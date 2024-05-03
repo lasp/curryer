@@ -1,0 +1,35 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisStateProperties",
+    "properties": {
+      "input_body": "TSIS_TIM",
+      "input_frame": "TSIS_AZEL_COORD",
+      "input_center": "TSIS_AZEL",
+      "input_data_units": {
+        "angles": "radians",
+        "distances": "meters"
+      },
+      "spk_type": "INTERP_LAGRANGE_EVEN",
+      "polynom_degree": 1,
+      "frame_kernel": "tsis_v01.frames.fk.tf"
+    }
+  },
+  "input_data": {
+    "ugps": [
+      0,
+      3155760018000000
+    ],
+    "position_x": [
+      -0.239377,
+      -0.239377
+    ],
+    "position_y": [
+      0.146924,
+      0.146924
+    ],
+    "position_z": [
+      0.153198,
+      0.153198
+    ]
+  }
+}

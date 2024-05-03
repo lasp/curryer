@@ -1,0 +1,15 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeQuaternionProperties",
+    "properties": {
+      "input_body": "ISS_SC",
+      "input_frame": "ITRF93",
+      "input_data_type": "SPICE QUATERNIONS",
+      "input_angular_rate": "MAKE UP",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "cprs_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": "iss_sc_v01.attitude.ck.testcase1.nc"
+}

@@ -1,0 +1,35 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisStateProperties",
+    "properties": {
+      "input_body": "TSIS_TADS",
+      "input_frame": "ISS_EXPA35_COORD",
+      "input_center": "ISS_EXPA35",
+      "input_data_units": {
+        "angles": "radians",
+        "distances": "meters"
+      },
+      "spk_type": "INTERP_LAGRANGE_EVEN",
+      "polynom_degree": 1,
+      "frame_kernel": "tsis_v01.frames.fk.tf"
+    }
+  },
+  "input_data": {
+    "ugps": [
+      0,
+      3155760018000000
+    ],
+    "position_x": [
+      0.409575,
+      0.409575
+    ],
+    "position_y": [
+      0.506349,
+      0.506349
+    ],
+    "position_z": [
+      0.174625,
+      0.174625
+    ]
+  }
+}

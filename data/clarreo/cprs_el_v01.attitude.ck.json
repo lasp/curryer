@@ -1,0 +1,25 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeEulerProperties",
+    "properties": {
+      "input_body": "CPRS_EL",
+      "input_frame": "CPRS_YOKE_COORD",
+      "input_data_type": "EULER ANGLES",
+      "input_time_type": "gps",
+      "input_time_columns": [
+        "gps"
+      ],
+      "input_angle_units": "RADIANS",
+      "input_angular_rate": "MAKE UP",
+      "input_gap_threshold": "30s",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "cprs_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": null,
+  "input_columns": {
+    "corrected_timestamp": "gps",
+    "hps.el_ang_nonlin": "angle_x"
+  }
+}

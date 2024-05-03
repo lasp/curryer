@@ -1,0 +1,76 @@
+{# Jinja2 Macros for SPICE kernel templates. #}
+{# Author: Brandon Stone #}
+{# Date: 2017-01-19 #}
+
+{# Format string values, adding single quotes around them. #}
+{% macro format_str(v) %}
+    {{- "'%s'"|format(v) if v is string else v -}}
+{% endmacro %}
+
+
+{# Format values.
+
+    Parameters
+    ----------
+    vals : any
+        Value to format. Iterables are decended into.
+    add_paren : bool, optional
+        Add parentheses around scalar values. Default=False
+    quote_str : bool
+        Add quotes around strings. Default=True
+
+    Notes
+    -----
+    - List are space delimited with parentheses.
+    - Strings are quoted (unless `quote_str=False`).
+    - None is rendered as "" (nothing).
+#}
+{% macro format_value(vals, add_paren=False, quote_str=True) %}
+    {{- "( " if add_paren else "" -}}
+
+    {%- if vals is string -%}
+        {%- if quote_str -%}
+            {{ format_str(vals) }}
+        {%- else -%}
+            {{ vals }}
+        {%- endif -%}
+
+    {%- elif vals is number -%}
+        {{ vals }}
+
+    {%- elif vals is none -%}
+        {# Skip `None` values #}
+
+    {%- else -%}
+        {{- "( " -}}
+        {%- for v in vals -%}
+            {{- format_value(v, add_paren=False) ~ " " -}}
+        {%- endfor -%}
+        {{- ")" -}}
+
+    {%- endif -%}
+    {{- " )" if add_paren else "" -}}
+{% endmacro %}
+
+
+{# Create key/value assignments. Wrap line as needed. #}
+{#  Max line length is 132. #}
+{% macro format_assignment(key, val, append=False) %}
+    {% set eq = "+=" if append else "=" %}
+    {% set ln = "%s %s %s"|format(key|upper, eq, val) %}
+    {{- ln|indent(4, first=True)|wordwrap(width=120, break_long_words=False) }}
+{% endmacro %}
+
+
+{# Append to the SPICE "name" and "id" mappings.
+
+    Parameters
+    ----------
+    name : str or list
+    code : int or list
+#}
+{% macro append_mapping(name, code) %}
+    {{- format_assignment("NAIF_BODY_NAME", format_value(name, add_paren=name is string), append=True) }}
+    {{- format_assignment("NAIF_BODY_CODE", format_value(
+        code, add_paren=(code is number or code is string), quote_str=False), append=True) }}
+{% endmacro %}

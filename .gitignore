@@ -1,0 +1,24 @@
+# Python
+# ------
+*.pyc
+.cache/
+__pycache__
+**/.pytest_cache/
+**/.ipynb_checkpoints/
+
+
+# Intellij
+# --------
+/.idea
+*.iml
+
+
+# Other
+# -----
+tmp/
+*.log
+*.html
+*.png
+
+# Project-specific
+# ----------------

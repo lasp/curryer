@@ -1,0 +1,30 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeQuaternionProperties",
+    "properties": {
+      "input_body": "ISS_SC",
+      "input_frame": "J2000",
+      "input_data_type": "SPICE QUATERNIONS",
+      "input_time_type": "gps",
+      "input_time_columns": [
+        "gps"
+      ],
+      "input_angular_rate": "YES",
+      "input_gap_threshold": "30s",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "cprs_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": null,
+  "input_columns": {
+    "corrected_timestamp": "gps",
+    "hps.bad_quat_iss_eci_s": "quaternion_c",
+    "hps.bad_quat_iss_eci_i": "quaternion_x",
+    "hps.bad_quat_iss_eci_j": "quaternion_y",
+    "hps.bad_quat_iss_eci_k": "quaternion_z",
+    "hps.bad_rate_iss_x": "rate_x",
+    "hps.bad_rate_iss_y": "rate_y",
+    "hps.bad_rate_iss_z": "rate_z"
+  }
+}
