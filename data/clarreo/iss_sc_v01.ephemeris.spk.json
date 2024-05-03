@@ -1,0 +1,32 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisStateProperties",
+    "properties": {
+      "input_body": "ISS_SC",
+      "input_frame": "J2000",
+      "input_center": "EARTH",
+      "input_data_units": {
+        "angles": "radians",
+        "distances": "feet"
+      },
+      "input_time_type": "gps",
+      "input_time_columns": [
+        "gps"
+      ],
+      "input_gap_threshold": "30s",
+      "spk_type": "INTERP_HERMITE_UNEVEN",
+      "polynom_degree": 3,
+      "frame_kernel": "cprs_v01.frames.fk.tf"
+    }
+  },
+  "input_data": null,
+  "input_columns": {
+    "corrected_timestamp": "gps",
+    "hps.bad_pos_eci_x": "position_x",
+    "hps.bad_pos_eci_y": "position_y",
+    "hps.bad_pos_eci_z": "position_z",
+    "hps.bad_vel_eci_x": "velocity_x",
+    "hps.bad_vel_eci_y": "velocity_y",
+    "hps.bad_vel_eci_z": "velocity_z"
+  }
+}

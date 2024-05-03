@@ -1,0 +1,92 @@
+KPL/IK
+
+Instrument kernel for TSIS
+----------------------------------------------------------
+
+    The TIM science FOV is a cone with a half-angle of
+    5 deg and the TIM glint FOV is a cone with a half-
+    angle of 21 deg. _Taken from TSIS docs._
+
+
+     ^ Z        Boundary Corner Vector
+     |  ins   /
+     |      + (11.43,0,1)  - Subtended field of view angle
+     |    / |              |                        o
+     |  /   |              | arc tan(1/11.43) ~= 5.0
+     |/     | (11.43,0,0)  |
+     +------+---> X ------ + -- Boresight -->
+    Y              ins
+     ins
+
+    Knowing half angle:
+        tan(deg2rad(5.0))^(-1) ~= 11.43
+
+    Example keywords:
+        INS-125544100_FOV_CLASS_SPEC       = 'CORNERS'
+        INS-125544100_FOV_BOUNDARY_CORNERS = ( 11.43 0.0 1.0 )
+
+    This file was created by LASP_SDS_TEAM
+    on 2017-06-23/15:44:00.
+
+
+Kernel data
+----------------------------------------------------------
+
+    TIM (-125544100) - Science FOV
+    ----------------------------
+
+        \begindata
+
+        INS-125544100_FOV_SHAPE            = 'CIRCLE'
+        INS-125544100_FOV_FRAME            = 'TSIS_TIM_COORD'
+        INS-125544100_BORESIGHT            = ( 0.0 0.0 1.0 )
+        INS-125544100_FOV_CLASS_SPEC       = 'ANGLES'
+        INS-125544100_FOV_REF_VECTOR       = ( 1.0 0.0 0.0 )
+        INS-125544100_FOV_REF_ANGLE        = 5.0
+        INS-125544100_FOV_ANGLE_UNITS      = 'DEGREES'
+
+        \begintext
+
+    TIM (-125544101) - Glint FOV
+    --------------------------
+
+        \begindata
+
+        INS-125544101_FOV_SHAPE            = 'CIRCLE'
+        INS-125544101_FOV_FRAME            = 'TSIS_TIM_COORD'
+        INS-125544101_BORESIGHT            = ( 0.0 0.0 1.0 )
+        INS-125544101_FOV_CLASS_SPEC       = 'ANGLES'
+        INS-125544101_FOV_REF_VECTOR       = ( 1.0 0.0 0.0 )
+        INS-125544101_FOV_REF_ANGLE        = 21.0
+        INS-125544101_FOV_ANGLE_UNITS      = 'DEGREES'
+
+        \begintext
+
+NAIF ID Code to Name Mapping
+----------------------------------------------------------
+
+    Instrument body name/id mappings.
+
+        \begintext data
+
+        NAIF_BODY_NAME += ( 'TSIS_TIM' )
+        NAIF_BODY_CODE += ( -125544100 )
+
+        NAIF_BODY_NAME += ( 'TSIS_TIM_GLINT' )
+        NAIF_BODY_CODE += ( -125544101 )
+
+        \begintext
+
+Platform ID
+----------------------------------------------------------
+
+    The TIM instrument is mounted on TSIS platform.
+
+    TODO: Is this a supported keyword? Used in Cassini kernel...
+
+        \begintext data
+
+        INS-125544100_PLATFORM_ID = ( -125544108 )
+        INS-125544101_PLATFORM_ID = ( -125544108 )
+
+        \begintext

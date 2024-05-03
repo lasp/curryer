@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "curryer"
+version = "0.0.1"
+description = "LASP SPICE and geospatial data product generation tools."
+authors = [
+    "Brandon Stone <brandon.h.stone@colorado.edu>"
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+numpy = "^1.23"
+scipy = "^1.9"
+pandas = "^1.5"
+xarray = ">=2022.11"
+netcdf4 = ">=1.6"
+pyhdf = ">=0.11"
+#h5netcdf = ">=1"
+#h5py = ">=3.7"
+rioxarray = ">=0.15"
+pyproj = ">=3.6"
+pyshp = ">=2.3"
+requests = ">=2.28"
+#boto3 = "^1.26"
+jinja2 = ">=3"
+spiceypy = ">=6"
+openpyxl = ">=3"
+
+pytest = "^7.1"
+ipython = ">=8.4"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.1"
+pytest-cov = ">=3"
+pylint = "^2"
+ipython = ">=8.4"
+#jupyterlab = ">=3.4"
+#matplotlib
+
+#[tool.poetry.scripts]
+#curryer = 'curryer.__main__:main'
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

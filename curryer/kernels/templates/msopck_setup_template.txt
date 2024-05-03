@@ -1,0 +1,42 @@
+{# Jinja2 Template - MSOPCK setup file #}
+{# Author: Brandon Stone #}
+{# Date: 2017-01-19 #}
+{%- from 'kernel_macros.jinja2' import format_value, format_assignment, append_mapping -%}
+
+MSOPCK Setup File
+==============================================================================
+
+    Object Name (ID): {{ name|upper }} ({{ code }})
+
+    This setup file (kernel) defines how orientation data is converted to a
+    binary CK kernel. Meant for use with GPS state and quaternion data.
+
+    NOTE: MSOPCK input data format is less flexible than MKSPK.
+
+
+Version and Date
+----------------------------------------------------------
+
+    Version {{ version }} -- {{ created }} -- Brandon Stone
+
+        -- Auto-generated
+
+
+Data
+----------------------------------------------------------
+\begindata
+
+
+{% if name and code %}
+    {{- append_mapping(name, code) -}}
+{%- endif -%}
+
+{% for key, val in configs.items() %}
+    {{- format_assignment(key, format_value(val)) -}}
+{% endfor %}
+
+
+\begintext
+----------------------------------------------------------
+{# WARNING: Keep trailing newline! #}
+End of file.

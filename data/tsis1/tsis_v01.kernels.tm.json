@@ -1,0 +1,52 @@
+{
+  "mappings": {
+    "ISS_SC": {
+      "id_code": -125544,
+      "frame": true,
+      "clock": true,
+      "attitude": true
+    },
+    "ISS_ELC3": -125544030,
+    "ISS_EXPA35": {
+      "id_code": -125544035,
+      "frame": true
+    },
+    "TSIS_TADS": {
+      "id_code": -125544109,
+      "frame": true
+    },
+    "TSIS_AZEL": {
+      "id_code": -125544108,
+      "clock": -125544,
+      "frame": true,
+      "attitude": true
+    },
+    "TSIS_TIM": {
+      "id_code": -125544100,
+      "frame": true
+    },
+    "TSIS_TIM_GLINT": {
+      "id_code": -125544101,
+      "frame": -125544100
+    }
+  },
+  "mission_kernels": [
+    "tsis_v01.frames.fk.tf",
+    "tsis_v01.instruments.ik.ti",
+    "iss_v01.fakeclock.sclk.tsc"
+  ],
+  "sds_kernels": [
+    "earth_assoc_itrf93.tf",
+    "earth_fixed.tf",
+    "moon_080317.tf",
+    "moon_assoc_pa.tf",
+    "naif0012.tls",
+    "pck00010.tpc",
+    "earth_200101_990628_predict.bpc",
+    "earth_720101_070426.bpc",
+    "earth_000101_221016_220723.bpc",
+    "moon_pa_de421_1900-2050.bpc",
+    "geophysical.ker",
+    "de430.bsp"
+  ]
+}

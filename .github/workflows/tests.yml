@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repo
+      - uses: actions/checkout@v4
+
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build test docker image
+          run: docker build . --file Dockerfile --target test --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-test:latest
+
+      - name: Run test docker image
+          run: docker run -i --rm -e SPACETRACK_USER=$SPACETRACK_USER -e SPACETRACK_PSWD=$SPACETRACK_PSWD curryer-${{ matrix.python-version }}-test:latest
+
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repo
+      - uses: actions/checkout@v4
+
+      - name: Set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build demo docker image
+          run: docker build . --file Dockerfile --target demo --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-demo:latest
+
+      - name: Run demo docker image
+          run: docker run -i --rm curryer-${{ matrix.python-version }}-demo:latest

@@ -1,0 +1,16 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeEulerProperties",
+    "properties": {
+      "input_body": "CPRS_AZ",
+      "input_frame": "CPRS_PEDE_COORD",
+      "input_data_type": "EULER ANGLES",
+      "input_angle_units": "RADIANS",
+      "input_angular_rate": "MAKE UP",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "cprs_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": "cprs_az_v01.attitude.ck.testcase1.nc"
+}

@@ -1,0 +1,14 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisTLEProperties",
+    "properties": {
+      "input_tle": 25544,
+      "input_body": "ISS_SC",
+      "input_frame": "J2000",
+      "input_center": "EARTH",
+      "tle_start_pad": "12 hours",
+      "tle_stop_pad": "12 hours"
+    }
+  },
+  "input_data": null
+}
