@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Check out repo
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Check out repo
-      - uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Set up python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
