@@ -1,0 +1,33 @@
+KPL/SCLK
+
+Fake SCLK Kernel for Spacecraft with ID -152950
+--------------------------------------------------------
+
+   This SCLK kernel contains the data necessary for converting from
+   ephemeris time (ET) to ticks for a fake clock associated with the
+   spacecraft with ID code -1234. This fake clock runs at the same rate
+   as ET, starting at ET 1980-JAN-06-00:00:00.000 and going for 100
+   years. It has two fields -- seconds and milliseconds. The clock's
+   granularity is 1 millisecond.
+
+   This file was created by LASP_SDS_TEAM
+   on 2017-06-21/17:09:38.
+
+Kernel data
+--------------------------------------------------------
+
+   \begindata
+
+      SCLK_KERNEL_ID              = ( @2017-06-21/17:09:38 )
+      SCLK_DATA_TYPE_152950       = ( 1 )
+      SCLK01_TIME_SYSTEM_152950   = ( 1 )
+      SCLK01_N_FIELDS_152950      = ( 2 )
+      SCLK01_MODULI_152950        = ( 3155760000 1000 )
+      SCLK01_OFFSETS_152950       = ( 0 0 )
+      SCLK01_OUTPUT_DELIM_152950  = ( 1 )
+      SCLK_PARTITION_START_152950 = ( 0.00000E+00 )
+      SCLK_PARTITION_END_152950   = ( 3.15576E+12 )
+      SCLK01_COEFFICIENTS_152950  = ( 0.0 @1980-JAN-06-00:00:00.000 1.0 )
+
+   \begintext
+

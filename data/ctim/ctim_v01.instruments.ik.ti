@@ -1,0 +1,51 @@
+KPL/IK
+
+Instrument kernel for CTIM
+----------------------------------------------------------
+
+    This file was created by LASP_SDS_TEAM
+    on 2022-07-20/15:44:00.
+
+
+Kernel data
+----------------------------------------------------------
+
+    TIM (-152950100) - Science FOV
+    ----------------------------
+
+        \begindata
+
+        INS-152950100_FOV_SHAPE            = 'CIRCLE'
+        INS-152950100_FOV_FRAME            = 'CTIM_TIM_COORD'
+        INS-152950100_BORESIGHT            = ( 0.0 0.0 -1.0 )
+        INS-152950100_FOV_CLASS_SPEC       = 'ANGLES'
+        INS-152950100_FOV_REF_VECTOR       = ( 1.0 0.0 0.0 )
+        INS-152950100_FOV_REF_ANGLE        = 21.0
+        INS-152950100_FOV_ANGLE_UNITS      = 'DEGREES'
+
+        \begintext
+
+NAIF ID Code to Name Mapping
+----------------------------------------------------------
+
+    Instrument body name/id mappings.
+
+        \begintext data
+
+        NAIF_BODY_NAME += ( 'CTIM_TIM' )
+        NAIF_BODY_CODE += ( -152950100 )
+
+        \begintext
+
+Platform ID
+----------------------------------------------------------
+
+    The TIM instrument is mounted on CTIM platform.
+
+    TODO: Is this a supported keyword? Used in Cassini kernel...
+
+        \begintext data
+
+        INS-152950100_PLATFORM_ID = ( -152950108 )
+
+        \begintext

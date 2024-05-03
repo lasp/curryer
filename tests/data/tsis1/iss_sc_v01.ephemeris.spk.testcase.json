@@ -1,0 +1,28 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisStateProperties",
+    "properties": {
+      "input_body": "ISS_SC",
+      "input_frame": "J2000",
+      "input_center": "EARTH",
+      "input_time_type": "utc",
+      "input_time_columns": [
+        "UTC"
+      ],
+      "input_data_units": {
+        "angles": "radians",
+        "distances": "feet"
+      },
+      "input_gap_threshold": "30s",
+      "spk_type": "INTERP_HERMITE_UNEVEN",
+      "polynom_degree": 3,
+      "frame_kernel": "tsis_v01.frames.fk.tf",
+      "planet_kernels": [
+        "../../../data/generic/earth_200101_990628_predict.bpc",
+        "../../../data/generic/earth_000101_221016_220723.bpc"
+      ]
+    }
+  },
+  "input_data": null,
+  "input_columns": null
+}

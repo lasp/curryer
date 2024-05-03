@@ -1,0 +1,57 @@
+KPL/IK
+
+Instrument kernel for CPRS
+----------------------------------------------------------
+
+    TODO: Set FOV to be for all pixels? Useful for in-fov checks?
+
+    This file was created by LASP_SDS_TEAM
+    on 2023-12-01/00:00:00.
+
+
+Kernel data
+----------------------------------------------------------
+
+    CPRS HySICS (-125544200) - Science FOV
+    --------------------------------------
+        TODO: Only thing specific is the boresight direction (center pixel).
+            Add the FOV?
+        INS-125544200_BORESIGHT            = ( 0.0 0.0 1.0 )
+        INS-125544200_BORESIGHT            = ( 0.001738687 -0.087155743 0.996193181 )
+
+        \begindata
+
+        INS-125544200_FOV_SHAPE            = 'CIRCLE'
+        INS-125544200_FOV_FRAME            = 'CPRS_HYSICS_COORD'
+        INS-125544200_BORESIGHT            = ( 0.0 0.0 1.0 )
+        INS-125544200_FOV_CLASS_SPEC       = 'ANGLES'
+        INS-125544200_FOV_REF_VECTOR       = ( 1.0 0.0 0.0 )
+        INS-125544200_FOV_REF_ANGLE        = 1.0
+        INS-125544200_FOV_ANGLE_UNITS      = 'DEGREES'
+
+        \begintext
+
+NAIF ID Code to Name Mapping
+----------------------------------------------------------
+
+    Instrument body name/id mappings.
+
+        \begintext data
+
+        NAIF_BODY_NAME += ( 'CPRS_HYSICS' )
+        NAIF_BODY_CODE += ( -125544200 )
+
+        \begintext
+
+Platform ID
+----------------------------------------------------------
+
+    The HySICS instrument is mounted on CPRS platform.
+
+    TODO: Is this a supported keyword? Used in Cassini kernel...
+
+        \begintext data
+
+        INS-125544200_PLATFORM_ID = ( -125544205 )
+
+        \begintext

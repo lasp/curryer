@@ -1,0 +1,28 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisTLEProperties",
+    "properties": {
+      "input_tle": 52950,
+      "input_body": "CTIM",
+      "input_frame": "J2000",
+      "input_center": "EARTH",
+      "tle_start_pad": "12 hours",
+      "tle_stop_pad": "12 hours",
+      "planet_kernels": [
+        "../generic/earth_200101_990628_predict.bpc",
+        "../generic/earth_000101_221016_220723.bpc",
+        "../generic/geophysical.ker"
+      ]
+    }
+  },
+  "input_data": null,
+  "input_columns": [
+    "object_name",
+    "norad_cat_id",
+    "epoch",
+    "creation_date",
+    "file",
+    "tle_line1",
+    "tle_line2"
+  ]
+}

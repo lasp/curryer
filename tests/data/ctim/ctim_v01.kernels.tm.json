@@ -1,0 +1,36 @@
+{
+  "mappings": {
+    "CTIM": {
+      "id_code": -152950,
+      "frame": "CTIM_COORD",
+      "clock": true,
+      "attitude": true
+    },
+    "CTIM_TIM": {
+      "id_code": -152950100,
+      "frame": true
+    }
+  },
+  "mission_kernels": [
+    "ctim_v01.frames.fk.tf",
+    "ctim_v01.instruments.ik.ti",
+    "ctim_v01.fakeclock.sclk.tsc",
+    "ctim_tim_v01.fixed_offset.spk.bsp",
+    "ctim_v01.attitude_apid1.ck.20230420.bc",
+    "ctim_v01.tle.spk.20230420.bsp"
+  ],
+  "sds_kernels": [
+    "earth_assoc_itrf93.tf",
+    "earth_fixed.tf",
+    "moon_080317.tf",
+    "moon_assoc_pa.tf",
+    "naif0012.tls",
+    "pck00010.tpc",
+    "earth_200101_990628_predict.bpc",
+    "earth_720101_070426.bpc",
+    "earth_000101_221016_220723.bpc",
+    "moon_pa_de421_1900-2050.bpc",
+    "geophysical.ker",
+    "de430.bsp"
+  ]
+}

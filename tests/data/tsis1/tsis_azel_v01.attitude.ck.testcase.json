@@ -1,0 +1,25 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeEulerProperties",
+    "properties": {
+      "input_body": "TSIS_AZEL",
+      "input_frame": "TSIS_TADS_COORD",
+      "input_data_type": "EULER ANGLES",
+      "input_time_type": "utc",
+      "input_time_columns": [
+        "UTC"
+      ],
+      "input_angle_units": "RADIANS",
+      "input_angular_rate": "MAKE UP",
+      "input_gap_threshold": "30s",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "tsis_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": null,
+  "input_columns": null,
+  "input_conversions": {
+    "5357": -1
+  }
+}
