@@ -48,7 +48,8 @@ def main(meta_kernel, generic_dir, kernel_configs, output_dir, input_file_or_obj
             geoloc_inst = spatial.Geolocate('CPRS_HYSICS')
             l1a_dataset = geoloc_inst(ugps_times)
 
-    out_file = output_dir / f'cprs_geolocation_l1a_{pd.Timestamp(time_range[0]).isoformat()}.nc'
+    created = pd.Timestamp(time_range[0]).strftime('%Y%m%dT%H%M%S')
+    out_file = output_dir / f'cprs_geolocation_l1a_{created}.nc'
     l1a_dataset.to_netcdf(out_file)
     logger.info('Script saved L1A geolocation:\n%s', out_file)
     return

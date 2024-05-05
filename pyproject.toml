@@ -7,10 +7,10 @@ authors = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-numpy = "^1.23"
-scipy = "^1.9"
-pandas = "^1.5"
+python = ">=3.9,<4"
+numpy = ">=1.23"
+scipy = ">=1.9"
+pandas = ">=1.5"
 xarray = ">=2022.11"
 netcdf4 = ">=1.6"
 pyhdf = ">=0.11"
@@ -25,13 +25,13 @@ jinja2 = ">=3"
 spiceypy = ">=6"
 openpyxl = ">=3"
 
-pytest = "^7.1"
+pytest = ">=7.1"
 ipython = ">=8.4"
 
 [tool.poetry.dev-dependencies]
-pytest = "^7.1"
+pytest = ">=7.1"
 pytest-cov = ">=3"
-pylint = "^2"
+pylint = ">=2"
 ipython = ">=8.4"
 #jupyterlab = ">=3.4"
 #matplotlib
