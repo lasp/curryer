@@ -40,6 +40,7 @@ RUN mkdir -p $DATA_DIR/generic \
 COPY data $DATA_DIR
 
 # Copy library files.
+# TODO: First copy depdencies and install python before the whole lib? Makes things faster locally.
 COPY bin $BASE_DIR/bin
 COPY curryer $BASE_DIR/curryer
 COPY tests $BASE_DIR/tests
@@ -59,6 +60,7 @@ RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_
     && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
 
 ENTRYPOINT pytest \
+    -v \
     --junitxml=junit.xml \
     --disable-warnings \
     tests
