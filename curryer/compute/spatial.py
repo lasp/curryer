@@ -585,7 +585,9 @@ class Geolocate:
             if qf_ds is not None:
                 extra = '\n\tQuality Flags Summary (count, hex, label):'
                 for val, cnt in qf_ds.value_counts().sort_index().items():
-                    extra += f'\n\t{cnt:7d}: 0x{val:<6X} - {str(SQF(val)).split(".", 1)[-1]}'
+                    # label = '|'.join([m.name for m in SQF(val)])  # TODO: 3.11 only!!!
+                    label = repr(SQF(val)).split('.', 1)[-1].rsplit(':', 1)[0]  # TODO: Yuck.
+                    extra += f'\n\t{cnt:7d}: 0x{val:<6X} - {label}'
 
             logger.info('Geolocation step [%s] took [%.3f] sec%s', msg, t1 - t0, extra)
 
@@ -752,7 +754,7 @@ class Geolocate:
         # Dev note: Important to do this check last, since above logic requires
         # direct assignment instead of OR'ing.
         angles_invalid = (solar_angles_df.isna().any(axis=1) | view_angles_df.isna().any(axis=1))
-        ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE
+        ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
 
         return solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
 
