@@ -1,9 +1,25 @@
-"""SPICE Spatial computations.
+"""Spatial computations.
+
+Notes
+-----
+Terms:
+    - ECEF - Earth Centered Earth Fixed, called ITRF93 in SPICE.
+    - ECI - Earth Centered Inertial, called J2000 in SPICE.
+    - Rectangular coordinates - X/Y/Z offset from center.
+    - Geodetic coordinates - Lon/Lat/Alt from a reference ellipsoid.
+    - WGS84 - Standard ellipsoidal representation of the Earth.
+    - Geoid height - Modeled height above the ellipsoid that's typically called
+    sea-level, based on gravitational equipotential surface.
+    - Orthometric height - Surface elevation above (not including) the geoid.
+    - Terrain correct - Process of accounting for elevated surfaces (terrain)
+    that may have been intersected before reaching the ellipsoid, resulting in a
+    "horizontal" (lon/lat) offset, increasing based on off-nadir angle.
 
 @author: Brandon Stone
 """
 import logging
 import time
+from typing import Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -18,7 +34,7 @@ from .. import spicierpy, spicetime
 logger = logging.getLogger(__name__)
 
 
-def pixel_vectors(instrument):
+def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> Tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument.
 
     Boresight vector is queried from the instrument kernel, but superseded by
@@ -64,9 +80,165 @@ def pixel_vectors(instrument):
     return count, vectors
 
 
-def instrument_intersect_ellipsoid(ugps_times, instrument, correction=None, allow_nans=True, boresight_vector=None,
-                                   geodetic=False, degrees=False):
+def instrument_pointing_vectors(ugps_times: np.ndarray, instrument: Union[int, str, spicierpy.obj.Body],
+                                correction: str = None, allow_nans=True, boresight_vector=None,
+                                ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """Determine the boresight pointing vectors in Earth Centered Inertial.
+
+    Parameters
+    ----------
+    ugps_times : np.ndarray
+        One or more times in GPS microseconds to compute the pointing.
+        Relevant SPICE kernels must be loaded for these times.
+    instrument : spicierpy.obj.Body or int or str
+        Instrument name or ID containing the boresight to process. If
+        `boresight_vector` is None (default), the SPICE instrument kernel
+        and/or SPICE variables must be loaded; see `pixel_vectors`.
+    correction : str, optional
+        Type of SPICE perspective correction to use. Default is "None".
+    allow_nans : bool, optional
+        Convert invalid returns (e.g., data gaps) into NaNs (default), otherwise
+        throws SPICE errors.
+    boresight_vector : np.ndarray, optional
+        Array of one or more boresight vectors in the instrument frame. Default
+        is None, instead loading them from SPICE kernels using `pixel_vectors`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Pointing vectors in rectangular coordinates (kilometers).
+        Invalid points are set to NaN unless `allow_nans` was False.
+        The index is the product of `ugps_times` and `boresight_vector`.
+    pd.DataFrame
+        Spacecraft position in ECI as rectangular x/y/z coordinates.
+        The index is the product of `ugps_times` and `boresight_vector`.
+    pd.Series
+        Quality flags indicating why one or both of the other returns were set
+        to NaNs (e.g., missing kernel data).
+        The index is the product of `ugps_times` and `boresight_vector`.
+
+    """
+    # Prepare the SPICE objects.
+    if not isinstance(instrument, spicierpy.obj.Body):
+        instrument = spicierpy.obj.Body(instrument, frame=True)
+
+    # Prepare arguments for spice.
+    observer_id = spicierpy.obj.Body('EARTH').id
+    out_frame_name = 'J2000'  # ECI
+    target_id = instrument.id
+    boresight_frame_name = instrument.frame.name
+
+    et_times = spicetime.adapt(ugps_times, to='et')
+    if correction is None:
+        correction = 'NONE'
+    nan_result = (np.full((3, 3), np.nan), np.full((3,), np.nan))
+
+    # Optional multi-pixel support...
+    if boresight_vector is None:
+        pix_count, pix_vectors = pixel_vectors(instrument)
+    else:
+        pix_count = 1
+        pix_vectors = np.array(boresight_vector)[None, ...]
+
+    logger.debug('Calculating [%s x %s] ECI pointing for [%s]', pix_count, len(et_times), instrument)
+
+    # Query the rotation and position in output reference frame, but optionally
+    # map SPICE errors to NaNs and quality flags.
+    @spicierpy.ext.spice_error_to_val(
+        err_value=nan_result, err_flag=SQF.from_spice_error, pass_flag=SQF.GOOD, disable=not allow_nans)
+    def _query(sample_et):
+        rot_to_out = spicierpy.pxform(boresight_frame_name, out_frame_name, sample_et)
+        position, _ = spicierpy.spkezp(
+            target_id, sample_et, ref=out_frame_name, abcorr=correction, obs=observer_id
+        )
+        return rot_to_out, position
+
+    pnt_points = np.full((et_times.size * pix_count, 3), np.nan)
+    sc_positions = np.full((et_times.size * pix_count, 3), np.nan)
+    quality_flags = np.zeros((et_times.size * pix_count,), dtype=np.int64)
+
+    for ith, time in enumerate(et_times):
+        # Query the boresight pointing and position in the output frame.
+        (out_rotation, out_position), qf_val = _query(time)
+
+        # Enough data was found to check individual pixels.
+        if qf_val == SQF.GOOD:
+            pnt_vectors = (out_rotation @ pix_vectors.T).T
+            pnt_points[ith * pix_count: (ith + 1) * pix_count, :] = pnt_vectors
+
+            sc_positions[ith * pix_count: (ith + 1) * pix_count, :] = out_position
+
+            qf_values = np.full((pix_count,), qf_val)
+            qf_values[~np.isfinite(pnt_vectors).all(axis=1)] |= SQF.CALC_ELLIPS_NO_INTERSECT
+            quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_values
+
+        else:
+            # Leave the surface and S/C data points as NaNs.
+            qf_val |= SQF.CALC_ELLIPS_INSUFF_DATA
+            quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_val
+
+    if pix_count == 1:
+        index = pd.Index(ugps_times, name='ugps')
+    else:
+        index = pd.MultiIndex.from_product([ugps_times, np.arange(pix_count) + 1], names=['ugps', 'pixel'])
+
+    pnt_data = pd.DataFrame(pnt_points, columns=['x', 'y', 'z'], index=index)
+    sc_data = pd.DataFrame(sc_positions, columns=['x', 'y', 'z'], index=index)
+    qf_data = pd.Series(quality_flags, name='qf', index=index)
+
+    pnt_data.columns.name = f'Pointing[{instrument.name}]@{out_frame_name}'
+    sc_data.columns.name = f'Position[{instrument.name}]@{out_frame_name}'
+
+    logger.info('Completed [%s x %s] ECI pointing for [%s]', pix_count, len(et_times), instrument)
+    return pnt_data, sc_data, qf_data
+
+
+def instrument_intersect_ellipsoid(ugps_times: np.ndarray, instrument: Union[int, str, spicierpy.obj.Body],
+                                   correction: str = None, allow_nans=True, boresight_vector=None, geodetic=False,
+                                   degrees=False) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Geolocate the boresight on the Earth's surface (WGS84 ellipsoid).
+
+    Parameters
+    ----------
+    ugps_times : np.ndarray
+        One or more times in GPS microseconds to compute the boresight to WGS84
+        ellipsoid intersection. Relevant SPICE kernels must be loaded for these
+        times.
+    instrument : spicierpy.obj.Body or int or str
+        Instrument name or ID containing the boresight to process. If
+        `boresight_vector` is None (default), the SPICE instrument kernel
+        and/or SPICE variables must be loaded; see `pixel_vectors`.
+    correction : str, optional
+        Type of SPICE perspective correction to use. Default is "None".
+    allow_nans : bool, optional
+        Convert invalid returns (e.g., data gaps) into NaNs (default), otherwise
+        throws SPICE errors.
+    boresight_vector : np.ndarray, optional
+        Array of one or more boresight vectors in the instrument frame. Default
+        is None, instead loading them from SPICE kernels using `pixel_vectors`.
+    geodetic : bool, optional
+        If True, intersections are in geodetic lon/lat/alt coordinates,
+        otherwise (default) they are in rectangular x/y/z coordinates.
+    degrees : bool, optional
+        Returns geodetic coordinates in degrees instead of radians (default).
+        Ignored if `geodetic` is False (default).
+
+    Returns
+    -------
+    pd.DataFrame
+        Ellipsoidal intersection in rectangular coordinates, or geodetic
+        lon/lat/alt if `geodetic` was True. The latter defaults to radians
+        unless `degrees` was True. The former and "alt" are in kilometers.
+        Invalid intersections are set to NaN unless `allow_nans` was False.
+        The index is the product of `ugps_times` and `boresight_vector`.
+    pd.DataFrame
+        Spacecraft position in ECEF as rectangular x/y/z coordinates.
+        The index is the product of `ugps_times` and `boresight_vector`.
+    pd.Series
+        Quality flags indicating why one or both of the other returns were set
+        to NaNs (e.g., missing kernel data, failed to intersect ellipsoid).
+        The index is the product of `ugps_times` and `boresight_vector`.
+
     """
     # Prepare the SPICE objects.
     if not isinstance(instrument, spicierpy.obj.Body):
@@ -145,9 +317,47 @@ def instrument_intersect_ellipsoid(ugps_times, instrument, correction=None, allo
     return surf_data, sc_data, qf_data
 
 
-def ray_intersect_ellipsoid(vector, position, geodetic=False, degrees=False, a=None, b=None, e2=None):
-    # Source:
-    #   https://modis.gsfc.nasa.gov/data/atbd/atbd_mod28_v3.pdf
+def ray_intersect_ellipsoid(vector: np.ndarray, position: np.ndarray, geodetic=False, degrees=False,
+                            a: float = None, b: float = None, e2: float = None) -> np.ndarray:
+    """Intersect a pointing vector to an ellipsoid (vectorized).
+
+    Parameters
+    ----------
+    vector : np.ndarray
+        Array of pointing vectors in an ellipsoid-centered-fixed reference frame
+        (i.e., ECEF for EGS84). Units must match `a`; default is kilometers.
+    position : np.ndarray
+        Array of position vectors in an ellipsoid-centered-fixed reference frame.
+        Must either be a single vector or the same shape as `vector`. Units
+        must match `vector`.
+    geodetic : bool, optional
+        If True, intersections are in geodetic lon/lat/alt coordinates,
+        otherwise (default) they are in rectangular x/y/z coordinates.
+    degrees : bool, optional
+        Returns geodetic coordinates in degrees instead of radians (default).
+        Ignored if `geodetic` is False (default).
+    a : float, optional
+        Ellipsoid's major axis. Default is WGS84 in kilometers.
+    b : float, optional
+        Ellipsoid's minor axis. Default is WGS84 in kilometers.
+    e2 : float, optional
+        Ellipsoid's squared eccentricity. Default is WGS84 in kilometers.
+
+    Returns
+    -------
+    np.ndarray
+        Ellipsoidal intersection in rectangular coordinates, or geodetic
+        lon/lat/alt if `geodetic` was True. The latter defaults to radians
+        unless `degrees` was True. The former and "alt" are in the same units
+        as the `vector` input (default is kilometer). Non-intersections are set
+        to NaNs.
+
+    References
+    ----------
+    MODIS ATBD
+        https://modis.gsfc.nasa.gov/data/atbd/atbd_mod28_v3.pdf
+
+    """
     if a is b is e2 is None:
         a = constants.WGS84_SEMI_MAJOR_AXIS_KM
         b = constants.WGS84_SEMI_MINOR_AXIS_KM
@@ -207,13 +417,31 @@ def ray_intersect_ellipsoid(vector, position, geodetic=False, degrees=False, a=N
     return lla.ravel() if given_1d else lla
 
 
-def ecef_to_geodetic(xyz, meters=False, degrees=True):
-    # TODO: Any edge cases that need checking (e.g., small values that
-    #   result in a NaN but should be zero or 90/180)???
-    # Source:
-    #   https://en.wikipedia.org/wiki/Geographic_coordinate_conversion#The_application_of_Ferrari's_solution
-    # Note:
-    #   With 1k points, this is ~0.2 ms, vs. SPICE at ~20ms.
+def ecef_to_geodetic(xyz: np.ndarray, meters=False, degrees=True) -> np.ndarray:
+    """Convert Earth Centered Earth Fixed rectangular coordinates to geodetic
+    latitude longitude and altitude (WGS84 ellipsoid).
+
+    Vectorized implementation (e.g., 1k points takes ~0.2 ms, vs. SPICE ~20ms).
+
+    Parameters
+    ----------
+    xyz : np.ndarray
+        Rectangular coordinates in ECEF.
+    meters : bool, optional
+        If True, inputs are in meters, otherwise (default) kilometers.
+    degrees : bool, optional
+        If True (default), outputs are in degrees, otherwise radians.
+
+    Returns
+    -------
+    np.ndarray
+        Geodetic latitude longitude and altitude (WGS84 ellipsoid).
+
+    References
+    ----------
+    https://en.wikipedia.org/wiki/Geographic_coordinate_conversion#The_application_of_Ferrari's_solution
+
+    """
 
     given_1d = xyz.ndim == 1
     if given_1d:
@@ -258,9 +486,29 @@ def ecef_to_geodetic(xyz, meters=False, degrees=True):
     return lla.ravel() if given_1d else lla
 
 
-def geodetic_to_ecef(lon_lat_alt, meters=False, degrees=True):
-    # Source:
-    #   https://en.wikipedia.org/wiki/Geographic_coordinate_conversion#From_geodetic_to_ECEF_coordinates
+def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.ndarray:
+    """Convert geodetic latitude longitude and altitude (WGS84 ellipsoid) to
+    Earth Centered Earth Fixed rectangular coordinates (vectorized).
+
+    Parameters
+    ----------
+    lon_lat_alt : np.ndarray
+        Geodetic latitude longitude and altitude (WGS84 ellipsoid).
+    meters : bool, optional
+        If True, outputs are in meters, otherwise (default) kilometers.
+    degrees : bool, optional
+        If True (default), inputs are in degrees, otherwise radians.
+
+    Returns
+    -------
+    np.ndarray
+        Rectangular coordinates in ECEF.
+
+    References
+    ----------
+    https://en.wikipedia.org/wiki/Geographic_coordinate_conversion#From_geodetic_to_ECEF_coordinates
+
+    """
     given_1d = lon_lat_alt.ndim == 1
     if given_1d:
         lon_lat_alt = lon_lat_alt[None, ...]
@@ -288,7 +536,40 @@ def geodetic_to_ecef(lon_lat_alt, meters=False, degrees=True):
     return xyz.ravel() if given_1d else xyz
 
 
-def terrain_correct(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, local_minmax=None):
+def terrain_correct(elev: elevation.Elevation, ec_srf_pos: np.ndarray, ec_sat_pos: np.ndarray,
+                    local_minmax: Tuple[float, float] = None) -> Tuple[np.ndarray, np.ndarray]:
+    """Perform terrain correction on ellipsoidal intersections (vectorized).
+
+    Parameters
+    ----------
+    elev : elevation.Elevation
+        Source of geoid and orthometric heights in kilometers and degrees.
+    ec_srf_pos: np.ndarray
+        Surface position in Earth Centered Earth Fixed rectangular coordinates
+        in kilometers.
+    ec_sat_pos: np.ndarray
+        Spacecraft position in Earth Centered Earth Fixed rectangular
+        coordinates in kilometers.
+    local_minmax : (float, float), optional
+        Assumed local min and max elevation in kilometers, otherwise (default)
+        query the min/max from `elev`.
+
+    Returns
+    -------
+    np.ndarray
+        Corrected surface position in geodetic latitude longitude and altitude.
+        Latitude and latitude are in degrees. Altitude is kilometers above the
+        WGS84 ellipsoid (geoid height + orthometric (DEM) height). Points that
+        can not be corrected (e.g., >85 degree off-nadir) are set to NaNs.
+    np.ndarray
+        Quality flags indicating why the correction failed.
+
+    References
+    ----------
+    MODIS ATBD
+        https://modis.gsfc.nasa.gov/data/atbd/atbd_mod28_v3.pdf
+
+    """
     if elev.meters or elev.degrees:
         raise ValueError('Elevation instance must be configured for KM (meters=False) and RADIANS (degrees=False)')
 
@@ -381,7 +662,7 @@ def terrain_correct(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, local_min
 
     # 9) Initialize to MAX position on the ellipsoid.
     # gd_cur_lon, gd_cur_lat, gd_cur_alt = gd_max_xyz[:, 0], gd_max_xyz[:, 1], np.zeros(npts)
-    gd_cur_xyz = gd_max_xyz.copy()  # TODO: Unused after, not needed? Check others!
+    gd_cur_xyz = gd_max_xyz.copy()
     gd_cur_xyz[:, 2] = np.zeros(npts)
 
     # 10) Terrain intersection.
@@ -477,7 +758,25 @@ def terrain_correct(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, local_min
     return (gd_final_pos.ravel(), qf_values.ravel()) if given_1d else (gd_final_pos, qf_values)
 
 
-def calc_azimuth(obs_position, trg_position, degrees=False):
+def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False) -> np.ndarray:
+    """Compute the azimuth angle (vectorized).
+
+    Parameters
+    ----------
+    obs_position : np.ndarray
+        Observer (surface) positions in rectangular coordinates.
+    trg_position : np.ndarray
+        Target positions in rectangular coordinates. Must be a single point or
+        the same length as `obs_position`.
+    degrees : bool, optional
+        If True, returns are in degrees, otherwise (default) radians.
+
+    Returns
+    -------
+    np.ndarray
+        Azimuth angle between the observer, target and +Z-axis.
+
+    """
     if obs_position.ndim == 2 and trg_position.ndim == 1:
         pass  # Many-to-one (non-pairwise) is supported.
     elif obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size:
@@ -501,7 +800,25 @@ def calc_azimuth(obs_position, trg_position, degrees=False):
     return az_ang.ravel() if given_1d else az_ang
 
 
-def calc_zenith(obs_position, trg_position, degrees=False):
+def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False) -> np.ndarray:
+    """Compute the zenith angle (vectorized).
+
+    Parameters
+    ----------
+    obs_position : np.ndarray
+        Observer (surface) positions in rectangular coordinates.
+    trg_position : np.ndarray
+        Target positions in rectangular coordinates. Must be a single point or
+        the same length as `obs_position`.
+    degrees : bool, optional
+        If True, returns are in degrees, otherwise (default) radians.
+
+    Returns
+    -------
+    np.ndarray
+        Zenith angle between the observer, target and reference frame center.
+
+    """
     pairwise = True
     if obs_position.ndim == 2 and trg_position.ndim == 1:
         pairwise = False
@@ -531,7 +848,36 @@ def calc_zenith(obs_position, trg_position, degrees=False):
     return zenith_ang.ravel() if given_1d else zenith_ang
 
 
-def surface_angles(surface_positions, target_positions=None, target_obj=None, degrees=False, allow_nans=False):
+def surface_angles(surface_positions: pd.DataFrame, target_positions: pd.DataFrame = None,
+                   target_obj: Union[int, str, spicierpy.obj.Body] = None, degrees=False, allow_nans=False
+                   ) -> pd.DataFrame:
+    """Compute the azimuth and zenith surface angles (vectorized).
+
+    Parameters
+    ----------
+    surface_positions : pd.DataFrame
+        Surface positions in rectangular coordinates. Index must be time in
+        GPS microseconds if `target_positions` is not supplied.
+    target_positions : pd.DataFrame, optional
+        Target positions in rectangular coordinates. Required unless
+        `target_obj` is supplied. Must be a single point or the same length as
+        `surface_positions`.
+    target_obj : spicierpy.obj.Body or int or str, optional
+        Target to query positions for at `surface_position` times. Typically, a
+        spacecraft or the Sun.
+    degrees : bool, optional
+        If True, returns are in degrees, otherwise (default) radians.
+    allow_nans : bool, optional
+        Convert invalid returns (e.g., data gaps) into NaNs (default), otherwise
+        throws SPICE errors.
+
+    Returns
+    -------
+    pd.DataFrame
+        Azimuth and zenith angles. Invalid values are set to NaNs unless
+        `allow_nans` was False.
+
+    """
     if not isinstance(surface_positions, pd.DataFrame):
         raise TypeError(f'`surface_positions` must be a DataFrame, not: {type(surface_positions)}')
     if target_positions is not None and not isinstance(target_positions, pd.DataFrame):
@@ -567,14 +913,30 @@ def surface_angles(surface_positions, target_positions=None, target_obj=None, de
 
 
 class Geolocate:
+    """High-level class to manage the geolocation processing steps.
+    """
 
-    def __init__(self, instrument, dem_data_dir=None):
+    def __init__(self, instrument: Union[str, int, spicierpy.obj.Body], dem_data_dir=None):
+        """Set up the geolocation process.
+
+        Parameters
+        ----------
+        instrument : spicierpy.obj.Body or int or str
+            Instrument name or ID containing the boresight to geolocate from.
+            SPICE kernels must already be loaded into memory.
+        dem_data_dir : str or Path, optional
+            Directory containing the elevation data files. Default is to look in
+            standardized locations.
+
+        """
         self.instrument = spicierpy.obj.Body(instrument, frame=True)  # E.g. "CPRS_HYSICS"
         self.sc_state_frame = spicierpy.obj.Frame('J2000')  # TODO: Or ECEF (ITRF93)?
         self.elevation = elevation.Elevation(dem_data_dir, meters=False, degrees=False)
         self._step_time = None
 
-    def _log_step(self, msg, qf_ds=None):
+    def _log_step(self, msg: str, qf_ds: pd.Series = None):
+        """Log an individual processing step, summarizing quality flag results.
+        """
         if msg is not None:
             t0 = self._step_time
             t1 = time.time()
@@ -593,7 +955,21 @@ class Geolocate:
 
         self._step_time = time.time()
 
-    def __call__(self, ugps_times):
+    def __call__(self, ugps_times: np.ndarray) -> xr.Dataset:
+        """Perform geolocation processing.
+
+        Parameters
+        ----------
+        ugps_times : np.ndarray
+            One or more times in GPS microseconds to geolocate. Relevant SPICE
+            kernels must already be loaded into memory.
+
+        Returns
+        -------
+        xr.Dataset
+            Geolocation results and ancillary statistics.
+
+        """
         logger.info('Geolocation starting processing of [%d] times for instrument=[%s]',
                     len(ugps_times), self.instrument)
 
@@ -639,15 +1015,15 @@ class Geolocate:
                 'attitude': (['frame', 'euclidian_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
                 'position': (['frame', 'euclidian_dim'], sc_state_df[['x', 'y', 'z']].values),
                 'velocity': (['frame', 'euclidian_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
-                # TODO: Now they want both ellipsoid and terrain?
+
                 'altitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['alt'].values),
                 'latitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lat'].values),
                 'longitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lon'].values),
-                # TODO: Different than ellips height for terrain corr'd point!
+
                 'altitude': (['frame', 'spatial_pixel'], terrain_lla_df['alt'].values),
                 'latitude': (['frame', 'spatial_pixel'], terrain_lla_df['lat'].values),
                 'longitude': (['frame', 'spatial_pixel'], terrain_lla_df['lon'].values),
-                # TODO: Drop per pixel dimension? Waste of space!
+
                 'solar_azimuth': (['frame', 'spatial_pixel'], solar_angles_df['azimuth'].values),
                 'solar_zenith': (['frame', 'spatial_pixel'], solar_angles_df['zenith'].values),
                 'view_azimuth': (['frame', 'spatial_pixel'], view_angles_df['azimuth'].values),
@@ -661,8 +1037,8 @@ class Geolocate:
                 'spectral_pixel': ('spectral_pixel', []),
             },
             attrs={
-                'instrument': self.instrument.name,  # TODO: Use expected attrs!
-                'state_frame': self.sc_state_frame.name,  # TODO: Use expected attrs!
+                'instrument': self.instrument.name,
+                'state_frame': self.sc_state_frame.name,
             }
         )
 
@@ -671,14 +1047,65 @@ class Geolocate:
                     len(ugps_times), time.time() - t0, dataset)
         return dataset
 
-    def intersect_ellipsoid(self, ugps_times):
+    def intersect_ellipsoid(self, ugps_times: np.ndarray) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+        """Intersect the pixels to the WGS84 ellipsoid.
+
+        Parameters
+        ----------
+        ugps_times : np.ndarray
+            One or more times in GPS microseconds.
+
+        Returns
+        -------
+        pd.DataFrame
+            Ellipsoidal intersection in geodetic lon/lat/alt coordinates
+            (degrees, kilometers). Invalid intersections are set to NaN.
+            The index is the product of `ugps_times` and pixels across-track.
+        pd.DataFrame
+            Spacecraft position in ECEF as rectangular x/y/z coordinates.
+            The index is the product of `ugps_times` and pixels across-track.
+        pd.Series
+            Quality flags indicating why one or both of the other returns were
+            NaNs (e.g., missing kernel data, failed to intersect ellipsoid).
+            The index is the product of `ugps_times` and pixels across-track.
+
+        """
         ellips_lla_df, sc_xyz_df, ellips_qf_ds = instrument_intersect_ellipsoid(
             ugps_times, self.instrument, geodetic=True, degrees=True)
         return ellips_lla_df, sc_xyz_df, ellips_qf_ds
 
-    def correct_terrain(self, ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=1.0):
-        # TODO: Assert shapes!!!
+    def correct_terrain(self, ellips_lla_df: pd.DataFrame, sc_xyz_df: pd.DataFrame, ellips_qf_ds: pd.Series,
+                        pad_degrees: float = 1.0) -> Tuple[pd.DataFrame, pd.Series]:
+        """Perform terrain correction on ellipsoidal intersections.
 
+        Parameters
+        ----------
+        ellips_lla_df : pd.DataFrame
+            Ellipsoidal intersection in geodetic lon/lat/alt coordinates
+            (degrees, kilometers). Invalid intersections are set to NaN.
+            The index is the product of `ugps_times` and pixels across-track.
+        sc_xyz_df : pd.DataFrame
+            Spacecraft position in ECEF as rectangular x/y/z coordinates.
+            The index is the product of `ugps_times` and pixels across-track.
+        ellips_qf_ds : pd.Series
+            Quality flags indicating why one or both of the other returns were
+            NaNs (e.g., missing kernel data, failed to intersect ellipsoid).
+            The index is the product of `ugps_times` and pixels across-track.
+        pad_degrees : float, optional
+            Number of lon/lat degrees to pad the intersections when loading
+            the regional extent of the surface elevation.
+
+        Returns
+        -------
+        pd.DataFrame
+            Terrain intersection in geodetic lon/lat/alt coordinates
+            (degrees, kilometers). Invalid intersections are set to NaN.
+            The index matches the input index from `ellips_lla_df`.
+        pd.Series
+            Quality flags indicating why the returns were NaNs.
+            The index matches the input index from `ellips_lla_df`.
+
+        """
         is_valid = (ellips_qf_ds == SQF.GOOD).values
         data_arr = np.full((ellips_lla_df.shape[0], 3), np.nan)
         qf_arr = ellips_qf_ds.values.copy()
@@ -695,7 +1122,6 @@ class Geolocate:
             terrain_lla_arr_sub, terrain_qf_arr_sub = terrain_correct(
                 elev=elev_region, ec_srf_pos=ellips_xyz_arr_sub, ec_sat_pos=sc_xyz_df.values[is_valid],
             )
-            # TODO: Also compute the ellipsoidal height?
 
             data_arr[is_valid, :] = terrain_lla_arr_sub
             qf_arr[is_valid] |= terrain_qf_arr_sub
@@ -706,7 +1132,37 @@ class Geolocate:
         terrain_lla_df.columns.name = f'Terrain[{self.instrument.name}]@ITRF93'
         return terrain_lla_df, terrain_qf_ds
 
-    def calc_ancillary(self, terrain_lla_df, sc_xyz_df):
+    def calc_ancillary(self, terrain_lla_df: pd.DataFrame, sc_xyz_df: pd.DataFrame
+                       ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series]:
+        """Compute ancillary data fields.
+
+        Parameters
+        ----------
+        terrain_lla_df : pd.DataFrame
+            Terrain intersection in geodetic lon/lat/alt coordinates
+            (degrees, kilometers). Invalid intersections are set to NaN.
+            The index is the product of `ugps_times` and pixels across-track.
+        sc_xyz_df : pd.DataFrame
+            Spacecraft position in ECEF as rectangular x/y/z coordinates.
+            The index is the product of `ugps_times` and pixels across-track.
+
+        Returns
+        -------
+        pd.DataFrame
+            Solar azimuth and zenith angles (degrees).
+            The index matches the input index from `terrain_lla_df`.
+        pd.DataFrame
+            View azimuth and zenith angles (degrees).
+            The index matches the input index from `terrain_lla_df`.
+        pd.DataFrame
+            Spacecraft position (x/y/z), velocity (vx/vy/vz) and attitude
+            (ex/ey/ez). The latter is from the instrument perspective.
+            The index matches the input index from `terrain_lla_df`.
+        pd.Series
+            Quality flags indicating why any of the returns were NaNs.
+            The index matches the input index from `terrain_lla_df`.
+
+        """
         terrain_xyz_arr = geodetic_to_ecef(terrain_lla_df.values, degrees=True)
         terrain_xyz_df = pd.DataFrame(terrain_xyz_arr, columns=['x', 'y', 'z'], index=terrain_lla_df.index)
 
