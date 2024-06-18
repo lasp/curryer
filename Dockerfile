@@ -44,6 +44,7 @@ COPY data $DATA_DIR
 COPY bin $BASE_DIR/bin
 COPY curryer $BASE_DIR/curryer
 COPY tests $BASE_DIR/tests
+COPY README.md $BASE_DIR
 COPY pyproject.toml $BASE_DIR
 
 # Ensure pip is upgraded
