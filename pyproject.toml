@@ -1,6 +1,9 @@
 [tool.poetry]
 name = "lasp-curryer"
 version = "0.0.4"
+packages = [
+    { include = "curryer" }
+]
 description = "LASP SPICE extentions and geospatial data product generation tools."
 authors = [
     "Brandon Stone <brandon.h.stone@colorado.edu>"
