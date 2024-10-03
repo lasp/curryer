@@ -85,7 +85,7 @@ ENTRYPOINT ["/bin/bash"]
 # L1A Geolocation Integration Test Case
 #
 # Example:
-#   > docker build -t curryer_clarreo_l1a. --target clarreo_l1a
+#   > docker build -t curryer_clarreo_l1a . --target demo
 #   > docker run -a stdout -a stderr --rm curryer_clarreo_l1a
 #       or to override with a different input file:
 #   > docker run -a stdout -a stderr --rm -v `pwd`:/app/curryer/tests/data/demo curryer_clarreo_l1a
