@@ -80,10 +80,10 @@ def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> Tuple[int,
     return count, vectors
 
 
-def instrument_pointing_vectors(ugps_times: np.ndarray, instrument: Union[int, str, spicierpy.obj.Body],
-                                correction: str = None, allow_nans=True, boresight_vector=None,
-                                ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
-    """Determine the boresight pointing vectors in Earth Centered Inertial.
+def instrument_pointing_state(ugps_times: np.ndarray, instrument: Union[int, str, spicierpy.obj.Body],
+                              correction: str = None, allow_nans=True, boresight_vector=None,
+                              pointing_frame='J2000') -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """Compute the boresight pointing and state (ECEF or ECI).
 
     Parameters
     ----------
@@ -102,16 +102,19 @@ def instrument_pointing_vectors(ugps_times: np.ndarray, instrument: Union[int, s
     boresight_vector : np.ndarray, optional
         Array of one or more boresight vectors in the instrument frame. Default
         is None, instead loading them from SPICE kernels using `pixel_vectors`.
+    pointing_frame : str, optional
+        Pointing frame. Use "ITRF93" for ECEF and "J2000" for ECI (default).
 
     Returns
     -------
     pd.DataFrame
-        Pointing vectors in rectangular coordinates (kilometers).
+        Pointing in rectangular coordinates in kilometers.
         Invalid points are set to NaN unless `allow_nans` was False.
         The index is the product of `ugps_times` and `boresight_vector`.
     pd.DataFrame
-        Spacecraft position in ECI as rectangular x/y/z coordinates.
-        The index is the product of `ugps_times` and `boresight_vector`.
+        Instrument position, velocity, and attitude in pointing_frame as
+        rectangular x/y/z coordinates and Euler angles in degrees.
+        The index is the `ugps_times`.
     pd.Series
         Quality flags indicating why one or both of the other returns were set
         to NaNs (e.g., missing kernel data).
@@ -124,14 +127,13 @@ def instrument_pointing_vectors(ugps_times: np.ndarray, instrument: Union[int, s
 
     # Prepare arguments for spice.
     observer_id = spicierpy.obj.Body('EARTH').id
-    out_frame_name = 'J2000'  # ECI
     target_id = instrument.id
     boresight_frame_name = instrument.frame.name
 
     et_times = spicetime.adapt(ugps_times, to='et')
     if correction is None:
         correction = 'NONE'
-    nan_result = (np.full((3, 3), np.nan), np.full((3,), np.nan))
+    nan_result = (np.full((3, 3), np.nan), np.full((3,), np.nan), np.full((6,), np.nan))
 
     # Optional multi-pixel support...
     if boresight_vector is None:
@@ -140,56 +142,59 @@ def instrument_pointing_vectors(ugps_times: np.ndarray, instrument: Union[int, s
         pix_count = 1
         pix_vectors = np.array(boresight_vector)[None, ...]
 
-    logger.debug('Calculating [%s x %s] ECI pointing for [%s]', pix_count, len(et_times), instrument)
+    logger.debug('Calculating [%s x %s] [%s] pointing state for [%s]',
+                 pix_count, len(et_times), pointing_frame, instrument)
 
-    # Query the rotation and position in output reference frame, but optionally
+    # Query the rotation and position in reference frame, but optionally
     # map SPICE errors to NaNs and quality flags.
     @spicierpy.ext.spice_error_to_val(
         err_value=nan_result, err_flag=SQF.from_spice_error, pass_flag=SQF.GOOD, disable=not allow_nans)
     def _query(sample_et):
-        rot_to_out = spicierpy.pxform(boresight_frame_name, out_frame_name, sample_et)
-        position, _ = spicierpy.spkezp(
-            target_id, sample_et, ref=out_frame_name, abcorr=correction, obs=observer_id
+        rot_matrix = spicierpy.pxform(boresight_frame_name, pointing_frame, sample_et)
+        rot_euler = spicierpy.m2eul(rot_matrix, 1, 2, 3)
+        position_velocity, _ = spicierpy.spkezr(
+            target_id, sample_et, ref=pointing_frame, abcorr=correction, obs=observer_id
         )
-        return rot_to_out, position
+        return rot_matrix, rot_euler, position_velocity
 
     pnt_points = np.full((et_times.size * pix_count, 3), np.nan)
-    sc_positions = np.full((et_times.size * pix_count, 3), np.nan)
     quality_flags = np.zeros((et_times.size * pix_count,), dtype=np.int64)
+    sc_state = np.full((et_times.size, 9), np.nan)
 
-    for ith, time in enumerate(et_times):
-        # Query the boresight pointing and position in the output frame.
-        (out_rotation, out_position), qf_val = _query(time)
+    for ith, atime in enumerate(et_times):
+        # Query the boresight pointing and position.
+        (instr_rotation, instr_rot_euler, instr_position), qf_val = _query(atime)
 
         # Enough data was found to check individual pixels.
         if qf_val == SQF.GOOD:
-            pnt_vectors = (out_rotation @ pix_vectors.T).T
+            pnt_vectors = (instr_rotation @ pix_vectors.T).T
             pnt_points[ith * pix_count: (ith + 1) * pix_count, :] = pnt_vectors
-
-            sc_positions[ith * pix_count: (ith + 1) * pix_count, :] = out_position
-
-            qf_values = np.full((pix_count,), qf_val)
-            qf_values[~np.isfinite(pnt_vectors).all(axis=1)] |= SQF.CALC_ELLIPS_NO_INTERSECT
-            quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_values
-
+            sc_state[ith, :6] = instr_position
+            sc_state[ith, 6:] = instr_rot_euler
         else:
             # Leave the surface and S/C data points as NaNs.
-            qf_val |= SQF.CALC_ELLIPS_INSUFF_DATA
-            quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_val
+            qf_val |= SQF.CALC_ANCIL_INSUFF_DATA
 
+        quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_val
+
+    sc_state[:, 6:] = np.rad2deg(sc_state[:, 6:])
+
+    time_index = pd.Index(ugps_times, name='ugps')
     if pix_count == 1:
-        index = pd.Index(ugps_times, name='ugps')
+        pnt_index = time_index
     else:
-        index = pd.MultiIndex.from_product([ugps_times, np.arange(pix_count) + 1], names=['ugps', 'pixel'])
+        pnt_index = pd.MultiIndex.from_product([ugps_times, np.arange(pix_count) + 1], names=['ugps', 'pixel'])
 
-    pnt_data = pd.DataFrame(pnt_points, columns=['x', 'y', 'z'], index=index)
-    sc_data = pd.DataFrame(sc_positions, columns=['x', 'y', 'z'], index=index)
-    qf_data = pd.Series(quality_flags, name='qf', index=index)
+    columns = ['x', 'y', 'z']
+    pnt_data = pd.DataFrame(pnt_points, columns=columns, index=pnt_index)
+    qf_data = pd.Series(quality_flags, name='qf', index=pnt_index)
+    sc_data = pd.DataFrame(sc_state, columns=['x', 'y', 'z', 'vx', 'vy', 'vz', 'ex', 'ey', 'ez'], index=time_index)
 
-    pnt_data.columns.name = f'Pointing[{instrument.name}]@{out_frame_name}'
-    sc_data.columns.name = f'Position[{instrument.name}]@{out_frame_name}'
+    pnt_data.columns.name = f'Pointing[{instrument.name}]@{pointing_frame}'
+    sc_data.columns.name = f'State[{instrument.name}]@{pointing_frame}'
 
-    logger.info('Completed [%s x %s] ECI pointing for [%s]', pix_count, len(et_times), instrument)
+    logger.info('Completed [%s x %s] [%s] pointing state for [%s]',
+                pix_count, len(et_times), pointing_frame, instrument)
     return pnt_data, sc_data, qf_data
 
 
@@ -650,7 +655,7 @@ def terrain_correct(elev: elevation.Elevation, ec_srf_pos: np.ndarray, ec_sat_po
     # 5) ECR point along the viewing vector for MAX height.
     ec_max_pos = ec_srf_pos + dist_srf_max * ec_sat_vec
 
-    # TODO: Unused? Meant to be a limit?
+    # TODO: Unused? Meant to be an infinite loop limit? Unnecessary...
     # # 6) Distance along satellite vector for MIN local height.
     # dist_srf_min = alt_srf_min / cos_sat
     #
@@ -991,7 +996,8 @@ class Geolocate:
         terrain_lla_df, terrain_qf_ds = self.correct_terrain(ellips_lla_df, sc_xyz_df, ellips_qf_ds)
         self._log_step('terrain intersect', terrain_qf_ds)
 
-        solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds = self.calc_ancillary(terrain_lla_df, sc_xyz_df)
+        pnt_xyz_df, solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds = self.calc_ancillary(
+            terrain_lla_df, sc_xyz_df)
         self._log_step('ancillary fields', ancil_qf_ds)
 
         # Combine ancillary QFs with the rest of them.
@@ -1010,11 +1016,16 @@ class Geolocate:
         view_angles_df = view_angles_df.unstack(level=1)
         all_qfs_ds = all_qfs_ds.unstack(level=1)
 
+        vector_name = 'eci_vector' if self.sc_state_frame.name == 'J2000' else self.sc_state_frame.name
+
         dataset = xr.Dataset(
             {
                 'attitude': (['frame', 'euclidian_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
                 'position': (['frame', 'euclidian_dim'], sc_state_df[['x', 'y', 'z']].values),
                 'velocity': (['frame', 'euclidian_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
+
+                vector_name: (['frame', 'spatial_pixel', 'euclidian_dim'],
+                              pnt_xyz_df[['x', 'y', 'z']].values.reshape((ugps_times.size, -1, 3))),
 
                 'altitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['alt'].values),
                 'latitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lat'].values),
@@ -1133,7 +1144,7 @@ class Geolocate:
         return terrain_lla_df, terrain_qf_ds
 
     def calc_ancillary(self, terrain_lla_df: pd.DataFrame, sc_xyz_df: pd.DataFrame
-                       ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series]:
+                       ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series]:
         """Compute ancillary data fields.
 
         Parameters
@@ -1149,6 +1160,9 @@ class Geolocate:
         Returns
         -------
         pd.DataFrame
+            Instrument pointing in frame `sc_state_frame` (e.g. ECI) in KM.
+            The index matches the input index from `terrain_lla_df`.
+        pd.DataFrame
             Solar azimuth and zenith angles (degrees).
             The index matches the input index from `terrain_lla_df`.
         pd.DataFrame
@@ -1157,7 +1171,7 @@ class Geolocate:
         pd.DataFrame
             Spacecraft position (x/y/z), velocity (vx/vy/vz) and attitude
             (ex/ey/ez). The latter is from the instrument perspective.
-            The index matches the input index from `terrain_lla_df`.
+            The index is the UGPS times from `terrain_lla_df`.
         pd.Series
             Quality flags indicating why any of the returns were NaNs.
             The index matches the input index from `terrain_lla_df`.
@@ -1169,50 +1183,19 @@ class Geolocate:
         solar_angles_df = surface_angles(terrain_xyz_df, target_obj='SUN', degrees=True)
         view_angles_df = surface_angles(terrain_xyz_df, target_positions=sc_xyz_df, degrees=True)
 
-        ancil_qf_arr = np.zeros(terrain_lla_df.shape[0], dtype=np.int64)
-        ancil_qf_ds = pd.Series(ancil_qf_arr, name='qf', index=terrain_lla_df.index)
-
-        # Query the S/C attitude, position, and velocity, potentially in a
-        # different reference frame than was provided.
-        boresight_frame_name = self.instrument.frame.name  # TODO: Do they want instr or pure S/C att?
-        out_frame_name = self.sc_state_frame.name
-        observer_id = spicierpy.obj.Body('EARTH').id
-        target_id = self.instrument.id
-        nan_result = (np.full((3,), np.nan), np.full((6,), np.nan))
-
-        @spicierpy.ext.spice_error_to_val(
-            err_value=nan_result, err_flag=SQF.from_spice_error, pass_flag=SQF.GOOD)
-        def _query(sample_et):
-            rotation = spicierpy.pxform(boresight_frame_name, out_frame_name, sample_et)
-            rotation = spicierpy.m2eul(rotation, 1, 2, 3)  # TODO: Check order!
-            # https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/cspice/m2eul_c.html
-            position_velocity, _ = spicierpy.spkezr(
-                target_id, sample_et, ref=out_frame_name, abcorr='NONE', obs=observer_id)
-            return rotation, position_velocity
-
+        # Query pointing vectors and instr/SC state (pos, vel, rot), potentially
+        # in a different reference frame than was provided.
         ugps_times = terrain_lla_df.index.unique(level=0)
-        sc_state_arr = np.empty((ugps_times.size, 9))
-
-        for ith, et_time in enumerate(spicetime.adapt(ugps_times, 'ugps', 'et')):
-            (sc_rot, sc_posvel), qf_val = _query(et_time)
-            sc_state_arr[ith, :6] = sc_posvel
-            sc_state_arr[ith, 6:] = sc_rot
-            if qf_val != SQF.GOOD:
-                # Dev note: Can't bitwise "or" b/c slice converts it to a float.
-                ancil_qf_ds.loc[(ugps_times[ith], slice(None, None))] = SQF.CALC_ANCIL_INSUFF_DATA.value
-
-        sc_state_arr[:, 6:] = np.rad2deg(sc_state_arr[:, 6:])
-        sc_state_df = pd.DataFrame(
-            sc_state_arr, columns=['x', 'y', 'z', 'vx', 'vy', 'vz', 'ex', 'ey', 'ez'], index=ugps_times
+        pnt_xyz_df, sc_state_df, ancil_qf_ds = instrument_pointing_state(
+            ugps_times, self.instrument, pointing_frame=self.sc_state_frame.name
         )
-        sc_state_df.columns.name = f'State[{self.instrument.name}]@{out_frame_name}'
 
         # Dev note: Important to do this check last, since above logic requires
         # direct assignment instead of OR'ing.
         angles_invalid = (solar_angles_df.isna().any(axis=1) | view_angles_df.isna().any(axis=1))
         ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
 
-        return solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
+        return pnt_xyz_df, solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
 
 
 # =============================================================================
