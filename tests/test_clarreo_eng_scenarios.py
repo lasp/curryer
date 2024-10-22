@@ -11,6 +11,7 @@ import xarray as xr
 from curryer import utils, spicetime, meta
 from curryer import spicierpy as sp
 from curryer.compute import pointing, spatial, constants, elevation
+from curryer.compute.constants import SpatialQualityFlags as SQF
 from curryer.kernels import create
 
 
@@ -85,11 +86,16 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
 
             self.assertIsInstance(l1a_dataset, xr.Dataset)
 
+            # Validate against Engineering expected value (single time).
+            lonlats_ds = l1a_dataset.sel(frame=ugps_times[0] / 1e6)
+            lonlats_arr = np.stack([lonlats_ds['longitude_ellipsoidal'].values,
+                                   lonlats_ds['latitude_ellipsoidal'].values], axis=1)
+            self.compare_to_expected(lonlats_arr, atols=(2e-5, 9e-7))
+
             # Note that terrain correction was NOT applied to the validation
             # dataset, so applying it is expected to increase the error.
-            lonlats = l1a_dataset.sel(frame=ugps_times[0] / 1e6)
-            lonlats = np.stack([lonlats['longitude'].values, lonlats['latitude'].values], axis=1)
-            self.compare_to_expected(lonlats, atols=(3e-4, 2e-4))
+            lonlats_arr = np.stack([lonlats_ds['longitude'].values, lonlats_ds['latitude'].values], axis=1)
+            self.compare_to_expected(lonlats_arr, atols=(3e-4, 2e-4))
 
     def test_case1_kernels_files_tlm_input(self):
         # Load meta kernel details. Includes existing static kernels.
@@ -168,15 +174,19 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
 
             self.assertIsInstance(l1a_dataset, xr.Dataset)
 
+            # Validate against Engineering expected value (single time).
             lonlats = l1a_dataset.sel(frame=ugps_times[0] / 1e6)
-            lonlats = np.stack([lonlats['longitude'].values, lonlats['latitude'].values], axis=1)
-            self.compare_to_expected(lonlats, atols=(3e-4, 2e-4))
+            lonlats = np.stack([lonlats['longitude_ellipsoidal'].values,
+                                lonlats['latitude_ellipsoidal'].values], axis=1)
+            self.compare_to_expected(lonlats, atols=(2e-5, 9e-7))
 
-            # TODO: Expected to miss data for the last second!
-
-            # TODO: Times around no-intersect!
-            missed_times = [1356566566807000, 1356566566874000, 1356566567477000, 1356566568147000, 1356566568214000]
-            return
+            qf_counts = l1a_dataset['quality_flags'].to_dataframe().value_counts()
+            self.assertEqual(qf_counts.size, 4)
+            self.assertEqual(qf_counts[SQF.GOOD.value], 2137990)
+            self.assertEqual(qf_counts[(SQF.CALC_ANCIL_NOT_FINITE | SQF.CALC_TERRAIN_EXTREME_ZENITH).value], 4091)
+            self.assertEqual(qf_counts[(SQF.CALC_ANCIL_NOT_FINITE | SQF.CALC_ELLIPS_NO_INTERSECT).value], 159)
+            self.assertEqual(qf_counts[(SQF.CALC_ANCIL_NOT_FINITE | SQF.CALC_ANCIL_INSUFF_DATA
+                                        | SQF.CALC_ELLIPS_INSUFF_DATA | SQF.SPICE_ERR_MISSING_ATTITUDE).value], 7200)
 
     @staticmethod
     def build_prod_tlm_file():
@@ -357,8 +367,8 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
         else:
             error = expect - lonlats
             max_lonlat = np.max(np.abs(error), axis=0)
-            npt.assert_allclose(expect[:, 0], lonlats[:, 0], atol=atols[0])
-            npt.assert_allclose(expect[:, 1], lonlats[:, 1], atol=atols[1])
+            npt.assert_allclose(expect[:, 0], lonlats[:, 0], atol=atols[0], rtol=0)
+            npt.assert_allclose(expect[:, 1], lonlats[:, 1], atol=atols[1], rtol=0)
         logger.info('Max Lon/Lat error: %f, %f', max_lonlat[0], max_lonlat[1])
 
     def test_case1_kernels_manual(self):

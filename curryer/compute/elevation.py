@@ -252,6 +252,7 @@ class Elevation:
         """
         name = filepath.name
         if name not in self._cache:
+            logger.info('Reading DEM file: %s', filepath)
             self._cache[name] = rioxarray.open_rasterio(filepath).sel(band=1)
         return self._cache[name]
 

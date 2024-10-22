@@ -72,11 +72,17 @@ ENTRYPOINT pytest \
 # Example:
 #   > docker build -t curryer_debug . --target debug
 #   > docker run --security-opt seccomp=unconfined --privileged -it --rm curryer_debug
+#
+#   > docker run -v .:/workspace -p 8889:8889 --security-opt seccomp=unconfined --privileged -it --rm curryer_debug
+#   > cd /workspace ; export JUPYTER_CONFIG_DIR=/workspace/notebooks
+#   > jupyter lab . --allow-root --ip 0.0.0.0 --port 8889 --no-browser
 # -----------------------------------------------------------------------------
 FROM test AS debug
 
 # Command line tools and debug dependencies.
 RUN apt-get install -y man less vim which tree
+
+RUN pip install matplotlib jupyterlab cartopy basemap basemap-data-hires
 
 CMD []
 ENTRYPOINT ["/bin/bash"]

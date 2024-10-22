@@ -94,6 +94,11 @@ class KernelCreator:
             else:
                 input_data = input_data[list(input_columns)]
 
+        # Drop rows with invalid values.
+        shape_before = input_data.shape
+        input_data = input_data.dropna(how='any')
+        if input_data.shape[0] != shape_before[0]:
+            logger.warning('Dropped [%d] rows from the input due to NaNs', shape_before[0] - input_data.shape[0])
         return input_data
 
     def load_writer(self, properties: classes.AbstractKernelProperties, parent_dir: Path = None):
