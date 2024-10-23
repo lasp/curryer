@@ -18,8 +18,6 @@ from .. import spicetime, spicierpy
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LSK_FILE = str(spicetime.leapsecond.find_default_file())
-
 
 class EphemerisTypes(Enum):
     """Ephemeris kernel types.
@@ -88,7 +86,7 @@ class AbstractEphemerisProperties(AbstractKernelProperties):
     spk_type: str = None
 
     # Existing kernels that are required to build this one.
-    leapsecond_kernel: str = DEFAULT_LSK_FILE
+    leapsecond_kernel: str = None
     planet_kernels: typing.List[str] = None  # Optional
 
     def __post_init__(self):

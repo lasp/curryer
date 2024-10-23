@@ -16,8 +16,6 @@ from .. import spicetime, spicierpy
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LSK_FILE = str(spicetime.leapsecond.find_default_file())
-
 
 class AttitudeTypes(Enum):
     """Attitude kernel types.
@@ -84,7 +82,7 @@ class AbstractAttitudeProperties(AbstractKernelProperties):
     ck_type: TypedDataDescriptor = TypedDataDescriptor(default=AttitudeTypes.LINEAR_QUAT, dtype=AttitudeTypes)
 
     # Existing kernels that are required to build this one.
-    leapsecond_kernel: str = DEFAULT_LSK_FILE
+    leapsecond_kernel: str = None
     frame_kernel: str = None
     clock_kernel: str = None
     create_clock: bool = False  # If true, writes to `clock_kernel`.
