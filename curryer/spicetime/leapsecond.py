@@ -12,6 +12,7 @@ The last leapsecond kernel that is loaded takes the highest precedence.
 """
 import datetime
 import logging
+import os
 import re
 import time
 import warnings
@@ -30,6 +31,8 @@ _LEAPSECOND_FILE_PATH = '../../data/generic'
 _LEAPSECOND_FILE_GLOB = 'naif*.tls'
 LEAPSECOND_BASE_URL = 'https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/'
 
+LEAPSECOND_USER_FILE_PATH = None
+
 
 def find_default_file():
     """Find the library's default leapsecond kernel file.
@@ -43,8 +46,13 @@ def find_default_file():
     # Locate the latest kernel file, relative to this module file.
     #   Pylint thinks the `Path` class is really a `PurePath`.
     # pylint: disable=no-member
-    path = Path(__file__).parent
-    path = path.joinpath(_LEAPSECOND_FILE_PATH).resolve()
+    if LEAPSECOND_USER_FILE_PATH is not None:
+        path = Path(LEAPSECOND_USER_FILE_PATH)
+    elif os.getenv('LEAPSECOND_FILE_ENV', None):
+        path = Path(os.getenv('LEAPSECOND_FILE_ENV'))
+    else:
+        path = Path(__file__).parent
+        path = path.joinpath(_LEAPSECOND_FILE_PATH).resolve()
     leapsecond_files = list(path.glob(_LEAPSECOND_FILE_GLOB))
     leapsecond_files.sort()
 

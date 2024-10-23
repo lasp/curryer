@@ -22,8 +22,6 @@ from .. import spicetime, utils
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LSK_FILE = str(spicetime.leapsecond.find_default_file())
-
 
 class TypedDataDescriptor:
     """Data descriptor that enforces typing through casting.
@@ -68,7 +66,7 @@ class AbstractKernelProperties:
     input_gap_threshold: str = None
 
     # Existing kernels that are required to build this one.
-    leapsecond_kernel: str = DEFAULT_LSK_FILE
+    leapsecond_kernel: str = None
 
     # Misc.
     version: int = 1
@@ -79,6 +77,9 @@ class AbstractKernelProperties:
     def __post_init__(self):
         if self.SUPPORTED_INPUT_DATA_TYPES is not None and self.input_data_type not in self.SUPPORTED_INPUT_DATA_TYPES:
             raise ValueError(f'Invalid properties class for input type {self.input_data_type}')
+
+        if self.leapsecond_kernel is None:
+            self.leapsecond_kernel = str(spicetime.leapsecond.find_default_file())
 
         if self.relative_dir:
             self.relative_dir = Path(self.relative_dir)
