@@ -181,7 +181,7 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
         msg = '\n\t'.join(f'{msg}:\n\t\t{ln}' for msg, ln in issues)
         raise ValueError(f'Final text failed validation. Issues[{len(issues)}]:\n\t{msg}')
 
-    logger.info('Created setup:\n%s', setup_txt)
+    logger.debug('Created setup:\n%s', setup_txt)
 
     if isinstance(setup_file, str):
         if os.path.isfile(setup_file) and not overwrite:
