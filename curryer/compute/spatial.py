@@ -1020,11 +1020,11 @@ class Geolocate:
 
         dataset = xr.Dataset(
             {
-                'attitude': (['frame', 'euclidian_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
-                'position': (['frame', 'euclidian_dim'], sc_state_df[['x', 'y', 'z']].values),
-                'velocity': (['frame', 'euclidian_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
+                'attitude': (['frame', 'euclidean_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
+                'position': (['frame', 'euclidean_dim'], sc_state_df[['x', 'y', 'z']].values),
+                'velocity': (['frame', 'euclidean_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
 
-                vector_name: (['frame', 'spatial_pixel', 'euclidian_dim'],
+                vector_name: (['frame', 'spatial_pixel', 'euclidean_dim'],
                               pnt_xyz_df[['x', 'y', 'z']].values.reshape((ugps_times.size, -1, 3))),
 
                 'altitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['alt'].values),
@@ -1042,7 +1042,7 @@ class Geolocate:
                 'quality_flags': (['frame', 'spatial_pixel'], all_qfs_ds.values),
             },
             coords={
-                'euclidian_dim': ('euclidian_dim', ['x', 'y', 'z']),
+                'euclidean_dim': ('euclidean_dim', ['x', 'y', 'z']),
                 'frame': ('frame', ugps_times / 1e6),
                 'spatial_pixel': ('spatial_pixel', pixel_ids.values),
                 'spectral_pixel': ('spectral_pixel', []),

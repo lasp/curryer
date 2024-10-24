@@ -89,6 +89,8 @@ class KernelCreator:
         # Optionally remap the columns.
         if input_columns is not None and len(input_columns):
             if isinstance(input_columns, dict):
+                if input_data.index.name in input_columns:
+                    input_data = input_data.reset_index()
                 input_data = input_data.rename(columns=input_columns)
                 input_data = input_data[list(input_columns.values())]
             else:
