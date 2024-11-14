@@ -18,6 +18,7 @@ class TLETestCase(unittest.TestCase):
         self.__spacetrack_user = os.getenv('SPACETRACK_USER')
         self.__spacetrack_pswd = os.getenv('SPACETRACK_PSWD')
 
+    @unittest.skip  # TODO: API Limits?
     def test_ctim_tle_read(self):
         accessor = tle.TLERemoteAccessor(self.__spacetrack_user, self.__spacetrack_pswd)
         table = accessor.read(self.ctim_norad_id, query_args=[
