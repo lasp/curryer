@@ -76,7 +76,7 @@ class SpatialTestCase(unittest.TestCase):
 
         lla = spatial.ray_intersect_ellipsoid(vec, np.array([-7000.0, -7000.0, 0.0]),
                                               geodetic=True, degrees=True)
-        npt.assert_allclose(lla, np.array([45.0, 0.0, 0.0]))
+        npt.assert_allclose(lla, np.array([-135.0, 0.0, 0.0]))
 
         # Above (below) the south pole.
         xyz = spatial.ray_intersect_ellipsoid(np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, -7000.0]))
@@ -96,7 +96,7 @@ class SpatialTestCase(unittest.TestCase):
 
         lla = spatial.ray_intersect_ellipsoid(vectors, positions, geodetic=True, degrees=True)
         npt.assert_allclose(lla, np.array([
-            [0.0, 0.0, 0.0], [90.0, 0.0, 0.0], [0.0, 90.0, 0.0], [-45.0, 0.0, 0.0]]))
+            [180.0, 0.0, 0.0], [90.0, 0.0, 0.0], [0.0, 90.0, 0.0], [-45.0, 0.0, 0.0]]))
 
         # Handling of non-intersecting vectors:
         #   * 1st vector is simple nadir.
