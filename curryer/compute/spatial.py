@@ -406,7 +406,7 @@ def ray_intersect_ellipsoid(vector: np.ndarray, position: np.ndarray, geodetic=F
     # height is assumed to be zero.
     bad_xyz = np.isnan(xyz).any(axis=1)
     lla = np.stack([
-        np.arctan(xyz[:, 1] / xyz[:, 0]),
+        np.arctan2(xyz[:, 1], xyz[:, 0]),
         np.arctan((xyz[:, 2] / (1 - e2)) / np.sqrt(xyz[:, 0] ** 2 + xyz[:, 1] ** 2)),
         np.where(bad_xyz, np.nan, 0.0)
     ], axis=1)
