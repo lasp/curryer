@@ -50,10 +50,6 @@ packages = [
 [project.urls]
 repository = "https://github.com/lasp/curryer"
 
-[tool.poetry.group.dev]
-optional = true
-
-
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.1"
 pytest-cov = ">=3"
