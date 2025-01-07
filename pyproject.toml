@@ -3,7 +3,7 @@ name = "lasp-curryer"
 version = "0.1.0"
 description = "LASP SPICE extentions and geospatial data product generation tools."
 authors = [
-    {name = "Brandon Stone", email = "<brandon.h.stone@colorado.edu>"}
+    {name = "Brandon Stone", email = "brandon.h.stone@colorado.edu"}
 ]
 readme = "README.md"
 requires-python = ">=3.9,<4"
