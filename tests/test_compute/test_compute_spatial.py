@@ -157,6 +157,81 @@ class SpatialTestCase(unittest.TestCase):
             npt.assert_allclose(lla[:2], exp_lla[:2], rtol=1e-5)
             npt.assert_allclose(lla[2], exp_lla[2], atol=1e-3)  # Spice has non-zero altitude.
 
+    def test_sc_angles_simple(self):
+        # TODO: Clean up.
+        # # Directly nadir (geodetic).
+        # obs_lla = np.array([-69.6365451, -31.2084545, 2.4191])
+        # trg_lla = np.array([-69.6365451, -31.2084545, 202.4191])
+        #
+        # # North-east.
+        # obs_lla = np.array([-69.6365451, -31.2084545, 2.4191])
+        # trg_lla = np.array([-68.6365451, -30.2084545, 2.4191 + 111.3195 * 1])
+        #
+        # # East.
+        # obs_lla = np.array([-69.6365451, -31.2084545, 2.4191])
+        # trg_lla = np.array([-68.6365451, -31.2084545, 2.4191 + 111.3195 * 1])
+        #
+        # # Simple equator - east 1-deg.
+        # obs_lla = np.array([90.0, 0.0, 0.0])
+        # trg_lla = np.array([91.0, 0.0, 0.0 + 111.3195])
+        #
+        # # Simple equator - north 1-deg.
+        # obs_lla = np.array([90.0, 0.0, 0.0])
+        # trg_lla = np.array([90.0, 1.0, 0.0 + 111.3195])
+        #
+        # # Simple equator - south & west 1-deg.
+        # obs_lla = np.array([90.0, 0.0, 0.0])
+        # trg_lla = np.array([89.0, -1.0, 0.0 + 111.3195])
+
+        obs_lla = np.array([0.0, 10.0, 0.0])
+        trg_lla = np.array([1.5, 0.0, 0.0 + 111.3195])
+
+        obs_ecef = spatial.geodetic_to_ecef(obs_lla, meters=False, degrees=True)
+        trg_ecef = spatial.geodetic_to_ecef(trg_lla, meters=False, degrees=True)
+
+        zen_out = spatial.calc_zenith(obs_ecef, trg_ecef, degrees=True)
+        az_out = spatial.calc_azimuth(obs_ecef, trg_ecef, degrees=True)
+
+        obs_lla_rad = np.deg2rad(obs_lla)
+        obs_uvec = np.array([
+            np.cos(obs_lla_rad[1]) * np.cos(obs_lla_rad[0]),
+            np.cos(obs_lla_rad[1]) * np.sin(obs_lla_rad[0]),
+            np.sin(obs_lla_rad[1])
+        ])
+
+        sc_vec = trg_ecef - obs_ecef
+        rng_vec = np.linalg.norm(sc_vec)
+        sc_uvec = sc_vec / rng_vec
+        # sc_uvec = sc_vec / np.linalg.norm(sc_vec)
+
+        zen_rad = np.arccos(obs_uvec @ sc_uvec)
+        zen_deg = np.rad2deg(zen_rad)
+
+        east_uvec = np.array([
+            -np.sin(obs_lla_rad[0]),
+            np.cos(obs_lla_rad[0]),
+            0.0
+        ])
+        north_uvec = np.cross(obs_uvec, east_uvec)
+
+        az_l_cos = sc_vec @ east_uvec
+        az_m_cos = sc_vec @ north_uvec
+        az_rad = np.arctan2(az_l_cos, az_m_cos)  # TODO: Reg arctan?
+        if az_rad < 0:
+            az_rad += np.pi * 2
+        # az_rad[az_rad < 0] += np.pi * 2
+        az_deg = np.rad2deg(az_rad)
+
+        # print(zen_out, zen_deg)
+        # print(az_out, az_deg)
+        npt.assert_allclose(zen_out, zen_deg)
+        npt.assert_allclose(az_out, az_deg)
+        # with self.mkrn.load():
+        #     sun_positions = spicierpy.ext.query_ephemeris(
+        #         ugps_times, target='SUN', observer='EARTH', ref_frame='ITRF93', allow_nans=True
+        #     )
+        # trg_ecef = sun_positions.values[0, :]
+
     def test_solar_angles_simple(self):
         ugps_times = np.asarray(spicetime.adapt(['2023-03-20T08:00', '2023-03-20T12:00', '2023-03-21T16:00'], 'iso'))
         ground_points = np.tile(np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM, 0.0, 0.0]), (ugps_times.size, 1))
