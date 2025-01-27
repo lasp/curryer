@@ -763,7 +763,7 @@ def terrain_correct(elev: elevation.Elevation, ec_srf_pos: np.ndarray, ec_sat_po
     return (gd_final_pos.ravel(), qf_values.ravel()) if given_1d else (gd_final_pos, qf_values)
 
 
-def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False) -> np.ndarray:
+def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False, signed=False) -> np.ndarray:
     """Compute the azimuth angle (vectorized).
 
     Parameters
@@ -775,6 +775,9 @@ def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fal
         the same length as `obs_position`.
     degrees : bool, optional
         If True, returns are in degrees, otherwise (default) radians.
+    signed : bool, optional
+        Return azimuth as a signed value ranging from 0 (North), 90 (East),
+        180/-180 (South), and -90 (West). Default is 0 to 360 clockwise.
 
     Returns
     -------
@@ -782,8 +785,9 @@ def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fal
         Azimuth angle between the observer, target and +Z-axis.
 
     """
+    pairwise = True
     if obs_position.ndim == 2 and trg_position.ndim == 1:
-        pass  # Many-to-one (non-pairwise) is supported.
+        pairwise = False
     elif obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size:
         raise ValueError('`obs_position` and `trg_position` must have the same dim and size!')
 
@@ -795,17 +799,44 @@ def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fal
     if obs_position.shape[-1] != 3 or obs_position.shape[-1] != trg_position.shape[-1]:
         raise ValueError('`obs_position` and `trg_position` must have 3 values per point!')
 
-    xy_ang = np.arctan2(trg_position[..., 1], trg_position[..., 0]) - np.arctan2(obs_position[:, 1], obs_position[:, 0])
-    xy_dist = np.sin(xy_ang) * np.sqrt(trg_position[..., 0] ** 2 + trg_position[..., 1] ** 2)
-    az_ang = np.arctan2(xy_dist, trg_position[..., 2] - obs_position[..., 2])
-    az_ang[az_ang < 0] += np.pi * 2
+    # Target vector.
+    trg_position = trg_position - obs_position
 
+    # Unit normal vector of the observer (surface), surface normal (geodetic).
+    obs_position = ecef_to_geodetic(obs_position, meters=False, degrees=False)
+    obs_uvec = np.array([
+        np.cos(obs_position[..., 1]) * np.cos(obs_position[..., 0]),
+        np.cos(obs_position[..., 1]) * np.sin(obs_position[..., 0]),
+        np.sin(obs_position[..., 1])
+    ]).T
+
+    # East and north unit vectors.
+    east_uvec = np.array([
+        -np.sin(obs_position[..., 0]),
+        np.cos(obs_position[..., 0]),
+        np.zeros(obs_position.shape[0])
+    ]).T
+    north_uvec = np.cross(obs_uvec, east_uvec)
+
+    # Directional cosines of the azimuth angle.
+    if pairwise:
+        az_l_cos = np.prod([trg_position, east_uvec], axis=0)
+        az_m_cos = np.prod([trg_position, north_uvec], axis=0)
+    else:
+        az_l_cos = trg_position * east_uvec
+        az_m_cos = trg_position * north_uvec
+    az_l_cos = az_l_cos.sum(axis=1)
+    az_m_cos = az_m_cos.sum(axis=1)
+    az_ang = np.arctan2(az_l_cos, az_m_cos)
+
+    if not signed:
+        az_ang[az_ang < 0] += np.pi * 2
     if degrees:
         az_ang = np.rad2deg(az_ang)
     return az_ang.ravel() if given_1d else az_ang
 
 
-def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False) -> np.ndarray:
+def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False, geocentric=False) -> np.ndarray:
     """Compute the zenith angle (vectorized).
 
     Parameters
@@ -817,6 +848,9 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
         the same length as `obs_position`.
     degrees : bool, optional
         If True, returns are in degrees, otherwise (default) radians.
+    geocentric : bool, optional
+        Compute geocentric zenith (angle between target and body center), or
+        geodetic zenith (angle between target and surface normal).
 
     Returns
     -------
@@ -838,9 +872,21 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
     if obs_position.shape[-1] != 3 or obs_position.shape[-1] != trg_position.shape[-1]:
         raise ValueError('`obs_position` and `trg_position` must have 3 values per point!')
 
+    # Unit vector from the observer (surface) to the target (S/C or SUN)
     trg_position = trg_position - obs_position
     trg_position /= np.linalg.norm(trg_position, axis=1)[..., None]
-    obs_position = obs_position / np.linalg.norm(obs_position, axis=1)[..., None]
+
+    # Unit normal vector of the observer (surface), either from the body center
+    # (geocentric) or surface-normal (geodetic).
+    if geocentric:
+        obs_position = obs_position / np.linalg.norm(obs_position, axis=1)[..., None]
+    else:
+        obs_position = ecef_to_geodetic(obs_position, meters=False, degrees=False)
+        obs_position = np.array([
+            np.cos(obs_position[..., 1]) * np.cos(obs_position[..., 0]),
+            np.cos(obs_position[..., 1]) * np.sin(obs_position[..., 0]),
+            np.sin(obs_position[..., 1])
+        ]).T
 
     if pairwise:
         zenith_ang = np.prod([obs_position, trg_position], axis=0)
@@ -854,8 +900,8 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
 
 
 def surface_angles(surface_positions: pd.DataFrame, target_positions: pd.DataFrame = None,
-                   target_obj: Union[int, str, spicierpy.obj.Body] = None, degrees=False, allow_nans=False
-                   ) -> pd.DataFrame:
+                   target_obj: Union[int, str, spicierpy.obj.Body] = None, degrees=False, allow_nans=False,
+                   signed=False, geocentric=False) -> pd.DataFrame:
     """Compute the azimuth and zenith surface angles (vectorized).
 
     Parameters
@@ -875,6 +921,12 @@ def surface_angles(surface_positions: pd.DataFrame, target_positions: pd.DataFra
     allow_nans : bool, optional
         Convert invalid returns (e.g., data gaps) into NaNs (default), otherwise
         throws SPICE errors.
+    signed : bool, optional
+        Return azimuth as a signed value ranging from 0 (North), 90 (East),
+        180/-180 (South), and -90 (West). Default is 0 to 360 clockwise.
+    geocentric : bool, optional
+        Compute geocentric zenith (angle between target and body center), or
+        geodetic zenith (angle between target and surface normal).
 
     Returns
     -------
@@ -908,8 +960,8 @@ def surface_angles(surface_positions: pd.DataFrame, target_positions: pd.DataFra
     if not pairwise:
         target_positions = target_positions.reindex(surface_positions.index, level=0)
 
-    azimuth_ang = calc_azimuth(surface_positions.values, target_positions.values, degrees=degrees)
-    zenith_ang = calc_zenith(surface_positions.values, target_positions.values, degrees=degrees)
+    azimuth_ang = calc_azimuth(surface_positions.values, target_positions.values, degrees=degrees, signed=signed)
+    zenith_ang = calc_zenith(surface_positions.values, target_positions.values, degrees=degrees, geocentric=geocentric)
 
     angles = pd.DataFrame({'azimuth': azimuth_ang, 'zenith': zenith_ang},
                           index=surface_positions.index)
@@ -1008,52 +1060,87 @@ class Geolocate:
         terrain_lla_df.loc[:, 'alt'] *= 1e3
         ellips_lla_df.loc[:, 'alt'] *= 1e3
 
-        # Unstack time x pixel.
-        pixel_ids = ellips_lla_df.index.unique(level=1)
-        terrain_lla_df = terrain_lla_df.unstack(level=1)
-        ellips_lla_df = ellips_lla_df.unstack(level=1)
-        solar_angles_df = solar_angles_df.unstack(level=1)
-        view_angles_df = view_angles_df.unstack(level=1)
-        all_qfs_ds = all_qfs_ds.unstack(level=1)
-
         vector_name = 'eci_vector' if self.sc_state_frame.name == 'J2000' else self.sc_state_frame.name
 
-        dataset = xr.Dataset(
-            {
-                'attitude': (['frame', 'euclidean_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
-                'position': (['frame', 'euclidean_dim'], sc_state_df[['x', 'y', 'z']].values),
-                'velocity': (['frame', 'euclidean_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
+        if isinstance(ellips_lla_df.index, pd.MultiIndex):
+            # Unstack time x pixel.
+            pixel_ids = ellips_lla_df.index.unique(level=1)
+            terrain_lla_df = terrain_lla_df.unstack(level=1)
+            ellips_lla_df = ellips_lla_df.unstack(level=1)
+            solar_angles_df = solar_angles_df.unstack(level=1)
+            view_angles_df = view_angles_df.unstack(level=1)
+            all_qfs_ds = all_qfs_ds.unstack(level=1)
 
-                vector_name: (['frame', 'spatial_pixel', 'euclidean_dim'],
-                              pnt_xyz_df[['x', 'y', 'z']].values.reshape((ugps_times.size, -1, 3))),
+            dataset = xr.Dataset(
+                {
+                    'attitude': (['frame', 'euclidean_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
+                    'position': (['frame', 'euclidean_dim'], sc_state_df[['x', 'y', 'z']].values),
+                    'velocity': (['frame', 'euclidean_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
 
-                'altitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['alt'].values),
-                'latitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lat'].values),
-                'longitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lon'].values),
+                    vector_name: (['frame', 'spatial_pixel', 'euclidean_dim'],
+                                  pnt_xyz_df[['x', 'y', 'z']].values.reshape((ugps_times.size, -1, 3))),
 
-                'altitude': (['frame', 'spatial_pixel'], terrain_lla_df['alt'].values),
-                'latitude': (['frame', 'spatial_pixel'], terrain_lla_df['lat'].values),
-                'longitude': (['frame', 'spatial_pixel'], terrain_lla_df['lon'].values),
+                    'altitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['alt'].values),
+                    'latitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lat'].values),
+                    'longitude_ellipsoidal': (['frame', 'spatial_pixel'], ellips_lla_df['lon'].values),
 
-                'solar_azimuth': (['frame', 'spatial_pixel'], solar_angles_df['azimuth'].values),
-                'solar_zenith': (['frame', 'spatial_pixel'], solar_angles_df['zenith'].values),
-                'view_azimuth': (['frame', 'spatial_pixel'], view_angles_df['azimuth'].values),
-                'view_zenith': (['frame', 'spatial_pixel'], view_angles_df['zenith'].values),
-                'quality_flags': (['frame', 'spatial_pixel'], all_qfs_ds.values),
-            },
-            coords={
-                'euclidean_dim': ('euclidean_dim', ['x', 'y', 'z']),
-                'frame': ('frame', ugps_times / 1e6),
-                'spatial_pixel': ('spatial_pixel', pixel_ids.values),
-                'spectral_pixel': ('spectral_pixel', []),
-            },
-            attrs={
-                'instrument': self.instrument.name,
-                'state_frame': self.sc_state_frame.name,
-            }
-        )
+                    'altitude': (['frame', 'spatial_pixel'], terrain_lla_df['alt'].values),
+                    'latitude': (['frame', 'spatial_pixel'], terrain_lla_df['lat'].values),
+                    'longitude': (['frame', 'spatial_pixel'], terrain_lla_df['lon'].values),
 
-        self._log_step('create product', all_qfs_ds.stack())
+                    'solar_azimuth': (['frame', 'spatial_pixel'], solar_angles_df['azimuth'].values),
+                    'solar_zenith': (['frame', 'spatial_pixel'], solar_angles_df['zenith'].values),
+                    'view_azimuth': (['frame', 'spatial_pixel'], view_angles_df['azimuth'].values),
+                    'view_zenith': (['frame', 'spatial_pixel'], view_angles_df['zenith'].values),
+                    'quality_flags': (['frame', 'spatial_pixel'], all_qfs_ds.values),
+                },
+                coords={
+                    'euclidean_dim': ('euclidean_dim', ['x', 'y', 'z']),
+                    'frame': ('frame', ugps_times / 1e6),
+                    'spatial_pixel': ('spatial_pixel', pixel_ids.values),
+                    'spectral_pixel': ('spectral_pixel', []),
+                },
+                attrs={
+                    'instrument': self.instrument.name,
+                    'state_frame': self.sc_state_frame.name,
+                }
+            )
+        else:
+            dataset = xr.Dataset(
+                {
+                    'attitude': (['frame', 'euclidean_dim'], sc_state_df[['ex', 'ey', 'ez']].values),
+                    'position': (['frame', 'euclidean_dim'], sc_state_df[['x', 'y', 'z']].values),
+                    'velocity': (['frame', 'euclidean_dim'], sc_state_df[['vx', 'vy', 'vz']].values),
+
+                    vector_name: (['frame', 'spatial_pixel', 'euclidean_dim'],
+                                  pnt_xyz_df[['x', 'y', 'z']].values.reshape((ugps_times.size, -1, 3))),
+
+                    'altitude_ellipsoidal': (['frame'], ellips_lla_df['alt'].values),
+                    'latitude_ellipsoidal': (['frame'], ellips_lla_df['lat'].values),
+                    'longitude_ellipsoidal': (['frame'], ellips_lla_df['lon'].values),
+
+                    'altitude': (['frame'], terrain_lla_df['alt'].values),
+                    'latitude': (['frame'], terrain_lla_df['lat'].values),
+                    'longitude': (['frame'], terrain_lla_df['lon'].values),
+
+                    'solar_azimuth': (['frame'], solar_angles_df['azimuth'].values),
+                    'solar_zenith': (['frame'], solar_angles_df['zenith'].values),
+                    'view_azimuth': (['frame'], view_angles_df['azimuth'].values),
+                    'view_zenith': (['frame'], view_angles_df['zenith'].values),
+                    'quality_flags': (['frame'], all_qfs_ds.values),
+                },
+                coords={
+                    'euclidean_dim': ('euclidean_dim', ['x', 'y', 'z']),
+                    'frame': ('frame', ugps_times / 1e6),
+                    'spectral_pixel': ('spectral_pixel', []),
+                },
+                attrs={
+                    'instrument': self.instrument.name,
+                    'state_frame': self.sc_state_frame.name,
+                }
+            )
+
+        self._log_step('create product', all_qfs_ds if isinstance(all_qfs_ds, pd.Series) else all_qfs_ds.stack())
         logger.info('Geolocation completed processing of [%d] times in [%.3f] sec:\n%s',
                     len(ugps_times), time.time() - t0, dataset)
         return dataset
