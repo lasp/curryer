@@ -191,7 +191,7 @@ def batch_kernels(kernel_configs, output_kernels=None, time_range=None, time_for
     Parameters
     ----------
     kernel_configs : list[str or Path]
-        One ore more kernel creation properties (JSON file).
+        One or more kernel creation properties (JSON file).
     output_kernels : list[str or Path], optional
         File to save the kernel as. Default is to use the `kernel_config`, but
         with the appropriate file extension. Must be None if more than one
@@ -247,7 +247,7 @@ def batch_kernels(kernel_configs, output_kernels=None, time_range=None, time_for
         if not isinstance(output_kernels, (list, tuple)):
             raise TypeError(f'`output_kernels` must be a list/tuple, not: {type(output_kernels)}')
         if not n_config == len(output_kernels):
-            raise ValueError(f'`output_kernels` must be the same length as `kernel_configs` or None')
+            raise ValueError('`output_kernels` must be the same length as `kernel_configs` or None')
     else:
         output_kernels = [None for _ in range(n_config)]
 

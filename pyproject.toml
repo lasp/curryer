@@ -41,6 +41,15 @@ dependencies = [
     "numpy (>=1.23,<2.0)"
 ]
 
+[project.optional-dependencies]
+# Since these are only for testing, we do not care what version they are
+test = [
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "pytest-randomly",
+    "ruff"
+]
 
 [tool.poetry]
 packages = [
@@ -51,14 +60,37 @@ packages = [
 repository = "https://github.com/lasp/curryer"
 
 [tool.poetry.group.dev.dependencies]
-pytest = ">=7.1"
-pytest-cov = ">=3"
-pylint = ">=2"
-ipython = ">=8.4"
+pre-commit = "*"
+pytest = "*"
+pytest-cov = "*"
+pytest-randomly = "*"
+ruff = "*"
+ipython = "*"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'
 
 [build-system]
-requires = ["poetry-core>=2.0"]
+requires = ["poetry-core>=2.0.1"]  # 2.0.0 has bugs
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+include = ["curryer/**/*.py"]
+exclude = [
+    "docs",
+    "examples",
+    "tests",
+    "data"
+]
+
+[tool.ruff.lint]
+select = [
+    "E",  # Pycodestyle errors
+#    "F",  # Pyflakes syntax checking
+#    "I",  # isort import sorting
+#    "S",  # Bandit security and vulnerability checking
+    "W",  # Pycodestyle warnings
+#    "PT",  # Pytest test checking
+#    "UP"  # Syntax updater for Python version changes
+]

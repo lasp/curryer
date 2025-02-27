@@ -69,7 +69,7 @@ class AbstractMissionData(metaclass=ABCMeta):
             return
         try:
             self._loaded_kernels.unload(clear=True)
-        except:
+        except:  # noqa E722
             logging.exception('Error while unloading kernels:\n')
 
     @log_return()

@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import requests
 
-from . import spicetime
 
 
 logger = logging.getLogger(__name__)
@@ -104,9 +103,9 @@ class TLERemoteAccessor:
         query_url += f'/predicates/{",".join(columns)}'
 
         if '/orderby/' not in query_url:
-            query_url += f'/orderby/EPOCH%20desc'
+            query_url += '/orderby/EPOCH%20desc'
 
-        query_url += f'/metadata/true/emptyresult/show/distinct/true'
+        query_url += '/metadata/true/emptyresult/show/distinct/true'
         return query_url
 
     def read(self, norad_cat_id, columns=None, query_args=None, index_col=None):
