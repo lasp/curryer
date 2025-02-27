@@ -208,10 +208,9 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt='ugps'):
             contains_ids = kernel_objects(filename, as_id=True)
             if contains_ids:
                 contains_ids = ', '.join(str(val) for val in contains_ids)
-        except:
-            logger.exception('Exception occurred while preparing another exception! Suppressing...')
-        raise ValueError(f'No data for body [{body}] was found in the kernel containing IDs=[{contains_ids}],'
-                         f' type=[{ktype}], file: {filename!r}')
+        finally:
+            raise ValueError(f'No data for body [{body}] was found in the kernel containing IDs=[{contains_ids}],'
+                             f' type=[{ktype}], file: {filename!r}')
     return spicetime.adapt(window, 'et', to_fmt)
 
 
