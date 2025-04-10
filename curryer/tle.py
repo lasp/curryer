@@ -80,10 +80,6 @@ class TLERemoteAccessor:
             auth_resp.raise_for_status()
             self.__cookies = auth_resp.cookies
 
-        if len(self.__cookies.items()) > 1:
-            raise ValueError('Developer error, only expected 0 or 1 cookie representing authentication!'
-                             f' Found: {self.__cookies.items()}')
-
     def is_authenticated(self):
         """Check if queries are authenticated.
         """
