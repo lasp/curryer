@@ -42,8 +42,9 @@ Frame definitions for the ISS spacecraft & CPRS mission
     References
     ----------
 
-    1. Space Station Reference Coordinate Systems (SSP 30219, Rev J)
-    2. Geolocation Sources v11 (citing Agile #159559)
+    1. CPRS Reference Frames (Agile #: 157031)
+    2. Space Station Reference Coordinate Systems (SSP 30219, Rev J)
+    3. Geolocation Sources v11 (citing Agile #159559)
 
 
     This file was created by LASP_SDS_TEAM
