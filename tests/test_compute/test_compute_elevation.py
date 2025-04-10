@@ -128,7 +128,7 @@ class ElevationTestCase(unittest.TestCase):
         match = elev.lookup_file(0, 10, stat='std')
         self.assertEqual(match['name'].name, match3['name'].name)
 
-    def test_elevation_query_height(self):
+    def test_elevation_query_height_simple(self):
         elev = elevation.Elevation()
 
         ellps_ht = elev.query(-105.25, 40)  # aka Boulder, CO.
@@ -139,6 +139,33 @@ class ElevationTestCase(unittest.TestCase):
 
         geoid_ht = ellps_ht - ortho_ht
         npt.assert_allclose(geoid_ht, -0.015438, rtol=1e-4)
+
+    def test_elevation_query_height_independent(self):
+        elev = elevation.Elevation(meters=True)
+
+        # Values taken from an Eng implementation.
+        data = pd.DataFrame(np.asarray([
+            [43.1148139831317, -84.6976955990196, 168.224880218506, 201.75, -33.5251197814941],
+            [30.7142335714838, -118.408357681129, -41.5095481872559, -1, -40.5095481872559],
+            [46.9825861173755, -106.153850751956, 787.063784599304, 802.75, -15.6862154006958],
+            [48.679864955151, -117.691430468442, 1285.94964790344, 1302.25, -16.3003520965576],
+            [43.5747030971555, -115.143410938208, 1953.82563877106, 1967.5, -13.6743612289429],
+            [45.1548026115667, -78.8271085836354, 298.847255706787, 334.5, -35.6527442932129],
+            [44.8626493624983, -85.2585688512091, 198.102993011475, 232.75, -34.6470069885254],
+            [37.8445403906834, -104.145025996957, 1461.82157897949, 1482.75, -20.9284210205078],
+            [43.1095578035511, -72.4888975580822, 288.799005508423, 316.75, -27.9509944915771],
+            [33.4237337562312, -118.277695974855, -38.2005424499512, -1, -37.2005424499512],
+        ]), columns=['lat', 'lon', 'elev', 'ortho', 'geoid'])
+
+        out = pd.DataFrame(index=data.index, columns=data.columns, dtype=np.float64)
+        self.assertEqual(out.shape[0], data.shape[0])
+
+        for ith, pnt in data.iterrows():
+            elev_ht = elev.query(pnt['lon'], pnt['lat'])
+            ortho_ht = elev.query(pnt['lon'], pnt['lat'], orthometric=True)
+            out.loc[ith] = [pnt['lat'], pnt['lon'], elev_ht, ortho_ht, elev_ht - ortho_ht]
+
+        npt.assert_allclose(data, out, rtol=1e-1, atol=100)
 
     def test_elevation_local_minmax(self):
         elev = elevation.Elevation()
