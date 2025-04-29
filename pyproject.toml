@@ -6,9 +6,20 @@ authors = [
     {name = "Brandon Stone", email = "brandon.h.stone@colorado.edu"}
 ]
 readme = "README.md"
+keywords = [
+    "spice",
+    "geolocation",
+    "geometry",
+    "ephemeris",
+    "attitude",
+    "kernel",
+    "coordinates",
+    "lasp",
+    "university of colorado",
+    "naif"
+]
 requires-python = ">=3.9,<4"
 license = { text = "MIT"}
-keywords = ["LASP", "SDP"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -41,7 +52,6 @@ dependencies = [
     "numpy (>=1.23,<2.0)"
 ]
 
-
 [tool.poetry]
 packages = [
     { include = "curryer" }
@@ -49,12 +59,16 @@ packages = [
 
 [project.urls]
 repository = "https://github.com/lasp/curryer"
+#documentation = ""  # Add once readthedocs is up
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.1"
 pytest-cov = ">=3"
 pylint = ">=2"
 ipython = ">=8.4"
+sphinx = "*"
+myst-parser = "*"
+sphinx-autoapi = "*"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'
