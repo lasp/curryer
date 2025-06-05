@@ -112,8 +112,6 @@ FROM test AS debug
 # Command line tools and debug dependencies.
 RUN apt-get update && apt-get install -y man less vim which tree
 
-RUN pip install matplotlib jupyterlab cartopy basemap basemap-data-hires
-
 CMD []
 ENTRYPOINT ["/bin/bash"]
 
