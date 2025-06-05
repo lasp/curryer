@@ -31,6 +31,8 @@ RUN apt-get update && apt-get install -y \
     git \
     build-essential \
     g++ \
+    gdal-bin \
+    libgdal-dev \
     libgeos-dev \
     libproj-dev \
     proj-data \
@@ -40,11 +42,25 @@ RUN apt-get update && apt-get install -y \
     libfreetype6-dev \
     libssl-dev \
     libffi-dev \
-    python3-dev \
-    python3-pyproj \
     && rm -rf /var/lib/apt/lists/*
 
-# Install poetry and add to path.
+# Install Miniconda
+ENV CONDA_DIR=/opt/conda
+RUN curl -sSLo miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh && \
+    bash miniconda.sh -b -p $CONDA_DIR && \
+    rm miniconda.sh && \
+    $CONDA_DIR/bin/conda clean -afy
+
+# Add conda to PATH
+ENV PATH=$CONDA_DIR/bin:$PATH
+
+# Install cspice from conda-forge
+RUN conda install -y -c conda-forge cspice
+
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+
+#ENV POETRY_VIRTUALENVS_CREATE=false
 RUN pip install poetry
 
 # Copy data files.
@@ -61,22 +77,15 @@ COPY tests $BASE_DIR/tests
 COPY README.md $BASE_DIR
 COPY pyproject.toml $BASE_DIR
 
-# Ensure pip is upgraded
-RUN pip install --upgrade pip
-
 # Install all dependencies (including dev deps) specified in pyproject.toml
-# Copy the manually exported requirements.txt file
-COPY requirements.txt $BASE_DIR
-
-# Install dependencies using pip
-RUN pip install -r $BASE_DIR/requirements.txt
+RUN poetry install
 
 # Download third-party data.
 ENV CURRYER_DATA_DIR=$DATA_DIR
 
-RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_data_dir())") \
-    && mkdir -p ${PROJ_DOWNLOAD_DIR} \
-    && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
+RUN PROJ_DOWNLOAD_DIR=$(poetry run python -c "import pyproj; print(pyproj.datadir.get_user_data_dir())") && \
+    mkdir -p "$PROJ_DOWNLOAD_DIR" && \
+    curl -o "$PROJ_DOWNLOAD_DIR/world" -L https://cdn.proj.org/world
 
 ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--disable-warnings", "tests"]
 
