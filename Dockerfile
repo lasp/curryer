@@ -13,8 +13,8 @@ FROM python:${BASE_IMAGE_PYTHON_VERSION:-3.11}-slim AS test
 
 USER root
 
-ENV BASE_DIR /app/curryer
-ENV DATA_DIR $BASE_DIR/data
+ENV BASE_DIR=/app/curryer
+ENV DATA_DIR=/app/curryer/data
 WORKDIR $BASE_DIR
 
 # Create virtual environment and permanently activate it for this image
@@ -26,12 +26,26 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 RUN pip install --upgrade pip
 
 # Update the OS tools and install dependencies.
-RUN apt-get update
-RUN apt-get install -y curl
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    g++ \
+    libgeos-dev \
+    libproj-dev \
+    proj-data \
+    proj-bin \
+    libjpeg-dev \
+    libpng-dev \
+    libfreetype6-dev \
+    libssl-dev \
+    libffi-dev \
+    python3-dev \
+    python3-pyproj \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install poetry and add to path.
-RUN curl -sSL https://install.python-poetry.org | python -
-ENV PATH="$PATH:/root/.local/bin"
+RUN pip install poetry
 
 # Copy data files.
 RUN mkdir -p $DATA_DIR/generic \
@@ -51,7 +65,11 @@ COPY pyproject.toml $BASE_DIR
 RUN pip install --upgrade pip
 
 # Install all dependencies (including dev deps) specified in pyproject.toml
-RUN poetry install
+# Copy the manually exported requirements.txt file
+COPY requirements.txt $BASE_DIR
+
+# Install dependencies using pip
+RUN pip install -r $BASE_DIR/requirements.txt
 
 # Download third-party data.
 ENV CURRYER_DATA_DIR=$DATA_DIR
@@ -60,14 +78,17 @@ RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_
     && mkdir -p ${PROJ_DOWNLOAD_DIR} \
     && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
 
-ENTRYPOINT pytest \
-    -v \
-    --junitxml=junit.xml \
-    --disable-warnings \
-    tests
+ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--disable-warnings", "tests"]
 
 # =============================================================================
 # Debug environment.
+#
+#
+# Example for apple silicone:
+# docker build --platform=linux/arm64 -t curryer_debug . --target debug
+#
+#
+#
 #
 # Example:
 #   > docker build -t curryer_debug . --target debug
@@ -80,7 +101,7 @@ ENTRYPOINT pytest \
 FROM test AS debug
 
 # Command line tools and debug dependencies.
-RUN apt-get install -y man less vim which tree
+RUN apt-get update && apt-get install -y man less vim which tree
 
 RUN pip install matplotlib jupyterlab cartopy basemap basemap-data-hires
 
