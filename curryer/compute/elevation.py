@@ -18,6 +18,8 @@ from typing import List, Union, Optional, Tuple, Set
 import numpy as np
 import pandas as pd
 import xarray as xr
+from geotiff import GeoTiff
+from affine import Affine
 import rioxarray
 from pyproj import Transformer
 from pyproj.transformer import TransformerGroup
@@ -96,6 +98,21 @@ class Elevation:
             # Download extra data layers if missing.
             logger.info('Downloading EGM96 geoid data for pyproj transformer.')
             tg.download_grids(verbose=True)
+
+    @staticmethod
+    def get_affine_from_geotiff(gtiff):
+        """
+        Extract an Affine transform from a GeoTiff objects transform matrix.
+        Args:
+            gtiff (geotiff.GeoTiff): A GeoTiff object read in from the geotiff library.
+
+        Returns:
+            affine.Affine: The corresponding Affine transformation.
+        """
+        matrix = gtiff.tifTrans.transforms[0]
+        a, b, _, c = matrix[0]
+        d, e, _, f = matrix[1]
+        return Affine.from_gdal(c, a, b, f, d, e)
 
     @track_performance
     def locate_files(self, pattern: str = '*_gmted_*.tif') -> List[Path]:
