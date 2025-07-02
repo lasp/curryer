@@ -270,7 +270,27 @@ class Elevation:
         name = filepath.name
         if name not in self._cache:
             logger.info('Reading DEM file: %s', filepath)
-            self._cache[name] = rioxarray.open_rasterio(filepath).sel(band=1)
+            # self._cache[name] = rioxarray.open_rasterio(filepath).sel(band=1)
+
+            gtiff = GeoTiff(filepath)
+            array = gtiff.read()
+            transform = self.get_affine_from_geotiff(gtiff)
+            height, width = array.shape
+            x0, y0 = transform * (0, 0)
+            x_coords = [x0 + i * transform.a for i in range(width)]
+            y_coords = [y0 + j * transform.e for j in range(height)]
+
+            da = xr.DataArray(
+                array,
+                dims=("y", "x"),
+                coords={"x": x_coords, "y": y_coords},
+                attrs={
+                    "transform": tuple(transform.to_gdal()),
+                    "crs": f"EPSG:{gtiff.as_crs}",
+                    "_FillValue": getattr(array, 'fill_value', -32768)
+                }
+            )
+            self._cache[name] = da
         return self._cache[name]
 
     @track_performance
