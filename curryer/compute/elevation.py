@@ -286,6 +286,7 @@ class Elevation:
                 coords={"x": x_coords, "y": y_coords},
                 attrs={
                     "transform": tuple(transform.to_gdal()),
+                    "resolution": (transform.a, transform.e),
                     "crs": f"EPSG:{gtiff.as_crs}",
                     "_FillValue": getattr(array, 'fill_value', -32768)
                 }
@@ -562,7 +563,7 @@ class Elevation:
             tile_hts = self._slice_file(
                 rds, min_lon, max_lon, min_lat, max_lat, orthometric=orthometric, fill_val=fill_val,
             )
-            resolutions.append(rds.rio.resolution())
+            resolutions.append(rds.resolution)
             fill_val = rds.attrs['_FillValue']
 
             # Special case of wrapping the dateline.
@@ -573,7 +574,7 @@ class Elevation:
 
         # Handle rare case of mismatched resolutions (near poles).
         if not all(resolutions[0][0] == x and resolutions[0][1] == y for x, y in resolutions):
-
+            print(resolutions)
             xmin_res = min(x for x, y in resolutions)  # Positive.
             ymin_res = max(y for x, y in resolutions)  # Negative.
 
