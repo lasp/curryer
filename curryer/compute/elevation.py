@@ -100,9 +100,16 @@ class Elevation:
             tg.download_grids(verbose=True)
 
     @staticmethod
-    def get_affine_from_geotiff(gtiff):
+    def latlon_to_pixel(self, lon, lat):
+        """Convert lon/lat to raster row/col indices using the stored Affine transform."""
+        inv = ~self.transform
+        col, row = inv * (lon, lat)
+        return int(row), int(col)
+
+    @track_performance
+    def get_affine_from_geotiff(self, gtiff):
         """
-        Extract an Affine transform from a GeoTiff objects transform matrix.
+        Extract an Affine transform from a GeoTiff object's transform matrix and store it as self.transform.
         Args:
             gtiff (geotiff.GeoTiff): A GeoTiff object read in from the geotiff library.
 
@@ -112,7 +119,8 @@ class Elevation:
         matrix = gtiff.tifTrans.transforms[0]
         a, b, _, c = matrix[0]
         d, e, _, f = matrix[1]
-        return Affine.from_gdal(c, a, b, f, d, e)
+        self.transform = Affine.from_gdal(c, a, b, f, d, e)
+        return self.transform
 
     @track_performance
     def locate_files(self, pattern: str = '*_gmted_*.tif') -> List[Path]:
