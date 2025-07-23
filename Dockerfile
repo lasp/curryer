@@ -13,8 +13,8 @@ FROM python:${BASE_IMAGE_PYTHON_VERSION:-3.11}-slim AS test
 
 USER root
 
-ENV BASE_DIR /app/curryer
-ENV DATA_DIR $BASE_DIR/data
+ENV BASE_DIR=/app/curryer
+ENV DATA_DIR=$BASE_DIR/data
 WORKDIR $BASE_DIR
 
 # Create virtual environment and permanently activate it for this image
@@ -27,7 +27,7 @@ RUN pip install --upgrade pip
 
 # Update the OS tools and install dependencies.
 RUN apt-get update
-RUN apt-get install -y curl
+RUN apt-get install -y curl build-essential gcc g++ libc6-dev
 
 # Install poetry and add to path.
 RUN curl -sSL https://install.python-poetry.org | python -
@@ -60,11 +60,7 @@ RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_
     && mkdir -p ${PROJ_DOWNLOAD_DIR} \
     && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
 
-ENTRYPOINT pytest \
-    -v \
-    --junitxml=junit.xml \
-    --disable-warnings \
-    tests
+ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--disable-warnings", "tests"]
 
 # =============================================================================
 # Debug environment.
