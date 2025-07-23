@@ -612,6 +612,7 @@ class Elevation:
 
         # Handle rare case of mismatched resolutions (near poles).
         if not all(resolutions[0][0] == x and resolutions[0][1] == y for x, y in resolutions):
+
             xmin_res = min(x for x, y in resolutions)  # Positive.
             ymin_res = max(y for x, y in resolutions)  # Negative.
 
