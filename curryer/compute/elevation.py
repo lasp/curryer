@@ -101,7 +101,23 @@ class Elevation:
     def latlon_to_pixel(self, lon, lat, transform):
         """Convert lon/lat to raster row/col indices using the given Affine transform.
 
-        Note: This assumes pixel-center coordinates, so we don't need to add 0.5 offset
+        Parameters
+        ----------
+        lon : float
+            Longitude coordinate in degrees.
+        lat : float
+            Latitude coordinate in degrees.
+        transform : affine.Affine
+            Affine transformation object for coordinate conversion.
+
+        Returns
+        -------
+        tuple of int
+            Row and column indices (row, col) in the raster.
+
+        Notes
+        -----
+        This assumes pixel-center coordinates, so we don't need to add 0.5 offset
         since our coordinates already represent pixel centers.
         """
         inv = ~transform
@@ -110,13 +126,17 @@ class Elevation:
 
     @track_performance
     def get_affine_from_geotiff(self, gtiff):
-        """
-        Extract an Affine transform from a GeoTiff object's transform matrix.
-        Args:
-            gtiff (geotiff.GeoTiff): A GeoTiff object read in from the geotiff library.
+        """Extract an Affine transform from a GeoTiff object's transform matrix.
 
-        Returns:
-            affine.Affine: The corresponding Affine transformation.
+        Parameters
+        ----------
+        gtiff : geotiff.GeoTiff
+            A GeoTiff object read in from the geotiff library.
+
+        Returns
+        -------
+        affine.Affine
+            The corresponding Affine transformation.
         """
         matrix = gtiff.tifTrans.transforms[0]
         a, b, _, c = matrix[0]
