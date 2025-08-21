@@ -98,7 +98,7 @@ class Elevation:
             logger.info('Downloading EGM96 geoid data for pyproj transformer.')
             tg.download_grids(verbose=True)
 
-    def latlon_to_pixel(self, lon, lat, transform):
+    def latlon_to_pixel(self, lon: float, lat: float, transform: Affine) -> Tuple[int, int]:
         """Convert lon/lat to raster row/col indices using the given Affine transform.
 
         Parameters
@@ -125,7 +125,7 @@ class Elevation:
         return int(row), int(col)
 
     @track_performance
-    def get_affine_from_geotiff(self, gtiff):
+    def get_affine_from_geotiff(self, gtiff: GeoTiff) -> Affine:
         """Extract an Affine transform from a GeoTiff object's transform matrix.
 
         Parameters
@@ -498,9 +498,29 @@ class Elevation:
         return files
 
     def _slice_file(self, rds: xr.DataArray, min_lon: float, max_lon: float, min_lat: float, max_lat: float,
-                    orthometric=False, fill_val: float = None) -> xr.DataArray:
-        """Subset a file by a min/max lon/lat region.
+                    orthometric: bool = False, fill_val: float = None) -> xr.DataArray:
         """
+        Subset a DEM file by a min/max lon/lat region.
+
+        Parameters
+        ----------
+        rds : xr.DataArray
+            DEM data array with 'x' (longitude) and 'y' (latitude) coordinates.
+        min_lon, max_lon : float
+            Longitude bounds in degrees (\[-180, 180\]).
+        min_lat, max_lat : float
+            Latitude bounds in degrees (\[-90, 90\]).
+        orthometric : bool, optional
+            If True, return orthometric heights (DEM only). If False, return ellipsoid heights (DEM + geoid).
+        fill_val : float, optional
+            Fill value to check for consistency.
+
+        Returns
+        -------
+        xr.DataArray
+            Subsetted DEM or ellipsoid heights for the region.
+        """
+
         # Use xarray's built-in selection instead of rioxarray
         # Handle edge case that longitude wrapped the international dateline
         if rds['x'].min().item() >= max_lon:
