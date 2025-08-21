@@ -25,7 +25,6 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 dependencies = [
-    "scipy>=1.9",
     "pandas>=1.5",
     "xarray>=2022.11",
     "netcdf4>=1.6",
@@ -33,14 +32,10 @@ dependencies = [
     "geotiff>=0.2.10",
     "tifffile>=2021.7.4,!=2022.4.28,<2023.7.0",
     "affine>=2.3",
-    "zarr>=2.12.0,<2.13",
-    "numcodecs>=0.10.0,<0.12.0",
     "pyproj>=3.6",
-    "pyshp>=2.3",
     "requests>=2.28",
     "jinja2>=3",
     "spiceypy>=6",
-    "openpyxl>=3",
     "numpy (>=1.23,<2.0)"
 ]
 
