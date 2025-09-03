@@ -13,7 +13,7 @@ SpiceTime
 Examples
 --------
 >>> utc = adapt([0, 1], from_='ugps', to='utc')
->>> print('Adapt API:\n\t{!r}\n\ttype={}'.format(utc, type(utc)))
+>>> print('Adapt API:\\n\\t{!r}\\n\\ttype={}'.format(utc, type(utc)))
 Adapt API:
 	['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001']
 	type=<class 'list'>
@@ -21,7 +21,7 @@ Adapt API:
 
 >>> ugps = SpiceTime([0, 1], ttype='ugps')
 >>> utc_arr = ugps.to_utc()
->>> print('SpiceTime API:\n\t{!r}'.format(utc_arr))
+>>> print('SpiceTime API:\\n\\t{!r}'.format(utc_arr))
 SpiceTime API:
 	SpiceTime(['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001'],
       dtype='<U26', ttype='utc')
@@ -35,7 +35,7 @@ from types import MappingProxyType
 import numpy as np
 
 from .. import spicierpy as sp
-from . import constants, utils, native
+from . import constants, utils, native, leapsecond
 
 
 # TODO: Support format type of a SPICE clock obj (i.e., convert to/from sclk ticks).
@@ -190,6 +190,8 @@ def from_tai(dt_val):
 def from_utc(dt_val):
     """Convert times from UTC string(s) (ISO format).
     """
+    # Ensure leapsecond kernel is loaded for UTC conversions
+    leapsecond.load()
     return sp.str2et(dt_val)
 
 
@@ -231,6 +233,9 @@ def to_tai(dt_val):
 def to_utc(dt_val, date_format=None):
     """Convert times to UTC strings (ISO format).
     """
+    # Ensure leapsecond kernel is loaded for UTC conversions
+    leapsecond.load()
+
     # SPICE compatible format string, default to ISO.
     if date_format is None:
         date_format = 'YYYY-MM-DD HR:MN:SC.###### ::UTC ::RND'

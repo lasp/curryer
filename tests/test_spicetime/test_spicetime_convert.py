@@ -23,7 +23,7 @@ import unittest
 
 import numpy as np
 
-from curryer.spicetime.leapsecond import are_loaded
+from curryer.spicetime.leapsecond import are_loaded, load
 from curryer.spicetime import convert, utils
 from curryer.utils import enable_logging
 
@@ -56,6 +56,8 @@ class ConvertFmtStrTestCase(unittest.TestCase):
 
 class ConvertTestCase(unittest.TestCase):
     def setUp(self):
+        # Trigger lazy loading by calling load() explicitly for tests
+        load()
         self.assertTrue(are_loaded(), 'No leapsecond kernel is loaded. Check the `leapsecond` tests.')
 
     def test_utc_to_et_at_19800106(self):
@@ -107,6 +109,8 @@ class ConvertTestCase(unittest.TestCase):
 
 class AdaptTestCase(unittest.TestCase):
     def setUp(self):
+        # Trigger lazy loading by calling load() explicitly for tests
+        load()
         self.assertTrue(are_loaded(), 'No leapsecond kernel is loaded. Check the `leapsecond` tests.')
 
     def test_ugps_to_utc_scalar(self):
@@ -155,6 +159,8 @@ class AdaptIntegrationTestCase(unittest.TestCase):
     loggers = {'sds_utils.idl': 15}
 
     def setUp(self):
+        # Trigger lazy loading by calling load() explicitly for tests
+        load()
         self.assertTrue(are_loaded(), 'No leapsecond kernel is loaded. Check the `leapsecond` tests.')
 
         self.ttypes = list(convert.TTYPE_TO_DTYPE.keys())
@@ -222,6 +228,8 @@ class AdaptIntegrationTestCase(unittest.TestCase):
 
 class SpiceTimeClassTestCase(unittest.TestCase):
     def setUp(self):
+        # Trigger lazy loading by calling load() explicitly for tests
+        load()
         self.assertTrue(are_loaded(), 'No leapsecond kernel is loaded. Check the `leapsecond` tests.')
 
     def test_ndarray_explicit_creation(self):

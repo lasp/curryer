@@ -57,8 +57,18 @@ class LeapsecondTestCase(unittest.TestCase):
         self.assertTrue(fn.is_file())
 
     def test_import_loads_the_leapsecond_kernel(self):
-        # Reload the module, just in case a bad test cleared the kernel pool.
+        # Test that lazy loading works when leapsecond functionality is used
+        # (Previously this test checked immediate loading on import)
+
+        # Clear any existing kernels and reload module
+        from curryer import spicierpy as sp
+        sp.kclear()  # Clear kernel pool
         reload(leapsecond)
+
+        # No kernels should be loaded immediately after import
+        self.assertFalse(leapsecond.are_loaded())
+        # But loading should work when explicitly called
+        leapsecond.load()
         self.assertTrue(leapsecond.are_loaded())
 
     def test_load_actually_works(self):
@@ -120,6 +130,8 @@ class LeapsecondFakeTestCase(unittest.TestCase):
     def test_quiet_load_warns_about_failed_to_find_file(self, *_):
         # Mock a fake file glob that causes the warning, and are_loaded to
         #   trick it into thinking it needs to load a kernel in the first place.
+        # Reset the attempted flag to allow _quiet_load to run again
+        leapsecond._default_load_attempted = False
         with self.assertWarns(UserWarning):
             leapsecond._quiet_load()
 
