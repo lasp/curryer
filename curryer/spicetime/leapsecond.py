@@ -1,10 +1,11 @@
 """Leapsecond kernel methods.
 
-Importing this module will load the default leapsecond kernel that is included
-with this library. If the kernel pool is cleared, `load()` should be called to
-reload the leapsecond kernel. The included kernel can be updated using
-`update_file()`; if a new kernel is available, it will be downloaded to the
-package's "data" directory.
+This module provides methods for loading and managing leapsecond kernels.
+The default leapsecond kernel will be loaded automatically on first use of
+time conversion functions that require it. If the kernel pool is cleared,
+`load()` should be called to reload the leapsecond kernel. The included kernel
+can be updated using `update_file()`; if a new kernel is available, it will be
+downloaded to the package's "data" directory.
 
 The last leapsecond kernel that is loaded takes the highest precedence.
 
@@ -53,19 +54,25 @@ def find_default_file():
     else:
         path = Path(__file__).parent
         path = path.joinpath(_LEAPSECOND_FILE_PATH).resolve()
-    leapsecond_files = list(path.glob(_LEAPSECOND_FILE_GLOB))
-    leapsecond_files.sort()
 
-    if len(leapsecond_files) == 0:
-        raise FileNotFoundError('Unable to find the default leapsecond kernel file. '
-                                'Searched directory: {}'.format(path))
+    # Check if path points directly to a file (for user-specified paths)
+    if path.is_file():
+        file = path
+        logger.debug('Found user-specified leapsecond kernel: %s', file)
+    else:
+        # Search for kernel files in the directory
+        leapsecond_files = list(path.glob(_LEAPSECOND_FILE_GLOB))
+        leapsecond_files.sort()
 
-    file = leapsecond_files[-1]
-    logger.debug('Found default leapsecond kernel: %s', file)
+        if len(leapsecond_files) == 0:
+            raise FileNotFoundError('Unable to find the default leapsecond kernel file. '
+                                    'Searched directory: {}'.format(path))
+
+        file = leapsecond_files[-1]
+        logger.debug('Found default leapsecond kernel: %s', file)
 
     # Warn if the file might be outdated (not modified in 3 yrs; units=sec).
     if (time.time() - file.stat().st_mtime) > int(63072000 / 2 * 3):
-        # warnings.warn(
         logger.debug(
             'The leapsecond kernel is older than two years. Consider running `check_for_update` or `update_file`.'
         )
@@ -117,8 +124,12 @@ def load(filename=None):
 
     # Load the default kernel into the kernel pool.
     else:
-        default_kernel = find_default_file()
-        sp.furnsh(str(default_kernel))
+        # Attempt lazy loading of default kernel if not already attempted
+        if not _default_load_attempted:
+            _quiet_load()
+        else:
+            default_kernel = find_default_file()
+            sp.furnsh(str(default_kernel))
 
 
 def check_for_update():
@@ -198,9 +209,19 @@ def update_file():
 # Find the library's default leapsecond file when imported.
 #   Then load it into memory (SPICE kernel pool). If the kernel file is older
 #   than 2 years (created/modified), warn that it might be outdated.
+
+# Module-level flag to track if we've attempted to load default kernel
+_default_load_attempted = False
+
+
 def _quiet_load():
     """Load the default leapsecond kernel, but suppress missing file errors.
     """
+    global _default_load_attempted
+    if _default_load_attempted:
+        return
+    _default_load_attempted = True
+
     try:
         load()
     except FileNotFoundError:
@@ -208,7 +229,7 @@ def _quiet_load():
         warnings.warn('Unable to find the default leapsecond kernel file. No leapsecond kernel was loaded!')
 
 
-_quiet_load()
+# Remove immediate loading - will be done lazily
 
 
 def read_leapseconds(filename=None):
