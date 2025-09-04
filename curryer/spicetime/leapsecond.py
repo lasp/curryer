@@ -112,6 +112,8 @@ def load(filename=None):
     None
 
     """
+    global _default_load_attempted
+
     loaded_files = are_loaded()
 
     # Load the supplied kernel file.
@@ -127,7 +129,6 @@ def load(filename=None):
         # Reset the lazy loading flag if no kernels are loaded but flag is set
         # (handles case where kernel pool was cleared externally)
         if _default_load_attempted and not loaded_files:
-            global _default_load_attempted
             _default_load_attempted = False
 
         # Attempt lazy loading of default kernel if not already attempted
