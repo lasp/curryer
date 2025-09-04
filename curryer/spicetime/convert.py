@@ -167,6 +167,8 @@ def from_et(dt_val):
 def from_ugps(dt_val):
     """Convert times from GPS microseconds.
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val / constants.TimeConstant.SEC_TO_USEC
                      - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
@@ -175,6 +177,8 @@ def from_ugps(dt_val):
 def from_gps(dt_val):
     """Convert times from GPS seconds.
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
 
@@ -182,6 +186,8 @@ def from_gps(dt_val):
 def from_tai(dt_val):
     """Convert times from International Atomic Time seconds (1958).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val + constants.EpochOffsetSeconds.GPS_TO_TAI
                      - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
@@ -190,7 +196,7 @@ def from_tai(dt_val):
 def from_utc(dt_val):
     """Convert times from UTC string(s) (ISO format).
     """
-    # Ensure leapsecond kernel is loaded for UTC conversions
+    # Ensure leapseound kernel is loaded for UTC conversions
     leapsecond.load()
     return sp.str2et(dt_val)
 
@@ -209,6 +215,8 @@ def to_et(dt_val):
 def to_ugps(dt_val):
     """Convert times to GPS microseconds (int64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     ugps = ((sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET)
             * constants.TimeConstant.SEC_TO_USEC)
     return np.round(ugps).astype(np.int64)
@@ -218,6 +226,8 @@ def to_ugps(dt_val):
 def to_gps(dt_val):
     """Convert times to GPS seconds (float64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
 
 
@@ -225,6 +235,8 @@ def to_gps(dt_val):
 def to_tai(dt_val):
     """Convert times to International Atomic Time seconds (1958; float64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return (sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
             - constants.EpochOffsetSeconds.GPS_TO_TAI)
 
