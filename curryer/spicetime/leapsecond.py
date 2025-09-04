@@ -240,7 +240,8 @@ def _quiet_load():
     _default_load_attempted = True
 
     try:
-        load()
+        default_kernel = find_default_file()
+        sp.furnsh(str(default_kernel))
     except FileNotFoundError:
         logger.exception('An exception occurred while locating the leapsecond file. Suppressing:')
         warnings.warn('Unable to find the default leapsecond kernel file. No leapsecond kernel was loaded!')
