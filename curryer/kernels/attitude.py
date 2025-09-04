@@ -80,6 +80,7 @@ class AbstractAttitudeProperties(AbstractKernelProperties):
 
     # Output properties.
     ck_type: TypedDataDescriptor = TypedDataDescriptor(default=AttitudeTypes.LINEAR_QUAT, dtype=AttitudeTypes)
+    down_sample_tolerance: float = None
 
     # Existing kernels that are required to build this one.
     leapsecond_kernel: str = None
@@ -140,6 +141,12 @@ class AbstractAttitudeProperties(AbstractKernelProperties):
         config['REFERENCE_FRAME_NAME'] = self.input_frame.name
         config['INPUT_DATA_TYPE'] = self.input_data_type.value
         config['CK_TYPE'] = self.ck_type.value
+
+        if self.down_sample_tolerance:
+            if self.ck_type.value != 3:
+                logger.warning('Ignoring `DOWN_SAMPLE_TOLERANCE`, only valid with CK type 3 (LINEAR_QUAT)')
+            else:
+                config['DOWN_SAMPLE_TOLERANCE'] = self.down_sample_tolerance
 
         # Time format that spice expects. Internally, user data is converted
         #   from the format at "self.input_time_type" to this.
