@@ -124,6 +124,12 @@ def load(filename=None):
 
     # Load the default kernel into the kernel pool.
     else:
+        # Reset the lazy loading flag if no kernels are loaded but flag is set
+        # (handles case where kernel pool was cleared externally)
+        if _default_load_attempted and not loaded_files:
+            global _default_load_attempted
+            _default_load_attempted = False
+
         # Attempt lazy loading of default kernel if not already attempted
         if not _default_load_attempted:
             _quiet_load()
@@ -212,6 +218,16 @@ def update_file():
 
 # Module-level flag to track if we've attempted to load default kernel
 _default_load_attempted = False
+
+
+def reset_lazy_loading():
+    """Reset the lazy loading state to allow re-loading of default kernels.
+
+    This is useful when the SPICE kernel pool is cleared externally
+    (e.g., by test fixtures) and lazy loading needs to be re-triggered.
+    """
+    global _default_load_attempted
+    _default_load_attempted = False
 
 
 def _quiet_load():
