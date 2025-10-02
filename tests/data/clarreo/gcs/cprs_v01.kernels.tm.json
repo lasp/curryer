@@ -1,0 +1,61 @@
+{
+  "mappings": {
+    "ISS_SC": {
+      "id_code": -125544,
+      "frame": true,
+      "clock": true,
+      "attitude": true
+    },
+    "CPRS_ST": {
+      "id_code": -125544209,
+      "frame": true
+    },
+    "CPRS_BASE": {
+      "id_code": -125544208,
+      "frame": true
+    },
+    "CPRS_PEDE": {
+      "id_code": -125544207,
+      "frame": true
+    },
+    "CPRS_AZ": {
+      "id_code": -125544206,
+      "clock": -125544,
+      "frame": true,
+      "attitude": true
+    },
+    "CPRS_YOKE": {
+      "id_code": -125544205,
+      "frame": true
+    },
+    "CPRS_EL": {
+      "id_code": -125544204,
+      "clock": -125544,
+      "frame": true,
+      "attitude": true
+    },
+    "CPRS_HYSICS": {
+      "id_code": -125544200,
+      "frame": true
+    }
+  },
+  "mission_kernels": [
+    "cprs_v01.frames.fk.tf",
+    "cprs_v01.instruments.ik.ti",
+    "iss_v01.fakeclock.sclk.tsc"
+  ],
+  "sds_kernels": [
+    "earth_assoc_itrf93.tf",
+    "earth_fixed.tf",
+    "moon_080317.tf",
+    "moon_assoc_pa.tf",
+    "naif0012.tls",
+    "pck00010.tpc",
+    "earth_200101_990628_predict.bpc",
+    "earth_720101_070426.bpc",
+    "earth_000101_221016_220723.bpc",
+    "moon_pa_de421_1900-2050.bpc",
+    "geophysical.ker",
+    "de430.bsp"
+  ]
+}
