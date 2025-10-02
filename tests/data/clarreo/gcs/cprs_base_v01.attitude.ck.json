@@ -1,0 +1,23 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.attitude.AttitudeEulerProperties",
+    "properties": {
+      "input_body": "CPRS_BASE",
+      "input_frame": "CPRS_ST_COORD",
+      "input_data_type": "EULER ANGLES",
+      "input_angle_units": "RADIANS",
+      "input_angular_rate": "NO",
+      "input_gap_threshold": "30s",
+      "ck_type": "LINEAR_QUAT",
+      "frame_kernel": "cprs_v01.frames.fk.tf",
+      "clock_kernel": "iss_v01.fakeclock.sclk.tsc"
+    }
+  },
+  "input_data": null,
+  "input_columns": {
+    "ugps": "ugps",
+    "angle_x": "angle_x",
+    "angle_y": "angle_y",
+    "angle_z": "angle_z"
+  }
+}
