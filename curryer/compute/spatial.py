@@ -33,6 +33,9 @@ from .constants import SpatialQualityFlags as SQF
 
 logger = logging.getLogger(__name__)
 
+EARTH_FRAME = 'ITRF93'  # High-accuracy, requires extra kernels.
+# 'IAU_EARTH' is low-accuracy, but built-in.
+
 
 def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument.
@@ -265,7 +268,7 @@ def instrument_intersect_ellipsoid(
 
     # Prepare arguments for spice.
     observer_id = spicierpy.obj.Body("EARTH").id
-    fixed_frame_name = "ITRF93"  # ECEF (high-precision)
+    fixed_frame_name = EARTH_FRAME  # ECEF (high-precision)
     target_id = instrument.id
     boresight_frame_name = instrument.frame.name
 
@@ -1008,7 +1011,7 @@ def surface_angles(
             ugps_times = ugps_times.unique(level=0)
 
         target_positions = spicierpy.ext.query_ephemeris(
-            ugps_times, target=target_obj, observer="EARTH", ref_frame="ITRF93", allow_nans=allow_nans
+            ugps_times, target=target_obj, observer="EARTH", ref_frame=EARTH_FRAME, allow_nans=allow_nans
         )
 
     elif target_positions.shape[0] != surface_positions.shape[0]:
@@ -1024,6 +1027,34 @@ def surface_angles(
     angles = pd.DataFrame({"azimuth": azimuth_ang, "zenith": zenith_ang}, index=surface_positions.index)
     angles.columns.name = target_positions.columns.name
     return angles
+
+
+def minmax_lon(lons: np.ndarray, degrees=False) -> (float, float):
+    """Compute min/max longitude, accounting for the international dateline.
+
+    Parameters
+    ----------
+    lons : np.ndarray
+    degrees : bool, optional
+        If True, inputs and returns are in degrees, otherwise (default) radians.
+        Must range -180 to 180, otherwise -pi, pi.
+
+    Returns
+    -------
+    float, float
+        Min and max longitude. Max may be numerically larger than min if it was
+        determined to wrap the international dateline.
+
+    """
+    min_lon, max_lon = lons.min(), lons.max()
+    if max_lon - min_lon <= (180 if degrees else np.pi):
+        return min_lon, max_lon
+
+    lon_360 = lons % (360 if degrees else 2 * np.pi)
+    lower_lon, upper_lon = lon_360.min(), lon_360.max()
+    if upper_lon > (180 if degrees else np.pi):
+        upper_lon %= -(360 if degrees else 2 * np.pi)
+    return lower_lon, upper_lon
 
 
 class Geolocate:
@@ -1271,9 +1302,10 @@ class Geolocate:
 
         if is_valid.any():
             # Pre-compute regional DEM for faster elevation look-ups.
+            mm_lon = minmax_lon(ellips_lla_df["lon"], degrees=True)
             minmax_lonlat = [
-                ellips_lla_df["lon"].min() - pad_degrees,
-                ellips_lla_df["lon"].max() + pad_degrees,
+                mm_lon[0] - pad_degrees,
+                mm_lon[1] + pad_degrees,
                 ellips_lla_df["lat"].min() - pad_degrees,
                 ellips_lla_df["lat"].max() + pad_degrees,
             ]
@@ -1292,7 +1324,7 @@ class Geolocate:
         terrain_lla_df = pd.DataFrame(data_arr, columns=["lon", "lat", "alt"], index=ellips_lla_df.index)
         terrain_qf_ds = pd.Series(qf_arr, name="qf", index=ellips_lla_df.index)
 
-        terrain_lla_df.columns.name = f"Terrain[{self.instrument.name}]@ITRF93"
+        terrain_lla_df.columns.name = f"Terrain[{self.instrument.name}]@{EARTH_FRAME}"
         return terrain_lla_df, terrain_qf_ds
 
     def calc_ancillary(
@@ -1375,7 +1407,7 @@ def spice_angles(ugps_times, surface_positions, target_obj, degrees=False):
             azccw=False,
             elplsz=True,
             obspos=surface_positions[ith],
-            obsref="ITRF93",
+            obsref=EARTH_FRAME,
             obsctr="EARTH",
         )
         azimuth_ang.append(output[1])
@@ -1579,7 +1611,7 @@ def legacy_intersect_ellipsoid(
 
     # Prepare arguments for spice.
     target_name = "EARTH"
-    fixed_frame_name = "ITRF93"  # ECEF (high-precision)
+    fixed_frame_name = EARTH_FRAME  # ECEF (high-precision)
     observer_name = instrument.name
     boresight_frame_name = instrument.frame.name
 

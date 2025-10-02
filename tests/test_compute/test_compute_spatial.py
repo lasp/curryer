@@ -40,6 +40,20 @@ class SpatialTestCase(unittest.TestCase):
         self.mock_elev.local_minmax.return_value = -0.1, 9.0
         self.mock_elev.query.side_effect = lambda ll, lt: 8 - 6 * np.rad2deg(ll)
 
+    def test_min_max_lon(self):
+        items = [
+            (np.array([-178, -170, 175, 165]), (165, -170)),
+            (np.array([-178, -170, -175, -165]), (-178, -165)),
+            (np.array([89, 0, -89]), (-89, 89)),
+            (np.array([91, 178, -91]), (91, -91)),
+            (np.array([89, -89]), (-89, 89)),
+            (np.array([91, -91]), (91, -91)),
+        ]
+        for arr, exp in items:
+            np.allclose(spatial.minmax_lon(arr, degrees=True), exp)
+        for arr, exp in items:
+            np.allclose(spatial.minmax_lon(np.deg2rad(arr)), np.deg2rad(exp))
+
     def test_pixel_vectors(self):
         vectors_ds = xr.load_dataset(self.test_dir / "cprs_hysics_v01.pixel_vectors.nc")
         exp_vectors = np.stack([vectors_ds[col].values for col in ["x", "y", "z"]], axis=1)
