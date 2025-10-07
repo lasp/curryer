@@ -6,6 +6,12 @@
       "clock": true,
       "attitude": true
     },
+    "CPRS_ST": {
+      "id_code": -125544209,
+      "frame": true,
+      "clock": -125544,
+      "attitude": true
+    },
     "CPRS_BASE": {
       "id_code": -125544208,
       "frame": true
