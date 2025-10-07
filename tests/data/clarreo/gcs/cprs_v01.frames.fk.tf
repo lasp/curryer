@@ -9,12 +9,12 @@ Frame definitions for the ISS spacecraft & CPRS mission
     ==========          =================   ==========  ========
     ISS_ISSACS          J2000 (ECI)         CK          -125544000
     CPRS_ST_COORD       ISS_ISSACS          CK          -125544209
-    CPRS_BASE_COORD     CPRS_ST_COORD       FIXED       -125544208
+    CPRS_BASE_COORD     CPRS_ST_COORD       CK          -125544208
     CPRS_PEDE_COORD     CPRS_BASE_COORD     FIXED       -125544207
     CPRS_AZ_COORD       CPRS_PEDE_COORD     CK          -125544206
-    CPRS_YOKE_COORD     CPRS_AZ_COORD       FIXED       -125544205
+    CPRS_YOKE_COORD     CPRS_AZ_COORD       CK          -125544205
     CPRS_EL_COORD       CPRS_YOKE_COORD     CK          -125544204
-    CPRS_HYSICS_COORD   CPRS_EL_COORD       FIXED       -125544200
+    CPRS_HYSICS_COORD   CPRS_EL_COORD       CK          -125544200
 
     TODO: Update figures and remove star tracker if used.
 
@@ -114,20 +114,12 @@ Frame definitions
 
         FRAME_CPRS_BASE_COORD       = -125544208
         FRAME_-125544208_NAME       = 'CPRS_BASE_COORD'
-        FRAME_-125544208_CLASS      = 4
+        FRAME_-125544208_CLASS      = 3
         FRAME_-125544208_CLASS_ID   = -125544208
         FRAME_-125544208_CENTER     = -125544209
-        TKFRAME_-125544208_RELATIVE = 'CPRS_ST_COORD'
-        TKFRAME_-125544208_SPEC     = 'MATRIX'
-        TKFRAME_-125544208_MATRIX   = (  0.999999989287301
-                                         0.0001463741700879
-                                         0.0
-                                        -0.0001463741665978
-                                         0.999999965443881
-                                         0.0002183731650958
-                                         3.19641908103789e-08
-                                        -0.0002183731627564
-                                         0.99999997615658  )
+        CK_-125544208_SCLK          = -125544
+        CK_-125544208_SPK           = -125544209
+
 
         OBJECT_-125544208_FRAME     = 'CPRS_BASE_COORD'
 
@@ -183,20 +175,11 @@ Frame definitions
 
         FRAME_CPRS_YOKE_COORD       = -125544205
         FRAME_-125544205_NAME       = 'CPRS_YOKE_COORD'
-        FRAME_-125544205_CLASS      = 4
+        FRAME_-125544205_CLASS      = 3
         FRAME_-125544205_CLASS_ID   = -125544205
         FRAME_-125544205_CENTER     = -125544206
-        TKFRAME_-125544205_RELATIVE = 'CPRS_AZ_COORD'
-        TKFRAME_-125544205_SPEC     = 'MATRIX'
-        TKFRAME_-125544205_MATRIX   = (  0.9996750783506642
-                                        -0.00021487977962499243
-                                        -0.02548904767295347
-                                         0.0004407258997284637
-                                         0.9999606945639048
-                                         0.008855229412911994
-                                         0.025486143005074312
-                                        -0.008863585840634874
-                                         0.999635880388839  )
+        CK_-125544205_SCLK          = -125544
+        CK_-125544205_SPK           = -125544206
 
         OBJECT_-125544205_FRAME     = 'CPRS_YOKE_COORD'
 
@@ -226,20 +209,11 @@ Frame definitions
 
         FRAME_CPRS_HYSICS_COORD     = -125544200
         FRAME_-125544200_NAME       = 'CPRS_HYSICS_COORD'
-        FRAME_-125544200_CLASS      = 4
+        FRAME_-125544200_CLASS      = 3
         FRAME_-125544200_CLASS_ID   = -125544200
         FRAME_-125544200_CENTER     = -125544204
-        TKFRAME_-125544200_RELATIVE = 'CPRS_EL_COORD'
-        TKFRAME_-125544200_SPEC     = 'MATRIX'
-        TKFRAME_-125544200_MATRIX   = (  0.9999920791911767
-                                         0.0007431816342588406
-                                        -0.003910114125088962
-                                        -0.0007384230140716236
-                                         0.9999989851088592
-                                         0.0012183058246558903
-                                         0.003911015585978143
-                                        -0.0012154088553500448
-                                         0.9999916133339591  )
+        CK_-125544200_SCLK          = -125544
+        CK_-125544200_SPK           = -125544204
 
         OBJECT_-125544200_FRAME     = 'CPRS_HYSICS_COORD'
 
