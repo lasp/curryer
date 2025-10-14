@@ -19,29 +19,52 @@ from curryer.kernels import create
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# CONFIG LOADING
-# ============================================================================
+# Configuration Loading Functions
 
 def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
-    """
-    Load Monte Carlo configuration from a JSON file.
+    """Load Monte Carlo configuration from a JSON file.
 
     Args:
         config_path: Path to the JSON configuration file (e.g., gcs_config.json)
 
     Returns:
         MonteCarloConfig object populated from the JSON file
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist
+        ValueError: If config file format is invalid
+        KeyError: If required config sections are missing
     """
     config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
     logger.info(f"Loading Monte Carlo configuration from: {config_path}")
 
-    with open(config_path, 'r') as f:
-        config_data = json.load(f)
+    try:
+        with open(config_path, 'r') as f:
+            config_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in config file {config_path}: {e}")
+
+    # Validate required sections exist
+    if 'monte_carlo' not in config_data:
+        raise KeyError("Missing required 'monte_carlo' section in config file")
+    if 'geolocation' not in config_data:
+        raise KeyError("Missing required 'geolocation' section in config file")
 
     # Extract monte_carlo section
     mc_config = config_data.get('monte_carlo', {})
     geo_config = config_data.get('geolocation', {})
+
+    # Validate monte_carlo section
+    if 'parameters' not in mc_config:
+        raise KeyError("Missing required 'parameters' in monte_carlo section")
+    if not isinstance(mc_config['parameters'], list):
+        raise ValueError("'parameters' must be a list")
+    if len(mc_config['parameters']) == 0:
+        raise ValueError("No parameters defined in configuration")
 
     # Parse parameters and group related ones together
     parameters = []
@@ -165,9 +188,7 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     return config
 
 
-# ============================================================================
-# GCS MODULE PLACEHOLDERS
-# ============================================================================
+# GCS Module Placeholder Functions
 
 def diagnose_telemetry_data(tlm_dataset: pd.DataFrame, dataset_name: str = "telemetry"):
     """
@@ -396,6 +417,14 @@ def placeholder_gcp_pairing(clarreo_data_files):
     """
     PLACEHOLDER for GCP pairing module.
 
+    TODO: Replace with real GCP pairing implementation
+
+    Expected inputs:
+    - clarreo_data_files (list): List of CLARREO L1A image file paths
+
+    Expected outputs:
+    - List of tuples: [(clarreo_file, gcp_reference_file), ...]
+
     Real implementation will:
     - Take CLARREO L1 image files
     - Find spatially/temporally overlapping Landsat GCP scenes
@@ -412,6 +441,19 @@ def placeholder_gcp_pairing(clarreo_data_files):
 def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info):
     """
     PLACEHOLDER for image matching module.
+
+    TODO: Replace with real image matching implementation
+
+    Expected inputs:
+    - geolocated_data (xarray.Dataset): CLARREO geolocated pixels with lat/lon coordinates
+    - gcp_reference_file (str): Path to Landsat GCP reference image
+    - params_info (list): Current parameter values for error correlation
+
+    Expected outputs:
+    - xarray.Dataset with error measurements matching error_stats module format:
+      - lat_error_deg, lon_error_deg: Spatial errors in degrees
+      - riss_ctrs, bhat_hs, t_hs2ctrs: Coordinate transformation data
+      - cp_lat_deg, cp_lon_deg, cp_alt: Control point coordinates
 
     Real implementation will:
     - Compare CLARREO geolocated pixels with Landsat GCP references
@@ -544,9 +586,7 @@ def call_error_stats_module(image_matching_output):
         })
 
 
-# ============================================================================
-# ORIGINAL FUNCTIONS
-# ============================================================================
+# Original Functions
 
 class ParameterType(Enum):
     CONSTANT_KERNEL = auto()  # Set a specific value.

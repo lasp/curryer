@@ -6,10 +6,21 @@ This script demonstrates the complete Monte Carlo Ground Control System (GCS) wo
 for CLARREO Pathfinder geolocation parameter optimization. It follows the test_scenario_5a
 structure but is organized for easy understanding and modification.
 
+GETTING STARTED:
+1. Ensure data directories exist: tests/data/clarreo/gcs/ and data/generic/
+2. Adjust parameters in create_monte_carlo_config() if needed
+3. Run: python run_monte_carlo.py
+4. Review results in curryer/correction/monte_carlo_results/
+
+USER CONFIGURATION POINTS:
+- edit_monte_carlo_config(): Modify parameters, bounds, sigmas, iterations
+- setup_directories(): Change data/output directory paths
+- prepare_gcp_data_sets(): Add/modify data sets for processing
+
 Usage:
     python run_monte_carlo.py
 
-Author: CLARREO Team
+Author: Matthew Maclay
 Date: October 7, 2025
 """
 
@@ -30,9 +41,7 @@ from curryer import spicierpy as sp
 from curryer.correction import monte_carlo as mc
 from curryer.kernels import create
 
-# =============================================================================
-# CONFIGURATION AND SETUP
-# =============================================================================
+# Configuration and Setup Functions
 
 def setup_logging():
     """Configure logging for detailed output."""
@@ -42,7 +51,17 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 def setup_directories():
-    """Setup working directories and validate paths."""
+    """Setup working directories and validate paths.
+
+    USER CONFIGURATION: Modify these paths to point to your data locations:
+    - generic_dir: SPICE generic kernels (LSK, PCK, etc.)
+    - data_dir: GCS test data (telemetry, science, kernel configs)
+    - output_dir: Where results will be saved
+
+    Raises:
+        FileNotFoundError: If required data directories don't exist
+        PermissionError: If unable to create output directory
+    """
     logger = logging.getLogger(__name__)
 
     # Define directory paths
@@ -50,15 +69,27 @@ def setup_directories():
     generic_dir = root_dir / 'data' / 'generic'
     data_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
 
-    # Validate directories exist
+    # Validate directories exist with clear error messages
     if not generic_dir.is_dir():
-        raise FileNotFoundError(f"Generic data directory not found: {generic_dir}")
+        raise FileNotFoundError(
+            f"Generic data directory not found: {generic_dir}\n"
+            f"Please ensure SPICE generic kernels are available at this location."
+        )
     if not data_dir.is_dir():
-        raise FileNotFoundError(f"GCS data directory not found: {data_dir}")
+        raise FileNotFoundError(
+            f"GCS data directory not found: {data_dir}\n"
+            f"Please ensure test data files are available at this location."
+        )
 
-    # Create output directory in repo instead of temporary directory
+    # Create output directory with error handling
     output_dir = root_dir / 'curryer' / 'correction' / 'monte_carlo_results'
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise PermissionError(
+            f"Unable to create output directory: {output_dir}\n"
+            f"Please check write permissions for this location."
+        )
 
     logger.info(f"Generic data directory: {generic_dir}")
     logger.info(f"GCS data directory: {data_dir}")
@@ -67,12 +98,19 @@ def setup_directories():
     return generic_dir, data_dir, output_dir
 
 # =============================================================================
-# MONTE CARLO CONFIGURATION
+# Monte Carlo Configuration
 # =============================================================================
 
 def create_monte_carlo_config(data_dir, generic_dir, config_output_path=None):
     """
     Create the Monte Carlo configuration with all 12 parameters.
+
+    USER CONFIGURATION: This is the main place to adjust Monte Carlo parameters.
+    You can modify:
+    - current_value: Starting parameter values
+    - bounds: Limits for parameter variation
+    - sigma: Standard deviation for random sampling
+    - n_iterations: Number of parameter sets to test
 
     This configuration defines:
     - 9 CONSTANT_KERNEL parameters (3 frames × 3 attitudes each)
@@ -259,7 +297,7 @@ def create_monte_carlo_config(data_dir, generic_dir, config_output_path=None):
     return config
 
 # =============================================================================
-# STATIC KERNEL CREATION
+# Static Kernel Creation
 # =============================================================================
 
 def create_static_kernels(data_dir, generic_dir, work_dir):
@@ -307,13 +345,16 @@ def create_static_kernels(data_dir, generic_dir, work_dir):
     return generated_kernels
 
 # =============================================================================
-# DATA PREPARATION
+# Data Preparation
 # =============================================================================
 
 def prepare_gcp_data_sets(data_dir):
     """
     Prepare the list of telemetry, science, and GCP data sets for processing.
     Each tuple represents one image-to-reference pair for geolocation testing.
+
+    USER CONFIGURATION: Add more data sets here as they become available.
+    Format: (telemetry_file, science_file, gcp_reference_file)
     """
     logger = logging.getLogger(__name__)
     logger.info("=== PREPARING GCP DATA SETS ===")
@@ -336,7 +377,7 @@ def prepare_gcp_data_sets(data_dir):
     return tlm_sci_gcp_sets
 
 # =============================================================================
-# MONTE CARLO EXECUTION
+# Monte Carlo Execution
 # =============================================================================
 
 def run_monte_carlo_analysis(config, work_dir, tlm_sci_gcp_sets):
@@ -366,7 +407,7 @@ def run_monte_carlo_analysis(config, work_dir, tlm_sci_gcp_sets):
     return results, netcdf_data
 
 # =============================================================================
-# RESULTS ANALYSIS
+# Results Analysis
 # =============================================================================
 
 def analyze_results(netcdf_data):
@@ -436,12 +477,22 @@ def save_results(netcdf_data, work_dir, config):
     return results_file
 
 # =============================================================================
-# MAIN EXECUTION
+# Main Execution
 # =============================================================================
 
 def main():
     """
     Main execution function that orchestrates the complete Monte Carlo GCS workflow.
+
+    This function runs the complete workflow:
+    1. Setup logging and directories
+    2. Create Monte Carlo configuration
+    3. Generate static kernels
+    4. Prepare data sets
+    5. Execute Monte Carlo analysis
+    6. Analyze and save results
+
+    Results are saved to: curryer/correction/monte_carlo_results/
     """
     print("="*80)
     print("CLARREO MONTE CARLO GCS TEST RUNNER")
