@@ -541,31 +541,58 @@ def _generate_realistic_boresights(n_measurements):
     return boresights
 
 
-def call_error_stats_module(image_matching_output):
+def call_error_stats_module(image_matching_results):
     """
     Call the REAL error_stats module with image matching output.
 
-    This demonstrates the actual integration with the completed error_stats module.
+    Args:
+        image_matching_results: Either a single image matching result (xarray.Dataset)
+                              or a list of image matching results from multiple GCP pairs
+
+    Returns:
+        Aggregate error statistics dataset
     """
+    # Handle both single result (backward compatibility) and list of results
+    if not isinstance(image_matching_results, list):
+        image_matching_results = [image_matching_results]
+
     try:
         from curryer.correction.error_stats.geolocation_error_stats import ErrorStatsProcessor
 
-        logger.info("Error Statistics: Processing geolocation errors (REAL MODULE)")
+        logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs (REAL MODULE)")
         processor = ErrorStatsProcessor()
-        error_results = processor.process_geolocation_errors(image_matching_output)
+
+        if len(image_matching_results) == 1:
+            # Single GCP pair case
+            error_results = processor.process_geolocation_errors(image_matching_results[0])
+        else:
+            # Multiple GCP pairs - aggregate the data first
+            aggregated_data = _aggregate_image_matching_results(image_matching_results)
+            error_results = processor.process_geolocation_errors(aggregated_data)
 
         return error_results
     except ImportError as e:
         logger.warning(f"Error stats module not available: {e}")
-        logger.info("Error Statistics: Using placeholder calculations")
+        logger.info(f"Error Statistics: Using placeholder calculations for {len(image_matching_results)} GCP pairs")
 
-        # Fallback: compute basic statistics
-        lat_errors = image_matching_output['lat_error_deg'].values
-        lon_errors = image_matching_output['lon_error_deg'].values
+        # Fallback: compute basic statistics across all GCP pairs
+        all_lat_errors = []
+        all_lon_errors = []
+        total_measurements = 0
+
+        for result in image_matching_results:
+            lat_errors = result['lat_error_deg'].values
+            lon_errors = result['lon_error_deg'].values
+            all_lat_errors.extend(lat_errors)
+            all_lon_errors.extend(lon_errors)
+            total_measurements += len(lat_errors)
+
+        all_lat_errors = np.array(all_lat_errors)
+        all_lon_errors = np.array(all_lon_errors)
 
         # Convert to meters (approximate)
-        lat_error_m = lat_errors * 111000
-        lon_error_m = lon_errors * 111000
+        lat_error_m = all_lat_errors * 111000
+        lon_error_m = all_lon_errors * 111000
         total_error_m = np.sqrt(lat_error_m**2 + lon_error_m**2)
 
         mean_error = float(np.mean(total_error_m))
@@ -581,9 +608,81 @@ def call_error_stats_module(image_matching_output):
         }, attrs={
             'mean_error_m': mean_error,
             'rms_error_m': rms_error,
-            'total_measurements': len(lat_errors),
+            'total_measurements': total_measurements,
+            'gcp_pairs_processed': len(image_matching_results),
             'performance_threshold_m': 300.0,  # CLARREO requirement
         })
+
+
+def _aggregate_image_matching_results(image_matching_results):
+    """
+    Aggregate multiple image matching results into a single dataset for error stats processing.
+
+    Args:
+        image_matching_results: List of xarray.Dataset objects from image matching
+
+    Returns:
+        Single aggregated xarray.Dataset with all measurements combined
+    """
+    logger.info(f"Aggregating {len(image_matching_results)} image matching results")
+
+    # Combine all measurements into single arrays
+    all_lat_errors = []
+    all_lon_errors = []
+    all_riss_ctrs = []
+    all_bhat_hs = []
+    all_t_hs2ctrs = []
+    all_cp_lats = []
+    all_cp_lons = []
+    all_cp_alts = []
+
+    for i, result in enumerate(image_matching_results):
+        # Add GCP pair identifier to track source
+        n_measurements = len(result['lat_error_deg'])
+
+        all_lat_errors.extend(result['lat_error_deg'].values)
+        all_lon_errors.extend(result['lon_error_deg'].values)
+
+        # Handle coordinate transformation data
+        if 'riss_ctrs' in result:
+            all_riss_ctrs.extend(result['riss_ctrs'].values)
+        if 'bhat_hs' in result:
+            all_bhat_hs.extend(result['bhat_hs'].values)
+        if 't_hs2ctrs' in result:
+            all_t_hs2ctrs.extend(result['t_hs2ctrs'].values)
+        if 'cp_lat_deg' in result:
+            all_cp_lats.extend(result['cp_lat_deg'].values)
+        if 'cp_lon_deg' in result:
+            all_cp_lons.extend(result['cp_lon_deg'].values)
+        if 'cp_alt' in result:
+            all_cp_alts.extend(result['cp_alt'].values)
+
+    # Create aggregated dataset
+    aggregated = xr.Dataset({
+        'lat_error_deg': (['measurement'], np.array(all_lat_errors)),
+        'lon_error_deg': (['measurement'], np.array(all_lon_errors)),
+    }, coords={
+        'measurement': np.arange(len(all_lat_errors))
+    })
+
+    # Add optional coordinate transformation data if available
+    if all_riss_ctrs:
+        aggregated['riss_ctrs'] = (['measurement', 'coord'], np.array(all_riss_ctrs))
+    if all_bhat_hs:
+        aggregated['bhat_hs'] = (['measurement', 'coord'], np.array(all_bhat_hs))
+    if all_t_hs2ctrs:
+        aggregated['t_hs2ctrs'] = (['measurement', 'matrix_i', 'matrix_j'], np.array(all_t_hs2ctrs))
+    if all_cp_lats:
+        aggregated['cp_lat_deg'] = (['measurement'], np.array(all_cp_lats))
+    if all_cp_lons:
+        aggregated['cp_lon_deg'] = (['measurement'], np.array(all_cp_lons))
+    if all_cp_alts:
+        aggregated['cp_alt'] = (['measurement'], np.array(all_cp_alts))
+
+    aggregated.attrs['source_gcp_pairs'] = len(image_matching_results)
+    aggregated.attrs['total_measurements'] = len(all_lat_errors)
+
+    return aggregated
 
 
 # Original Functions
@@ -1094,8 +1193,9 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         param_values = _extract_parameter_values(params)
         _store_parameter_values(netcdf_data, param_idx, param_values)
 
-        # Store error results for all GCP pairs in this parameter set
-        pair_errors = []
+        # Collect image matching results from all GCP pairs for this parameter set
+        image_matching_results = []
+        gcp_pair_geolocation_data = []
 
         # Process each pairing of image data to a GCP for this parameter set
         for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
@@ -1172,40 +1272,77 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
                 )
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
 
-                # === ERROR STATISTICS MODULE (REAL) ===
-                logger.info("    === ERROR STATISTICS MODULE ===")
-                stats_dataset = call_error_stats_module(image_matching_output)
+                # Store image matching result for aggregate processing
+                image_matching_output.attrs['gcp_pair_index'] = pair_idx
+                image_matching_output.attrs['gcp_pair_id'] = f"{sci_key}_pair_{pair_idx}"
+                image_matching_results.append(image_matching_output)
 
-                # Extract error metrics
-                error_metrics = _extract_error_metrics(stats_dataset)
-                pair_errors.append(error_metrics['rms_error_m'])
-
-                # Store results in NetCDF structure
-                _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics)
-
-                logger.info(f"    GCP pair complete: RMS = {error_metrics['rms_error_m']:.2f}m")
-
-                # Store comprehensive results for backward compatibility
-                iteration_result = {
-                    'iteration': len(results),
+                # Store geolocation data for backward compatibility
+                gcp_pair_geolocation_data.append({
                     'pair_index': pair_idx,
-                    'param_index': param_idx,
-                    'parameters': param_values,
                     'geolocation': geo_dataset,
                     'gcp_pairs': gcp_pairs,
-                    'image_matching': image_matching_output,
-                    'error_stats': stats_dataset,
-                    'rms_error_m': error_metrics['rms_error_m']
-                }
-                results.append(iteration_result)
+                })
+
+                logger.info(f"    GCP pair {pair_idx + 1} image matching complete")
+
+        # === ERROR STATISTICS MODULE (AGGREGATE PROCESSING) ===
+        logger.info(f"  === ERROR STATISTICS MODULE (AGGREGATE) ===")
+        logger.info(f"  Processing aggregate statistics from {len(image_matching_results)} GCP pairs")
+
+        # Call error stats module on aggregate of all image matching results
+        aggregate_stats = call_error_stats_module(image_matching_results)
+
+        # Extract aggregate error metrics
+        aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
+
+        logger.info(f"  Aggregate error statistics: RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
+                   f"measurements = {aggregate_error_metrics['n_measurements']}")
+
+        # Process individual GCP pair results for detailed NetCDF storage
+        pair_errors = []
+        for pair_idx, image_matching_result in enumerate(image_matching_results):
+            # Get individual pair error metrics from the single result
+            individual_stats = call_error_stats_module(image_matching_result)
+            individual_metrics = _extract_error_metrics(individual_stats)
+
+            pair_errors.append(individual_metrics['rms_error_m'])
+
+            # Store individual results in NetCDF structure
+            _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
+
+            logger.info(f"    GCP pair {pair_idx + 1}: RMS = {individual_metrics['rms_error_m']:.2f}m")
+
+        # Store comprehensive results for backward compatibility
+        for pair_idx, (image_matching_result, geo_data) in enumerate(zip(image_matching_results, gcp_pair_geolocation_data)):
+            individual_stats = call_error_stats_module(image_matching_result)
+            individual_metrics = _extract_error_metrics(individual_stats)
+
+            iteration_result = {
+                'iteration': len(results),
+                'pair_index': pair_idx,
+                'param_index': param_idx,
+                'parameters': param_values,
+                'geolocation': geo_data['geolocation'],
+                'gcp_pairs': geo_data['gcp_pairs'],
+                'image_matching': image_matching_result,
+                'error_stats': individual_stats,
+                'aggregate_error_stats': aggregate_stats,  # NEW: Include aggregate statistics
+                'rms_error_m': individual_metrics['rms_error_m'],
+                'aggregate_rms_error_m': aggregate_error_metrics['rms_error_m']  # NEW: Include aggregate RMS
+            }
+            results.append(iteration_result)
 
         # Compute overall performance metrics for this parameter set
         _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors)
 
-        # Log parameter set summary
+        # Log parameter set summary with both individual and aggregate metrics
         percent_under_250 = netcdf_data['percent_under_250m'][param_idx]
         mean_rms = netcdf_data['mean_rms_all_pairs'][param_idx]
-        logger.info(f"Parameter set {param_idx + 1} complete: {percent_under_250:.1f}% under 250m, mean RMS = {mean_rms:.2f}m")
+        logger.info(f"Parameter set {param_idx + 1} complete:")
+        logger.info(f"  Individual pairs - {percent_under_250:.1f}% under 250m, mean RMS = {mean_rms:.2f}m")
+        logger.info(f"  Aggregate - RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
+                   f"total measurements = {aggregate_error_metrics['n_measurements']}")
 
     # Save NetCDF results
     output_file = work_dir / "monte_carlo_results.nc"
