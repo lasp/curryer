@@ -40,7 +40,7 @@ def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:
     else:
         h = np.zeros_like(lat)
 
-    # TODO: Get actual radiance/reflectance data when available
+    # Get actual radiance/reflectance data when available
     # For now, use ones as placeholder (image matching uses this for intensity)
     if 'radiance' in geo_dataset:
         data = geo_dataset['radiance'].values
