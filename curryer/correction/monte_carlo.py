@@ -25,6 +25,7 @@ from curryer.correction.monte_carlo_image_match_adapter import (
     load_optical_psf_from_mat,
     load_gcp_from_mat,
     get_gcp_center_location,
+    extract_spacecraft_position_midframe,  # NEW - for Fix #1
 )
 
 
@@ -546,6 +547,8 @@ def real_image_matching(
     telemetry: pd.DataFrame,
     calibration_dir: Path,
     params_info: list,
+    los_vectors_cached: Optional[np.ndarray] = None,
+    optical_psfs_cached: Optional[List] = None,
 ) -> xr.Dataset:
     """
     REAL image matching using integrated_image_match() module.
@@ -559,6 +562,8 @@ def real_image_matching(
         telemetry: Telemetry DataFrame with spacecraft state
         calibration_dir: Directory containing calibration files (LOS vectors, PSF)
         params_info: Current parameter values for error tracking
+        los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
+        optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
 
     Returns:
         xarray.Dataset with error measurements in format expected by error_stats:
@@ -584,26 +589,29 @@ def real_image_matching(
         gcp_center_lat, gcp_center_lon = get_gcp_center_location(gcp)
         logger.info(f"    GCP shape: {gcp.data.shape}, center: ({gcp_center_lat:.4f}, {gcp_center_lon:.4f})")
 
-        # 3. Load calibration data
+        # 3. Use cached calibration data if available, otherwise load
         logger.info("  Loading calibration data...")
 
-        # Load LOS vectors
-        los_file = calibration_dir / "b_HS.mat"
-        los_vectors = load_los_vectors_from_mat(los_file)
-        logger.info(f"    LOS vectors: {los_vectors.shape}")
+        if los_vectors_cached is not None and optical_psfs_cached is not None:
+            # Use cached data (fast path)
+            los_vectors = los_vectors_cached
+            optical_psfs = optical_psfs_cached
+            logger.info("    Using cached calibration data")
+        else:
+            # Load from files (slow path, for backward compatibility)
+            los_file = calibration_dir / "b_HS.mat"
+            los_vectors = load_los_vectors_from_mat(los_file)
+            logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-        # Load optical PSF
-        psf_file = calibration_dir / "optical_PSF_675nm_upsampled.mat"
-        optical_psfs = load_optical_psf_from_mat(psf_file)
-        logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
+            psf_file = calibration_dir / "optical_PSF_675nm_upsampled.mat"
+            optical_psfs = load_optical_psf_from_mat(psf_file)
+            logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
-        # Extract spacecraft position (need ancillary data - for now use placeholder)
-        # TODO: Extract actual spacecraft position from telemetry or geolocation data
-        # For now, use ISS altitude ~400km
-        r_iss_midframe = np.array([6378e3 + 400e3, 0.0, 0.0])  # Placeholder
-        logger.warning("    Using placeholder spacecraft position - TODO: extract from telemetry")
+        # 4. Extract spacecraft position from telemetry
+        r_iss_midframe = extract_spacecraft_position_midframe(telemetry)
+        logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
-        # 4. Perform real image matching
+        # 5. Perform real image matching
         logger.info("  Running integrated_image_match()...")
         geolocation_config = ImageMatchGeolocationConfig()
         search_config = SearchConfig()
@@ -618,7 +626,7 @@ def real_image_matching(
             search_config=search_config,
         )
 
-        # 5. Convert IntegratedImageMatchResult to xarray.Dataset format
+        # 6. Convert IntegratedImageMatchResult to xarray.Dataset format
         logger.info("  Converting results to error_stats format...")
 
         # Create single measurement result (image matching produces one correlation per GCP)
@@ -660,8 +668,10 @@ def real_image_matching(
             'xyz_to': ['x', 'y', 'z']
         })
 
-        # Add detailed metadata
+        # Add detailed metadata (Fix #3 Part B: Add km errors to attrs)
         output.attrs.update({
+            'lat_error_km': result.lat_error_km,
+            'lon_error_km': result.lon_error_km,
             'correlation_ccv': result.ccv_final,
             'final_grid_step_m': result.final_grid_step_m,
             'final_index_row': result.final_index_row,
@@ -701,7 +711,7 @@ def call_error_stats_module(image_matching_results):
         image_matching_results = [image_matching_results]
 
     try:
-        from curryer.correction.error_stats.geolocation_error_stats import ErrorStatsProcessor
+        from curryer.correction.geolocation_error_stats import ErrorStatsProcessor
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs (REAL MODULE)")
         processor = ErrorStatsProcessor()
@@ -782,12 +792,19 @@ def _aggregate_image_matching_results(image_matching_results):
         all_lon_errors.extend(result['lon_error_deg'].values)
 
         # Handle coordinate transformation data
+        # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
         if 'riss_ctrs' in result:
-            all_riss_ctrs.extend(result['riss_ctrs'].values)
+            # Shape: (1, 3) -> extract as (3,) for each measurement
+            for j in range(n_measurements):
+                all_riss_ctrs.append(result['riss_ctrs'].values[j])
         if 'bhat_hs' in result:
-            all_bhat_hs.extend(result['bhat_hs'].values)
+            # Shape: (1, 3) -> extract as (3,) for each measurement
+            for j in range(n_measurements):
+                all_bhat_hs.append(result['bhat_hs'].values[j])
         if 't_hs2ctrs' in result:
-            all_t_hs2ctrs.extend(result['t_hs2ctrs'].values)
+            # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
+            for j in range(n_measurements):
+                all_t_hs2ctrs.append(result['t_hs2ctrs'].values[:, :, j])
         if 'cp_lat_deg' in result:
             all_cp_lats.extend(result['cp_lat_deg'].values)
         if 'cp_lon_deg' in result:
@@ -795,21 +812,36 @@ def _aggregate_image_matching_results(image_matching_results):
         if 'cp_alt' in result:
             all_cp_alts.extend(result['cp_alt'].values)
 
-    # Create aggregated dataset
+    n_total = len(all_lat_errors)
+
+    # Create aggregated dataset with correct dimension names for error_stats
     aggregated = xr.Dataset({
         'lat_error_deg': (['measurement'], np.array(all_lat_errors)),
         'lon_error_deg': (['measurement'], np.array(all_lon_errors)),
     }, coords={
-        'measurement': np.arange(len(all_lat_errors))
+        'measurement': np.arange(n_total)
     })
 
     # Add optional coordinate transformation data if available
+    # Use dimension names that match error_stats expectations
     if all_riss_ctrs:
-        aggregated['riss_ctrs'] = (['measurement', 'coord'], np.array(all_riss_ctrs))
+        # Stack into (n_measurements, 3)
+        aggregated['riss_ctrs'] = (['measurement', 'xyz'], np.array(all_riss_ctrs))
+        aggregated = aggregated.assign_coords({'xyz': ['x', 'y', 'z']})
+
     if all_bhat_hs:
-        aggregated['bhat_hs'] = (['measurement', 'coord'], np.array(all_bhat_hs))
+        # Stack into (n_measurements, 3)
+        aggregated['bhat_hs'] = (['measurement', 'xyz'], np.array(all_bhat_hs))
+
     if all_t_hs2ctrs:
-        aggregated['t_hs2ctrs'] = (['measurement', 'matrix_i', 'matrix_j'], np.array(all_t_hs2ctrs))
+        # Stack into (3, 3, n_measurements) to match error_stats format
+        t_stacked = np.stack(all_t_hs2ctrs, axis=2)
+        aggregated['t_hs2ctrs'] = (['xyz_from', 'xyz_to', 'measurement'], t_stacked)
+        aggregated = aggregated.assign_coords({
+            'xyz_from': ['x', 'y', 'z'],
+            'xyz_to': ['x', 'y', 'z']
+        })
+
     if all_cp_lats:
         aggregated['cp_lat_deg'] = (['measurement'], np.array(all_cp_lats))
     if all_cp_lons:
@@ -818,7 +850,10 @@ def _aggregate_image_matching_results(image_matching_results):
         aggregated['cp_alt'] = (['measurement'], np.array(all_cp_alts))
 
     aggregated.attrs['source_gcp_pairs'] = len(image_matching_results)
-    aggregated.attrs['total_measurements'] = len(all_lat_errors)
+    aggregated.attrs['total_measurements'] = n_total
+
+    logger.info(f"  Aggregated dataset: {n_total} measurements from {len(image_matching_results)} GCP pairs")
+    logger.info(f"  Dimensions: {dict(aggregated.sizes)}")
 
     return aggregated
 
@@ -857,6 +892,381 @@ class MonteCarloConfig:
     use_real_image_matching: bool = False  # Enable real image matching (requires calibration files)
     # match: ImageMatchConfig
     # stats: ErrorStatsConfig
+
+
+@dataclass
+class TestModeConfig:
+    """
+    Configuration for Monte Carlo test mode (used by test scripts).
+
+    Test mode allows running the Monte Carlo pipeline with validated test data
+    to verify integration without requiring production data.
+    """
+    test_data_dir: Path  # tests/data/clarreo/image_match/
+    test_cases: typing.Optional[typing.List[str]] = None  # Specific cases: ['1', '2'] or None for all
+    randomize_errors: bool = True  # Add variations to simulate parameter effects
+    error_variation_percent: float = 3.0  # Percentage variation to apply (e.g., 3.0 = ±3%)
+    cache_image_match_results: bool = True  # Cache results, apply variations instead of re-running
+
+
+def discover_test_image_match_cases(test_data_dir: Path, test_cases: typing.Optional[typing.List[str]] = None) -> typing.List[dict]:
+    """
+    Discover available image matching test cases.
+
+    This function scans the test data directory for validated image matching
+    test cases and returns metadata about available test files.
+
+    Args:
+        test_data_dir: Root directory for test data (tests/data/clarreo/image_match/)
+        test_cases: Specific test cases to use (e.g., ['1', '2']) or None for all
+
+    Returns:
+        List of test case dictionaries with file paths and metadata
+
+    Example:
+        >>> cases = discover_test_image_match_cases(Path('tests/data/clarreo/image_match'))
+        >>> print(f"Found {len(cases)} test cases")
+        Found 12 test cases
+    """
+    logger.info(f"Discovering image matching test cases in: {test_data_dir}")
+
+    # Shared calibration files (same for all test cases)
+    los_file = test_data_dir / "b_HS.mat"
+    psf_file_unbinned = test_data_dir / "optical_PSF_675nm_upsampled.mat"
+    psf_file_binned = test_data_dir / "optical_PSF_675nm_3_pix_binned_upsampled.mat"
+
+    if not los_file.exists():
+        raise FileNotFoundError(f"LOS vectors file not found: {los_file}")
+    if not psf_file_unbinned.exists():
+        raise FileNotFoundError(f"Optical PSF file not found: {psf_file_unbinned}")
+
+    # Test case metadata (from test_image_match.py)
+    test_case_metadata = {
+        '1': {
+            'name': 'Dili',
+            'gcp_file': 'GCP12055Dili_resampled.mat',
+            'ancil_file': 'R_ISS_midframe_TestCase1.mat',
+            'expected_error_km': (3.0, -3.0),  # (lat, lon)
+            'cases': [
+                {'subimage': 'TestCase1a_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase1b_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase1c_subimage_binned.mat', 'binned': True},
+                {'subimage': 'TestCase1d_subimage_binned.mat', 'binned': True},
+            ]
+        },
+        '2': {
+            'name': 'Maracaibo',
+            'gcp_file': 'GCP10121Maracaibo_resampled.mat',
+            'ancil_file': 'R_ISS_midframe_TestCase2.mat',
+            'expected_error_km': (-3.0, 2.0),
+            'cases': [
+                {'subimage': 'TestCase2a_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase2b_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase2c_subimage_binned.mat', 'binned': True},
+            ]
+        },
+        '3': {
+            'name': 'Algeria3',
+            'gcp_file': 'GCP10181Algeria3_resampled.mat',
+            'ancil_file': 'R_ISS_midframe_TestCase3.mat',
+            'expected_error_km': (2.0, 3.0),
+            'cases': [
+                {'subimage': 'TestCase3a_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase3b_subimage_binned.mat', 'binned': True},
+            ]
+        },
+        '4': {
+            'name': 'Dunhuang',
+            'gcp_file': 'GCP10142Dunhuang_resampled.mat',
+            'ancil_file': 'R_ISS_midframe_TestCase4.mat',
+            'expected_error_km': (-2.0, -3.0),
+            'cases': [
+                {'subimage': 'TestCase4a_subimage.mat', 'binned': False},
+                {'subimage': 'TestCase4b_subimage_binned.mat', 'binned': True},
+            ]
+        },
+        '5': {
+            'name': 'Algeria5',
+            'gcp_file': 'GCP10071Algeria5_resampled.mat',
+            'ancil_file': 'R_ISS_midframe_TestCase5.mat',
+            'expected_error_km': (1.0, -1.0),
+            'cases': [
+                {'subimage': 'TestCase5a_subimage.mat', 'binned': False},
+            ]
+        },
+    }
+
+    # Filter to requested test cases
+    if test_cases is None:
+        test_cases = sorted(test_case_metadata.keys())
+
+    discovered_cases = []
+
+    for case_id in test_cases:
+        if case_id not in test_case_metadata:
+            logger.warning(f"Test case '{case_id}' not found in metadata, skipping")
+            continue
+
+        metadata = test_case_metadata[case_id]
+        case_dir = test_data_dir / case_id
+
+        if not case_dir.is_dir():
+            logger.warning(f"Test case directory not found: {case_dir}, skipping")
+            continue
+
+        # Add each subcase variant (a, b, c, d)
+        for subcase in metadata['cases']:
+            subimage_file = case_dir / subcase['subimage']
+            gcp_file = case_dir / metadata['gcp_file']
+            ancil_file = case_dir / metadata['ancil_file']
+            psf_file = psf_file_binned if subcase['binned'] else psf_file_unbinned
+
+            # Validate all files exist
+            if not subimage_file.exists():
+                logger.warning(f"Subimage file not found: {subimage_file}, skipping")
+                continue
+            if not gcp_file.exists():
+                logger.warning(f"GCP file not found: {gcp_file}, skipping")
+                continue
+            if not ancil_file.exists():
+                logger.warning(f"Ancillary file not found: {ancil_file}, skipping")
+                continue
+
+            discovered_cases.append({
+                'case_id': case_id,
+                'case_name': metadata['name'],
+                'subcase_name': subcase['subimage'],
+                'subimage_file': subimage_file,
+                'gcp_file': gcp_file,
+                'ancil_file': ancil_file,
+                'los_file': los_file,
+                'psf_file': psf_file,
+                'expected_lat_error_km': metadata['expected_error_km'][0],
+                'expected_lon_error_km': metadata['expected_error_km'][1],
+                'binned': subcase['binned'],
+            })
+
+    logger.info(f"Discovered {len(discovered_cases)} test case variants from {len(test_cases)} test case groups")
+    for case in discovered_cases:
+        logger.info(f"  - {case['case_id']}/{case['subcase_name']}: {case['case_name']}, "
+                   f"expected error=({case['expected_lat_error_km']:.1f}, {case['expected_lon_error_km']:.1f}) km")
+
+    return discovered_cases
+
+
+def run_test_mode_image_matching(
+    test_case: dict,
+    param_idx: int,
+    test_mode_config: TestModeConfig,
+    cached_result: typing.Optional[xr.Dataset] = None,
+) -> xr.Dataset:
+    """
+    Run image matching with test data for Monte Carlo testing.
+
+    This function loads validated test files and runs real image matching,
+    optionally applying variations to simulate parameter effects without
+    re-running the full image matching process.
+
+    Args:
+        test_case: Test case dictionary from discover_test_image_match_cases()
+        param_idx: Current parameter set index (for variation seed)
+        test_mode_config: Test mode configuration
+        cached_result: Previously computed result (for efficiency)
+
+    Returns:
+        xarray.Dataset with error measurements in standard format
+    """
+    from scipy.io import loadmat
+    from curryer.correction.monte_carlo_image_match_adapter import (
+        load_gcp_from_mat,
+        load_los_vectors_from_mat,
+        load_optical_psf_from_mat,
+    )
+    from curryer.correction.data_structures import ImageGrid
+
+    # If we have a cached result and should apply variations instead of re-running
+    if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
+        if test_mode_config.randomize_errors:
+            logger.info(f"Image Matching: Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
+            return _apply_error_variation(cached_result, param_idx, test_mode_config)
+        else:
+            logger.info(f"Image Matching: Using cached result without variation")
+            return cached_result.copy()
+
+    # Run real image matching
+    logger.info(f"Image Matching: TEST MODE - {test_case['case_name']} ({test_case['subcase_name']})")
+    start_time = time.time()
+
+    try:
+        # 1. Load subimage (pre-geolocated test data)
+        subimage_struct = loadmat(test_case['subimage_file'], squeeze_me=True, struct_as_record=False)["subimage"]
+        subimage = ImageGrid(
+            data=np.asarray(subimage_struct.data),
+            lat=np.asarray(subimage_struct.lat),
+            lon=np.asarray(subimage_struct.lon),
+            h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
+        )
+
+        # 2. Load GCP reference
+        gcp = load_gcp_from_mat(test_case['gcp_file'])
+        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+
+        # 3. Load calibration data
+        los_vectors = load_los_vectors_from_mat(test_case['los_file'])
+        optical_psfs = load_optical_psf_from_mat(test_case['psf_file'])
+
+        # 4. Load spacecraft position
+        ancil_data = loadmat(test_case['ancil_file'], squeeze_me=True)
+        r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
+
+        # 5. Run real image matching
+        from curryer.correction.image_match import integrated_image_match
+        from curryer.correction.data_structures import (
+            GeolocationConfig as ImageMatchGeolocationConfig,
+            SearchConfig,
+        )
+
+        result = integrated_image_match(
+            subimage=subimage,
+            gcp=gcp,
+            r_iss_midframe_m=r_iss_midframe,
+            los_vectors_hs=los_vectors,
+            optical_psfs=optical_psfs,
+            geolocation_config=ImageMatchGeolocationConfig(),
+            search_config=SearchConfig(),
+        )
+
+        # 6. Convert to expected output format
+        lat_error_deg = result.lat_error_km / 111.0
+        lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+        processing_time = time.time() - start_time
+
+        # Log validation against expected errors
+        expected_lat = test_case['expected_lat_error_km']
+        expected_lon = test_case['expected_lon_error_km']
+        lat_diff = abs(result.lat_error_km - expected_lat)
+        lon_diff = abs(result.lon_error_km - expected_lon)
+
+        logger.info(f"  Image matching complete in {processing_time:.2f}s:")
+        logger.info(f"    Lat error: {result.lat_error_km:.3f} km (expected: {expected_lat:.3f}, diff: {lat_diff:.3f})")
+        logger.info(f"    Lon error: {result.lon_error_km:.3f} km (expected: {expected_lon:.3f}, diff: {lon_diff:.3f})")
+        logger.info(f"    Correlation: {result.ccv_final:.4f}")
+        logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
+
+        # 7. Create output dataset (same format as real_image_matching)
+        # Use realistic transformation matrix and boresight (from error_stats test case 1)
+        # These are reasonable defaults that won't cause NaN in error_stats
+        t_matrix = np.array([
+            [-0.418977524967338, 0.748005379751721, 0.514728846515064],
+            [-0.421890284446342, 0.341604851993858, -0.839830169131854],
+            [-0.804031356019172, -0.569029065124742, 0.172451447025628]
+        ])
+        boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])  # Slight off-nadir
+
+        output = xr.Dataset({
+            'lat_error_deg': (['measurement'], [lat_error_deg]),
+            'lon_error_deg': (['measurement'], [lon_error_deg]),
+            'riss_ctrs': (['measurement', 'xyz'], [r_iss_midframe]),
+            'bhat_hs': (['measurement', 'xyz'], [boresight]),
+            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
+            'cp_lat_deg': (['measurement'], [gcp_center_lat]),
+            'cp_lon_deg': (['measurement'], [gcp_center_lon]),
+            'cp_alt': (['measurement'], [0.0]),
+        }, coords={
+            'measurement': [0],
+            'xyz': ['x', 'y', 'z'],
+            'xyz_from': ['x', 'y', 'z'],
+            'xyz_to': ['x', 'y', 'z']
+        })
+
+        # Add metadata
+        output.attrs.update({
+            'lat_error_km': result.lat_error_km,
+            'lon_error_km': result.lon_error_km,
+            'correlation_ccv': result.ccv_final,
+            'final_grid_step_m': result.final_grid_step_m,
+            'final_index_row': result.final_index_row,
+            'final_index_col': result.final_index_col,
+            'processing_time_s': processing_time,
+            'gcp_file': str(test_case['gcp_file'].name),
+            'gcp_center_lat': gcp_center_lat,
+            'gcp_center_lon': gcp_center_lon,
+            'test_mode': True,
+            'test_case_id': test_case['case_id'],
+            'test_case_name': test_case['case_name'],
+            'expected_lat_error_km': test_case['expected_lat_error_km'],
+            'expected_lon_error_km': test_case['expected_lon_error_km'],
+            'param_idx': param_idx,
+        })
+
+        return output
+
+    except Exception as e:
+        logger.error(f"  Test mode image matching failed: {e}")
+        raise
+
+
+def _apply_error_variation(base_result: xr.Dataset, param_idx: int, test_mode_config: TestModeConfig) -> xr.Dataset:
+    """
+    Apply random variation to image matching results to simulate parameter effects.
+
+    This is used in test mode to simulate how different parameter values would
+    affect geolocation errors, without actually re-running image matching.
+
+    Args:
+        base_result: Original image matching result
+        param_idx: Parameter set index (used as random seed)
+        test_mode_config: Test mode configuration with variation settings
+
+    Returns:
+        New Dataset with varied error values
+    """
+    # Create copy
+    output = base_result.copy(deep=True)
+
+    # Set reproducible random seed based on param_idx
+    np.random.seed(param_idx)
+
+    # Generate variation factors (centered at 1.0, with specified percentage variation)
+    variation_fraction = test_mode_config.error_variation_percent / 100.0
+    lat_factor = 1.0 + np.random.normal(0, variation_fraction)
+    lon_factor = 1.0 + np.random.normal(0, variation_fraction)
+    ccv_factor = 1.0 + np.random.normal(0, variation_fraction / 10.0)  # Smaller variation for correlation
+
+    # Apply variations to error values
+    original_lat_km = base_result.attrs['lat_error_km']
+    original_lon_km = base_result.attrs['lon_error_km']
+    original_ccv = base_result.attrs['correlation_ccv']
+
+    varied_lat_km = original_lat_km * lat_factor
+    varied_lon_km = original_lon_km * lon_factor
+    varied_ccv = np.clip(original_ccv * ccv_factor, 0.0, 1.0)  # Keep correlation in valid range
+
+    # Update dataset values
+    gcp_center_lat = base_result.attrs['gcp_center_lat']
+    lat_error_deg = varied_lat_km / 111.0
+    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_error_deg = varied_lon_km / (lon_radius_km * np.pi / 180.0)
+
+    output['lat_error_deg'].values[0] = lat_error_deg
+    output['lon_error_deg'].values[0] = lon_error_deg
+
+    # Update attributes
+    output.attrs['lat_error_km'] = varied_lat_km
+    output.attrs['lon_error_km'] = varied_lon_km
+    output.attrs['correlation_ccv'] = varied_ccv
+    output.attrs['param_idx'] = param_idx
+    output.attrs['variation_applied'] = True
+    output.attrs['variation_lat_factor'] = lat_factor
+    output.attrs['variation_lon_factor'] = lon_factor
+
+    logger.info(f"  Applied variation: lat {original_lat_km:.3f} → {varied_lat_km:.3f} km ({(lat_factor-1)*100:+.1f}%), "
+               f"lon {original_lon_km:.3f} → {varied_lon_km:.3f} km ({(lon_factor-1)*100:+.1f}%)")
+
+    return output
 
 
 def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
@@ -1310,6 +1720,12 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         'std_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
         'n_measurements': np.full((n_param_sets, n_gcp_pairs), 0, dtype=int),
 
+        # Fix #3 Part A: Per-GCP-pair image matching results
+        'im_lat_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
+        'im_lon_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
+        'im_ccv': np.full((n_param_sets, n_gcp_pairs), np.nan),
+        'im_grid_step_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
+
         # Overall performance metrics per parameter set
         'percent_under_250m': np.full(n_param_sets, np.nan),
         'mean_rms_all_pairs': np.full(n_param_sets, np.nan),
@@ -1332,6 +1748,22 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         # Extract and store parameter values for this set
         param_values = _extract_parameter_values(params)
         _store_parameter_values(netcdf_data, param_idx, param_values)
+
+        # Fix #2 Part A: Load calibration data ONCE per parameter set (before GCP pair loop)
+        los_vectors_cached = None
+        optical_psfs_cached = None
+
+        if config.use_real_image_matching and config.calibration_dir:
+            logger.info("Loading calibration data once for all GCP pairs...")
+
+            los_file = config.calibration_dir / "b_HS.mat"
+            los_vectors_cached = load_los_vectors_from_mat(los_file)
+
+            psf_file = config.calibration_dir / "optical_PSF_675nm_upsampled.mat"
+            optical_psfs_cached = load_optical_psf_from_mat(psf_file)
+
+            logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")
+            logger.info(f"  Cached optical PSF: {len(optical_psfs_cached)} entries")
 
         # Collect image matching results from all GCP pairs for this parameter set
         image_matching_results = []
@@ -1478,6 +1910,12 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
 
             # Store individual results in NetCDF structure
             _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
+
+            # Store per-GCP-pair image matching results
+            netcdf_data['im_lat_error_km'][param_idx, pair_idx] = image_matching_result.attrs.get('lat_error_km', np.nan)
+            netcdf_data['im_lon_error_km'][param_idx, pair_idx] = image_matching_result.attrs.get('lon_error_km', np.nan)
+            netcdf_data['im_ccv'][param_idx, pair_idx] = image_matching_result.attrs.get('correlation_ccv', np.nan)
+            netcdf_data['im_grid_step_m'][param_idx, pair_idx] = image_matching_result.attrs.get('final_grid_step_m', np.nan)
 
             logger.info(f"    GCP pair {pair_idx + 1}: RMS = {individual_metrics['rms_error_m']:.2f}m")
 
@@ -1651,6 +2089,12 @@ def _save_netcdf_results(netcdf_data, output_file, config):
         if var in netcdf_data:
             data_vars[var] = (['parameter_set_id', 'gcp_pair_id'], netcdf_data[var])
 
+    # Fix #3 Part A: Per-GCP-pair image matching results
+    image_matching_vars = ['im_lat_error_km', 'im_lon_error_km', 'im_ccv', 'im_grid_step_m']
+    for var in image_matching_vars:
+        if var in netcdf_data:
+            data_vars[var] = (['parameter_set_id', 'gcp_pair_id'], netcdf_data[var])
+
     # Overall metrics (1D: parameter_set_id)
     overall_vars = ['percent_under_250m', 'mean_rms_all_pairs', 'worst_pair_rms', 'best_pair_rms']
     for var in overall_vars:
@@ -1694,6 +2138,10 @@ def _save_netcdf_results(netcdf_data, output_file, config):
         'mean_rms_all_pairs': {'units': 'meters', 'long_name': 'Mean RMS error across all GCP pairs'},
         'worst_pair_rms': {'units': 'meters', 'long_name': 'Worst performing GCP pair RMS error'},
         'best_pair_rms': {'units': 'meters', 'long_name': 'Best performing GCP pair RMS error'},
+        'im_lat_error_km': {'units': 'kilometers', 'long_name': 'Image matching latitude error'},
+        'im_lon_error_km': {'units': 'kilometers', 'long_name': 'Image matching longitude error'},
+        'im_ccv': {'units': 'N/A', 'long_name': 'Image matching correlation coefficient'},
+        'im_grid_step_m': {'units': 'meters', 'long_name': 'Image matching final grid step size'},
     }
 
     for var, attrs in var_attrs.items():
