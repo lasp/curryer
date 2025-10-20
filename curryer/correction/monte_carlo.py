@@ -356,7 +356,7 @@ def diagnose_science_data(sci_dataset, dataset_name: str = "science"):
                     zero_count = (values == 0).sum()
                     msg = f"  {col}: Contains {zero_count} zero values!"
                     logger.warning(msg)
-                    print(f"⚠️  {msg}")
+                    print(f"️   {msg}")
 
     elif isinstance(sci_dataset, xr.Dataset):
         msg = f"Dataset type: xarray.Dataset"
