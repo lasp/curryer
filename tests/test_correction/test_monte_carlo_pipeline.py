@@ -26,15 +26,218 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import xarray as xr
+from scipy.io import loadmat
 
 from curryer import utils
 from curryer.correction import monte_carlo as mc
+from curryer.correction.data_structures import ImageGrid
+from curryer.correction.image_match import integrated_image_match
+from curryer.correction.data_structures import (
+    GeolocationConfig as ImageMatchGeolocationConfig,
+    SearchConfig,
+)
+from curryer.correction.monte_carlo_image_match_adapter import (
+    load_gcp_from_mat,
+    load_los_vectors_from_mat,
+    load_optical_psf_from_mat,
+)
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
+
+
+def apply_geolocation_error_to_subimage(
+    subimage: ImageGrid,
+    gcp: ImageGrid,
+    lat_error_km: float,
+    lon_error_km: float
+) -> ImageGrid:
+    """
+    Apply artificial geolocation error to a subimage for testing.
+
+    This function is used in tests to inject known errors into well-aligned
+    test data, allowing validation that the image matching algorithm can
+    correctly detect and measure those errors.
+
+    Args:
+        subimage: The subimage to apply error to
+        gcp: Ground control point grid (used to get reference latitude)
+        lat_error_km: Latitude error to apply in kilometers (north positive)
+        lon_error_km: Longitude error to apply in kilometers (east positive)
+
+    Returns:
+        New ImageGrid with shifted lat/lon coordinates
+    """
+    # Get reference latitude for accurate km-to-degree conversion
+    mid_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+
+    # Convert km to degrees using Earth radius and local curvature
+    earth_radius_km = 6378.137  # WGS84 semi-major axis
+    lat_offset_deg = lat_error_km / earth_radius_km * (180.0 / np.pi)
+    lon_radius_km = earth_radius_km * np.cos(np.deg2rad(mid_lat))
+    lon_offset_deg = lon_error_km / lon_radius_km * (180.0 / np.pi)
+
+    return ImageGrid(
+        data=subimage.data.copy(),
+        lat=subimage.lat + lat_offset_deg,
+        lon=subimage.lon + lon_offset_deg,
+        h=subimage.h.copy() if subimage.h is not None else None,
+    )
+
+
+def run_test_mode_image_matching_with_applied_errors(
+    test_case: dict,
+    param_idx: int,
+    test_mode_config: mc.TestModeConfig,
+    cached_result: Optional[xr.Dataset] = None,
+) -> xr.Dataset:
+    """
+    Test-specific wrapper that applies artificial errors before running image matching.
+
+    This function loads test data, applies the expected geolocation errors to create
+    a misaligned subimage, then runs the image matching algorithm to verify it can
+    correctly detect and measure those errors.
+
+    This is ONLY for testing - production Monte Carlo code should not inject errors.
+
+    Args:
+        test_case: Test case dictionary from discover_test_image_match_cases()
+        param_idx: Current parameter set index
+        test_mode_config: Test mode configuration
+        cached_result: Previously computed result (for variation testing)
+
+    Returns:
+        xarray.Dataset with error measurements
+    """
+    # If we have a cached result and should apply variations
+    if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
+        if test_mode_config.randomize_errors:
+            logger.info(f"Image Matching: Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
+            # Use the Monte Carlo module's variation function
+            return mc._apply_error_variation(cached_result, param_idx, test_mode_config)
+        else:
+            logger.info(f"Image Matching: Using cached result without variation")
+            return cached_result.copy()
+
+    # Run real image matching with applied errors
+    logger.info(f"Image Matching: TEST MODE (with applied errors) - {test_case['case_name']} ({test_case['subcase_name']})")
+
+    import time
+    start_time = time.time()
+
+    try:
+        # 1. Load subimage (pre-geolocated test data)
+        subimage_struct = loadmat(test_case['subimage_file'], squeeze_me=True, struct_as_record=False)["subimage"]
+        subimage = ImageGrid(
+            data=np.asarray(subimage_struct.data),
+            lat=np.asarray(subimage_struct.lat),
+            lon=np.asarray(subimage_struct.lon),
+            h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
+        )
+
+        # 2. Load GCP reference
+        gcp = load_gcp_from_mat(test_case['gcp_file'])
+        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+
+        # 3. **APPLY EXPECTED GEOLOCATION ERROR** (test-specific step)
+        # This creates a misaligned subimage that the algorithm should detect
+        expected_lat_error = test_case['expected_lat_error_km']
+        expected_lon_error = test_case['expected_lon_error_km']
+
+        logger.info(f"  Applying artificial error: lat={expected_lat_error:.3f} km, lon={expected_lon_error:.3f} km")
+        subimage_with_error = apply_geolocation_error_to_subimage(
+            subimage, gcp, expected_lat_error, expected_lon_error
+        )
+
+        # 4. Load calibration data
+        los_vectors = load_los_vectors_from_mat(test_case['los_file'])
+        optical_psfs = load_optical_psf_from_mat(test_case['psf_file'])
+
+        # 5. Load spacecraft position
+        ancil_data = loadmat(test_case['ancil_file'], squeeze_me=True)
+        r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
+
+        # 6. Run real image matching with the error-injected subimage
+        result = integrated_image_match(
+            subimage=subimage_with_error,  # ← Using error-injected data
+            gcp=gcp,
+            r_iss_midframe_m=r_iss_midframe,
+            los_vectors_hs=los_vectors,
+            optical_psfs=optical_psfs,
+            geolocation_config=ImageMatchGeolocationConfig(),
+            search_config=SearchConfig(),
+        )
+
+        # 7. Convert to expected output format
+        lat_error_deg = result.lat_error_km / 111.0
+        lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+        processing_time = time.time() - start_time
+
+        # Log validation against expected errors
+        lat_diff = abs(result.lat_error_km - expected_lat_error)
+        lon_diff = abs(result.lon_error_km - expected_lon_error)
+
+        logger.info(f"  Image matching complete in {processing_time:.2f}s:")
+        logger.info(f"    Lat error: {result.lat_error_km:.3f} km (expected: {expected_lat_error:.3f}, diff: {lat_diff:.3f})")
+        logger.info(f"    Lon error: {result.lon_error_km:.3f} km (expected: {expected_lon_error:.3f}, diff: {lon_diff:.3f})")
+        logger.info(f"    Correlation: {result.ccv_final:.4f}")
+
+        # 8. Create output dataset (matching Monte Carlo format)
+        t_matrix = np.array([
+            [-0.418977524967338, 0.748005379751721, 0.514728846515064],
+            [-0.421890284446342, 0.341604851993858, -0.839830169131854],
+            [-0.804031356019172, -0.569029065124742, 0.172451447025628]
+        ])
+        boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])
+
+        output = xr.Dataset({
+            'lat_error_deg': (['measurement'], [lat_error_deg]),
+            'lon_error_deg': (['measurement'], [lon_error_deg]),
+            'riss_ctrs': (['measurement', 'xyz'], [r_iss_midframe]),
+            'bhat_hs': (['measurement', 'xyz'], [boresight]),
+            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
+            'cp_lat_deg': (['measurement'], [gcp_center_lat]),
+            'cp_lon_deg': (['measurement'], [gcp_center_lon]),
+            'cp_alt': (['measurement'], [0.0]),
+        }, coords={
+            'measurement': [0],
+            'xyz': ['x', 'y', 'z'],
+            'xyz_from': ['x', 'y', 'z'],
+            'xyz_to': ['x', 'y', 'z']
+        })
+
+        # Add metadata
+        output.attrs.update({
+            'lat_error_km': result.lat_error_km,
+            'lon_error_km': result.lon_error_km,
+            'correlation_ccv': result.ccv_final,
+            'final_grid_step_m': result.final_grid_step_m,
+            'final_index_row': result.final_index_row,
+            'final_index_col': result.final_index_col,
+            'processing_time_s': processing_time,
+            'gcp_file': str(test_case['gcp_file'].name),
+            'gcp_center_lat': gcp_center_lat,
+            'gcp_center_lon': gcp_center_lon,
+            'test_mode': True,
+            'test_case_id': test_case['case_id'],
+            'test_case_name': test_case['case_name'],
+            'expected_lat_error_km': test_case['expected_lat_error_km'],
+            'expected_lon_error_km': test_case['expected_lon_error_km'],
+            'param_idx': param_idx,
+        })
+
+        return output
+
+    except Exception as e:
+        logger.error(f"  Test mode image matching failed: {e}")
+        raise
 
 
 class MonteCarloTestModeTestCase(unittest.TestCase):
@@ -106,8 +309,8 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
             cache_image_match_results=True,
         )
 
-        # Run image matching
-        result = mc.run_test_mode_image_matching(
+        # Run image matching using test-specific wrapper that applies errors
+        result = run_test_mode_image_matching_with_applied_errors(
             test_case,
             param_idx=0,
             test_mode_config=test_config

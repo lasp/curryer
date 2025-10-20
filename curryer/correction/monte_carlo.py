@@ -611,7 +611,7 @@ def real_image_matching(
         r_iss_midframe = extract_spacecraft_position_midframe(telemetry)
         logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
-        # 5. Perform real image matching
+        # 5. Run real image matching
         logger.info("  Running integrated_image_match()...")
         geolocation_config = ImageMatchGeolocationConfig()
         search_config = SearchConfig()
