@@ -39,6 +39,13 @@ class ImageGrid:
 
 
 @dataclass
+class NamedImageGrid(ImageGrid):
+    """Image grid with an associated descriptive name."""
+
+    name: Optional[str] = None
+
+
+@dataclass
 class PSFGrid:
     """Point spread function sampled on a latitude/longitude grid."""
 
@@ -104,7 +111,7 @@ class GeolocationConfig:
     """Configuration parameters for PSF geolocation modelling."""
 
     gcp_step_m: float = 30.0
-    motion_convolution_step_m: float = 30.0 / 20.0
+    motion_convolution_step_m: float = gcp_step_m / 20.0
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
 
