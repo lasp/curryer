@@ -541,7 +541,7 @@ def _generate_realistic_boresights(n_measurements):
     return boresights
 
 
-def real_image_matching(
+def image_matching(
     geolocated_data: xr.Dataset,
     gcp_reference_file: Path,
     telemetry: pd.DataFrame,
@@ -1156,7 +1156,7 @@ def run_test_mode_image_matching(
         logger.info(f"    Correlation: {result.ccv_final:.4f}")
         logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
 
-        # 7. Create output dataset (same format as real_image_matching)
+        # 7. Create output dataset (same format as image_matching)
         # Use realistic transformation matrix and boresight (from error_stats test case 1)
         # These are reasonable defaults that won't cause NaN in error_stats
         t_matrix = np.array([
@@ -1844,7 +1844,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
                     gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
 
                     try:
-                        image_matching_output = real_image_matching(
+                        image_matching_output = image_matching(
                             geolocated_data=geo_dataset,
                             gcp_reference_file=gcp_file,
                             telemetry=tlm_dataset,
