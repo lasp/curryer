@@ -5,12 +5,16 @@ The routines in this module describe each image footprint using the
 and compute the distance between a GCP center point and the nearest edge of
 each L1A footprint.  The core entry point is :func:`find_l1a_gcp_pairs`, which
 returns a many-to-many mapping between the supplied L1A and GCP collections.
+
+File-based utilities (discover_gcp_files, pair_files) provide higher-level
+wrappers for working with MATLAB .mat files on disk.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from pathlib import Path
+from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
 
@@ -370,3 +374,153 @@ def find_l1a_gcp_pairs(
                              l1a.name, gcp.name, margin, max_distance_m)
 
     return PairingResult(l1a_meta, gcp_meta, matches)
+
+
+# ============================================================================
+# File-Based Pairing Utilities
+# ============================================================================
+
+def discover_gcp_files(
+    gcp_directory: Path,
+    pattern: str = "*_resampled.mat"
+) -> List[Path]:
+    """
+    Find all GCP files in a directory matching a pattern.
+
+    Args:
+        gcp_directory: Directory to search
+        pattern: Glob pattern for GCP files (default: "*_resampled.mat")
+
+    Returns:
+        Sorted list of Path objects for GCP files
+
+    Example:
+        >>> gcp_files = discover_gcp_files(Path("tests/data/clarreo/image_match"))
+        >>> print(f"Found {len(gcp_files)} GCP files")
+    """
+    gcp_dir = Path(gcp_directory)
+    if not gcp_dir.is_dir():
+        logger.warning(f"GCP directory not found: {gcp_dir}")
+        return []
+
+    # Search recursively in subdirectories too
+    gcp_files = sorted(gcp_dir.rglob(pattern))
+    logger.info(f"Discovered {len(gcp_files)} GCP files in {gcp_dir} with pattern '{pattern}'")
+
+    return gcp_files
+
+
+def pair_files(
+    l1a_files: List[Path],
+    gcp_directory: Path,
+    max_distance_m: float = 0.0,
+    l1a_key: str = "subimage",
+    gcp_key: str = "GCP",
+    gcp_pattern: str = "*_resampled.mat"
+) -> List[Tuple[Path, Path]]:
+    """
+    Find L1A-GCP pairs based on spatial overlap and return as file path tuples.
+
+    This is the production replacement for placeholder_gcp_pairing().
+    Uses the find_l1a_gcp_pairs() algorithm for spatial matching.
+
+    Args:
+        l1a_files: List of L1A file paths to pair
+        gcp_directory: Directory containing GCP reference files
+        max_distance_m: Minimum margin for valid pairing (default: 0.0)
+            - 0.0: Requires GCP center inside L1A footprint (strict)
+            - >0: Allows GCP center up to this distance inside footprint
+            - <0: Allows GCP center outside footprint (loose)
+        l1a_key: MATLAB struct key for L1A data (default: "subimage")
+        gcp_key: MATLAB struct key for GCP data (default: "GCP")
+        gcp_pattern: File pattern for GCP discovery (default: "*_resampled.mat")
+
+    Returns:
+        List of (l1a_file, gcp_file) tuples for all valid spatial pairs
+        Note: One L1A can pair with multiple GCPs (many-to-many)
+
+    Raises:
+        FileNotFoundError: If gcp_directory doesn't exist
+        ValueError: If no valid pairs found
+
+    Example:
+        >>> l1a_files = [Path("test1.mat"), Path("test2.mat")]
+        >>> pairs = pair_files(l1a_files, Path("gcp_chips"), max_distance_m=0.0)
+        >>> print(f"Found {len(pairs)} valid L1A-GCP pairs")
+        >>> for l1a, gcp in pairs:
+        ...     print(f"  {l1a.name} → {gcp.name}")
+    """
+    from .image_match import load_image_grid_from_mat
+
+    gcp_dir = Path(gcp_directory)
+    if not gcp_dir.is_dir():
+        raise FileNotFoundError(f"GCP directory not found: {gcp_dir}")
+
+    logger.info(f"GCP Pairing: Loading {len(l1a_files)} L1A images...")
+
+    # Load L1A images as NamedImageGrid
+    l1a_images = []
+    for l1a_file in l1a_files:
+        try:
+            img = load_image_grid_from_mat(
+                l1a_file,
+                key=l1a_key,
+                name=str(l1a_file),
+                as_named=True
+            )
+            l1a_images.append(img)
+        except Exception as e:
+            logger.warning(f"Failed to load L1A file {l1a_file}: {e}")
+
+    if not l1a_images:
+        raise ValueError("No L1A images loaded successfully")
+
+    # Discover and load GCP images
+    gcp_files = discover_gcp_files(gcp_dir, pattern=gcp_pattern)
+    if not gcp_files:
+        raise ValueError(f"No GCP files found in {gcp_dir} with pattern '{gcp_pattern}'")
+
+    logger.info(f"GCP Pairing: Found {len(gcp_files)} GCP files")
+
+    gcp_images = []
+    for gcp_file in gcp_files:
+        try:
+            img = load_image_grid_from_mat(
+                gcp_file,
+                key=gcp_key,
+                name=str(gcp_file),
+                as_named=True
+            )
+            gcp_images.append(img)
+        except Exception as e:
+            logger.warning(f"Failed to load GCP file {gcp_file}: {e}")
+
+    if not gcp_images:
+        raise ValueError("No GCP images loaded successfully")
+
+    # Run spatial pairing algorithm
+    logger.info(f"GCP Pairing: Finding spatial overlaps (max_distance={max_distance_m}m)...")
+    result = find_l1a_gcp_pairs(l1a_images, gcp_images, max_distance_m)
+
+    if not result.matches:
+        logger.warning(
+            f"No valid pairs found with max_distance={max_distance_m}m. "
+            f"Try increasing max_distance_m or check spatial coverage."
+        )
+        return []
+
+    logger.info(f"GCP Pairing: Found {len(result.matches)} valid pairs")
+
+    # Convert PairingResult to file path tuples
+    pairs = []
+    for match in result.matches:
+        l1a_file = l1a_files[match.l1a_index]
+        gcp_file = gcp_files[match.gcp_index]
+        pairs.append((l1a_file, gcp_file))
+        logger.debug(
+            f"  Paired: {l1a_file.name} → {gcp_file.name} "
+            f"(margin={match.distance_m:.1f}m)"
+        )
+
+    return pairs
+
