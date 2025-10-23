@@ -58,6 +58,7 @@ ipython = ">=8.4"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'
+responses = "^0.25.8"
 
 [build-system]
 requires = ["poetry-core>=2.0"]
