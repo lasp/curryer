@@ -37,10 +37,7 @@ jobs:
         run: docker build . --file Dockerfile --target test --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-test:latest
 
       - name: Run test docker image
-        env:
-          SPACETRACK_USER: ${{ secrets.SPACETRACK_USER }}
-          SPACETRACK_PSWD: ${{ secrets.SPACETRACK_PSWD }}
-        run: docker run -i --rm -e SPACETRACK_USER="$SPACETRACK_USER" -e SPACETRACK_PSWD="$SPACETRACK_PSWD" curryer-${{ matrix.python-version }}-test:latest
+        run: docker run -i --rm curryer-${{ matrix.python-version }}-test:latest
 
   demo:
     runs-on: ubuntu-latest
