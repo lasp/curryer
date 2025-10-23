@@ -1,0 +1,56 @@
+KPL/IK
+
+Instrument kernel for CPRS
+----------------------------------------------------------
+
+    Note that only the FOV parameters are supported by SPICE built-in routines.
+    Everything else is just for convenient storage and accessed using basic
+    SPICE kernel variable reads.
+
+    This file was created by LASP_SDS_TEAM
+    on 2023-12-01/00:00:00.
+
+
+Kernel data
+----------------------------------------------------------
+
+    CPRS HySICS (-125544200) - Science FOV
+    --------------------------------------
+
+        \begindata
+
+        INS-125544200_FOV_SHAPE            = 'CIRCLE'
+        INS-125544200_FOV_FRAME            = 'CPRS_HYSICS_COORD'
+        INS-125544200_BORESIGHT            = ( 0.0 0.0 1.0 )
+        INS-125544200_FOV_CLASS_SPEC       = 'ANGLES'
+        INS-125544200_FOV_REF_VECTOR       = ( 1.0 0.0 0.0 )
+        INS-125544200_FOV_REF_ANGLE        = 1.0
+        INS-125544200_FOV_ANGLE_UNITS      = 'DEGREES'
+
+        \begintext
+
+    CPRS HySICS (-125544200) - Pixel Vectors
+    ----------------------------------------
+
+        \begindata
+
+        INS-125544200_PIXEL_COUNT          = 3
+        INS-125544200_PIXEL_VECTORS        = (
+                             0                         0                         1
+                             0       -0.0819385086300409         0.996637386818037
+                             0        0.0366437087065563         0.999328393778656
+        )
+
+        \begintext
+
+NAIF ID Code to Name Mapping
+----------------------------------------------------------
+
+    Instrument body name/id mappings.
+
+        \begintext data
+
+        NAIF_BODY_NAME += ( 'CPRS_HYSICS' )
+        NAIF_BODY_CODE += ( -125544200 )
+
+        \begintext
