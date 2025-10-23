@@ -17,19 +17,102 @@ from curryer.compute import spatial
 from curryer.kernels import create
 
 # Import image matching modules
-from curryer.correction.image_match import integrated_image_match
-from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig, SearchConfig
-from curryer.correction.monte_carlo_image_match_adapter import (
-    geolocated_to_image_grid,
-    load_los_vectors_from_mat,
+from curryer.correction.image_match import (
+    integrated_image_match,
+    load_image_grid_from_mat,
     load_optical_psf_from_mat,
-    load_gcp_from_mat,
-    get_gcp_center_location,
-    extract_spacecraft_position_midframe,  # NEW - for Fix #1
+    load_los_vectors_from_mat,
 )
+from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig, SearchConfig
+from curryer.correction.pairing import pair_files
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Internal Adapter Functions (Monte Carlo <-> Image Matching)
+# ============================================================================
+
+def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
+    """
+    Convert Monte Carlo geolocation output to ImageGrid for image matching.
+
+    Internal adapter function: converts xarray.Dataset from geolocation step
+    to ImageGrid format expected by image_match module.
+
+    Args:
+        geo_dataset: xarray.Dataset with latitude, longitude, altitude/height
+
+    Returns:
+        ImageGrid suitable for integrated_image_match()
+    """
+    from curryer.correction.data_structures import ImageGrid
+
+    lat = geo_dataset['latitude'].values
+    lon = geo_dataset['longitude'].values
+
+    # Try different field names for altitude/height
+    if 'altitude' in geo_dataset:
+        h = geo_dataset['altitude'].values
+    elif 'height' in geo_dataset:
+        h = geo_dataset['height'].values
+    else:
+        h = np.zeros_like(lat)
+
+    # Get actual radiance/reflectance data when available
+    if 'radiance' in geo_dataset:
+        data = geo_dataset['radiance'].values
+    elif 'reflectance' in geo_dataset:
+        data = geo_dataset['reflectance'].values
+    else:
+        data = np.ones_like(lat)
+
+    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
+
+
+def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray:
+    """
+    Extract spacecraft position at mid-frame from Monte Carlo telemetry.
+
+    Internal adapter function: extracts position from telemetry DataFrame
+    with fallback logic for different column naming conventions.
+
+    Args:
+        telemetry: Telemetry DataFrame with spacecraft position columns
+
+    Returns:
+        np.ndarray, shape (3,) - [x, y, z] position in meters (J2000 frame)
+
+    Raises:
+        ValueError: If position columns cannot be found
+    """
+    mid_idx = len(telemetry) // 2
+
+    # Try common column name patterns
+    position_patterns = [
+        ['sc_pos_x', 'sc_pos_y', 'sc_pos_z'],
+        ['position_x', 'position_y', 'position_z'],
+        ['r_x', 'r_y', 'r_z'],
+        ['pos_x', 'pos_y', 'pos_z'],
+    ]
+
+    for cols in position_patterns:
+        if all(c in telemetry.columns for c in cols):
+            position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+            logger.debug(f"Extracted spacecraft position from columns {cols}: {position}")
+            return position
+
+    # If patterns don't match, try to find any column containing 'pos' or 'r_'
+    pos_cols = [c for c in telemetry.columns if 'pos' in c.lower() or c.startswith('r_')]
+    if len(pos_cols) >= 3:
+        logger.warning(f"Using first 3 position-like columns: {pos_cols[:3]}")
+        return telemetry[pos_cols[:3]].iloc[mid_idx].values.astype(np.float64)
+
+    raise ValueError(
+        f"Cannot find position columns in telemetry. "
+        f"Available columns: {telemetry.columns.tolist()}"
+    )
 
 
 # Configuration Loading Functions
@@ -580,13 +663,15 @@ def image_matching(
     try:
         # 1. Convert geolocation output to ImageGrid
         logger.info("  Converting geolocation data to ImageGrid format...")
-        subimage = geolocated_to_image_grid(geolocated_data)
+        subimage = _geolocated_to_image_grid(geolocated_data)
         logger.info(f"    Subimage shape: {subimage.data.shape}")
 
         # 2. Load GCP reference image
         logger.info(f"  Loading GCP reference from {gcp_reference_file}...")
-        gcp = load_gcp_from_mat(gcp_reference_file)
-        gcp_center_lat, gcp_center_lon = get_gcp_center_location(gcp)
+        gcp = load_image_grid_from_mat(gcp_reference_file, key="GCP")
+        # Get GCP center location (center pixel)
+        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
         logger.info(f"    GCP shape: {gcp.data.shape}, center: ({gcp_center_lat:.4f}, {gcp_center_lon:.4f})")
 
         # 3. Use cached calibration data if available, otherwise load
@@ -608,7 +693,7 @@ def image_matching(
             logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
         # 4. Extract spacecraft position from telemetry
-        r_iss_midframe = extract_spacecraft_position_midframe(telemetry)
+        r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
         logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
         # 5. Run real image matching
@@ -890,6 +975,14 @@ class MonteCarloConfig:
     geo: GeolocationConfig
     calibration_dir: typing.Optional[Path] = None  # Directory with LOS vectors, optical PSF, GCP files
     use_real_image_matching: bool = False  # Enable real image matching (requires calibration files)
+
+    # Pairing configuration
+    use_real_pairing: bool = False  # Enable real GCP pairing (spatial matching)
+    gcp_directory: typing.Optional[Path] = None  # Directory containing GCP reference files
+    pairing_max_distance_m: float = 0.0  # Maximum distance for valid pairing (0.0 = strict overlap)
+    pairing_l1a_key: str = "subimage"  # MATLAB struct key for L1A data
+    pairing_gcp_key: str = "GCP"  # MATLAB struct key for GCP data
+    pairing_gcp_pattern: str = "*_resampled.mat"  # File pattern for GCP discovery
     # match: ImageMatchConfig
     # stats: ErrorStatsConfig
 
@@ -1077,8 +1170,8 @@ def run_test_mode_image_matching(
         xarray.Dataset with error measurements in standard format
     """
     from scipy.io import loadmat
-    from curryer.correction.monte_carlo_image_match_adapter import (
-        load_gcp_from_mat,
+    from curryer.correction.image_match import (
+        load_image_grid_from_mat,
         load_los_vectors_from_mat,
         load_optical_psf_from_mat,
     )
@@ -1108,9 +1201,10 @@ def run_test_mode_image_matching(
         )
 
         # 2. Load GCP reference
-        gcp = load_gcp_from_mat(test_case['gcp_file'])
-        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+        gcp = load_image_grid_from_mat(test_case['gcp_file'], key="GCP")
+        # Get GCP center location (inline calculation)
+        gcp_center_lat = float(np.mean(gcp.lat))
+        gcp_center_lon = float(np.mean(gcp.lon))
 
         # 3. Load calibration data
         los_vectors = load_los_vectors_from_mat(test_case['los_file'])
@@ -1243,7 +1337,7 @@ def _apply_error_variation(base_result: xr.Dataset, param_idx: int, test_mode_co
 
     varied_lat_km = original_lat_km * lat_factor
     varied_lon_km = original_lon_km * lon_factor
-    varied_ccv = np.clip(original_ccv * ccv_factor, 0.0, 1.0)  # Keep correlation in valid range
+    varied_ccv = np.clip(original_ccv * ccv_factor, 0.0, 1.0) # Keep correlation in valid range
 
     # Update dataset values
     gcp_center_lat = base_result.attrs['gcp_center_lat']
