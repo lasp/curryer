@@ -5,13 +5,19 @@
 __pycache__
 **/.pytest_cache/
 **/.ipynb_checkpoints/
+venv
+.venv
+poetry.lock
 
+# Sphinx
+# ------
+docs/build
 
 # Intellij
 # --------
 /.idea
 *.iml
-
+.run
 
 # Other
 # -----
