@@ -4,21 +4,23 @@ Monte Carlo Pipeline Integration Test
 This test script validates the complete Monte Carlo GCS pipeline using
 validated test data from tests/data/clarreo/image_match/.
 
-It enables testing the full pipeline without requiring production data:
+It enables testing the majority of the modules in the GCS pipeline (skipping parameter modification, kernel creation,
+ and geolocation) all without requiring real production data:
 - Real image matching with test files
+- Real GCP pairing with spatial matching
 - Error statistics processing
 - NetCDF output generation
-- Parameter variation simulation
+- Parameter variation simulation (apply offsets to image matching results, skipping real geolocation)
 
 Usage:
     # Run all tests
-    pytest tests/test_monte_carlo_pipeline.py -v
+    pytest tests/test_correction/test_monte_carlo_pipeline.py -v
 
     # Run standalone (full integration test)
-    python tests/test_monte_carlo_pipeline.py
+    python tests/test_correction/test_monte_carlo_pipeline.py
 
     # Run quick test (fewer iterations)
-    python tests/test_monte_carlo_pipeline.py --quick
+    python tests/test_correction/test_monte_carlo_pipeline.py --quick
 """
 
 import argparse
@@ -34,17 +36,18 @@ from scipy.io import loadmat
 
 from curryer import utils
 from curryer.correction import monte_carlo as mc
-from curryer.correction.data_structures import ImageGrid
-from curryer.correction.image_match import integrated_image_match
+from curryer.correction.data_structures import ImageGrid, NamedImageGrid
+from curryer.correction.image_match import (
+    integrated_image_match,
+    load_image_grid_from_mat,
+    load_los_vectors_from_mat,
+    load_optical_psf_from_mat,
+)
 from curryer.correction.data_structures import (
     GeolocationConfig as ImageMatchGeolocationConfig,
     SearchConfig,
 )
-from curryer.correction.monte_carlo_image_match_adapter import (
-    load_gcp_from_mat,
-    load_los_vectors_from_mat,
-    load_optical_psf_from_mat,
-)
+from curryer.correction.pairing import find_l1a_gcp_pairs
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
@@ -140,7 +143,8 @@ def run_test_mode_image_matching_with_applied_errors(
         )
 
         # 2. Load GCP reference
-        gcp = load_gcp_from_mat(test_case['gcp_file'])
+        gcp = load_image_grid_from_mat(test_case['gcp_file'], key="GCP")
+        # Get GCP center location (center pixel)
         gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
         gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
 
@@ -408,7 +412,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     # Create or use provided work directory
     if work_dir is None:
         # Default to a real directory instead of temp
-        work_dir = root_dir / 'tests/test_corrections/monte_carlo_results'
+        work_dir = root_dir / 'test_corrections/monte_carlo_results'
         work_dir.mkdir(parents=True, exist_ok=True)
         tmp_dir_obj = None
         cleanup_work_dir = False
@@ -441,6 +445,82 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
 
     logger.info(f"Discovered {len(discovered_cases)} test case variants")
 
+    # ============================================================================
+    # USE REAL GCP PAIRING MODULE
+    # ============================================================================
+    logger.info("=" * 80)
+    logger.info("PERFORMING GCP PAIRING WITH SPATIAL MATCHING")
+    logger.info("=" * 80)
+
+    # Load all L1A subimages as NamedImageGrid objects
+    l1a_images = []
+    l1a_to_testcase = {}  # Map L1A name to test case metadata
+
+    for test_case in discovered_cases:
+        l1a_img = load_image_grid_from_mat(
+            test_case['subimage_file'],
+            key="subimage",
+            as_named=True,
+            name=str(test_case['subimage_file'].relative_to(test_data_dir))
+        )
+        l1a_images.append(l1a_img)
+        l1a_to_testcase[l1a_img.name] = test_case
+        logger.info(f"Loaded L1A: {l1a_img.name}")
+
+    # Load all unique GCP references as NamedImageGrid objects
+    gcp_files_seen = set()
+    gcp_images = []
+
+    for test_case in discovered_cases:
+        gcp_file = test_case['gcp_file']
+        if gcp_file not in gcp_files_seen:
+            gcp_img = load_image_grid_from_mat(
+                gcp_file,
+                key="GCP",
+                as_named=True,
+                name=str(gcp_file.relative_to(test_data_dir))
+            )
+            gcp_images.append(gcp_img)
+            gcp_files_seen.add(gcp_file)
+            logger.info(f"Loaded GCP: {gcp_img.name}")
+
+    # Perform spatial pairing
+    logger.info(f"\nRunning find_l1a_gcp_pairs with {len(l1a_images)} L1A images and {len(gcp_images)} GCP references...")
+    pairing_result = find_l1a_gcp_pairs(
+        l1a_images,
+        gcp_images,
+        max_distance_m=0.0  # Require strict overlap
+    )
+
+    logger.info(f"Pairing complete: Found {len(pairing_result.matches)} valid pairs")
+    for match in pairing_result.matches:
+        l1a_name = pairing_result.l1a_images[match.l1a_index].name
+        gcp_name = pairing_result.gcp_images[match.gcp_index].name
+        logger.info(f"  {l1a_name} ↔ {gcp_name} (distance: {match.distance_m:.1f}m)")
+
+    # Convert pairing results to test cases for processing
+    paired_test_cases = []
+    for match in pairing_result.matches:
+        l1a_img = pairing_result.l1a_images[match.l1a_index]
+        gcp_img = pairing_result.gcp_images[match.gcp_index]
+
+        # Get original test case metadata
+        test_case = l1a_to_testcase[l1a_img.name]
+
+        # Create paired test case with both L1A and matched GCP
+        paired_test_case = {
+            **test_case,  # Include all original metadata
+            'l1a_image': l1a_img,
+            'gcp_image': gcp_img,
+            'pairing_distance_m': match.distance_m,
+        }
+        paired_test_cases.append(paired_test_case)
+
+    logger.info(f"\nCreated {len(paired_test_cases)} paired test cases for Monte Carlo processing")
+    logger.info("=" * 80)
+
+    # Use paired test cases instead of discovered cases
+    n_gcp_pairs = len(paired_test_cases)
     # Create minimal Monte Carlo configuration
     # Note: We're not actually using the geo config since we skip geolocation
     generic_dir = root_dir / 'data' / 'generic'
