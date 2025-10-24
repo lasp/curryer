@@ -10,7 +10,7 @@ KPL/FK
    Date of last revision:                2008 March 21 16:07
    Purpose of revision:
 
-      Changed names of PA system and frame from "principal axis" to 
+      Changed names of PA system and frame from "principal axis" to
       "principal axes."
 
 
@@ -32,18 +32,18 @@ KPL/FK
       file
 
          moon_pa_de418_1950-2050.bpc
- 
+
       The comment section below titled "Lunar body-fixed frame
       associations" discusses lunar frame association kernels. These
       kernels direct portions of the SPICE system that rely on default
       body-fixed reference frames to associate with the Moon either the
       MOON_ME or MOON_PA reference frames.
 
-   
+
    This file was modified on 26-FEB-2009 by Nat Bachman. The initial
-   blank line was removed and this change description was added. 
+   blank line was removed and this change description was added.
    Nothing else has been changed.
- 
+
 
    Frames Specified by this Kernel
    =====================================================================
@@ -54,7 +54,7 @@ KPL/FK
    MOON_ME          MOON_ME_DE421      FIXED  31001
    MOON_PA_DE421    ICRF/J2000         PCK    31006
    MOON_ME_DE421    MOON_PA_DE421      FIXED  31007
-        
+
 
    Introduction
    =====================================================================
@@ -70,7 +70,7 @@ KPL/FK
    The frames specified by this kernel are realizations of two different
    lunar reference systems:
 
-      Principal Axes (PA) system 
+      Principal Axes (PA) system
       --------------------------
       The axes of this system are defined by the principal axes of the
       Moon. Due to the nature of the Moon's orbit and
@@ -78,7 +78,7 @@ KPL/FK
       Moon's mean spin axis, nor does the X axis coincide with the mean
       direction to the center of the Earth (in contrast with the ME
       system defined below).
- 
+
       Lunar principal axes frames realizing the lunar PA system and
       specified by this kernel are associated with JPL planetary
       ephemerides. Each new JPL planetary ephemeris can (but does not
@@ -86,7 +86,7 @@ KPL/FK
       system. Coordinates of lunar surface features expressed in lunar
       PA frames can change slightly from one lunar ephemeris version to
       the next.
- 
+
 
       Mean Earth/Polar Axis (ME) system
       ---------------------------------
@@ -99,7 +99,7 @@ KPL/FK
 
       This system is also sometimes called the "mean Earth/mean
       rotation axis" system or "mean Earth" system.
- 
+
       The mean directions used to define the axes of a mean Earth/polar
       axis reference frame realizing the lunar ME system and specified
       by this kernel are associated with a given JPL planetary
@@ -113,7 +113,7 @@ KPL/FK
    polar axis frames. The names of these frames have the form
 
       MOON_PA_DEnnn
-     
+
    and
 
       MOON_ME_DEnnn
@@ -139,7 +139,7 @@ KPL/FK
    here, for example, older DE-based frames. NAIF recommends that, if
    this frame kernel is modified, the name of this file also be changed
    to avoid confusion.
- 
+
 
    Comparison of PA and ME frames
    ------------------------------
@@ -159,7 +159,7 @@ KPL/FK
    rotational elements from the IAU/IAG Working Group report [2] is
    given the name IAU_MOON; the data defining this frame are provided
    in a generic text PCK.
- 
+
    The orientation of the lunar ME frame obtained by applying the
    DE-based PA-to-ME rotation described above to the DE-based lunar
    libration data does not agree closely with the lunar ME frame
@@ -167,7 +167,7 @@ KPL/FK
    Working Group report (that is, the IAU_MOON frame). The difference
    is due to truncation of the libration series used in the report's
    formula for lunar orientation (see [1]).
- 
+
    In the case of DE-421, for the time period ~2000-2020, the
    time-dependent difference of these ME frame implementations has an
    amplitude of approximately 0.0051 degrees, which is equivalent to
@@ -181,7 +181,7 @@ KPL/FK
 
    The magnitudes of the rotational offsets between the
    DE-418 and DE-421 realizations of the MOON_PA and MOON_ME
-   frames are discussed below. 
+   frames are discussed below.
 
    Note that the angle ranges shown below are ordered as signed values,
    *not* by absolute value.
@@ -202,7 +202,7 @@ KPL/FK
       X axis:     -3.8063e-07  to  -2.9746e-07 radians
       Y axis:     -2.5322e-07  to  -1.8399e-07 radians
       Z axis:     -9.9373e-08  to   6.0046e-08 radians
-       
+
 
    MOON_ME frame orientation differences
    -------------------------------------
@@ -220,7 +220,7 @@ KPL/FK
       X axis:     7.2260e-09   to   9.0391e-08 radians
       Y axis:     3.7643e-08   to   1.0691e-07 radians
       Z axis:    -2.4471e-07   to  -8.5296e-08 radians
-        
+
 
    Regarding Use of the ICRF in SPICE
    ==================================
@@ -230,7 +230,7 @@ KPL/FK
    J2000 pole offset magnitude is about 18 milliarcseconds (mas) and
    the equinox offset magnitude is approximately 78 milliarcseconds
    (see [3]).
- 
+
    Certain SPICE data products use the frame label "J2000" for data
    that actually are referenced to the ICRF. This is the case for SPK
    files containing JPL version DE-4nn planetary ephemerides, for
@@ -263,7 +263,7 @@ KPL/FK
 
       CIDFRM
       CNMFRM
-  
+
    and of the SPICE time conversion and geometry routines
 
       ET2LST
@@ -282,7 +282,7 @@ KPL/FK
    frame from its current value, which initially is IAU_MOON, to that
    shown in the right-hand column:
 
-      Kernel name          Lunar body-fixed frame        
+      Kernel name          Lunar body-fixed frame
       -----------          ----------------------
       moon_assoc_me.tf     MOON_ME
       moon_assoc_pa.tf     MOON_PA
@@ -318,16 +318,16 @@ KPL/FK
    and a binary lunar PCK containing lunar orientation data for the
    time of interest. Normally the kernels need be loaded only once
    during program initialization.
- 
+
    SPICE users may find it convenient to use a meta-kernel (also called
    a "FURNSH kernel") to name the kernels to be loaded. Below, we show
    an example of such a meta-kernel, as well as the source code of a
    small Fortran program that uses lunar body fixed frames. The
    program's output is included as well.
- 
+
    The kernel names shown here are simply used as examples; users must
    select the kernels appropriate for their applications.
- 
+
    Numeric results shown below may differ very slightly from those
    obtained on users' computer systems.
 
@@ -339,7 +339,7 @@ KPL/FK
       KPL/MK
 
 
-      Example meta-kernel showing use of 
+      Example meta-kernel showing use of
 
         - binary lunar PCK
         - generic lunar frame kernel (FK)
@@ -406,8 +406,8 @@ KPL/FK
       C
       C     Find the geometric state of the Earth relative to the
       C     Moon at ET, expressed relative to the ME frame.
-      C    
-            CALL SPKEZR ( 'Earth',  ET,      'MOON_ME', 
+      C
+            CALL SPKEZR ( 'Earth',  ET,      'MOON_ME',
            .              'NONE',   'Moon',  STME,      LT )
 
             WRITE (*,*) '      In MOON_ME frame:'
@@ -416,8 +416,8 @@ KPL/FK
       C
       C     Find the geometric state of the Earth relative to the
       C     Moon at ET, expressed relative to the PA frame.
-      C    
-            CALL SPKEZR ( 'Earth',  ET,      'MOON_PA', 
+      C
+            CALL SPKEZR ( 'Earth',  ET,      'MOON_PA',
            .              'NONE',   'Moon',  STPA,      LT )
 
             WRITE (*,*) '      In MOON_PA frame:'
@@ -442,9 +442,9 @@ KPL/FK
    References
    =====================================================================
 
-   [1]  J.G. Williams, D.H. Boggs and W.M. Folkner. "DE421 Lunar  
+   [1]  J.G. Williams, D.H. Boggs and W.M. Folkner. "DE421 Lunar
         Orbit, Physical Librations, and Surface Coordinates,"
-        preprint of JPL IOM 335-JW,DB,WF-20080314-001, dated 
+        preprint of JPL IOM 335-JW,DB,WF-20080314-001, dated
         March 14, 2008.
 
    [2]  Seidelmann, P.K., Abalakin, V.K., Bursa, M., Davies, M.E.,
@@ -454,7 +454,7 @@ KPL/FK
         Elements of the Planets and Satellites: 2000," Celestial
         Mechanics and Dynamical Astronomy, v.82, Issue 1, pp. 83-111.
 
-   [3]  Roncoli, R. (2005). "Lunar Constants and Models Document," 
+   [3]  Roncoli, R. (2005). "Lunar Constants and Models Document,"
         JPL D-32296.
 
 
@@ -465,13 +465,13 @@ KPL/FK
    frame. This frame is an alias for the principal axes frame defined
    by the latest version of the JPL Solar System Dynamics Group's
    planetary ephemeris.
- 
+
    In this instance of the lunar reference frames kernel, MOON_PA is an
    alias for the lunar principal axes frame associated with the
    planetary ephemeris DE-421.
 
    \begindata
- 
+
       FRAME_MOON_PA                 = 31000
       FRAME_31000_NAME              = 'MOON_PA'
       FRAME_31000_CLASS             = 4
@@ -490,7 +490,7 @@ KPL/FK
    reference frame. This frame is an alias for the mean Earth/polar
    axis frame defined by the latest version of the JPL Solar System
    Dynamics Group's planetary ephemeris.
- 
+
    In this instance of the lunar reference frames kernel, MOON_ME is an
    alias for the lunar mean Earth/polar axis frame associated with the
    planetary ephemeris DE-421.
@@ -502,7 +502,7 @@ KPL/FK
       FRAME_31001_CLASS             = 4
       FRAME_31001_CLASS_ID          = 31001
       FRAME_31001_CENTER            = 301
- 
+
       TKFRAME_31001_SPEC            = 'MATRIX'
       TKFRAME_31001_RELATIVE        = 'MOON_ME_DE421'
       TKFRAME_31001_MATRIX          = ( 1 0 0
@@ -541,7 +541,7 @@ KPL/FK
    Rotation angles are from reference [1].
 
    \begindata
- 
+
       FRAME_MOON_ME_DE421           = 31007
       FRAME_31007_NAME              = 'MOON_ME_DE421'
       FRAME_31007_CLASS             = 4
@@ -578,16 +578,16 @@ KPL/FK
    is unchanged.
 
    The ME frame name associated with the new data set will be named
- 
+
       MOON_ME_DEnnn
 
-   The frame ID and class ID for this frame will be 
+   The frame ID and class ID for this frame will be
 
       31009
 
    The rotational offset between this frame and the new DE-specific PA
    frame will need to be updated; this offset is DE-dependent.
-    
+
    The generic ME frame specification will be updated to point to the
    new DE-specific ME frame. The rest of this frame specification
    is unchanged.

@@ -9,7 +9,7 @@ KPL/FK
    Created by:                           Nat Bachman  (NAIF/JPL)
    Last updated:                         2008 March 18 22:17
    Purpose of update:
-  
+
       Documentation now refers to DE421 kernels. Deprecated SPICE
       routines and their replacements are noted.
 
@@ -30,7 +30,7 @@ KPL/FK
 
       MOON_PA
 
-   with the Moon. 
+   with the Moon.
 
    When this kernel is loaded via FURNSH, the SPICE frame system
    routines CNMFRM and CIDFRM, which identify the reference frame
@@ -42,7 +42,7 @@ KPL/FK
 
       ET2LST
       LSPCN
-   
+
    Any code that calls these routines to obtain results
    involving lunar body-fixed frames are affected.  Within SPICE, the
    only higher-level system that is affected is the dynamic frame
@@ -68,8 +68,8 @@ KPL/FK
    these routines accept the name of the target body-fixed
    frame as an input argument.
 
-   Note:  to direct SPICE to associate the lunar mean Earth/polar 
-   axis frame 
+   Note:  to direct SPICE to associate the lunar mean Earth/polar
+   axis frame
 
       MOON_ME
 
@@ -127,9 +127,9 @@ KPL/FK
 
          KERNELS_TO_LOAD = ( 'moon_pa_de421_1900-2050.bpc'
                              'moon_080317.tf'
-                             'moon_assoc_pa.tf'    
+                             'moon_assoc_pa.tf'
                              'pck00008.tpc'
-                             'naif0008.tls'         
+                             'naif0008.tls'
                              'de421.bsp'                   )
          @begintext
 
@@ -150,7 +150,7 @@ KPL/FK
 
              DOUBLE PRECISION      DPR
 
-             INTEGER               FILEN 
+             INTEGER               FILEN
              PARAMETER           ( FILEN  = 255 )
 
              INTEGER               FRNMLN
@@ -190,9 +190,9 @@ KPL/FK
        C     Find the closest point on the Moon to the center
        C     of the Earth at ET.
        C
-             CALL SUBPT  ( 'Near point',  'MOON',  ET,  'NONE', 
+             CALL SUBPT  ( 'Near point',  'MOON',  ET,  'NONE',
             .              'EARTH',       SPOINT,  ALT          )
-            .               
+            .
        C
        C     Express the sub-observer point in latitudinal
        C     coordinates.
@@ -201,7 +201,7 @@ KPL/FK
 
        C
        C     Look up the name of the lunar body-fixed frame.
-       C     
+       C
              CALL CNMFRM ( 'MOON', FRCODE, FRNAME, FOUND )
 
        C
@@ -214,7 +214,7 @@ KPL/FK
              END IF
 
              WRITE(*,*) 'Lunar body-fixed frame is ', FRNAME
-             WRITE(*,*) 'Sub-Earth planetocentric longitude (deg):', 
+             WRITE(*,*) 'Sub-Earth planetocentric longitude (deg):',
             .            LON*DPR()
              WRITE(*,*) 'Sub-Earth planetocentric latitude  (deg):',
             .            LAT*DPR()
@@ -251,7 +251,7 @@ KPL/FK
    Data
    =====================================================================
 
-   The assignment below directs the SPICE system to associate the MOON_PA 
+   The assignment below directs the SPICE system to associate the MOON_PA
    reference frame with the Moon.
 
    For further information, see the Frames Required Reading section
