@@ -2,6 +2,7 @@
 
 @author: Brandon Stone
 """
+
 import functools
 import logging
 from abc import ABCMeta, abstractmethod
@@ -10,23 +11,19 @@ from io import StringIO
 import numpy as np
 import pandas as pd
 
-
 logger = logging.getLogger(__name__)
 
 
 def log_return(max_rows=5):
-    """Log any output tables/arrays from a function.
-    """
+    """Log any output tables/arrays from a function."""
 
     def log_return_wrapper(func):
-        """Store the function to log output from.
-        """
-        _logger = logging.getLogger(getattr(func, '__module__', __name__))
+        """Store the function to log output from."""
+        _logger = logging.getLogger(getattr(func, "__module__", __name__))
 
         @functools.wraps(func)
         def log_return_call(*args, **kwargs):
-            """Call the wrapper function and log the output.
-            """
+            """Call the wrapper function and log the output."""
             output = func(*args, **kwargs)
 
             if _logger.isEnabledFor(logging.DEBUG):
@@ -34,18 +31,18 @@ def log_return(max_rows=5):
 
                 # Table.
                 if isinstance(output, pd.DataFrame):
-                    if pd.get_option('display.width') == 80:
-                        pd.set_option('display.width', 140)
+                    if pd.get_option("display.width") == 80:
+                        pd.set_option("display.width", 140)
                     info_strm = StringIO()
-                    _logger.debug('%s%s:\n %s', output_name, output.shape, output.to_string(max_rows=max_rows))
+                    _logger.debug("%s%s:\n %s", output_name, output.shape, output.to_string(max_rows=max_rows))
                     output.info(buf=info_strm)
-                    _logger.debug('%s details:\n%s', output_name, info_strm.getvalue())
+                    _logger.debug("%s details:\n%s", output_name, info_strm.getvalue())
 
                 # Numpy array.
                 elif isinstance(output, np.ndarray):
-                    if np.get_printoptions()['threshold'] == 1000:
+                    if np.get_printoptions()["threshold"] == 1000:
                         np.set_printoptions(threshold=100)
-                    _logger.debug('%s%s:\n %s', output_name, output.shape, output)  # Auto trims.
+                    _logger.debug("%s%s:\n %s", output_name, output.shape, output)  # Auto trims.
 
             return output
 
@@ -55,8 +52,7 @@ def log_return(max_rows=5):
 
 
 class AbstractMissionData(metaclass=ABCMeta):
-    """Abstract class to get/write mission data.
-    """
+    """Abstract class to get/write mission data."""
 
     @abstractmethod
     def __init__(self, microsecond_cadence, *args, **kwargs):
@@ -69,8 +65,8 @@ class AbstractMissionData(metaclass=ABCMeta):
             return
         try:
             self._loaded_kernels.unload(clear=True)
-        except:
-            logging.exception('Error while unloading kernels:\n')
+        except:  # noqa E722
+            logging.exception("Error while unloading kernels:\n")
 
     @log_return()
     def get_times(self, ugps_range, cadence=None):
@@ -92,9 +88,9 @@ class AbstractMissionData(metaclass=ABCMeta):
         if cadence is None:
             cadence = self.microsecond_cadence
         if len(ugps_range) != 2:
-            raise ValueError('Must specify two uGPS times: inclusive start, exclusive end.')
+            raise ValueError("Must specify two uGPS times: inclusive start, exclusive end.")
 
-        logger.debug('Determining times in range [%s] with cadence [%s]', ugps_range, cadence)
+        logger.debug("Determining times in range [%s] with cadence [%s]", ugps_range, cadence)
         return np.arange(ugps_range[0], ugps_range[1], cadence)
 
 
@@ -113,10 +109,10 @@ def write_to_database(table, session, dbtable, auto_commit):
     int
 
     """
-    logger.info('Inserting [%s] rows into [%s] @ [%s]', table.shape[0], dbtable.__table__.fullname, session)
+    logger.info("Inserting [%s] rows into [%s] @ [%s]", table.shape[0], dbtable.__table__.fullname, session)
 
     if table.shape[0] == 0:
-        logger.warning('Skipping insert for empty dataset [%s]!', dbtable.__table__.fullname)
+        logger.warning("Skipping insert for empty dataset [%s]!", dbtable.__table__.fullname)
         return 0
 
     query = session.query(
@@ -124,11 +120,12 @@ def write_to_database(table, session, dbtable, auto_commit):
     ).filter(
         dbtable.ugps >= int(table.index.min()),
         dbtable.ugps <= int(table.index.max()),
-        *[getattr(dbtable, col) == table[col].iloc[0] for col in table.columns if col != 'ugps']
+        *[getattr(dbtable, col) == table[col].iloc[0] for col in table.columns if col != "ugps"],
         # dbtable.instrumentmodeid == int(table['instrumentmodeid'].iloc[0]),
         # dbtable.version == int(table['version'].iloc[0])
     )
-    assert query.count() == 0, 'Data already exists!'
+    if query.count() != 0:
+        raise ValueError("Data already exists!")
 
     # Bulk insert a list of dicts (rows).
     #   Convert DataFrame to a Numpy records array to maintain
@@ -136,12 +133,10 @@ def write_to_database(table, session, dbtable, auto_commit):
     #   from Numpy scalar types to Python scalar types (e.g., int).
     # TODO: Add an iter to flush every (e.g., 1440 rows / day's worth)?
     col_names = (table.index.name, *table.columns)
-    session.bulk_insert_mappings(
-        dbtable,
-        (dict(zip(col_names, row)) for row in table.to_records().tolist())
-    )
+    session.bulk_insert_mappings(dbtable, (dict(zip(col_names, row)) for row in table.to_records().tolist()))
 
-    assert query.count() == table.shape[0], 'Database is missing some data.'
+    if query.count() != table.shape[0]:
+        raise ValueError("Database is missing some data.")
     if auto_commit:
         session.commit()
     return table.shape[0]

@@ -14,21 +14,21 @@ Examples
 
 @author: Brandon Stone
 """
+
 import logging
 
 import numpy as np
 import pandas as pd
 
-from . import constants, abstract
 from .. import spicierpy
-
+from . import abstract, constants
 
 logger = logging.getLogger(__name__)
 
 
 class SolarDistAndDoppler(abstract.AbstractMissionData):
-    """Solar distance and Doppler server.
-    """
+    """Solar distance and Doppler server."""
+
     DEFAULT_CADENCE = constants.EPHEMERIS_TIMESTEP_USEC
 
     def __init__(self, observer, microsecond_cadence=None):
@@ -47,8 +47,8 @@ class SolarDistAndDoppler(abstract.AbstractMissionData):
         self.observer = observer
 
         # Ephemeris columns used in calculations.
-        self.position_columns = ['x', 'y', 'z']
-        self.velocity_columns = ['vx', 'vy', 'vz']
+        self.position_columns = ["x", "y", "z"]
+        self.velocity_columns = ["vx", "vy", "vz"]
 
     def _dist_correction(self, state):
         """TIM distance correction.
@@ -98,29 +98,31 @@ class SolarDistAndDoppler(abstract.AbstractMissionData):
 
         """
         ax = int(state.ndim == 2)
-        r_vel = (
-                np.sum(state[self.velocity_columns].values * state[self.position_columns].values, axis=ax)
-                / np.linalg.norm(state[self.position_columns], axis=ax)
-        )
+        r_vel = np.sum(
+            state[self.velocity_columns].values * state[self.position_columns].values, axis=ax
+        ) / np.linalg.norm(state[self.position_columns], axis=ax)
         return 1 - (r_vel / constants.SPEED_OF_LIGHT_KM_PER_S)
 
     @abstract.log_return()
     def get_corrections(self, ugps_times):
-        """Generate a table of the SDD corrections.
-        """
-        logger.debug('Creating corrections table with [%i] rows', len(ugps_times))
+        """Generate a table of the SDD corrections."""
+        logger.debug("Creating corrections table with [%i] rows", len(ugps_times))
         table = pd.DataFrame(
-            index=pd.Index(ugps_times, name='microsecondssincegpsepoch'),
-            columns=['sunobserverdopplerfactor', 'sunearthdopplerfactor',
-                     'sunobserverdistancecorrection', 'sunearthdistancecorrection'],
+            index=pd.Index(ugps_times, name="microsecondssincegpsepoch"),
+            columns=[
+                "sunobserverdopplerfactor",
+                "sunearthdopplerfactor",
+                "sunobserverdistancecorrection",
+                "sunearthdistancecorrection",
+            ],
         )
 
         # Query the ephemeris data for corrections for instrument to sun.
         sunobs = spicierpy.ext.query_ephemeris(
             ugps_times=ugps_times,
-            target=spicierpy.obj.Body('SUN'),
+            target=spicierpy.obj.Body("SUN"),
             observer=spicierpy.obj.Body(self.observer),
-            ref_frame='IAU_SUN',
+            ref_frame="IAU_SUN",
             allow_nans=self.allow_nans,
             velocity=True,
         )
@@ -128,26 +130,25 @@ class SolarDistAndDoppler(abstract.AbstractMissionData):
         # Return early if no kernel data exists.
         sunobs.dropna(inplace=True)
         if sunobs.size == 0:
-            logger.warning('[0/%i] times had compete ephemeris data; returning table with all NaNs.',
-                           len(ugps_times))
+            logger.warning("[0/%i] times had compete ephemeris data; returning table with all NaNs.", len(ugps_times))
             return table
 
-        table.loc[sunobs.index, 'sunobserverdistancecorrection'] = self._dist_correction(sunobs)
-        table.loc[sunobs.index, 'sunobserverdopplerfactor'] = self._doppler_correction(sunobs)
+        table.loc[sunobs.index, "sunobserverdistancecorrection"] = self._dist_correction(sunobs)
+        table.loc[sunobs.index, "sunobserverdopplerfactor"] = self._doppler_correction(sunobs)
 
         # Corrections for earth to sun.
         sunearth = spicierpy.ext.query_ephemeris(
             ugps_times=sunobs.index.values,  # Subset times with data.
-            target=spicierpy.obj.Body('SUN'),
-            observer=spicierpy.obj.Body('EARTH'),
-            ref_frame='IAU_SUN',
+            target=spicierpy.obj.Body("SUN"),
+            observer=spicierpy.obj.Body("EARTH"),
+            ref_frame="IAU_SUN",
             allow_nans=self.allow_nans,
             velocity=True,
         )
         sunearth.dropna(inplace=True)
 
-        table.loc[sunearth.index, 'sunearthdistancecorrection'] = self._dist_correction(sunearth)
-        table.loc[sunearth.index, 'sunearthdopplerfactor'] = self._doppler_correction(sunearth)
+        table.loc[sunearth.index, "sunearthdistancecorrection"] = self._dist_correction(sunearth)
+        table.loc[sunearth.index, "sunearthdopplerfactor"] = self._doppler_correction(sunearth)
 
         return table
 

@@ -2,6 +2,7 @@
 
 @author: Brandon Stone
 """
+
 import logging
 import os
 import shutil
@@ -12,18 +13,16 @@ import pandas as pd
 import spiceypy
 from spiceypy.utils.exceptions import SpiceyError
 
-from . import vectorized
-from .obj import Instrument, Body, Frame
 from .. import spicetime
 from ..utils import capture_subprocess
-
+from . import vectorized
+from .obj import Body, Frame, Instrument
 
 logger = logging.getLogger(__name__)
 
 
 class load_kernel:
-    """SPICE Kernel Context Manager.
-    """
+    """SPICE Kernel Context Manager."""
 
     def __init__(self, kernels):
         """SPICE Kernel Context Manager
@@ -60,48 +59,44 @@ class load_kernel:
 
     @property
     def loaded(self):
-        """List of kernels that have been loaded.
-        """
+        """List of kernels that have been loaded."""
         return self._loaded
 
     def _iter_load(self, kernels):
-        """Load multiple kernels.
-        """
+        """Load multiple kernels."""
         if isinstance(kernels, (str, Path)):
             self.load(str(kernels))
         elif isinstance(kernels, (list, tuple)):
             for k in kernels:
                 self._iter_load(k)
-        elif hasattr(kernels, 'keys'):
-            if 'meta' in kernels:
-                self._iter_load(kernels['meta'])
+        elif hasattr(kernels, "keys"):
+            if "meta" in kernels:
+                self._iter_load(kernels["meta"])
             for k in kernels:
-                if k != 'meta':
+                if k != "meta":
                     self._iter_load(kernels[k])
         else:
-            raise ValueError('Invalid `kernels`: {!r}'.format(kernels))
+            raise ValueError(f"Invalid `kernels`: {kernels!r}")
 
     def load(self, kernel):
-        """Load a kernel file.
-        """
-        logger.debug('Loading kernel: %r', kernel)
+        """Load a kernel file."""
+        logger.debug("Loading kernel: %r", kernel)
         spiceypy.furnsh(kernel)
         self._loaded.append(kernel)
 
     def unload(self, kernel=None, clear=False):
-        """Unload a kernel file.
-        """
+        """Unload a kernel file."""
         if clear:
             # spiceypy.kclear()
             # self._loaded.clear()
             for k in reversed(self.loaded):
                 self.unload(k)
         elif isinstance(kernel, str):
-            logger.debug('Unloading kernel: %r', kernel)
+            logger.debug("Unloading kernel: %r", kernel)
             spiceypy.unload(kernel)
             self._loaded.remove(kernel)
         else:
-            raise ValueError('Must specify `kernel` (str) or `all`=True.')
+            raise ValueError("Must specify `kernel` (str) or `all`=True.")
 
 
 def object_frame(obj_name, as_id=False):
@@ -125,7 +120,7 @@ def object_frame(obj_name, as_id=False):
     return spiceypy.cnmfrm(obj_name)[not as_id]
 
 
-def kernel_coverage(filename, body, as_segments=False, to_fmt='ugps'):
+def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
     """Determine the coverage window for an entire kernel file.
 
     Parameters
@@ -161,7 +156,7 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt='ugps'):
     # TODO: Switch to using objs for `body`.
 
     # Ephemeris kernel.
-    if ktype == 'SPK':
+    if ktype == "SPK":
         if isinstance(body, Frame):
             body = body.body
         elif not isinstance(body, Body):
@@ -173,28 +168,21 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt='ugps'):
         )
 
     # Attitude (orientation, pointing) kernel.
-    elif ktype == 'CK':
+    elif ktype == "CK":
         if isinstance(body, Body):
             body = body.frame
         elif not isinstance(body, Frame):
             body = Frame(body)
-        window = spiceypy.ckcov(
-            filename,
-            idcode=body.id,
-            needav=False,
-            level='SEGMENT',
-            tol=0,
-            timsys='TDB'
-        )
+        window = spiceypy.ckcov(filename, idcode=body.id, needav=False, level="SEGMENT", tol=0, timsys="TDB")
 
     # Valid, but unsupported kernel types.
-    elif ktype in ['PCK']:
+    elif ktype in ["PCK"]:
         # TODO: Consider implementing using: pckcov
-        raise NotImplementedError('For kernel type: {!r}'.format(ktype))
+        raise NotImplementedError(f"For kernel type: {ktype!r}")
 
     # Invalid kernel types (i.e., no related "coverage" function).
     else:
-        raise ValueError('Unknown or unexpected kernel type: {!r} from {!r}'.format(ktype, filename))
+        raise ValueError(f"Unknown or unexpected kernel type: {ktype!r} from {filename!r}")
 
     # Option to do the overall range.
     window = tuple(window)
@@ -203,16 +191,17 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt='ugps'):
 
     # Return times in uGPS.
     if len(window) == 0:
-        contains_ids = 'UNKNOWN'
+        contains_ids = "UNKNOWN"
         try:
             contains_ids = kernel_objects(filename, as_id=True)
             if contains_ids:
-                contains_ids = ', '.join(str(val) for val in contains_ids)
-        except:
-            logger.exception('Exception occurred while preparing another exception! Suppressing...')
-        raise ValueError(f'No data for body [{body}] was found in the kernel containing IDs=[{contains_ids}],'
-                         f' type=[{ktype}], file: {filename!r}')
-    return spicetime.adapt(window, 'et', to_fmt)
+                contains_ids = ", ".join(str(val) for val in contains_ids)
+        finally:
+            raise ValueError(
+                f"No data for body [{body}] was found in the kernel containing IDs=[{contains_ids}],"
+                f" type=[{ktype}], file: {filename!r}"
+            )
+    return spicetime.adapt(window, "et", to_fmt)
 
 
 def kernel_objects(filename, as_id=False):
@@ -240,24 +229,24 @@ def kernel_objects(filename, as_id=False):
     _, ktype = spiceypy.getfat(filename)
 
     # Ephemeris kernel.
-    if ktype == 'SPK':
+    if ktype == "SPK":
         objs = tuple(spiceypy.spkobj(filename))
         if not as_id:
             objs = tuple(Body(v) for v in objs)
 
     # Attitude (orientation, pointing) kernel.
-    elif ktype == 'CK':
+    elif ktype == "CK":
         objs = tuple(spiceypy.ckobj(filename))
         if not as_id:
             objs = tuple(Frame(v) for v in objs)
 
     # Valid, but unsupported kernel types.
-    elif ktype in ['DSK']:
-        raise NotImplementedError('For kernel type: {!r}'.format(ktype))
+    elif ktype in ["DSK"]:
+        raise NotImplementedError(f"For kernel type: {ktype!r}")
 
     # Invalid kernel types (i.e., no related "obj code" function).
     else:
-        raise ValueError('Unknown or unexpected kernel type: {!r} from {!r}'.format(ktype, filename))
+        raise ValueError(f"Unknown or unexpected kernel type: {ktype!r} from {filename!r}")
     return objs
 
 
@@ -324,14 +313,16 @@ def infer_ids(spacecraft_name, spacecraft_id, instruments=None, from_dsn=False, 
     for i, instrument_name in enumerate(instruments, 1):
         instrument_ids.append((instrument_name, spacecraft_id * 1000 - i))
 
-    return dict([
-        ('mission', spacecraft_name),
-        ('spacecraft', spacecraft_id),
-        ('clock', clock_id),
-        ('ephemeris', ephemeris_id),
-        ('attitude', attitude_id),
-        ('instruments', dict(instrument_ids))
-    ])
+    return dict(
+        [
+            ("mission", spacecraft_name),
+            ("spacecraft", spacecraft_id),
+            ("clock", clock_id),
+            ("ephemeris", ephemeris_id),
+            ("attitude", attitude_id),
+            ("instruments", dict(instrument_ids)),
+        ]
+    )
 
 
 def instrument_boresight(instrument, n_vectors=1, norm=False):
@@ -359,10 +350,9 @@ def instrument_boresight(instrument, n_vectors=1, norm=False):
 
 
 def brief(kernel_file, bin_=None):
-    """Brief summary of a kernel file.
-    """
+    """Brief summary of a kernel file."""
     if bin_ is None:
-        bin_ = shutil.which('brief')
+        bin_ = shutil.which("brief")
         if bin_ is None:
             raise FileNotFoundError('Unable to find executable "brief" in system PATH.')
     cmd = [bin_, os.path.realpath(kernel_file)]
@@ -417,11 +407,11 @@ def spice_error_to_val(err_value=None, err_flag=None, pass_flag=None, disable=Fa
     return wrapped_func
 
 
-POSITION_COLUMNS = ('x', 'y', 'z')
-VELOCITY_COLUMNS = ('vx', 'vy', 'vz')
+POSITION_COLUMNS = ("x", "y", "z")
+VELOCITY_COLUMNS = ("vx", "vy", "vz")
 
 
-def query_ephemeris(ugps_times, target, observer, ref_frame='J2000', correction=None, velocity=False, allow_nans=False):
+def query_ephemeris(ugps_times, target, observer, ref_frame="J2000", correction=None, velocity=False, allow_nans=False):
     """Query SPICE ephemeris data from pre-loaded kernels.
 
     Parameters
@@ -450,11 +440,11 @@ def query_ephemeris(ugps_times, target, observer, ref_frame='J2000', correction=
 
     """
     ref_frame = Frame(ref_frame)
-    correction = correction or 'NONE'
+    correction = correction or "NONE"
 
-    if not hasattr(ugps_times, '__iter__'):
+    if not hasattr(ugps_times, "__iter__"):
         ugps_times = [ugps_times]
-    et_times = spicetime.adapt(ugps_times, to='et')
+    et_times = spicetime.adapt(ugps_times, to="et")
 
     # Determine if we are reading position or position+velocity.
     #   This matters because if you request velocity, then any reference
@@ -475,32 +465,33 @@ def query_ephemeris(ugps_times, target, observer, ref_frame='J2000', correction=
     # Read the data from SPICE kernels.
     #   If time is a scalar, spice returns a 1d array of 6 values.
     #   If time is an iterable, spice returns a 2d array of N,6 values.
-    logger.debug('Reading [%i] ephemeris values of [%s], from [%s], in frame [%s], with correction [%s]',
-                 len(et_times), target.name, observer.name, ref_frame.name, correction)
+    logger.debug(
+        "Reading [%i] ephemeris values of [%s], from [%s], in frame [%s], with correction [%s]",
+        len(et_times),
+        target.name,
+        observer.name,
+        ref_frame.name,
+        correction,
+    )
 
     # Slowly iterate through the times. Catches insufficient data
     #   exceptions and returns NaNs instead.
     if allow_nans:
+
         def _checked_read_ephem(sample_et):
             """Read ephemeris data; converts insufficient data
             exceptions into NaNs.
             """
             # TODO: Update to use `spice_error_to_val`!
             try:
-                sample_arr, _ = read_ephem(
-                    target.id,
-                    sample_et,
-                    ref=ref_frame.name,
-                    abcorr=correction,
-                    obs=observer.id
-                )
+                sample_arr, _ = read_ephem(target.id, sample_et, ref=ref_frame.name, abcorr=correction, obs=observer.id)
                 return sample_arr
             except SpiceyError as e:
-                if 'SPICE(SPKINSUFFDATA)' in e.short:  # Lacks ephemeris (generally).
+                if "SPICE(SPKINSUFFDATA)" in e.short:  # Lacks ephemeris (generally).
                     return nan_output
-                if 'SPICE(NOFRAMECONNECT)' in e.short:  # Lacks attitude (generally).
+                if "SPICE(NOFRAMECONNECT)" in e.short:  # Lacks attitude (generally).
                     return nan_output
-                if 'SPICE(NOTDISJOINT)' in e.short:  # Interp through an invalid ephemeris (generally a gap).
+                if "SPICE(NOTDISJOINT)" in e.short:  # Interp through an invalid ephemeris (generally a gap).
                     return nan_output  # Viewpoint is inside target.
                 raise e
 
@@ -508,19 +499,13 @@ def query_ephemeris(ugps_times, target, observer, ref_frame='J2000', correction=
 
     # Can safely assume no NaNs (much faster).
     else:
-        arr, _ = read_ephem(
-            target.id,
-            et_times,
-            ref=ref_frame.name,
-            abcorr=correction,
-            obs=observer.id
-        )
+        arr, _ = read_ephem(target.id, et_times, ref=ref_frame.name, abcorr=correction, obs=observer.id)
 
     # Organize the return data into a table.
     if arr.ndim == 1:
         ugps_times = [ugps_times]
         arr = arr[None]
 
-    table = pd.DataFrame(arr, columns=default_columns, index=pd.Index(ugps_times, name='ugps'))
-    table.columns.name = '{}.{}@{}'.format(target, observer, ref_frame)
+    table = pd.DataFrame(arr, columns=default_columns, index=pd.Index(ugps_times, name="ugps"))
+    table.columns.name = f"{target}.{observer}@{ref_frame}"
     return table
