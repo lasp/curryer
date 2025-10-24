@@ -13,7 +13,7 @@ SpiceTime
 Examples
 --------
 >>> utc = adapt([0, 1], from_='ugps', to='utc')
->>> print('Adapt API:\n\t{!r}\n\ttype={}'.format(utc, type(utc)))
+>>> print('Adapt API:\\n\\t{!r}\\n\\ttype={}'.format(utc, type(utc)))
 Adapt API:
 	['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001']
 	type=<class 'list'>
@@ -21,7 +21,7 @@ Adapt API:
 
 >>> ugps = SpiceTime([0, 1], ttype='ugps')
 >>> utc_arr = ugps.to_utc()
->>> print('SpiceTime API:\n\t{!r}'.format(utc_arr))
+>>> print('SpiceTime API:\\n\\t{!r}'.format(utc_arr))
 SpiceTime API:
 	SpiceTime(['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001'],
       dtype='<U26', ttype='utc')
@@ -35,7 +35,7 @@ from types import MappingProxyType
 import numpy as np
 
 from .. import spicierpy as sp
-from . import constants, utils, native
+from . import constants, utils, native, leapsecond
 
 
 # TODO: Support format type of a SPICE clock obj (i.e., convert to/from sclk ticks).
@@ -167,6 +167,8 @@ def from_et(dt_val):
 def from_ugps(dt_val):
     """Convert times from GPS microseconds.
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val / constants.TimeConstant.SEC_TO_USEC
                      - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
@@ -175,6 +177,8 @@ def from_ugps(dt_val):
 def from_gps(dt_val):
     """Convert times from GPS seconds.
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
 
@@ -182,6 +186,8 @@ def from_gps(dt_val):
 def from_tai(dt_val):
     """Convert times from International Atomic Time seconds (1958).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val + constants.EpochOffsetSeconds.GPS_TO_TAI
                      - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
 
@@ -190,6 +196,8 @@ def from_tai(dt_val):
 def from_utc(dt_val):
     """Convert times from UTC string(s) (ISO format).
     """
+    # Ensure leapseound kernel is loaded for UTC conversions
+    leapsecond.load()
     return sp.str2et(dt_val)
 
 
@@ -207,6 +215,8 @@ def to_et(dt_val):
 def to_ugps(dt_val):
     """Convert times to GPS microseconds (int64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     ugps = ((sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET)
             * constants.TimeConstant.SEC_TO_USEC)
     return np.round(ugps).astype(np.int64)
@@ -216,6 +226,8 @@ def to_ugps(dt_val):
 def to_gps(dt_val):
     """Convert times to GPS seconds (float64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
 
 
@@ -223,6 +235,8 @@ def to_gps(dt_val):
 def to_tai(dt_val):
     """Convert times to International Atomic Time seconds (1958; float64).
     """
+    # Ensure leapsecond kernel is loaded for time conversions using sp.unitim
+    leapsecond.load()
     return (sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
             - constants.EpochOffsetSeconds.GPS_TO_TAI)
 
@@ -231,6 +245,9 @@ def to_tai(dt_val):
 def to_utc(dt_val, date_format=None):
     """Convert times to UTC strings (ISO format).
     """
+    # Ensure leapsecond kernel is loaded for UTC conversions
+    leapsecond.load()
+
     # SPICE compatible format string, default to ISO.
     if date_format is None:
         date_format = 'YYYY-MM-DD HR:MN:SC.###### ::UTC ::RND'
