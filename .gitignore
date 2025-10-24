@@ -28,3 +28,6 @@ tmp/
 
 # Project-specific
 # ----------------
+.env.local
+.env*.local
+data/generic/de430.bsp
