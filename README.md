@@ -2,52 +2,57 @@
 
 A library for SPICE extensions and geospatial data product generation.
 
-* Github: https://github.com/lasp/curryer
-* PyPi: https://pypi.org/project/lasp-curryer/
+- Github: https://github.com/lasp/curryer
+- PyPi: https://pypi.org/project/lasp-curryer/
 
 ## Core Features
-* Extensions and wrappers for SPICE routines and common data patterns.
-* Automation of SPICE kernel creation from JSON definition files and modern data
-file formats and third-party data structures.
-* Level-1 geospatial data processing routines (e.g., geolocation).
 
+- Extensions and wrappers for SPICE routines and common data patterns.
+- Automation of SPICE kernel creation from JSON definition files and modern data
+  file formats and third-party data structures.
+- Level-1 geospatial data processing routines (e.g., geolocation).
 
 ## Install
+
 ```shell
 pip install lasp-curryer
 ```
 
 ### Data / Binary Files
+
 _NOTE: Data files and precompiled binaries are not currently automated and thus
 require manual downloading. This will be addressed in the next major release._
 
 Download from the Curryer repo:
-* `data/generic` - Generic spice kernels (e.g., leapsecond kernel)
-  * Download 
-* `data/<misssion>` - Mission specific kernels and/or kernel definitions.
-* `data/gmted` - Digital Elevation Model (DEMs) with global coverage at
-15-arc-second.
-  * Alternatively, use the script [download_dem.py](bin/download_dem.py) to
-download different types and/or resolutions from the USGS.
+
+- `data/generic` - Generic spice kernels (e.g., leapsecond kernel)
+  - Download
+- `data/<mission>` - Mission specific kernels and/or kernel definitions.
+- `data/gmted` - Digital Elevation Model (DEMs) with global coverage at
+  15-arc-second.
+  - Alternatively, use the script [download_dem.py](bin/download_dem.py) to
+    download different types and/or resolutions from the USGS.
 
 Define the top-level directory using the environment variable `CURRYER_DATA_DIR`
 or pass the path to routines which require data files.
 
 Download Third-party Files:
-* SPICE Utilities: https://naif.jpl.nasa.gov/naif/utilities.html
-  * At minimum: `mkspk`, `msopck`, `brief`, `ckbreif`
-* SPICE Generic Kernels (large):
-  * [de430.bsp](https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de430.bsp),
-place in `data/generic`.
-  * PyProj Data:
-    * Data directory: `import pyproj; print(pyproj.datadir.get_user_data_dir())`
-    * [EGM96 TIFF](https://cdn.proj.org/us_nga_egm96_15.tif)
 
+- SPICE Utilities: https://naif.jpl.nasa.gov/naif/utilities.html
+  - At minimum: `mkspk`, `msopck`, `brief`, `ckbreif`
+- SPICE Generic Kernels (large):
+  - [de430.bsp](https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de430.bsp),
+    place in `data/generic`.
+- PyProj Data:
+  - Data directory: `import pyproj; print(pyproj.datadir.get_user_data_dir())`
+  - [EGM96 TIFF](https://cdn.proj.org/us_nga_egm96_15.tif)
 
 ## Examples
 
 ### SPICE Extensions
+
 Time conversion:
+
 ```python
 from curryer import spicetime
 
@@ -69,6 +74,7 @@ print(repr(spicetime.adapt(np.arange(4) * 60e6 + 1415491218000000, to='dt64')))
 ```
 
 Abstractions:
+
 ```python
 from curryer import spicierpy
 
@@ -116,10 +122,11 @@ with spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
 #         [-0.0017315 ,  0.08679351,  0.99622482]]))
 ```
 
-
 ### SPICE Kernel Creation
+
 Create CLARREO Dynamic Kernels:
-````python
+
+```python
 import curryer
 
 meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
@@ -147,11 +154,12 @@ for kernel_config in kernel_configs:
         kernel_config, output_kernel=output_dir, input_data=input_file_or_obj,
     ))
 
-````
-
+```
 
 ### Level-1 Geospatial Processing
+
 Geolocate CLARREO HYSICS Instrument:
+
 ```python
 import pandas as pd
 import curryer
@@ -172,5 +180,6 @@ with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels])
     l1a_dataset.to_netcdf('cprs_geolocation_l1a_20230101.nc')
 
 ```
+
 _Assumes dynamic kernels have been created and their file names defined within
 the metakernel JSON file._

@@ -28,3 +28,5 @@ tmp/
 
 # Project-specific
 # ----------------
+.env.local
+.env*.local
