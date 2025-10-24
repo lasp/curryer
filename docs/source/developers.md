@@ -2,7 +2,7 @@
 
 ## Environment Setup
 
-Development environment requires Poetry 2 or greater. 
+Development environment requires Poetry 2 or greater.
 
 ```bash
 poetry install

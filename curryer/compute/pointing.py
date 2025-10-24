@@ -3,6 +3,7 @@
 
 @author: Brandon Stone
 """
+
 import logging
 from enum import IntEnum
 from types import MappingProxyType
@@ -11,9 +12,8 @@ import numpy as np
 import pandas as pd
 from spiceypy.utils.exceptions import SpiceyError
 
-from . import constants, abstract, spatial
-from .. import spicierpy, spicetime
-
+from .. import spicetime, spicierpy
+from . import abstract, constants, spatial
 
 logger = logging.getLogger(__name__)
 
@@ -102,19 +102,18 @@ def boresight_dot_object(instrument, target, ugps_times):
     return calc_cosine(target_state, boresight_vector)
 
 
-def check_fov(ugps_times, instrument, target='MOON', observer=True, correction='LT+S', allow_nans=False):
-    """Check if there was an FOV event at the specified time.
-    """
+def check_fov(ugps_times, instrument, target="MOON", observer=True, correction="LT+S", allow_nans=False):
+    """Check if there was an FOV event at the specified time."""
     # Prepare the SPICE objects.
     if not isinstance(instrument, spicierpy.obj.Body):
         instrument = spicierpy.obj.Body(instrument, frame=True)
     if not isinstance(target, spicierpy.obj.Body):
         target = spicierpy.obj.Body(target, frame=True)
     observer = instrument.spacecraft if isinstance(instrument, spicierpy.obj.Instrument) else instrument
-    name = f'Obs[{observer}]Instrument[{instrument.name}]Target[{target.name}]'
+    name = f"Obs[{observer}]Instrument[{instrument.name}]Target[{target.name}]"
 
     # Check for FOV events at each time step!
-    et_times = spicetime.adapt(ugps_times, to='et')
+    et_times = spicetime.adapt(ugps_times, to="et")
 
     # Function to handle insufficient data errors.
     # lacks_data = re.compile(r'^SPICE\((SPKINSUFFDATA|NOFRAMECONNECT)\)', re.MULTILINE)
@@ -122,18 +121,21 @@ def check_fov(ugps_times, instrument, target='MOON', observer=True, correction='
         try:
             return spicierpy.fovtrg(
                 et=sample_et,
-                inst=instrument.name, target=target.name, tshape='ELLIPSOID', tframe=target.frame.name,
-                abcorr=correction or 'NONE',
-                observer=observer.name
+                inst=instrument.name,
+                target=target.name,
+                tshape="ELLIPSOID",
+                tframe=target.frame.name,
+                abcorr=correction or "NONE",
+                observer=observer.name,
             )
         except SpiceyError as e:
             if not allow_nans:
                 raise
-            if 'SPICE(SPKINSUFFDATA)' in e.short:
+            if "SPICE(SPKINSUFFDATA)" in e.short:
                 return -1  # Lacks ephemeris (generally).
-            if 'SPICE(NOFRAMECONNECT)' in e.short:
+            if "SPICE(NOFRAMECONNECT)" in e.short:
                 return -2  # Lacks attitude (generally).
-            if 'SPICE(NOTDISJOINT)' in e.short:
+            if "SPICE(NOTDISJOINT)" in e.short:
                 # Interp through an invalid ephemeris (generally a gap).
                 return -3  # Viewpoint is inside target.
             raise e
@@ -142,7 +144,7 @@ def check_fov(ugps_times, instrument, target='MOON', observer=True, correction='
             #     raise
             # return -1
 
-    logger.info('Checking for [%s] FOV events: %s', len(et_times), name)
+    logger.info("Checking for [%s] FOV events: %s", len(et_times), name)
     # vec_fovtrg = np.vectorize(_fov, otypes=[np.int8])
     # flags = vec_fovtrg(et_times)
     # flags = np.array(list(map(_fov, et_times)), dtype=np.int8)
@@ -152,10 +154,18 @@ def check_fov(ugps_times, instrument, target='MOON', observer=True, correction='
 
     if len(ugps_times) > 0:
         cnts = results.value_counts().to_dict()
-        logger.info('Check FOV [%s] between [%s, %s] had nInFov=[%d], nOutFov=[%d],'
-                    ' nMissEphem=[%d], nMissAtt=[%d], nDisjoint=[%d]',
-                    name, spicetime.adapt(ugps_times[0], to='utc'), spicetime.adapt(ugps_times[-1], to='utc'),
-                    cnts.get(1, 0), cnts.get(0, 0), cnts.get(-1, 0), cnts.get(-2, 0), cnts.get(-3, 0))
+        logger.info(
+            "Check FOV [%s] between [%s, %s] had nInFov=[%d], nOutFov=[%d],"
+            " nMissEphem=[%d], nMissAtt=[%d], nDisjoint=[%d]",
+            name,
+            spicetime.adapt(ugps_times[0], to="utc"),
+            spicetime.adapt(ugps_times[-1], to="utc"),
+            cnts.get(1, 0),
+            cnts.get(0, 0),
+            cnts.get(-1, 0),
+            cnts.get(-2, 0),
+            cnts.get(-3, 0),
+        )
     return results
 
 
@@ -163,6 +173,7 @@ class OccultType(IntEnum):
     """Types of planetary occultation.
     See: https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/cspice/occult_c.html
     """
+
     TOTAL_TARGET1_BY_TARGET2 = -3
     ANNULAR_TARGET1_BY_TARGET2 = -2
     PARTIAL_TARGET1_BY_TARGET2 = -1
@@ -172,9 +183,8 @@ class OccultType(IntEnum):
     TOTAL_TARGET2_BY_TARGET1 = 3
 
 
-def check_occult(ugps_times, observer, target1='MOON', target2='SUN', correction='LT'):
-    """Check if there was an FOV event at the specified time.
-    """
+def check_occult(ugps_times, observer, target1="MOON", target2="SUN", correction="LT"):
+    """Check if there was an FOV event at the specified time."""
     # Prepare the SPICE objects.
     if not isinstance(observer, spicierpy.obj.Body):
         observer = spicierpy.obj.Body(observer)
@@ -182,37 +192,44 @@ def check_occult(ugps_times, observer, target1='MOON', target2='SUN', correction
         target1 = spicierpy.obj.Body(target1, frame=True)
     if not isinstance(target2, spicierpy.obj.Body):
         target2 = spicierpy.obj.Body(target2, frame=True)
-    name = 'Obs[{}]T1[{}]T2[{}]'.format(observer.name, target1.name, target2.name)
+    name = f"Obs[{observer.name}]T1[{target1.name}]T2[{target2.name}]"
 
     # Check for occult events at each time step!
-    et_times = spicetime.adapt(ugps_times, to='et')
+    et_times = spicetime.adapt(ugps_times, to="et")
 
     vec_occult = np.vectorize(
-        spicierpy.occult, otypes=[np.int8],
-        excluded={'target1', 'shape1', 'frame1', 'target2', 'shape2', 'frame2', 'abcorr', 'observer'}
+        spicierpy.occult,
+        otypes=[np.int8],
+        excluded={"target1", "shape1", "frame1", "target2", "shape2", "frame2", "abcorr", "observer"},
     )
     codes = vec_occult(
         et=et_times,
-        target1=target1.name, shape1='ELLIPSOID', frame1=target1.frame.name,
-        target2=target2.name, shape2='ELLIPSOID', frame2=target2.frame.name,
-        abcorr=correction or 'NONE',
-        observer=observer.name
+        target1=target1.name,
+        shape1="ELLIPSOID",
+        frame1=target1.frame.name,
+        target2=target2.name,
+        shape2="ELLIPSOID",
+        frame2=target2.frame.name,
+        abcorr=correction or "NONE",
+        observer=observer.name,
     )
     return pd.Series(codes, index=ugps_times, name=name)
 
 
 class PointingData(abstract.AbstractMissionData):
-    """Class for working with TIM pointing data.
-    """
+    """Class for working with TIM pointing data."""
+
     DEFAULT_CADENCE = constants.ATTITUDE_TIMESTEP_USEC
-    DEFAULT_QF_MAP = MappingProxyType(dict(
+    DEFAULT_QF_MAP = MappingProxyType(
+        dict(
             NOT_TRACKING_THE_SUN=0x10,
             EARTH_IN_FIELD_OF_VIEW=0x40,
             MOON_IN_FIELD_OF_VIEW=0x80,
             POINTING_GAP=0x200000,
             POINTING_OBSC_STATIC_STRUCT=0x8000,
             POINTING_OBSC_SOLAR_ARRAY=0x10000,
-    ))
+        )
+    )
 
     def __init__(self, observer, qf_map=None, with_geolocate=False, microsecond_cadence=None):
         """Setup how the attitude data will be used.
@@ -257,53 +274,51 @@ class PointingData(abstract.AbstractMissionData):
             Table of [?] at each time.
 
         """
-        logger.debug('Creating pointing table with up to [%i] rows', len(ugps_times))
+        logger.debug("Creating pointing table with up to [%i] rows", len(ugps_times))
         cosines = pd.DataFrame(
-            index=pd.Index(ugps_times, name='microsecondssincegpsepoch'),
-            columns=['timdotearth', 'timdotmoon', 'timdotsun'],
+            index=pd.Index(ugps_times, name="microsecondssincegpsepoch"),
+            columns=["timdotearth", "timdotmoon", "timdotsun"],
         )
-        qualityflags = pd.Series(
-            np.zeros(cosines.shape[0], dtype=np.uint32),
-            index=cosines.index,
-            name='qualityflags'
-        )
+        qualityflags = pd.Series(np.zeros(cosines.shape[0], dtype=np.uint32), index=cosines.index, name="qualityflags")
 
         # Search for FOV events.
         #   This includes every time, and will let us know when we are missing
         #   data, making the following calls faster than this.
-        fov = check_fov(ugps_times, self.observer, target='MOON', allow_nans=self.allow_nans)
+        fov = check_fov(ugps_times, self.observer, target="MOON", allow_nans=self.allow_nans)
 
         # Times with complete SPICE data.  TODO: This doesn't work as intended. Still get excep lower!
         idata = fov >= 0
         ugps_good = fov[idata].index.values
-        qualityflags[~idata] |= self.qf_map['POINTING_GAP']
+        qualityflags[~idata] |= self.qf_map["POINTING_GAP"]
 
         # Return early if no kernel data exists.
         if ugps_good.size == 0:
-            logger.warning('[0/%i] times had compete ephemeris/attitude data; returning table with all cosine NaNs.',
-                           len(ugps_times))
+            logger.warning(
+                "[0/%i] times had compete ephemeris/attitude data; returning table with all cosine NaNs.",
+                len(ugps_times),
+            )
             return cosines.join(qualityflags)
 
         # Set Moon-in-FOV, but only if there is occultation of the sun.
-        occult = check_occult(ugps_good, self.observer, 'MOON', 'SUN')
+        occult = check_occult(ugps_good, self.observer, "MOON", "SUN")
         fov = (fov > 0) & (occult > OccultType.NO_OCCULT.value)
-        qualityflags[fov == 1] |= self.qf_map['MOON_IN_FIELD_OF_VIEW']
+        qualityflags[fov == 1] |= self.qf_map["MOON_IN_FIELD_OF_VIEW"]
 
         # Check Earth-in-FOV.
-        fov = check_fov(ugps_good, self.observer, target='EARTH', allow_nans=self.allow_nans)
-        qualityflags[idata & (fov == 1)] |= self.qf_map['EARTH_IN_FIELD_OF_VIEW']
+        fov = check_fov(ugps_good, self.observer, target="EARTH", allow_nans=self.allow_nans)
+        qualityflags[idata & (fov == 1)] |= self.qf_map["EARTH_IN_FIELD_OF_VIEW"]
 
         # Check Sun-in-FOV (not used in production).
         # Note: Inverted QF b/c NOT tracking (i.e., not in FOV).
-        fov = check_fov(ugps_good, self.observer, target='SUN', allow_nans=self.allow_nans)
-        occult = check_occult(ugps_good, self.observer, 'EARTH', 'SUN')
+        fov = check_fov(ugps_good, self.observer, target="SUN", allow_nans=self.allow_nans)
+        occult = check_occult(ugps_good, self.observer, "EARTH", "SUN")
         fov = (fov > 0) & (occult <= OccultType.NO_OCCULT.value)
-        qualityflags[idata & (fov != 1)] |= self.qf_map['NOT_TRACKING_THE_SUN']
+        qualityflags[idata & (fov != 1)] |= self.qf_map["NOT_TRACKING_THE_SUN"]
 
         # Calculate cosines.
-        cosines.loc[idata, 'timdotearth'] = boresight_dot_object(self.observer, 'EARTH', ugps_good)
-        cosines.loc[idata, 'timdotmoon'] = boresight_dot_object(self.observer, 'MOON', ugps_good)
-        cosines.loc[idata, 'timdotsun'] = boresight_dot_object(self.observer, 'SUN', ugps_good)
+        cosines.loc[idata, "timdotearth"] = boresight_dot_object(self.observer, "EARTH", ugps_good)
+        cosines.loc[idata, "timdotmoon"] = boresight_dot_object(self.observer, "MOON", ugps_good)
+        cosines.loc[idata, "timdotsun"] = boresight_dot_object(self.observer, "SUN", ugps_good)
         cosines = cosines.astype(np.float64)
 
         # Option to geolocate.
@@ -319,31 +334,41 @@ class PointingData(abstract.AbstractMissionData):
             surf_lla = spatial.ecef_to_geodetic(surf_xyz.values, degrees=True)
             sc_alt = spatial.ecef_to_geodetic(sc_xyz.values)[:, 2]
 
-            geoloc = pd.DataFrame({'surfacelon': np.nan_to_num(surf_lla[:, 0], nan=0),
-                                   'surfacelat': np.nan_to_num(surf_lla[:, 1], nan=0),
-                                   'surfacedot': np.nan_to_num(surf_dot, nan=-1),
-                                   'surfacealt': np.nan_to_num(sc_alt, nan=0)},
-                                  index=pd.Index(ugps_times, name='microsecondssincegpsepoch'))
+            geoloc = pd.DataFrame(
+                {
+                    "surfacelon": np.nan_to_num(surf_lla[:, 0], nan=0),
+                    "surfacelat": np.nan_to_num(surf_lla[:, 1], nan=0),
+                    "surfacedot": np.nan_to_num(surf_dot, nan=-1),
+                    "surfacealt": np.nan_to_num(sc_alt, nan=0),
+                },
+                index=pd.Index(ugps_times, name="microsecondssincegpsepoch"),
+            )
 
             # Add QF for nadir pointing.
             # TODO: Use fovspec? The "corners" don't match expected value?!
             # fovspec = spicierpy.getfov(self.instrument.id, 1)
             # assert fovspec[0] == 'CIRCLE'
-            assert spicierpy.gcpool(f'INS{self.observer.frame.id}_FOV_SHAPE', 0, 1)[0] == 'CIRCLE'
-            assert spicierpy.gcpool(f'INS{self.observer.frame.id}_FOV_ANGLE_UNITS', 0, 1)[0] == 'DEGREES'
-            instr_fov_deg = spicierpy.gdpool(f'INS{self.observer.frame.id}_FOV_REF_ANGLE', 0, 1)[0]
+            if spicierpy.gcpool(f"INS{self.observer.frame.id}_FOV_SHAPE", 0, 1)[0] != "CIRCLE":
+                raise ValueError(
+                    f"Expected FOV_SHAPE to be CIRCLE, got {spicierpy.gcpool(f'INS{self.observer.frame.id}_FOV_SHAPE', 0, 1)[0]}"
+                )
+            if spicierpy.gcpool(f"INS{self.observer.frame.id}_FOV_ANGLE_UNITS", 0, 1)[0] != "DEGREES":
+                raise ValueError(
+                    f"Expected FOV_ANGLE_UNITS to be DEGREES, got {spicierpy.gcpool(f'INS{self.observer.frame.id}_FOV_ANGLE_UNITS', 0, 1)[0]}"
+                )
+            instr_fov_deg = spicierpy.gdpool(f"INS{self.observer.frame.id}_FOV_REF_ANGLE", 0, 1)[0]
 
             instr_fov_cos = np.cos(np.deg2rad(instr_fov_deg))  # Half-angle as a cosine.
-            is_nadir = cosines['timdotearth'] >= instr_fov_cos
-            qualityflags[is_nadir.index[is_nadir]] |= self.qf_map['POINTING_OBSC_STATIC_STRUCT']  # TODO: New one?!!
+            is_nadir = cosines["timdotearth"] >= instr_fov_cos
+            qualityflags[is_nadir.index[is_nadir]] |= self.qf_map["POINTING_OBSC_STATIC_STRUCT"]  # TODO: New one?!!
 
             # Add QF for FOV entirely over Earth.
             minor_radii = constants.WGS84_SEMI_MINOR_AXIS_KM
             max_alt = 510  # TODO: Compute?
             horizon_ang = np.arcsin(minor_radii / (minor_radii + max_alt))
             threshold_cos = np.cos(horizon_ang - np.deg2rad(instr_fov_deg))
-            is_full_earth = cosines['timdotearth'] >= threshold_cos
-            qualityflags[is_full_earth.index[is_full_earth]] |= self.qf_map['POINTING_OBSC_SOLAR_ARRAY']  # TODO: New?
+            is_full_earth = cosines["timdotearth"] >= threshold_cos
+            qualityflags[is_full_earth.index[is_full_earth]] |= self.qf_map["POINTING_OBSC_SOLAR_ARRAY"]  # TODO: New?
 
         # Combine data.
         result = cosines.join(qualityflags)
@@ -355,7 +380,7 @@ class PointingData(abstract.AbstractMissionData):
         result.dropna(inplace=True)
         sz_after = result.shape[0]
         if sz_before != sz_after:
-            logger.info('Dropping [%d/%d] rows with NaNs', sz_before - sz_after, sz_before)
+            logger.info("Dropping [%d/%d] rows with NaNs", sz_before - sz_after, sz_before)
         return result
 
     # @abstract.log_return(max_rows=3)
@@ -403,8 +428,13 @@ class PointingData(abstract.AbstractMissionData):
 #   pointing calculations (cosines), but it is not needed when using SPICE
 #   kernels with frame definitions.
 # ----------------------------------------------------------------------------
-def legacy_instrument_dot_object(spacecraft_to_eci_rotation, spacecraft_in_eci_state, object_in_eci_state,
-                                 boresight_in_instrument_vector, spacecraft_to_instrument_rotation=None):
+def legacy_instrument_dot_object(
+    spacecraft_to_eci_rotation,
+    spacecraft_in_eci_state,
+    object_in_eci_state,
+    boresight_in_instrument_vector,
+    spacecraft_to_instrument_rotation=None,
+):
     """Calculate the cosine angle between an instrument's boresight and an
     object (planet).
 
@@ -458,9 +488,8 @@ def legacy_instrument_dot_object(spacecraft_to_eci_rotation, spacecraft_in_eci_s
         as_scalar = False
     else:
         raise ValueError(
-            'Invalid dimensions for arguments. Rotation array must be 2 or 3 dim, and state arrays must have one less'
-            ' (i.e., 1 or 2). Got ndim: {}, {}, {}'
-            ''.format(spacecraft_to_eci_rotation.ndim, spacecraft_in_eci_state.ndim, object_in_eci_state.ndim)
+            "Invalid dimensions for arguments. Rotation array must be 2 or 3 dim, and state arrays must have one less"
+            f" (i.e., 1 or 2). Got ndim: {spacecraft_to_eci_rotation.ndim}, {spacecraft_in_eci_state.ndim}, {object_in_eci_state.ndim}"
         )
 
     # Define the rotation from the instrument (boresight) reference frame to
@@ -470,7 +499,7 @@ def legacy_instrument_dot_object(spacecraft_to_eci_rotation, spacecraft_in_eci_s
     elif 2 == spacecraft_to_instrument_rotation.ndim:
         instrument_to_spacecraft_rotation = spacecraft_to_instrument_rotation.T
     else:
-        raise ValueError('The spacecraft to instrument rotation must be fixed (i.e., a 2D rotation matrix).')
+        raise ValueError("The spacecraft to instrument rotation must be fixed (i.e., a 2D rotation matrix).")
 
     # Define the rotation from the ECI (earth centered inertial) reference
     #   frame to the spacecraft's reference frame. To support multi-sample

@@ -6,9 +6,7 @@
       "input_frame": "J2000",
       "input_center": "EARTH",
       "input_time_type": "utc",
-      "input_time_columns": [
-        "UTC"
-      ],
+      "input_time_columns": ["UTC"],
       "input_data_units": {
         "angles": "radians",
         "distances": "feet"

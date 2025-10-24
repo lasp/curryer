@@ -6,9 +6,7 @@
       "input_frame": "CPRS_YOKE_COORD",
       "input_data_type": "EULER ANGLES",
       "input_time_type": "gps",
-      "input_time_columns": [
-        "gps"
-      ],
+      "input_time_columns": ["gps"],
       "input_angle_units": "RADIANS",
       "input_angular_rate": "MAKE UP",
       "input_gap_threshold": "30s",

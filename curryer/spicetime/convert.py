@@ -15,19 +15,20 @@ Examples
 >>> utc = adapt([0, 1], from_='ugps', to='utc')
 >>> print('Adapt API:\n\t{!r}\n\ttype={}'.format(utc, type(utc)))
 Adapt API:
-	['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001']
-	type=<class 'list'>
+        ['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001']
+        type=<class 'list'>
 
 
 >>> ugps = SpiceTime([0, 1], ttype='ugps')
 >>> utc_arr = ugps.to_utc()
 >>> print('SpiceTime API:\n\t{!r}'.format(utc_arr))
 SpiceTime API:
-	SpiceTime(['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001'],
+        SpiceTime(['1980-01-06 00:00:00.000000', '1980-01-06 00:00:00.000001'],
       dtype='<U26', ttype='utc')
 
 @author: Brandon Stone
 """
+
 import logging
 import re
 from types import MappingProxyType
@@ -35,7 +36,7 @@ from types import MappingProxyType
 import numpy as np
 
 from .. import spicierpy as sp
-from . import constants, utils, native
+from . import constants, native, utils
 
 
 # TODO: Support format type of a SPICE clock obj (i.e., convert to/from sclk ticks).
@@ -130,15 +131,21 @@ def adapt(dt_val, from_=None, to=None, **kwargs):
     # Default to uGPS. Matches datetime_adapt, but note that spice uses ET
     # internally, and thus these conversions do as well.
     if from_ is to is None:
-        raise ValueError('Keywords either `from_` or `to` must not be None.')
+        raise ValueError("Keywords either `from_` or `to` must not be None.")
 
-    from_ = 'ugps' if from_ is None else from_.lower()
-    to = 'ugps' if to is None else to.lower()
+    from_ = "ugps" if from_ is None else from_.lower()
+    to = "ugps" if to is None else to.lower()
 
     logger = logging.getLogger(__name__)
     if logger.isEnabledFor(5):  # Trace-ish level.
-        logger.log(5, 'Time conversion [%s] -> [%s] for [%d] values of type [%s]', from_, to,
-                   1 if np.isscalar(dt_val) else len(dt_val), type(dt_val))
+        logger.log(
+            5,
+            "Time conversion [%s] -> [%s] for [%d] values of type [%s]",
+            from_,
+            to,
+            1 if np.isscalar(dt_val) else len(dt_val),
+            type(dt_val),
+        )
 
     # Determine how to convert between the formats and then apply it.
     out_val = utils.apply_conversions(utils.find_mapping_path(conversions, from_, to), dt_val, **kwargs)
@@ -158,38 +165,35 @@ def adapt(dt_val, from_=None, to=None, **kwargs):
 #
 @utils.InputAsArray(np.float64)
 def from_et(dt_val):
-    """Convert times from Ephemeris Time (SPICE; float64).
-    """
+    """Convert times from Ephemeris Time (SPICE; float64)."""
     return dt_val
 
 
 @utils.InputAsArray(np.int64)
 def from_ugps(dt_val):
-    """Convert times from GPS microseconds.
-    """
-    return sp.unitim(dt_val / constants.TimeConstant.SEC_TO_USEC
-                     - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
+    """Convert times from GPS microseconds."""
+    return sp.unitim(
+        dt_val / constants.TimeConstant.SEC_TO_USEC - constants.EpochOffsetSeconds.GPS_TO_J2000ET, "TAI", "ET"
+    )
 
 
 @utils.InputAsArray(np.float64)
 def from_gps(dt_val):
-    """Convert times from GPS seconds.
-    """
-    return sp.unitim(dt_val - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
+    """Convert times from GPS seconds."""
+    return sp.unitim(dt_val - constants.EpochOffsetSeconds.GPS_TO_J2000ET, "TAI", "ET")
 
 
 @utils.InputAsArray(np.float64)
 def from_tai(dt_val):
-    """Convert times from International Atomic Time seconds (1958).
-    """
-    return sp.unitim(dt_val + constants.EpochOffsetSeconds.GPS_TO_TAI
-                     - constants.EpochOffsetSeconds.GPS_TO_J2000ET, 'TAI', 'ET')
+    """Convert times from International Atomic Time seconds (1958)."""
+    return sp.unitim(
+        dt_val + constants.EpochOffsetSeconds.GPS_TO_TAI - constants.EpochOffsetSeconds.GPS_TO_J2000ET, "TAI", "ET"
+    )
 
 
 @utils.InputAsArray(np.str_)
 def from_utc(dt_val):
-    """Convert times from UTC string(s) (ISO format).
-    """
+    """Convert times from UTC string(s) (ISO format)."""
     return sp.str2et(dt_val)
 
 
@@ -198,48 +202,47 @@ def from_utc(dt_val):
 #
 @utils.InputAsArray(np.float64)
 def to_et(dt_val):
-    """Convert times to Ephemeris Time (SPICE; float64).
-    """
+    """Convert times to Ephemeris Time (SPICE; float64)."""
     return dt_val
 
 
 @utils.InputAsArray(np.float64)
 def to_ugps(dt_val):
-    """Convert times to GPS microseconds (int64).
-    """
-    ugps = ((sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET)
-            * constants.TimeConstant.SEC_TO_USEC)
+    """Convert times to GPS microseconds (int64)."""
+    ugps = (
+        sp.unitim(dt_val, "ET", "TAI") + constants.EpochOffsetSeconds.GPS_TO_J2000ET
+    ) * constants.TimeConstant.SEC_TO_USEC
     return np.round(ugps).astype(np.int64)
 
 
 @utils.InputAsArray(np.float64)
 def to_gps(dt_val):
-    """Convert times to GPS seconds (float64).
-    """
-    return sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
+    """Convert times to GPS seconds (float64)."""
+    return sp.unitim(dt_val, "ET", "TAI") + constants.EpochOffsetSeconds.GPS_TO_J2000ET
 
 
 @utils.InputAsArray(np.float64)
 def to_tai(dt_val):
-    """Convert times to International Atomic Time seconds (1958; float64).
-    """
-    return (sp.unitim(dt_val, 'ET', 'TAI') + constants.EpochOffsetSeconds.GPS_TO_J2000ET
-            - constants.EpochOffsetSeconds.GPS_TO_TAI)
+    """Convert times to International Atomic Time seconds (1958; float64)."""
+    return (
+        sp.unitim(dt_val, "ET", "TAI")
+        + constants.EpochOffsetSeconds.GPS_TO_J2000ET
+        - constants.EpochOffsetSeconds.GPS_TO_TAI
+    )
 
 
 @utils.InputAsArray(np.float64)
 def to_utc(dt_val, date_format=None):
-    """Convert times to UTC strings (ISO format).
-    """
+    """Convert times to UTC strings (ISO format)."""
     # SPICE compatible format string, default to ISO.
     if date_format is None:
-        date_format = 'YYYY-MM-DD HR:MN:SC.###### ::UTC ::RND'
+        date_format = "YYYY-MM-DD HR:MN:SC.###### ::UTC ::RND"
     else:
         date_format = spice_strftime(date_format)
 
     # SPICE needs to know string length (plus 1).
     #   Ignore the "meta" commands.
-    nchar = len(date_format.split('::', 1)[0].rstrip()) + 1
+    nchar = len(date_format.split("::", 1)[0].rstrip()) + 1
 
     return sp.timout(dt_val, date_format, nchar)
 
@@ -249,119 +252,137 @@ def to_utc(dt_val, date_format=None):
 # The shortest conversion path is used, or if multiple are tied, the order they
 # are defined in is used.
 #
-conversions = MappingProxyType(dict(
-    et=dict(
-        et=utils.noop_float64,
-        ugps=to_ugps,
-        gps=to_gps,
-        tai=to_tai,
-        utc=to_utc,
-        iso=to_utc,
-    ),
-    ugps=dict(
-        ugps=utils.noop_int64,
-        et=from_ugps,
-        dt64=native.ugps2datetime,
-        gpsd=native.ugps_to_gps_fraction,
-    ),
-    gps=dict(
-        gps=utils.noop_float64,
-        et=from_gps,
-    ),
-    tai=dict(
-        tai=utils.noop_float64,
-        et=from_tai,
-    ),
-    # Note: ISO string formats only map to ET in order to force correct
-    #   datetime string formatting. Mapping to self/alias breaks that.
-    #   e.g. "2018-01-29" with utc -> utc and output date_format="%Y/%j"
-    utc=dict(
-        et=from_utc,
-    ),
-    iso=dict(
-        et=from_utc,
-    ),
-    dt64=dict(
-        dt64=utils.noop_dt64,
-        ugps=native.datetime2ugps,
-    ),
-    gpsd=dict(
-        gpsd=utils.noop_float64,
-        ugps=native.gps_fraction_to_ugps,
-        epoch=native.gps_fraction_to_epoch_fraction,
-        ctim=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='CTIM'))(
-            native.gps_fraction_to_epoch_fraction),
-        tsis2=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='TSIS2'))(
-            native.gps_fraction_to_epoch_fraction),
-        tsis=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='TSIS'))(
-            native.gps_fraction_to_epoch_fraction),
-        tcte=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='TCTE'))(
-            native.gps_fraction_to_epoch_fraction),
-        sorce=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='SORCE'))(
-            native.gps_fraction_to_epoch_fraction),
-        jd=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='JD'))(
-            native.gps_fraction_to_epoch_fraction),
-        mjd=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch='MJD'))(
-            native.gps_fraction_to_epoch_fraction),
-    ),
-    epoch=dict(
-        epoch=utils.noop_float64,
-        gpsd=native.epoch_fraction_to_gps_fraction,
-    ),
-    ctim=dict(
-        ctim=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='CTIM'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    tsis2=dict(
-        tsis2=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='TSIS2'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    tsis1=dict(
-        tsis1=utils.noop_float64,
-        tsis=utils.noop_float64,
-    ),
-    tsis=dict(
-        tsis=utils.noop_float64,
-        tsis1=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='TSIS'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    tcte=dict(
-        tcte=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='TCTE'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    sorce=dict(
-        sorce=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='SORCE'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    jd=dict(
-        jd=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='JD'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-    mjd=dict(
-        mjd=utils.noop_float64,
-        gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch='MJD'))(
-            native.epoch_fraction_to_gps_fraction),
-    ),
-))
+conversions = MappingProxyType(
+    dict(
+        et=dict(
+            et=utils.noop_float64,
+            ugps=to_ugps,
+            gps=to_gps,
+            tai=to_tai,
+            utc=to_utc,
+            iso=to_utc,
+        ),
+        ugps=dict(
+            ugps=utils.noop_int64,
+            et=from_ugps,
+            dt64=native.ugps2datetime,
+            gpsd=native.ugps_to_gps_fraction,
+        ),
+        gps=dict(
+            gps=utils.noop_float64,
+            et=from_gps,
+        ),
+        tai=dict(
+            tai=utils.noop_float64,
+            et=from_tai,
+        ),
+        # Note: ISO string formats only map to ET in order to force correct
+        #   datetime string formatting. Mapping to self/alias breaks that.
+        #   e.g. "2018-01-29" with utc -> utc and output date_format="%Y/%j"
+        utc=dict(
+            et=from_utc,
+        ),
+        iso=dict(
+            et=from_utc,
+        ),
+        dt64=dict(
+            dt64=utils.noop_dt64,
+            ugps=native.datetime2ugps,
+        ),
+        gpsd=dict(
+            gpsd=utils.noop_float64,
+            ugps=native.gps_fraction_to_ugps,
+            epoch=native.gps_fraction_to_epoch_fraction,
+            ctim=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="CTIM"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            tsis2=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="TSIS2"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            tsis=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="TSIS"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            tcte=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="TCTE"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            sorce=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="SORCE"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            jd=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="JD"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+            mjd=utils.InputAsArray(np.float64, False, defaults=dict(to_epoch="MJD"))(
+                native.gps_fraction_to_epoch_fraction
+            ),
+        ),
+        epoch=dict(
+            epoch=utils.noop_float64,
+            gpsd=native.epoch_fraction_to_gps_fraction,
+        ),
+        ctim=dict(
+            ctim=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="CTIM"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        tsis2=dict(
+            tsis2=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="TSIS2"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        tsis1=dict(
+            tsis1=utils.noop_float64,
+            tsis=utils.noop_float64,
+        ),
+        tsis=dict(
+            tsis=utils.noop_float64,
+            tsis1=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="TSIS"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        tcte=dict(
+            tcte=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="TCTE"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        sorce=dict(
+            sorce=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="SORCE"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        jd=dict(
+            jd=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="JD"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+        mjd=dict(
+            mjd=utils.noop_float64,
+            gpsd=utils.InputAsArray(np.float64, False, defaults=dict(from_epoch="MJD"))(
+                native.epoch_fraction_to_gps_fraction
+            ),
+        ),
+    )
+)
 
 #
 # Class to maintain `ttype` for arrays.
 # Pylint has no clue how to inspect ndarray.
 # pylint: disable=too-many-function-args,arguments-differ,no-member
 #
-TTYPE_TO_DTYPE = MappingProxyType({
-    'et': np.float64,
-    'ugps': np.int64,
-    'gps': np.float64,
-    'tai': np.float64,
-    'utc': np.str_,
-})
+TTYPE_TO_DTYPE = MappingProxyType(
+    {
+        "et": np.float64,
+        "ugps": np.int64,
+        "gps": np.float64,
+        "tai": np.float64,
+        "utc": np.str_,
+    }
+)
 
 
 # TODO: Deprecate!
@@ -472,10 +493,10 @@ class SpiceTime(np.ndarray):
             #   Example: `np.ndarray.__new__(SpiceTime, in_arr)` would create
             #   a new instance of SpiceTime (self), but without using a view.
             #   If it is reached, `ttype` can't get set, so error out!
-            raise TypeError('New arrays created using explicit creation must use the `SpiceTime` class.')
+            raise TypeError("New arrays created using explicit creation must use the `SpiceTime` class.")
 
         # Set the `ttype`. Could be None if casting from a non-SpiceTime obj.
-        self._ttype = getattr(obj, 'ttype', None)
+        self._ttype = getattr(obj, "ttype", None)
 
     def __array_prepare__(self, out_arr, context=None):
         """Numpy's way of supporting subclassing from ufuncs (e.g.,
@@ -484,8 +505,9 @@ class SpiceTime(np.ndarray):
         """
         # Prevent mixing with datetime64.
         if out_arr.dtype.type == np.datetime64:
-            raise TypeError('Can not combine SpiceTime and numpy.datetime64 arrays. '
-                            'Datetime64 does not support leapseconds!')
+            raise TypeError(
+                "Can not combine SpiceTime and numpy.datetime64 arrays. Datetime64 does not support leapseconds!"
+            )
         return np.ndarray.__array_prepare__(self, out_arr, context)
 
     def __array_wrap__(self, out_arr, context=None):
@@ -497,110 +519,105 @@ class SpiceTime(np.ndarray):
         #   but only if they use the same time units.
         if out_arr.dtype.type == np.timedelta64:
             allowed_timedelta64_units = {
-                'us': ['ugps'],
-                's': ['gps', 'tai'],
+                "us": ["ugps"],
+                "s": ["gps", "tai"],
             }
-            search_units = re.search(r'\w+\[(\w{1,2})\]', out_arr.dtype.str)
+            search_units = re.search(r"\w+\[(\w{1,2})\]", out_arr.dtype.str)
             units = None if search_units is None else search_units.group(1)
 
             if out_arr.ttype not in allowed_timedelta64_units.get(units, []):
-                raise TypeError('Cannot combine ttype {!r} with timedelta units {!r} ({})'.format(
-                    self.ttype, units, out_arr.dtype.str
-                ))
+                raise TypeError(
+                    f"Cannot combine ttype {self.ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})"
+                )
             out_arr = out_arr.astype(TTYPE_TO_DTYPE[out_arr.ttype])
 
         return np.ndarray.__array_wrap__(self, out_arr, context)
 
     def __repr__(self):
-        """String representation of the array with the time format `ttype`.
-        """
+        """String representation of the array with the time format `ttype`."""
         s = np.ndarray.__repr__(self)
-        return s[:-1] + ', ttype={!r})'.format(self.ttype)
+        return s[:-1] + f", ttype={self.ttype!r})"
 
     @property
     def ttype(self):
-        """Time format.
-        """
+        """Time format."""
         return self._ttype
 
     @ttype.setter
     def ttype(self, value):
-        """Set the time format, but only if undefined.
-        """
+        """Set the time format, but only if undefined."""
         if self._ttype is None:
             self._ttype = value
         else:
-            raise AttributeError('Cannot change the time format `ttype` once defined. '
-                                 'Use the conversion functions to convert between formats '
-                                 '(e.g., `self.adapt("utc")`')
+            raise AttributeError(
+                "Cannot change the time format `ttype` once defined. "
+                "Use the conversion functions to convert between formats "
+                '(e.g., `self.adapt("utc")`'
+            )
 
     def adapt(self, to, **kwargs):
-        """Convert from the current time format to another.
-        """
+        """Convert from the current time format to another."""
         if self.ttype is None:
-            raise AttributeError('Time format `ttype` cannot be None. It should be set at creation '
-                                 '(e.g., `st = SpiceTime([0, 1], "ugps")`, or after (e.g., `st.ttype = "ugps").')
+            raise AttributeError(
+                "Time format `ttype` cannot be None. It should be set at creation "
+                '(e.g., `st = SpiceTime([0, 1], "ugps")`, or after (e.g., `st.ttype = "ugps").'
+            )
         dt_out = adapt(self, from_=self.ttype, to=to, **kwargs)
 
         # Maintain the SpiceTime class (lost in SPICE/C or dtype casting).
         #   Update the ttype based on the `to` conversion.
-        if not hasattr(dt_out, 'ttype'):
+        if not hasattr(dt_out, "ttype"):
             return self.__class__(dt_out, ttype=to)
 
         dt_out._ttype = to
         return dt_out
 
     def to_et(self):
-        """Convert times to Ephemeris Time (SPICE; float64).
-        """
-        return self.adapt('et')
+        """Convert times to Ephemeris Time (SPICE; float64)."""
+        return self.adapt("et")
 
     def to_ugps(self):
-        """Convert times to GPS microseconds (int64).
-        """
-        return self.adapt('ugps')
+        """Convert times to GPS microseconds (int64)."""
+        return self.adapt("ugps")
 
     def to_gps(self):
-        """Convert times to GPS seconds (float64).
-        """
-        return self.adapt('gps')
+        """Convert times to GPS seconds (float64)."""
+        return self.adapt("gps")
 
     def to_tai(self):
-        """Convert times to International Atomic Time seconds (1958; float64).
-        """
-        return self.adapt('tai')
+        """Convert times to International Atomic Time seconds (1958; float64)."""
+        return self.adapt("tai")
 
     def to_utc(self, date_format=None):
-        """Convert times to UTC strings (ISO format).
-        """
-        return self.adapt('utc', date_format=date_format)
+        """Convert times to UTC strings (ISO format)."""
+        return self.adapt("utc", date_format=date_format)
 
 
 # Convert Python date time format style to SPICE's alternative.
 _py_to_spice_format = {
-    '%a': 'Wkd',  # Weekday, abbrev
-    '%A': 'Weekday',  # Weekday, full name
-    '%w': None,  # Weekday, decimal number (0-6)
-    '%d': 'DD',  # Day of month, zero-padded
-    '%b': 'Mon',  # Month, abbrev
-    '%B': 'Month',  # Month, full name
-    '%m': 'MM',  # Month, zero-padded
-    '%y': 'YR',  # Year w/o century, zero-padded
-    '%Y': 'YYYY',  # Year, zero-padded
-    '%H': 'HR',  # Hour (24), zero-padded
-    '%I': 'AP',  # Hour (12), zero-padded
-    '%p': 'AMPM',  # AM / PM (NOTE: Adds periods)
-    '%M': 'MN',  # Minute, zero-padded
-    '%S': 'SC',  # Second, zero-padded
-    '%f': '.######',  # Microsecond, zero-padded (6 places)
-    '%z': None,  # UTC offset (e.g., +0000)
-    '%Z': None,  # Time zone name (e.g., MST)
-    '%j': 'DOY',  # Day of year, zero-padded
-    '%U': None,  # Week number (Sunday), zero-padded
-    '%W': None,  # Week number (Monday), zero-padded
-    '%c': None,  # Locale's date and time representation
-    '%x': None,  # Locale's date representation
-    '%X': None  # Locale's time representation
+    "%a": "Wkd",  # Weekday, abbrev
+    "%A": "Weekday",  # Weekday, full name
+    "%w": None,  # Weekday, decimal number (0-6)
+    "%d": "DD",  # Day of month, zero-padded
+    "%b": "Mon",  # Month, abbrev
+    "%B": "Month",  # Month, full name
+    "%m": "MM",  # Month, zero-padded
+    "%y": "YR",  # Year w/o century, zero-padded
+    "%Y": "YYYY",  # Year, zero-padded
+    "%H": "HR",  # Hour (24), zero-padded
+    "%I": "AP",  # Hour (12), zero-padded
+    "%p": "AMPM",  # AM / PM (NOTE: Adds periods)
+    "%M": "MN",  # Minute, zero-padded
+    "%S": "SC",  # Second, zero-padded
+    "%f": ".######",  # Microsecond, zero-padded (6 places)
+    "%z": None,  # UTC offset (e.g., +0000)
+    "%Z": None,  # Time zone name (e.g., MST)
+    "%j": "DOY",  # Day of year, zero-padded
+    "%U": None,  # Week number (Sunday), zero-padded
+    "%W": None,  # Week number (Monday), zero-padded
+    "%c": None,  # Locale's date and time representation
+    "%x": None,  # Locale's date representation
+    "%X": None,  # Locale's time representation
 }
 PY_TO_SPICE_FORMAT = MappingProxyType(_py_to_spice_format)
 
@@ -634,31 +651,27 @@ def spice_strftime(date_format):
         https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/cspice/timout_c.html#Particulars
 
     """
-    dt_fmt = ''
-    meta = '::RND ::UTC'
+    dt_fmt = ""
+    meta = "::RND ::UTC"
     ix_last = 0
 
     # Special case where microseconds must follow seconds.
-    date_format = re.sub(
-        r'(?<!%)%S\.%f',
-        PY_TO_SPICE_FORMAT['%S'] + PY_TO_SPICE_FORMAT['%f'],
-        date_format
-    )
+    date_format = re.sub(r"(?<!%)%S\.%f", PY_TO_SPICE_FORMAT["%S"] + PY_TO_SPICE_FORMAT["%f"], date_format)
 
-    for reg in re.finditer(r'(?<!%)%\w', date_format):
+    for reg in re.finditer(r"(?<!%)%\w", date_format):
         fmt_code = PY_TO_SPICE_FORMAT.get(reg.group(), None)
         if fmt_code is None:
-            raise ValueError('SPICE does not support the Python date format code: {!r}'.format(reg.group()))
+            raise ValueError(f"SPICE does not support the Python date format code: {reg.group()!r}")
 
         # Special case where microseconds must follow seconds.
         #   Already replaced the only valid configuration.
-        if reg.group() == '%f':
-            raise ValueError('Invalid use of `%f`. SPICE only supports `%f` if preceded by `%S.`.')
+        if reg.group() == "%f":
+            raise ValueError("Invalid use of `%f`. SPICE only supports `%f` if preceded by `%S.`.")
 
-        dt_fmt += date_format[ix_last:reg.start()]
+        dt_fmt += date_format[ix_last : reg.start()]
         dt_fmt += fmt_code
         ix_last = reg.end()
 
     dt_fmt += date_format[ix_last:]
     dt_fmt += meta
-    return dt_fmt.replace('%%', '%')
+    return dt_fmt.replace("%%", "%")

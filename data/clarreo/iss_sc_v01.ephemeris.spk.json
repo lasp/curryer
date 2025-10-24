@@ -10,9 +10,7 @@
         "distances": "feet"
       },
       "input_time_type": "gps",
-      "input_time_columns": [
-        "gps"
-      ],
+      "input_time_columns": ["gps"],
       "input_gap_threshold": "30s",
       "spk_type": "INTERP_HERMITE_UNEVEN",
       "polynom_degree": 3,

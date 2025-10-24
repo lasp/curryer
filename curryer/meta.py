@@ -2,30 +2,29 @@
 
 @author: Brandon Stone
 """
+
 import json
 import logging
-import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import spicierpy
 
-
 logger = logging.getLogger(__name__)
 
-SC_FIELDS = {'clock', 'attitude', 'ephemeris', 'instruments', 'infer_all'}
+SC_FIELDS = {"clock", "attitude", "ephemeris", "instruments", "infer_all"}
 
 
 @dataclass(repr=False)
 class MetaKernel:
-    """SPICE meta-kernel properties.
-    """
-    mappings: typing.Dict[str, spicierpy.obj.AbstractObj] = field(default_factory=dict)
-    mission_kernels: typing.List[Path] = field(default_factory=list, repr=False)
-    sds_kernels: typing.List[Path] = field(default_factory=list, repr=False)
+    """SPICE meta-kernel properties."""
+
+    mappings: dict[str, spicierpy.obj.AbstractObj] = field(default_factory=dict)
+    mission_kernels: list[Path] = field(default_factory=list, repr=False)
+    sds_kernels: list[Path] = field(default_factory=list, repr=False)
 
     def __repr__(self):
-        return f'{self.__class__.__name__}({", ".join(str(val) for val in self.mappings.values())})'
+        return f"{self.__class__.__name__}({', '.join(str(val) for val in self.mappings.values())})"
 
     def first(self):
         try:
@@ -39,8 +38,8 @@ class MetaKernel:
             pass
         return val
 
-    def find_frame_kernels(self) -> typing.List[Path]:
-        return [fn for fn in self.mission_kernels if fn.suffix == '.tf']
+    def find_frame_kernels(self) -> list[Path]:
+        return [fn for fn in self.mission_kernels if fn.suffix == ".tf"]
 
     def load(self):
         return spicierpy.ext.load_kernel([self.mission_kernels, self.sds_kernels])
@@ -58,7 +57,7 @@ class MetaKernel:
             output.append(fn)
 
             if not fn.is_file():
-                logger.warning('Missing file [%s] defined in meta-kernel!', fn)
+                logger.warning("Missing file [%s] defined in meta-kernel!", fn)
         return output
 
     @classmethod
@@ -68,21 +67,21 @@ class MetaKernel:
         if sds_dir is None:
             sds_dir = Path.cwd()
 
-        properties['mission_kernels'] = cls._render_paths(properties.get('mission_kernels', []), rel_dir=mission_dir)
-        properties['sds_kernels'] = cls._render_paths(properties.get('sds_kernels', []), rel_dir=sds_dir)
+        properties["mission_kernels"] = cls._render_paths(properties.get("mission_kernels", []), rel_dir=mission_dir)
+        properties["sds_kernels"] = cls._render_paths(properties.get("sds_kernels", []), rel_dir=sds_dir)
 
-        frame_kernels = [fn for fn in properties['mission_kernels'] if fn.suffix == '.tf']
+        frame_kernels = [fn for fn in properties["mission_kernels"] if fn.suffix == ".tf"]
         loaded_krns = spicierpy.ext.load_kernel(frame_kernels) if frame_kernels else None
 
         mappings = {}
-        for name, attr in properties['mappings'].items():
+        for name, attr in properties["mappings"].items():
             if not isinstance(attr, dict):
                 mappings[name] = spicierpy.obj.Body.define(name, attr)
             elif SC_FIELDS.intersection(attr):
                 mappings[name] = spicierpy.obj.Spacecraft.define(name=name, **attr)
             else:
                 mappings[name] = spicierpy.obj.Body.define(name=name, **attr)
-        properties['mappings'] = mappings
+        properties["mappings"] = mappings
 
         if loaded_krns is not None:
             loaded_krns.unload(clear=True)

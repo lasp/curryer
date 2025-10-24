@@ -9,41 +9,40 @@ UNAVCO Geoid Height Calculator
 
 @author: Brandon Stone
 """
+
 import logging
 import os
 import re
 from pathlib import Path
-from typing import List, Union, Optional, Tuple, Set
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 import rioxarray
+import xarray as xr
 from pyproj import Transformer
 from pyproj.transformer import TransformerGroup
 
-from . import constants
 from ..utils import track_performance
-
+from . import constants
 
 logger = logging.getLogger(__name__)
 
 # Unique vertical datums in GMTED2010 (by area):
-VDATUMS = {'EGM96', 'MSL', 'CVGD28', 'NGVD29', 'WGS 84', 'NAVD88', 'AHD'}
+VDATUMS = {"EGM96", "MSL", "CVGD28", "NGVD29", "WGS 84", "NAVD88", "AHD"}
 VDATUM_TO_EPSG = {
-    'EGM96': 5773,  # Vert.
-    'MSL': 5714,  # Vert.
-    'CVGD28': 5713,  # Vert. (Source typo? EPSG says "CGVD28").
-    'NGVD29': 7968,  # Vert.
-    'WGS 84': 4979,  # 3D.
-    'NAVD88': 5703,  # Vert.
-    'AHD': 5711,  # Vert.
+    "EGM96": 5773,  # Vert.
+    "MSL": 5714,  # Vert.
+    "CVGD28": 5713,  # Vert. (Source typo? EPSG says "CGVD28").
+    "NGVD29": 7968,  # Vert.
+    "WGS 84": 4979,  # 3D.
+    "NAVD88": 5703,  # Vert.
+    "AHD": 5711,  # Vert.
 }
 
 
 class Elevation:
-    """High-level class for accessing elevation data from individual files.
-    """
+    """High-level class for accessing elevation data from individual files."""
 
     LON_STEP = 30
     LAT_STEP = 20
@@ -67,8 +66,8 @@ class Elevation:
 
         """
         if data_dir is None:
-            data_dir = Path(os.getenv('CURRYER_DATA_DIR', Path(__file__).parents[2] / 'data')) / 'gmted'
-            logger.info('Default elevation data directory: [%s]', data_dir)
+            data_dir = Path(os.getenv("CURRYER_DATA_DIR", Path(__file__).parents[2] / "data")) / "gmted"
+            logger.info("Default elevation data directory: [%s]", data_dir)
         else:
             data_dir = Path(data_dir)
         if not data_dir.is_dir():
@@ -83,22 +82,21 @@ class Elevation:
 
         self.check_for_geoid_data()
         self.egm96_to_wgs84 = Transformer.from_crs(
-            'EPSG:4326+5773', 'EPSG:4979', always_xy=True, only_best=True, allow_ballpark=False
+            "EPSG:4326+5773", "EPSG:4979", always_xy=True, only_best=True, allow_ballpark=False
         ).transform
 
     @staticmethod
     def check_for_geoid_data():
-        """Ensure that third-party geoid data is available.
-        """
+        """Ensure that third-party geoid data is available."""
         # EGM96.
-        tg = TransformerGroup('EPSG:4326+5773', 'EPSG:4979')
+        tg = TransformerGroup("EPSG:4326+5773", "EPSG:4979")
         if len(tg.unavailable_operations):
             # Download extra data layers if missing.
-            logger.info('Downloading EGM96 geoid data for pyproj transformer.')
+            logger.info("Downloading EGM96 geoid data for pyproj transformer.")
             tg.download_grids(verbose=True)
 
     @track_performance
-    def locate_files(self, pattern: str = '*_gmted_*.tif') -> List[Path]:
+    def locate_files(self, pattern: str = "*_gmted_*.tif") -> list[Path]:
         """Locate DEM files on the filesystem (cached).
 
         Parameters
@@ -129,44 +127,56 @@ class Elevation:
         if self._metadata is not None:
             return self._metadata
 
-        regex = re.compile(r'(?P<lat0>[0-9]{2})(?P<lat1>[NS])(?P<lon0>[0-9]{3})(?P<lon1>[EW])'
-                           r'_20101117_gmted_(?P<stat>[a-z]+)(?P<res>[0-9]{3}).tif', re.I)
+        regex = re.compile(
+            r"(?P<lat0>[0-9]{2})(?P<lat1>[NS])(?P<lon0>[0-9]{3})(?P<lon1>[EW])"
+            r"_20101117_gmted_(?P<stat>[a-z]+)(?P<res>[0-9]{3}).tif",
+            re.I,
+        )
         metadata = []
         for filepath in self.locate_files():
             match = regex.fullmatch(filepath.name)
             if match is None:
-                raise ValueError(f'Invalid file name pattern: {filepath}')
+                raise ValueError(f"Invalid file name pattern: {filepath}")
 
-            lat = float(match.group('lat0'))
-            if match.group('lat1').upper() == 'S':
+            lat = float(match.group("lat0"))
+            if match.group("lat1").upper() == "S":
                 lat *= -1
 
-            lon = float(match.group('lon0'))
-            if match.group('lon1').upper() == 'W':
+            lon = float(match.group("lon0"))
+            if match.group("lon1").upper() == "W":
                 lon *= -1
 
-            metadata.append(dict(
-                ll_lon=lon,
-                ll_lat=lat,
-                ur_lon=lon + self.LON_STEP,
-                ur_lat=lat + self.LAT_STEP,
-                arcsec=float(match.group('res')) / 10,
-                stat=match.group('stat'),
-                name=filepath,
-            ))
+            metadata.append(
+                dict(
+                    ll_lon=lon,
+                    ll_lat=lat,
+                    ur_lon=lon + self.LON_STEP,
+                    ur_lat=lat + self.LAT_STEP,
+                    arcsec=float(match.group("res")) / 10,
+                    stat=match.group("stat"),
+                    name=filepath,
+                )
+            )
 
         self._metadata = pd.DataFrame(metadata)
 
         # Set a multi-dim index for faster lookups (~8x faster).
-        self._metadata = self._metadata.set_index(['ll_lon', 'll_lat', 'stat', 'arcsec']).sort_index()
+        self._metadata = self._metadata.set_index(["ll_lon", "ll_lat", "stat", "arcsec"]).sort_index()
 
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('Generated DEM metadata:\n%s', self._metadata.to_string())
+            logger.debug("Generated DEM metadata:\n%s", self._metadata.to_string())
         return self._metadata
 
     @track_performance
-    def lookup_file(self, lon: float, lat: float, arcsec: float = None, stat: str = 'mea', wrap_lon=False,
-                    degrees: Union[bool, None] = None) -> Optional[pd.Series]:
+    def lookup_file(
+        self,
+        lon: float,
+        lat: float,
+        arcsec: float = None,
+        stat: str = "mea",
+        wrap_lon=False,
+        degrees: Union[bool, None] = None,
+    ) -> Optional[pd.Series]:
         """Find the DEM file for a given lon/lat point.
 
         Parameters
@@ -212,11 +222,9 @@ class Elevation:
 
         # Look up files with a matching lower-left corner.
         try:
-            match = self._metadata.loc[(
-                lon - (lon - self.LON_MID) % self.LON_STEP,
-                lat - (lat - self.LAT_MID) % self.LAT_STEP,
-                stat
-            )]
+            match = self._metadata.loc[
+                (lon - (lon - self.LON_MID) % self.LON_STEP, lat - (lat - self.LAT_MID) % self.LAT_STEP, stat)
+            ]
         except KeyError:
             return
 
@@ -252,13 +260,14 @@ class Elevation:
         """
         name = filepath.name
         if name not in self._cache:
-            logger.info('Reading DEM file: %s', filepath)
+            logger.info("Reading DEM file: %s", filepath)
             self._cache[name] = rioxarray.open_rasterio(filepath).sel(band=1)
         return self._cache[name]
 
     @track_performance
-    def get_geoid_height(self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float],
-                         degrees: Union[bool, None] = None) -> Union[np.ndarray, float]:
+    def get_geoid_height(
+        self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float], degrees: Union[bool, None] = None
+    ) -> Union[np.ndarray, float]:
         """Query the geoid height for a given lon/lat(s).
 
         Parameters
@@ -323,7 +332,7 @@ class Elevation:
             lon = np.rad2deg(lon)
             lat = np.rad2deg(lat)
         rds = self.load_file(filepath)
-        hts = rds.sel(x=lon, y=lat, method='nearest')
+        hts = rds.sel(x=lon, y=lat, method="nearest")
         hts = hts.item()
         return hts if self.meters else hts / 1e3
 
@@ -350,20 +359,19 @@ class Elevation:
             True.
 
         """
-        match = self.lookup_file(lon, lat, stat='mea')
+        match = self.lookup_file(lon, lat, stat="mea")
         if match is None:
-            raise ValueError(f'Failed to find DEM file for lon=[{lon}], lat=[{lat}], stat=[mea]')
+            raise ValueError(f"Failed to find DEM file for lon=[{lon}], lat=[{lat}], stat=[mea]")
 
-        dem_ht = self.get_dem_height(lon, lat, match['name'])
+        dem_ht = self.get_dem_height(lon, lat, match["name"])
         if orthometric:
             return dem_ht
 
         geo_ht = self.get_geoid_height(lon, lat)
         return geo_ht + dem_ht
 
-    def _pad_lonlat(self, lon: float, lat: float, pad: float) -> Tuple[float, float, float, float]:
-        """Intelligently pad lon/lat values with a meter/kilometer distance.
-        """
+    def _pad_lonlat(self, lon: float, lat: float, pad: float) -> tuple[float, float, float, float]:
+        """Intelligently pad lon/lat values with a meter/kilometer distance."""
         if self.meters:
             pad /= 1e3
         km_per_deg = 2 * np.pi * constants.WGS84_SEMI_MAJOR_AXIS_KM / 360  # At equator.
@@ -377,10 +385,10 @@ class Elevation:
         max_lat = lat + pad
         return min_lon, max_lon, min_lat, max_lat
 
-    def _regional_files(self, min_lon: float, max_lon: float, min_lat: float, max_lat: float, allow_empty=False
-                        ) -> Set[Path]:
-        """Find all DEM files within a min/max lon/lat region.
-        """
+    def _regional_files(
+        self, min_lon: float, max_lon: float, min_lat: float, max_lat: float, allow_empty=False
+    ) -> set[Path]:
+        """Find all DEM files within a min/max lon/lat region."""
         if not self.degrees:
             min_lon, max_lon, min_lat, max_lat = np.rad2deg((min_lon, max_lon, min_lat, max_lat))
 
@@ -397,34 +405,41 @@ class Elevation:
         for alon in np.arange(start_lon, stop_lon, self.LON_STEP):
             for alat in np.arange(start_lat, max_lat, self.LAT_STEP):
                 # TODO: Request lowest available res? Defaults highest.
-                match = self.lookup_file(alon, alat, stat='mea', wrap_lon=True, degrees=True)
+                match = self.lookup_file(alon, alat, stat="mea", wrap_lon=True, degrees=True)
                 if match is not None:
-                    files.add(match['name'])
+                    files.add(match["name"])
 
         if not allow_empty and not files:
-            raise ValueError(f'Invalid lon/lat [{min_lon}:{max_lon}, {min_lat}:{max_lat}]. No DEMs intersect region!')
+            raise ValueError(f"Invalid lon/lat [{min_lon}:{max_lon}, {min_lat}:{max_lat}]. No DEMs intersect region!")
 
         return files
 
-    def _slice_file(self, rds: xr.Dataset, min_lon: float, max_lon: float, min_lat: float, max_lat: float,
-                    orthometric=False, fill_val: float = None) -> xr.DataArray:
-        """Subset a file by a min/max lon/lat region.
-        """
+    def _slice_file(
+        self,
+        rds: xr.Dataset,
+        min_lon: float,
+        max_lon: float,
+        min_lat: float,
+        max_lat: float,
+        orthometric=False,
+        fill_val: float = None,
+    ) -> xr.DataArray:
+        """Subset a file by a min/max lon/lat region."""
         # Edge case that longitude wrapped the international dateline.
-        if rds['x'].min().item() >= max_lon:
+        if rds["x"].min().item() >= max_lon:
             dem_hts = rds.rio.slice_xy(minx=min_lon % 360, maxx=180, miny=min_lat, maxy=max_lat)
 
-        elif rds['x'].max().item() < min_lon:
+        elif rds["x"].max().item() < min_lon:
             dem_hts = rds.rio.slice_xy(minx=-180, maxx=max_lon % -360, miny=min_lat, maxy=max_lat)
 
         else:
             dem_hts = rds.rio.slice_xy(minx=min_lon, maxx=max_lon, miny=min_lat, maxy=max_lat)
 
         # Handle fill-values.
-        if fill_val is not None and fill_val != rds.attrs['_FillValue']:
-            raise ValueError(f'DEM files have different fill values! [{fill_val}] != [{rds.attrs["_FillValue"]}]')
+        if fill_val is not None and fill_val != rds.attrs["_FillValue"]:
+            raise ValueError(f"DEM files have different fill values! [{fill_val}] != [{rds.attrs['_FillValue']}]")
 
-        dem_hts = dem_hts.where(dem_hts != rds.attrs['_FillValue'], other=0.0)
+        dem_hts = dem_hts.where(dem_hts != rds.attrs["_FillValue"], other=0.0)
 
         if not self.meters:
             dem_hts = dem_hts / 1e3
@@ -433,8 +448,8 @@ class Elevation:
             return dem_hts
 
         # Compute the geoid heights.
-        x = dem_hts['x'].values
-        y = dem_hts['y'].values
+        x = dem_hts["x"].values
+        y = dem_hts["y"].values
 
         xx = np.tile(x, (y.size, 1))
         yy = np.tile(y, (x.size, 1)).T
@@ -446,7 +461,7 @@ class Elevation:
         return ellps_hts
 
     @track_performance
-    def local_minmax(self, lon, lat, pad, orthometric=False) -> Tuple[float, float]:
+    def local_minmax(self, lon, lat, pad, orthometric=False) -> tuple[float, float]:
         """Compute the elevation min/max around a buffered point.
 
         Parameters
@@ -475,14 +490,12 @@ class Elevation:
             rds = self.load_file(filepath)
             ellps_hts = self._slice_file(rds, min_lon, max_lon, min_lat, max_lat, orthometric=orthometric)
 
-            local_minmax = (ellps_hts.min(skipna=True).item(),
-                            ellps_hts.max(skipna=True).item())
+            local_minmax = (ellps_hts.min(skipna=True).item(), ellps_hts.max(skipna=True).item())
 
             if ellps_minmax is None:
                 ellps_minmax = local_minmax
             else:
-                ellps_minmax = (min(ellps_minmax[0], local_minmax[0]),
-                                max(ellps_minmax[1], local_minmax[1]))
+                ellps_minmax = (min(ellps_minmax[0], local_minmax[0]), max(ellps_minmax[1], local_minmax[1]))
 
         return ellps_minmax
 
@@ -523,20 +536,25 @@ class Elevation:
         for filepath in files:
             rds = self.load_file(filepath)
             tile_hts = self._slice_file(
-                rds, min_lon, max_lon, min_lat, max_lat, orthometric=orthometric, fill_val=fill_val,
+                rds,
+                min_lon,
+                max_lon,
+                min_lat,
+                max_lat,
+                orthometric=orthometric,
+                fill_val=fill_val,
             )
             resolutions.append(rds.rio.resolution())
-            fill_val = rds.attrs['_FillValue']
+            fill_val = rds.attrs["_FillValue"]
 
             # Special case of wrapping the dateline.
-            if min_lon > max_lon and tile_hts['x'].max().item() < min_lon:
-                tile_hts['x'] = tile_hts['x'] + 360
+            if min_lon > max_lon and tile_hts["x"].max().item() < min_lon:
+                tile_hts["x"] = tile_hts["x"] + 360
 
             tiles.append(tile_hts)
 
         # Handle rare case of mismatched resolutions (near poles).
         if not all(resolutions[0][0] == x and resolutions[0][1] == y for x, y in resolutions):
-
             xmin_res = min(x for x, y in resolutions)  # Positive.
             ymin_res = max(y for x, y in resolutions)  # Negative.
 
@@ -545,12 +563,14 @@ class Elevation:
             ymin, ymax = None, None
             for ith, (xres, yres) in enumerate(resolutions):
                 tile = tiles[ith]
-                bounds.append((
-                    tile['x'].min().item() - xres / 2,
-                    tile['x'].max().item() + xres / 2,
-                    tile['y'].min().item() + yres / 2,
-                    tile['y'].max().item() - yres / 2,
-                ))
+                bounds.append(
+                    (
+                        tile["x"].min().item() - xres / 2,
+                        tile["x"].max().item() + xres / 2,
+                        tile["y"].min().item() + yres / 2,
+                        tile["y"].max().item() - yres / 2,
+                    )
+                )
                 if ith == 0:
                     xmin, xmax, ymin, ymax = bounds[-1]
                 else:
@@ -566,19 +586,24 @@ class Elevation:
             for ith, ((xmin, xmax, ymin, ymax), tile) in enumerate(zip(bounds, tiles)):
                 ix = (xcoord > xmin) & (xcoord < xmax)
                 iy = (ycoord > ymin) & (ycoord < ymax)
-                new_tiles.append(tile.interp(
-                    dict(x=xcoord[ix], y=ycoord[iy]), method='nearest', kwargs=dict(fill_value='extrapolate')
-                ))
+                new_tiles.append(
+                    tile.interp(
+                        dict(x=xcoord[ix], y=ycoord[iy]), method="nearest", kwargs=dict(fill_value="extrapolate")
+                    )
+                )
             tiles = new_tiles
 
-        hts = xr.combine_by_coords(tiles, combine_attrs='drop_conflicts')
+        hts = xr.combine_by_coords(tiles, combine_attrs="drop_conflicts")
 
         if not self.degrees:
-            hts['x'] = np.deg2rad(hts['x'])
-            hts['y'] = np.deg2rad(hts['y'])
+            hts["x"] = np.deg2rad(hts["x"])
+            hts["y"] = np.deg2rad(hts["y"])
 
         return ElevationRegion.from_xarray(
-            hts, orthometric=orthometric, degrees=self.degrees, meters=self.meters,
+            hts,
+            orthometric=orthometric,
+            degrees=self.degrees,
+            meters=self.meters,
         )
 
 
@@ -587,8 +612,17 @@ class ElevationRegion:
     pre-cached dataset.
     """
 
-    def __init__(self, data: np.ndarray, ulx: float, uly: float, dx: float, dy: float, orthometric=None,
-                 meters: Union[bool, None] = None, degrees: Union[bool, None] = None):
+    def __init__(
+        self,
+        data: np.ndarray,
+        ulx: float,
+        uly: float,
+        dx: float,
+        dy: float,
+        orthometric=None,
+        meters: Union[bool, None] = None,
+        degrees: Union[bool, None] = None,
+    ):
         """Initialize the region's elevation data.
 
         Parameters
@@ -625,8 +659,10 @@ class ElevationRegion:
         self._wrap = 360 if degrees else np.deg2rad(360)
 
     def __repr__(self):
-        return (f'{self.__class__.__name__}(ul=[{self.ulx:.6f}, {self.uly:.6f}], lr=[{self.lrx:.6f}, {self.lry:.6f}]'
-                f', res=[{self.dx:.6f}, {self.dy:.6f}], shape=[{self.data.shape}])')
+        return (
+            f"{self.__class__.__name__}(ul=[{self.ulx:.6f}, {self.uly:.6f}], lr=[{self.lrx:.6f}, {self.lry:.6f}]"
+            f", res=[{self.dx:.6f}, {self.dy:.6f}], shape=[{self.data.shape}])"
+        )
 
     @classmethod
     def from_xarray(cls, hts: xr.DataArray, **kwargs):
@@ -645,24 +681,25 @@ class ElevationRegion:
             Elevation region from an xarray data array.
 
         """
-        if 'x' not in hts.dims or 'y' not in hts.dims:
+        if "x" not in hts.dims or "y" not in hts.dims:
             raise ValueError(f'Unable to create a region without "x" and "y" dimensions: {hts.dims}')
-        if hts.sizes['x'] == 0 or hts.sizes['y'] == 0:
-            raise ValueError(f'Unable to create a region with zero-sized dimension: {hts.sizes}')
+        if hts.sizes["x"] == 0 or hts.sizes["y"] == 0:
+            raise ValueError(f"Unable to create a region with zero-sized dimension: {hts.sizes}")
 
-        dx = hts['x'].values[1] - hts['x'].values[0]
-        dy = hts['y'].values[1] - hts['y'].values[0]
+        dx = hts["x"].values[1] - hts["x"].values[0]
+        dy = hts["y"].values[1] - hts["y"].values[0]
 
-        ulx = hts['x'].values[0]
-        uly = hts['y'].values[0]
+        ulx = hts["x"].values[0]
+        uly = hts["y"].values[0]
 
         data = hts.values
 
         return cls(data, ulx, uly, dx, dy, **kwargs)
 
     @track_performance
-    def query(self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float], orthometric=None
-              ) -> Union[np.ndarray, float]:
+    def query(
+        self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float], orthometric=None
+    ) -> Union[np.ndarray, float]:
         """Query the surface (DEM + geoid) height above the ellipsoid a given
         lon/lat.
 
@@ -686,11 +723,11 @@ class ElevationRegion:
 
         """
         if orthometric is not None and self.orthometric is not None and orthometric != self.orthometric:
-            raise ValueError(f'Region was created with orthometric={self.orthometric}, unable to change!')
+            raise ValueError(f"Region was created with orthometric={self.orthometric}, unable to change!")
 
         in_scalar = np.isscalar(lon)
         if in_scalar != np.isscalar(lat) or (not in_scalar and (len(lon) != len(lat) or len(lon) == 0)):
-            raise ValueError('Inputs must be of same length and not empty!')
+            raise ValueError("Inputs must be of same length and not empty!")
 
         # Edge case of crossing the dateline.
         if in_scalar and lon < self.ulx:
@@ -705,21 +742,21 @@ class ElevationRegion:
         iy = np.int64((lat - self.uly + self.dy / 2) / self.dy)
 
         if in_scalar:
-            assert (self.ulx <= lon < self.lrx), (self.ulx, lon, self.lrx)
-            assert (self.uly >= lat > self.lry), (self.uly, lat, self.lry)
-            assert (0 <= ix < self.data.shape[1]), (ix, self.data.shape[1])
-            assert (0 <= iy < self.data.shape[0]), (iy, self.data.shape[0])
+            assert self.ulx <= lon < self.lrx, (self.ulx, lon, self.lrx)  # noqa: S101
+            assert self.uly >= lat > self.lry, (self.uly, lat, self.lry)  # noqa: S101
+            assert 0 <= ix < self.data.shape[1], (ix, self.data.shape[1])  # noqa: S101
+            assert 0 <= iy < self.data.shape[0], (iy, self.data.shape[0])  # noqa: S101
         else:
-            assert all((self.ulx <= lon) & (lon < self.lrx)), (self.ulx, lon, self.lrx)
-            assert all((self.uly >= lat) & (lat > self.lry)), (self.uly, lat, self.lry)
-            assert all((0 <= ix) & (ix < self.data.shape[1])), (ix, self.data.shape[1])
-            assert all((0 <= iy) & (iy < self.data.shape[0])), (iy, self.data.shape[0])
+            assert all((self.ulx <= lon) & (lon < self.lrx)), (self.ulx, lon, self.lrx)  # noqa: S101
+            assert all((self.uly >= lat) & (lat > self.lry)), (self.uly, lat, self.lry)  # noqa: S101
+            assert all((0 <= ix) & (ix < self.data.shape[1])), (ix, self.data.shape[1])  # noqa: S101
+            assert all((0 <= iy) & (iy < self.data.shape[0])), (iy, self.data.shape[0])  # noqa: S101
 
         val = self.data[iy, ix]
         return val
 
     @track_performance
-    def local_minmax(self, lon=None, lat=None, pad=None) -> Tuple[float, float]:
+    def local_minmax(self, lon=None, lat=None, pad=None) -> tuple[float, float]:
         """Compute local min/max elevation. Simply assumes the region is the
         same as the locality, returning its min/max.
 

@@ -6,9 +6,7 @@
       "input_frame": "TSIS_TADS_COORD",
       "input_data_type": "EULER ANGLES",
       "input_time_type": "utc",
-      "input_time_columns": [
-        "UTC"
-      ],
+      "input_time_columns": ["UTC"],
       "input_angle_units": "RADIANS",
       "input_angular_rate": "MAKE UP",
       "input_gap_threshold": "30s",

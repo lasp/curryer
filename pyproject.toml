@@ -2,9 +2,7 @@
 name = "lasp-curryer"
 version = "0.1.3"
 description = "LASP SPICE extentions and geospatial data product generation tools."
-authors = [
-    {name = "Brandon Stone", email = "brandon.h.stone@colorado.edu"}
-]
+authors = [{ name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" }]
 readme = "README.md"
 keywords = [
     "spice",
@@ -19,7 +17,7 @@ keywords = [
     "naif"
 ]
 requires-python = ">=3.9,<4"
-license = { text = "MIT"}
+license = { text = "MIT" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -49,30 +47,61 @@ dependencies = [
     "jinja2>=3",
     "spiceypy>=6",
     "openpyxl>=3",
-    "numpy (>=1.23,<2.0)"
+    "numpy (>=1.23,<2.0)",
 ]
 
+[project.optional-dependencies]
+# Since these are only for testing, we do not care what version they are
+test = ["pre-commit", "pytest", "pytest-cov", "pytest-randomly", "ruff"]
+
 [tool.poetry]
-packages = [
-    { include = "curryer" }
-]
+packages = [{ include = "curryer" }]
 
 [project.urls]
 repository = "https://github.com/lasp/curryer"
 #documentation = ""  # Add once readthedocs is up
 
 [tool.poetry.group.dev.dependencies]
-pytest = ">=7.1"
-pytest-cov = ">=3"
-pylint = ">=2"
-ipython = ">=8.4"
-sphinx = "*"
-myst-parser = "*"
-sphinx-autoapi = "*"
+pre-commit = "*"
+pytest = "*"
+pytest-cov = "*"
+pytest-randomly = "*"
+ruff = "*"
+ipython = "*"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'
 
 [build-system]
-requires = ["poetry-core>=2.0"]
+requires = ["poetry-core>=2.0.1"]         # 2.0.0 has bugs
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120  # Target line length. ruff format "does its best" to respect this.
+extend-include = ["curryer/**/*.py", "tests/**/*.py"]
+extend-exclude = ["data/**", "tests/data/**"]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort import sorting
+    "S",  # flake8-bandit security
+    "PT", # flake8-pytest-style
+    "UP", # pyupgrade syntax upgrader
+]
+per-file-ignores = { "tests/*" = [
+    "S",
+    "PT009",  # Allow unittest-style assertions in tests
+    "PT027",  # Allow unittest-style assertRaises in tests
+], "curryer/spicierpy/__init__.py" = [
+    "F403",
+] }
+ignore = [
+    "E501", # Ignore line length errors, as we trust ruff format to handle this.
+    "F541", # Allow f strings as docstrings
+]
+
+[tool.codespell]
+ignore-words-list = "timout,sorce,SORCE,AHD"

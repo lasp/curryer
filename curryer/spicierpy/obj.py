@@ -30,6 +30,7 @@ Notes
 
 @author: Brandon Stone
 """
+
 import logging
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
@@ -38,16 +39,15 @@ import numpy as np
 import spiceypy
 import spiceypy.utils.exceptions
 
-
 logger = logging.getLogger(__name__)
 
-_INDENT = '    '
+_INDENT = "    "
 
 
 class AbstractObj(metaclass=ABCMeta):
-    """Light-weight abstract class for storing SPICE name <--> id mappings.
-    """
-    __slots__ = ['_name', '_id']
+    """Light-weight abstract class for storing SPICE name <--> id mappings."""
+
+    __slots__ = ["_name", "_id"]
 
     def __init__(self, id_or_name):
         """Create a mapping object using an ID or name.
@@ -103,13 +103,11 @@ class AbstractObj(metaclass=ABCMeta):
         raise NotImplementedError
 
     def __repr__(self):
-        """<class-name>(<obj-name> or <obj-id>)
-        """
+        """<class-name>(<obj-name> or <obj-id>)"""
         return self.to_string().rstrip()
 
     def __eq__(self, other):
-        """Equate objects if one is a child of the other and their IDs match.
-        """
+        """Equate objects if one is a child of the other and their IDs match."""
         return (isinstance(other, self.__class__) or isinstance(self, type(other))) and self.id == other.id
 
     @property
@@ -136,30 +134,26 @@ class AbstractObj(metaclass=ABCMeta):
 
     @abstractmethod
     def _name2code(self, value):
-        """Return the SPICE ID for to the given SPICE name.
-        """
+        """Return the SPICE ID for to the given SPICE name."""
         raise NotImplementedError
 
     @abstractmethod
     def _code2name(self, value):
-        """Return the SPICE name for to the given SPICE ID.
-        """
+        """Return the SPICE name for to the given SPICE ID."""
         raise NotImplementedError
 
     def to_string(self, depth=0, verbose=False):
-        """String representation with an optional indent level.
-        """
+        """String representation with an optional indent level."""
         if verbose:
-            fmt = '{indent}{self.__class__.__name__}({self.name!r} or {self.id})\n'
+            fmt = "{indent}{self.__class__.__name__}({self.name!r} or {self.id})\n"
         else:
-            fmt = '{self.__class__.__name__}({self.name})'
+            fmt = "{self.__class__.__name__}({self.name})"
         return fmt.format(indent=_INDENT * depth, self=self)
 
     def _check_if_missing(self, value, attr_name):
-        """Raise an error if missing a value.
-        """
+        """Raise an error if missing a value."""
         if value is None:
-            raise ValueError('{} does not have an attached {!r}'.format(self, attr_name))
+            raise ValueError(f"{self} does not have an attached {attr_name!r}")
         return value
 
 
@@ -176,7 +170,8 @@ class Body(AbstractObj):
     Body('EARTH' or 399) Frame('ITRF93' or 13000)
 
     """
-    __slots__ = ['_frame']
+
+    __slots__ = ["_frame"]
 
     def __init__(self, id_or_name, frame=None):
         super().__init__(id_or_name)
@@ -197,14 +192,14 @@ class Body(AbstractObj):
         Frame
 
         """
-        return self._check_if_missing(self._frame, 'Frame')
+        return self._check_if_missing(self._frame, "Frame")
 
     @frame.setter
     def frame(self, value):
         if value is None or isinstance(value, Frame):
             pass
         elif value is True:
-            logger.debug('Looking up FRAME ID from BODY=[%s]', self.id)
+            logger.debug("Looking up FRAME ID from BODY=[%s]", self.id)
             frame_id, _ = spiceypy.cidfrm(self.id)
             value = Frame(frame_id, body=self)
         else:
@@ -234,7 +229,8 @@ class Frame(AbstractObj):
         - Generally instrument or spacecraft subsystem ID vs. frame ID.
 
     """
-    __slots__ = ['_body']
+
+    __slots__ = ["_body"]
 
     def __init__(self, id_or_name, body=None):
         super().__init__(id_or_name)
@@ -247,8 +243,10 @@ class Frame(AbstractObj):
         if frame.name != name:
             # Limitation of SPICE. TODO: Improve?
             # pylint: disable=protected-access
-            logger.warning('Frame name <--> id mapping must be defined in a frame kernel.'
-                           ' Assuming the kernel is loaded at a later point.')
+            logger.warning(
+                "Frame name <--> id mapping must be defined in a frame kernel."
+                " Assuming the kernel is loaded at a later point."
+            )
             frame._name = name
             # raise NotImplementedError('Frame name <--> id mapping must be defined in a frame kernel.')
         return frame
@@ -262,14 +260,14 @@ class Frame(AbstractObj):
         Body
 
         """
-        return self._check_if_missing(self._body, 'Body')
+        return self._check_if_missing(self._body, "Body")
 
     @body.setter
     def body(self, value):
         if value is None or isinstance(value, Body):
             pass
         elif value is True:
-            logger.debug('Looking up BODY ID from FRAME=[%s]', self.id)
+            logger.debug("Looking up BODY ID from FRAME=[%s]", self.id)
             # Note: `frinfo` --> frame center, frame class (type), frame class id.
             frame_center_id, _, _ = spiceypy.frinfo(self.id)
             value = Body(frame_center_id, frame=self)
@@ -283,13 +281,13 @@ class Frame(AbstractObj):
 
     def _code2name(self, value):
         name = spiceypy.frmnam(value)
-        return name if name != '' else str(value)
+        return name if name != "" else str(value)
 
 
 class AnyBodyOrFrame(AbstractObj):
-    """Obj representing a body or frame.
-    """
-    __slots__ = ['_is_frame', '_obj']
+    """Obj representing a body or frame."""
+
+    __slots__ = ["_is_frame", "_obj"]
 
     def __init__(self, id_or_name, body=True, frame=True):
         try:
@@ -317,11 +315,11 @@ class AnyBodyOrFrame(AbstractObj):
         raise NotImplementedError
 
     def _name2code(self, value):
-        assert value == self._name
+        assert value == self._name  # noqa: S101
         return self._id
 
     def _code2name(self, value):
-        assert value == self._id
+        assert value == self._id  # noqa: S101
         return self._name
 
 
@@ -343,10 +341,12 @@ class Spacecraft(Body):
         Frame('TCTE_TIM' or -1234001)
 
     """
-    __slots__ = ['_clock', '_ephemeris', '_attitude', '_instruments']
 
-    def __init__(self, id_or_name, frame=None, clock=None, ephemeris=None, attitude=None, instruments=None,
-                 infer_all=False):
+    __slots__ = ["_clock", "_ephemeris", "_attitude", "_instruments"]
+
+    def __init__(
+        self, id_or_name, frame=None, clock=None, ephemeris=None, attitude=None, instruments=None, infer_all=False
+    ):
         if infer_all:
             frame = clock = ephemeris = attitude = instruments = True
         super().__init__(id_or_name, frame=frame)
@@ -403,12 +403,12 @@ class Spacecraft(Body):
         elif value is None:
             value = OrderedDict()
         elif not (value is True or isinstance(value, list)):
-            raise TypeError('`instruments` must be None, True, dict or list, not: {}'.format(value))
+            raise TypeError(f"`instruments` must be None, True, dict or list, not: {value}")
 
         else:
             # Infer instruments...
             if value is True:
-                codes = spiceypy.gipool('NAIF_BODY_CODE', 0, 2000)
+                codes = spiceypy.gipool("NAIF_BODY_CODE", 0, 2000)
                 base_id = self.id * 1000
                 instrument_codes = codes[(codes // base_id == 1) & (codes % base_id > -1000)]
             else:
@@ -432,7 +432,7 @@ class Spacecraft(Body):
             Assumes the clock uses the same ID as the spacecraft (typical).
 
         """
-        return self._check_if_missing(self._clock, 'Clock')
+        return self._check_if_missing(self._clock, "Clock")
 
     @clock.setter
     def clock(self, value):
@@ -457,7 +457,7 @@ class Spacecraft(Body):
             Assumes the SPK uses the same ID as the spacecraft (typical).
 
         """
-        return self._check_if_missing(self._ephemeris, 'Ephemeris')
+        return self._check_if_missing(self._ephemeris, "Ephemeris")
 
     @ephemeris.setter
     def ephemeris(self, value):
@@ -480,7 +480,7 @@ class Spacecraft(Body):
             CK-based reference frame spacecraft.
 
         """
-        return self._check_if_missing(self._attitude, 'Attitude')
+        return self._check_if_missing(self._attitude, "Attitude")
 
     @attitude.setter
     def attitude(self, value):
@@ -496,19 +496,18 @@ class Spacecraft(Body):
         self._attitude = value
 
     def to_string(self, depth=0, verbose=False):
-        """String representation with an optional indent level.
-        """
+        """String representation with an optional indent level."""
         self_txt = super().to_string(depth=depth, verbose=verbose)
         if verbose:
-            self_txt = '{self}{frame}{clock}{ephemeris}{attitude}{instruments}'.format(
+            self_txt = "{self}{frame}{clock}{ephemeris}{attitude}{instruments}".format(
                 self=self_txt,
                 frame=self.frame.to_string(depth=depth + 1, verbose=True),
                 clock=self.clock.to_string(depth=depth + 1, verbose=True),
                 ephemeris=self.ephemeris.to_string(depth=depth + 1, verbose=True),
                 attitude=self.attitude.to_string(depth=depth + 1, verbose=True),
-                instruments=''.join(
+                instruments="".join(
                     instr.to_string(depth=depth + 1, verbose=True) for instr in self.instruments.values()
-                )
+                ),
             )
         return self_txt
 
@@ -517,7 +516,8 @@ class _SpacecraftItem(Body):
     """Abstract mapping class that can store a reference to a spacecraft
     mapping object.
     """
-    __slots__ = ['_spacecraft']
+
+    __slots__ = ["_spacecraft"]
 
     def __init__(self, id_or_name, frame=None, spacecraft=None):
         """Create a mapping object using an ID or name. May also include a
@@ -541,8 +541,7 @@ class _SpacecraftItem(Body):
         self.spacecraft = spacecraft
 
     def _infer_spacecraft(self, id_code):
-        """Infer the spacecraft from the object's ID.
-        """
+        """Infer the spacecraft from the object's ID."""
         raise NotImplementedError
 
     @property
@@ -557,7 +556,7 @@ class _SpacecraftItem(Body):
             assumptions (see subclass method `_infer_spacecraft_id`).
 
         """
-        return self._check_if_missing(self._spacecraft, 'Spacecraft')
+        return self._check_if_missing(self._spacecraft, "Spacecraft")
 
     @spacecraft.setter
     def spacecraft(self, value):
@@ -583,6 +582,7 @@ class Instrument(_SpacecraftItem):
     TCTE Frame('TCTE_TIM' or -1234001)
 
     """
+
     __slots__ = []
 
     def _infer_spacecraft(self, id_code):
@@ -590,14 +590,10 @@ class Instrument(_SpacecraftItem):
         return Spacecraft(id_code, instruments=[self])
 
     def to_string(self, depth=0, verbose=False):
-        """String representation with an optional indent level.
-        """
+        """String representation with an optional indent level."""
         self_txt = super().to_string(depth=depth, verbose=verbose)
         if verbose:
-            self_txt = '{self}{frame}'.format(
-                self=self_txt,
-                frame=self.frame.to_string(depth=depth + 1, verbose=True)
-            )
+            self_txt = f"{self_txt}{self.frame.to_string(depth=depth + 1, verbose=True)}"
         return self_txt
 
 
@@ -611,6 +607,7 @@ class Clock(_SpacecraftItem):
     TCTE -1234
 
     """
+
     __slots__ = []
 
     def _infer_spacecraft(self, id_code):
@@ -627,6 +624,7 @@ class Ephemeris(_SpacecraftItem):
     TCTE -1234
 
     """
+
     __slots__ = []
 
     def _infer_spacecraft(self, id_code):
@@ -646,6 +644,7 @@ class Attitude(_SpacecraftItem):
     TCTE -1234
 
     """
+
     __slots__ = []
 
     def _infer_spacecraft(self, id_code):

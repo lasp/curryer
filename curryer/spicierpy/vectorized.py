@@ -2,6 +2,7 @@
 
 @author: Brandon Stone
 """
+
 from functools import wraps
 
 import numpy as np
@@ -9,18 +10,15 @@ import spiceypy
 
 
 def _vectorize(pyfunc, **vec_kwargs):
-    """Vectorize a func and supply it as the first arg to a wrapper.
-    """
+    """Vectorize a func and supply it as the first arg to a wrapper."""
     vectorized_func = np.vectorize(pyfunc, **vec_kwargs)
 
     def outer_wrapper(wrapper_func):
-        """Decorate a wrapper function. Maintains the docstring and func name!
-        """
+        """Decorate a wrapper function. Maintains the docstring and func name!"""
 
         @wraps(vectorized_func)
         def inner_wrapper(*args, **kwargs):
-            """Call the wrapper with the vectorized func.
-            """
+            """Call the wrapper with the vectorized func."""
             return wrapper_func(vectorized_func, *args, **kwargs)
 
         return inner_wrapper
@@ -30,8 +28,7 @@ def _vectorize(pyfunc, **vec_kwargs):
 
 @wraps(spiceypy.recgeo)  # Maintains the original docstring.
 def recgeo(rectan, re, f, as_deg=False):
-    """Convert rectangular coords to geodetic (lon/lat/alt) (supports 2D ndarrays).
-    """
+    """Convert rectangular coords to geodetic (lon/lat/alt) (supports 2D ndarrays)."""
     if not isinstance(rectan, np.ndarray):
         rectan = np.asarray(rectan)
     if rectan.ndim == 1:
@@ -49,8 +46,7 @@ def recgeo(rectan, re, f, as_deg=False):
 
 @wraps(spiceypy.spkezr)
 def spkezr(targ, et, ref, abcorr, obs):
-    """Get position and velocity (supports ndarrays).
-    """
+    """Get position and velocity (supports ndarrays)."""
     # Add support for target/observer codes (int).
     if isinstance(targ, int):
         targ = spiceypy.bodc2n(targ)
@@ -58,7 +54,7 @@ def spkezr(targ, et, ref, abcorr, obs):
         obs = spiceypy.bodc2n(obs)
 
     # Add support for arrays of time.
-    if hasattr(et, '__iter__') and not (isinstance(et, np.ndarray) and et.ndim == 0):
+    if hasattr(et, "__iter__") and not (isinstance(et, np.ndarray) and et.ndim == 0):
         vlen = len(et)
         position_velocity = np.empty((vlen, 6), dtype=np.float64)
         light_times = np.empty(vlen, dtype=np.float64)
@@ -71,8 +67,7 @@ def spkezr(targ, et, ref, abcorr, obs):
 
 @wraps(spiceypy.spkezp)
 def spkezp(targ, et, ref, abcorr, obs):
-    """Get position (supports ndarrays).
-    """
+    """Get position (supports ndarrays)."""
     # Add support for target/observer names (str).
     if isinstance(targ, str):
         targ = spiceypy.bodn2c(targ)
@@ -80,7 +75,7 @@ def spkezp(targ, et, ref, abcorr, obs):
         obs = spiceypy.bodn2c(obs)
 
     # Add support for arrays of time.
-    if hasattr(et, '__iter__') and not (isinstance(et, np.ndarray) and et.ndim == 0):
+    if hasattr(et, "__iter__") and not (isinstance(et, np.ndarray) and et.ndim == 0):
         vlen = len(et)
         position_arr = np.empty((vlen, 3), dtype=np.float64)
         light_times = np.empty(vlen, dtype=np.float64)
@@ -93,8 +88,7 @@ def spkezp(targ, et, ref, abcorr, obs):
 
 @wraps(spiceypy.ckgp)
 def ckgp(inst, sclkdp, tol, ref):
-    """Get pointing (attitude) as a rotation matrix (supports ndarrays).
-    """
+    """Get pointing (attitude) as a rotation matrix (supports ndarrays)."""
     # Add support for object names (str).
     if isinstance(inst, str):
         inst = spiceypy.namfrm(inst)
@@ -102,16 +96,14 @@ def ckgp(inst, sclkdp, tol, ref):
         ref = spiceypy.frmnam(ref)
 
     # Add support for arrays of time.
-    if hasattr(sclkdp, '__iter__') and not (isinstance(sclkdp, np.ndarray) and sclkdp.ndim == 0):
+    if hasattr(sclkdp, "__iter__") and not (isinstance(sclkdp, np.ndarray) and sclkdp.ndim == 0):
         vlen = len(sclkdp)
         attitude_arr = np.empty((vlen, 3, 3), dtype=np.float64)
         sclk_times = np.empty(vlen, dtype=np.float64)
         # The SpiceyPy docs are wrong (copied C).
         # pylint: disable=unbalanced-tuple-unpacking
         for index, time in enumerate(sclkdp):
-            attitude_arr[index], sclk_times[index] = spiceypy.ckgp(
-                inst, time, tol, ref
-            )
+            attitude_arr[index], sclk_times[index] = spiceypy.ckgp(inst, time, tol, ref)
         return attitude_arr, sclk_times
 
     return spiceypy.ckgp(inst, sclkdp, tol, ref)
@@ -120,7 +112,7 @@ def ckgp(inst, sclkdp, tol, ref):
 # TODO: Add support for sister function that gets angular velocity too (ckgpav). Need a special test kernel!
 
 
-@_vectorize(spiceypy.sce2c, otypes=[np.float64], excluded='sc')
+@_vectorize(spiceypy.sce2c, otypes=[np.float64], excluded="sc")
 def sce2c(func, sc, et):
     """Convert ephemeris time (ET) to continuous encoded spacecraft clock
     "ticks" (supports ndarrays).
@@ -131,7 +123,7 @@ def sce2c(func, sc, et):
     return func(sc, et)
 
 
-@_vectorize(spiceypy.sct2e, otypes=[np.float64], excluded='sc')
+@_vectorize(spiceypy.sct2e, otypes=[np.float64], excluded="sc")
 def sct2e(func, sc, sclkdp):
     """Convert continuous encoded spacecraft clock "ticks" to ephemeris time
     (ET; supports ndarrays).
@@ -144,8 +136,7 @@ def sct2e(func, sc, sclkdp):
 
 @wraps(spiceypy.str2et)
 def str2et(time, *args, **kwargs):
-    """Convert strings to Ephemeris Time (ET) (supports ndarrays).
-    """
+    """Convert strings to Ephemeris Time (ET) (supports ndarrays)."""
     if isinstance(time, np.ndarray):
         return spiceypy.str2et(time.tolist(), *args, **kwargs)
 
@@ -154,8 +145,7 @@ def str2et(time, *args, **kwargs):
 
 @wraps(spiceypy.timout)
 def timout(et, *args, **kwargs):
-    """Convert Ephemeris Time (ET @J2000) to a string (supports scalar (0D) ndarrays).
-    """
+    """Convert Ephemeris Time (ET @J2000) to a string (supports scalar (0D) ndarrays)."""
     input_shape = None
     if isinstance(et, np.ndarray):
         if et.ndim == 0:
@@ -171,10 +161,9 @@ def timout(et, *args, **kwargs):
     return out
 
 
-@_vectorize(spiceypy.unitim, excluded=['insys', 'outsys'], cache=True)
+@_vectorize(spiceypy.unitim, excluded=["insys", "outsys"], cache=True)
 def unitim(func, epoch, *args, **kwargs):
-    """Convert between uniform (count) time scales (supports ndarrays).
-    """
+    """Convert between uniform (count) time scales (supports ndarrays)."""
     output = func(epoch, *args, **kwargs)
     if isinstance(output, np.ndarray) and output.ndim == 0:
         output = output.tolist()  # Converts it to a scalar (not a list).
