@@ -12,10 +12,13 @@ The main processing pipeline:
 4) Compute statistical performance metrics
 """
 
+import logging
 import numpy as np
 import xarray as xr
 from typing import Dict, Optional, Tuple, Union
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +27,7 @@ class GeolocationConfig:
     earth_radius_m: float = 6378140.0
     performance_threshold_m: float = 250.0
     performance_spec_percent: float = 39.0
+    minimum_correlation: Optional[float] = None  # NEW: Filter threshold (0.0-1.0)
 
 
 class ErrorStatsProcessor:
@@ -32,6 +36,41 @@ class ErrorStatsProcessor:
     def __init__(self, config: Optional[GeolocationConfig] = None):
         """Initialize processor with configuration."""
         self.config = config or GeolocationConfig()
+
+    def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:
+        """
+        Filter measurements by correlation coefficient threshold.
+
+        Args:
+            data: Input dataset with optional 'correlation' or 'ccv' variable
+
+        Returns:
+            Filtered dataset with low-correlation measurements removed
+        """
+        if self.config.minimum_correlation is None:
+            return data
+
+        # Check for correlation variable (try multiple names)
+        corr_var = None
+        for var_name in ['correlation', 'ccv', 'im_ccv']:
+            if var_name in data.data_vars:
+                corr_var = var_name
+                break
+
+        if corr_var is None:
+            logger.warning("No correlation variable found; skipping filtering")
+            return data
+
+        # Apply filter
+        valid_mask = data[corr_var] >= self.config.minimum_correlation
+        n_before = len(data.measurement)
+        filtered_data = data.where(valid_mask, drop=True)
+        n_after = len(filtered_data.measurement)
+
+        logger.info(f"Correlation filtering: {n_before} → {n_after} measurements "
+                    f"(threshold={self.config.minimum_correlation})")
+
+        return filtered_data
 
     def process_geolocation_errors(self, input_data: xr.Dataset) -> xr.Dataset:
         """
@@ -46,14 +85,20 @@ class ErrorStatsProcessor:
         # Validate input data
         self._validate_input_data(input_data)
 
-        # Extract data arrays
-        n_measurements = len(input_data.measurement)
+        # NEW: Apply correlation filtering if configured
+        filtered_data = self._filter_by_correlation(input_data)
+
+        if len(filtered_data.measurement) == 0:
+            raise ValueError("No measurements remaining after correlation filtering")
+
+        # Extract data arrays (now using filtered_data)
+        n_measurements = len(filtered_data.measurement)
 
         # Convert angular errors to distance errors
-        lat_error_rad = np.deg2rad(input_data.lat_error_deg.values)
-        lon_error_rad = np.deg2rad(input_data.lon_error_deg.values)
-        cp_lat_rad = np.deg2rad(input_data.cp_lat_deg.values)
-        cp_lon_rad = np.deg2rad(input_data.cp_lon_deg.values)
+        lat_error_rad = np.deg2rad(filtered_data.lat_error_deg.values)
+        lon_error_rad = np.deg2rad(filtered_data.lon_error_deg.values)
+        cp_lat_rad = np.deg2rad(filtered_data.cp_lat_deg.values)
+        cp_lon_rad = np.deg2rad(filtered_data.cp_lon_deg.values)
 
         # Calculate N-S and E-W error distances in meters
         ns_error_dist_m = self.config.earth_radius_m * lat_error_rad
@@ -61,19 +106,19 @@ class ErrorStatsProcessor:
 
         # Transform boresight vectors from HS to CTRS coordinates
         bhat_ctrs = self._transform_boresight_vectors(
-            input_data.bhat_hs.values,
-            input_data.t_hs2ctrs.values
+            filtered_data.bhat_hs.values,
+            filtered_data.t_hs2ctrs.values
         )
 
         # Process each measurement to nadir-equivalent
         results = self._process_to_nadir_equivalent(
             ns_error_dist_m, ew_error_dist_m,
-            input_data.riss_ctrs.values, bhat_ctrs,
+            filtered_data.riss_ctrs.values, bhat_ctrs,
             cp_lat_rad, cp_lon_rad, n_measurements
         )
 
         # Create output dataset
-        output_data = self._create_output_dataset(input_data, results)
+        output_data = self._create_output_dataset(filtered_data, results)
 
         # Add statistics as global attributes
         stats = self._calculate_statistics(results['nadir_equiv_total_error_m'])
@@ -288,6 +333,11 @@ class ErrorStatsProcessor:
                 'performance_threshold_m': self.config.performance_threshold_m
             }
         )
+
+        # Add correlation filtering metadata if applied
+        if self.config.minimum_correlation is not None:
+            output_ds.attrs['minimum_correlation_threshold'] = self.config.minimum_correlation
+            output_ds.attrs['correlation_filtering_applied'] = True
 
         return output_ds
 
