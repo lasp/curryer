@@ -363,6 +363,73 @@ class ErrorStatsProcessor:
 
         return stats
 
+    def process_from_netcdf(self,
+                           filepath: Union[str, 'Path'],
+                           minimum_correlation: Optional[float] = None) -> xr.Dataset:
+        """
+        Load previous results from NetCDF and reprocess error statistics.
+
+        This enables iterative post-processing of Monte Carlo results without
+        re-running expensive image matching operations.
+
+        Args:
+            filepath: Path to NetCDF file from previous Monte Carlo run
+            minimum_correlation: Override correlation threshold (if provided)
+
+        Returns:
+            Xarray Dataset with reprocessed error statistics
+
+        Example:
+            >>> processor = ErrorStatsProcessor()
+            >>> # Try different correlation thresholds
+            >>> results_50 = processor.process_from_netcdf(
+            ...     "monte_carlo_results/run_001.nc",
+            ...     minimum_correlation=0.5
+            ... )
+            >>> results_70 = processor.process_from_netcdf(
+            ...     "monte_carlo_results/run_001.nc",
+            ...     minimum_correlation=0.7
+            ... )
+        """
+        from pathlib import Path
+
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise FileNotFoundError(f"NetCDF file not found: {filepath}")
+
+        logger.info(f"Loading NetCDF results from: {filepath}")
+        input_data = xr.open_dataset(filepath)
+
+        # Override correlation threshold if provided
+        original_threshold = self.config.minimum_correlation
+        if minimum_correlation is not None:
+            self.config.minimum_correlation = minimum_correlation
+            logger.info(f"Overriding correlation threshold: "
+                       f"{original_threshold} → {minimum_correlation}")
+
+        # Validate that required variables exist
+        try:
+            self._validate_input_data(input_data)
+        except ValueError as e:
+            raise ValueError(
+                f"NetCDF file missing required variables for error stats: {e}\n"
+                f"Available variables: {list(input_data.data_vars.keys())}"
+            )
+
+        # Reprocess with current configuration
+        results = self.process_geolocation_errors(input_data)
+
+        # Add metadata about reprocessing
+        results.attrs['reprocessed_from'] = str(filepath)
+        results.attrs['reprocessing_date'] = str(np.datetime64('now'))
+        if minimum_correlation is not None:
+            results.attrs['correlation_threshold_override'] = minimum_correlation
+
+        # Restore original threshold
+        self.config.minimum_correlation = original_threshold
+
+        return results
+
     @staticmethod
     def create_test_dataset() -> xr.Dataset:
         """Create test dataset with the original 13 hardcoded test cases."""

@@ -401,5 +401,292 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         self.assertLess(abs(np.dot(v_uen, x_uen)), 1e-10)
 
 
+class TestCorrelationFiltering(unittest.TestCase):
+    """Test correlation-based filtering functionality."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.processor = ErrorStatsProcessor()
+
+    def _create_test_data_with_correlation(self, n_measurements=10):
+        """Create test dataset with correlation values."""
+        # Create proper transformation matrices
+        t_matrices = np.zeros((3, 3, n_measurements))
+        for i in range(n_measurements):
+            t_matrices[:, :, i] = np.eye(3)  # Use identity for simplicity
+
+        return xr.Dataset({
+            'lat_error_deg': (['measurement'], np.random.uniform(-0.01, 0.01, n_measurements)),
+            'lon_error_deg': (['measurement'], np.random.uniform(-0.01, 0.01, n_measurements)),
+            'riss_ctrs': (['measurement', 'xyz'], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
+            'bhat_hs': (['measurement', 'xyz'], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
+            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrices),
+            'cp_lat_deg': (['measurement'], np.random.uniform(-60, 60, n_measurements)),
+            'cp_lon_deg': (['measurement'], np.random.uniform(-180, 180, n_measurements)),
+            'cp_alt': (['measurement'], np.random.uniform(0, 1000, n_measurements)),
+            'correlation': (['measurement'], np.linspace(0.2, 1.0, n_measurements))
+        }, coords={
+            'measurement': np.arange(n_measurements),
+            'xyz': ['x', 'y', 'z'],
+            'xyz_from': ['x', 'y', 'z'],
+            'xyz_to': ['x', 'y', 'z']
+        })
+
+    def test_correlation_config_default(self):
+        """Test that minimum_correlation defaults to None."""
+        config = GeolocationConfig()
+        self.assertIsNone(config.minimum_correlation)
+
+    def test_correlation_config_custom(self):
+        """Test setting custom correlation threshold."""
+        config = GeolocationConfig(minimum_correlation=0.6)
+        self.assertEqual(config.minimum_correlation, 0.6)
+
+    def test_no_filtering_when_threshold_is_none(self):
+        """Test that no filtering occurs when minimum_correlation is None."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+
+        config = GeolocationConfig(minimum_correlation=None)
+        processor = ErrorStatsProcessor(config=config)
+
+        results = processor.process_geolocation_errors(test_data)
+
+        # All measurements should remain
+        self.assertEqual(len(results.measurement), 10)
+        self.assertNotIn('correlation_filtering_applied', results.attrs)
+
+    def test_filtering_with_threshold_05(self):
+        """Test filtering with correlation threshold of 0.5."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        # Correlation values: [0.2, 0.289, 0.378, 0.467, 0.556, 0.644, 0.733, 0.822, 0.911, 1.0]
+
+        config = GeolocationConfig(minimum_correlation=0.5)
+        processor = ErrorStatsProcessor(config=config)
+
+        results = processor.process_geolocation_errors(test_data)
+
+        # Should have 6 measurements with correlation >= 0.5
+        self.assertEqual(len(results.measurement), 6)
+        self.assertIn('correlation_filtering_applied', results.attrs)
+        self.assertTrue(results.attrs['correlation_filtering_applied'])
+        self.assertEqual(results.attrs['minimum_correlation_threshold'], 0.5)
+
+    def test_filtering_with_threshold_08(self):
+        """Test filtering with stricter correlation threshold of 0.8."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+
+        config = GeolocationConfig(minimum_correlation=0.8)
+        processor = ErrorStatsProcessor(config=config)
+
+        results = processor.process_geolocation_errors(test_data)
+
+        # Should have 3 measurements with correlation >= 0.8
+        self.assertEqual(len(results.measurement), 3)
+        self.assertTrue(results.attrs['correlation_filtering_applied'])
+
+    def test_filtering_with_alternative_variable_names(self):
+        """Test that filtering works with alternative correlation variable names."""
+        for var_name in ['ccv', 'im_ccv']:
+            test_data = self._create_test_data_with_correlation(n_measurements=10)
+            # Rename correlation variable
+            test_data = test_data.rename({'correlation': var_name})
+
+            config = GeolocationConfig(minimum_correlation=0.5)
+            processor = ErrorStatsProcessor(config=config)
+
+            results = processor.process_geolocation_errors(test_data)
+
+            # Should still filter correctly
+            self.assertEqual(len(results.measurement), 6)
+
+    def test_missing_correlation_variable_logs_warning(self):
+        """Test graceful handling when correlation variable is missing."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        # Remove correlation variable
+        test_data = test_data.drop_vars('correlation')
+
+        config = GeolocationConfig(minimum_correlation=0.5)
+        processor = ErrorStatsProcessor(config=config)
+
+        # Should process without filtering (and log warning)
+        results = processor.process_geolocation_errors(test_data)
+
+        # All measurements should remain
+        self.assertEqual(len(results.measurement), 10)
+
+    def test_all_measurements_filtered_raises_error(self):
+        """Test that filtering all measurements raises an error."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+
+        # Set impossibly high threshold
+        config = GeolocationConfig(minimum_correlation=1.1)
+        processor = ErrorStatsProcessor(config=config)
+
+        with self.assertRaises(ValueError) as context:
+            processor.process_geolocation_errors(test_data)
+        self.assertIn("No measurements remaining", str(context.exception))
+
+    def test_correlation_values_preserved_in_output(self):
+        """Test that correlation values are preserved in output dataset."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+
+        config = GeolocationConfig(minimum_correlation=0.5)
+        processor = ErrorStatsProcessor(config=config)
+
+        results = processor.process_geolocation_errors(test_data)
+
+        # Correlation should be in output
+        self.assertIn('correlation', results.data_vars)
+        # All remaining correlations should be >= 0.5
+        self.assertTrue((results.correlation >= 0.5).all())
+
+
+class TestNetCDFReprocessing(unittest.TestCase):
+    """Test NetCDF reprocessing capabilities."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.processor = ErrorStatsProcessor()
+        self.test_dir = Path(__file__).parent.parent / "test_outputs"
+        self.test_dir.mkdir(exist_ok=True, parents=True)
+
+    def tearDown(self):
+        """Clean up test files."""
+        # Optional: remove test files after tests
+        pass
+
+    def _create_test_netcdf(self, filepath, include_correlation=True, n_measurements=10):
+        """Create a test NetCDF file."""
+        t_matrices = np.zeros((3, 3, n_measurements))
+        for i in range(n_measurements):
+            t_matrices[:, :, i] = np.eye(3)
+
+        data_dict = {
+            'lat_error_deg': (['measurement'], np.random.uniform(-0.01, 0.01, n_measurements)),
+            'lon_error_deg': (['measurement'], np.random.uniform(-0.01, 0.01, n_measurements)),
+            'riss_ctrs': (['measurement', 'xyz'], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
+            'bhat_hs': (['measurement', 'xyz'], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
+            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrices),
+            'cp_lat_deg': (['measurement'], np.random.uniform(-60, 60, n_measurements)),
+            'cp_lon_deg': (['measurement'], np.random.uniform(-180, 180, n_measurements)),
+            'cp_alt': (['measurement'], np.random.uniform(0, 1000, n_measurements))
+        }
+
+        if include_correlation:
+            data_dict['correlation'] = (['measurement'], np.linspace(0.2, 1.0, n_measurements))
+
+        test_data = xr.Dataset(
+            data_dict,
+            coords={
+                'measurement': np.arange(n_measurements),
+                'xyz': ['x', 'y', 'z'],
+                'xyz_from': ['x', 'y', 'z'],
+                'xyz_to': ['x', 'y', 'z']
+            }
+        )
+
+        test_data.to_netcdf(filepath)
+        return filepath
+
+    def test_process_from_netcdf_basic(self):
+        """Test basic NetCDF loading and reprocessing."""
+        netcdf_path = self.test_dir / "test_basic.nc"
+        self._create_test_netcdf(netcdf_path, n_measurements=10)
+
+        results = self.processor.process_from_netcdf(netcdf_path)
+
+        self.assertIsInstance(results, xr.Dataset)
+        self.assertIn('nadir_equiv_total_error_m', results.data_vars)
+        self.assertIn('reprocessed_from', results.attrs)
+        self.assertIn('reprocessing_date', results.attrs)
+        self.assertEqual(str(netcdf_path), results.attrs['reprocessed_from'])
+
+    def test_process_from_netcdf_with_correlation_override(self):
+        """Test NetCDF reprocessing with correlation threshold override."""
+        netcdf_path = self.test_dir / "test_correlation_override.nc"
+        self._create_test_netcdf(netcdf_path, include_correlation=True, n_measurements=10)
+
+        # Reprocess with different thresholds
+        results_50 = self.processor.process_from_netcdf(netcdf_path, minimum_correlation=0.5)
+        results_80 = self.processor.process_from_netcdf(netcdf_path, minimum_correlation=0.8)
+
+        # Different thresholds should yield different numbers of measurements
+        self.assertEqual(len(results_50.measurement), 6)
+        self.assertEqual(len(results_80.measurement), 3)
+
+        # Check metadata
+        self.assertEqual(results_50.attrs['correlation_threshold_override'], 0.5)
+        self.assertEqual(results_80.attrs['correlation_threshold_override'], 0.8)
+
+    def test_process_from_netcdf_file_not_found(self):
+        """Test error handling for non-existent NetCDF file."""
+        with self.assertRaises(FileNotFoundError):
+            self.processor.process_from_netcdf("nonexistent_file.nc")
+
+    def test_process_from_netcdf_missing_required_variables(self):
+        """Test error handling for NetCDF missing required variables."""
+        netcdf_path = self.test_dir / "test_incomplete.nc"
+
+        # Create incomplete dataset
+        incomplete_data = xr.Dataset({
+            'lat_error_deg': (['measurement'], [0.001, 0.002]),
+            'lon_error_deg': (['measurement'], [0.001, 0.002])
+        }, coords={'measurement': [0, 1]})
+        incomplete_data.to_netcdf(netcdf_path)
+
+        with self.assertRaises(ValueError) as context:
+            self.processor.process_from_netcdf(netcdf_path)
+        self.assertIn("missing required variables", str(context.exception))
+
+    def test_process_from_netcdf_preserves_original_config(self):
+        """Test that reprocessing with override preserves original config."""
+        netcdf_path = self.test_dir / "test_config_preservation.nc"
+        self._create_test_netcdf(netcdf_path, include_correlation=True, n_measurements=10)
+
+        # Create processor with initial threshold
+        config = GeolocationConfig(minimum_correlation=0.3)
+        processor = ErrorStatsProcessor(config=config)
+
+        # Reprocess with override
+        results = processor.process_from_netcdf(netcdf_path, minimum_correlation=0.7)
+
+        # Original config should be restored
+        self.assertEqual(processor.config.minimum_correlation, 0.3)
+
+    def test_process_from_netcdf_without_correlation(self):
+        """Test reprocessing NetCDF file without correlation data."""
+        netcdf_path = self.test_dir / "test_no_correlation.nc"
+        self._create_test_netcdf(netcdf_path, include_correlation=False, n_measurements=10)
+
+        # Should process without filtering (log warning)
+        config = GeolocationConfig(minimum_correlation=0.5)
+        processor = ErrorStatsProcessor(config=config)
+
+        results = processor.process_from_netcdf(netcdf_path)
+
+        # All measurements should remain
+        self.assertEqual(len(results.measurement), 10)
+
+    def test_iterative_reprocessing_workflow(self):
+        """Test realistic workflow of iterative threshold testing."""
+        netcdf_path = self.test_dir / "test_iterative.nc"
+        self._create_test_netcdf(netcdf_path, include_correlation=True, n_measurements=20)
+
+        # Test multiple thresholds
+        thresholds = [0.3, 0.5, 0.7, 0.9]
+        results = {}
+
+        for threshold in thresholds:
+            result = self.processor.process_from_netcdf(netcdf_path, minimum_correlation=threshold)
+            results[threshold] = {
+                'n_measurements': len(result.measurement),
+                'pass_rate': result.attrs['percent_below_250m']
+            }
+
+        # Higher thresholds should have fewer measurements
+        n_measurements = [results[t]['n_measurements'] for t in thresholds]
+        self.assertEqual(n_measurements, sorted(n_measurements, reverse=True))
+
+
 if __name__ == '__main__':
     unittest.main()
