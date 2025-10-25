@@ -20,9 +20,7 @@ class EphemerisStateTestCase(unittest.TestCase):
         generic_dir = root_dir / 'data' / 'generic'
         self.assertTrue(generic_dir.is_dir())
 
-        self.bin_dir = root_dir / 'bin' / 'spice' / (
-            'macintel' if sys.platform == 'darwin' else 'linux')
-        self.assertTrue(self.bin_dir.is_dir())
+        self.bin_dir = None  # Rely on system SPICE installation.
 
         self.data_dir = root_dir / 'tests' / 'data' / 'tsis1'
         self.assertTrue(self.data_dir.is_dir())
