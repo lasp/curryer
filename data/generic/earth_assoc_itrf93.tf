@@ -26,8 +26,8 @@ KPL/FK
 
       ITRF93
 
-   with the Earth. High-accuracy binary Earth PCK files, which 
-   provide the orientation of the ITRF93 frame relative to 
+   with the Earth. High-accuracy binary Earth PCK files, which
+   provide the orientation of the ITRF93 frame relative to
    the ICRF are available from the NAIF web site:
 
       ftp://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck
@@ -94,7 +94,7 @@ KPL/FK
          KERNELS_TO_LOAD = ( 'earth_assoc_itrf93.tf'
                              'earth_000101_070620_070329.bpc'
                              'pck00008.tpc'
-                             'naif0008.tls'         
+                             'naif0008.tls'
                              'de414.bsp'                     )
          @begintext
 
@@ -116,7 +116,7 @@ KPL/FK
 
              DOUBLE PRECISION      DPR
 
-             INTEGER               FILEN 
+             INTEGER               FILEN
              PARAMETER           ( FILEN  = 255 )
 
              INTEGER               FRNMLN
@@ -156,9 +156,9 @@ KPL/FK
        C     Find the closest point on the Earth to the center
        C     of the Moon at ET.
        C
-             CALL SUBPT  ( 'Near point', 'EARTH', ET,  'NONE', 
+             CALL SUBPT  ( 'Near point', 'EARTH', ET,  'NONE',
             .              'MOON',       SPOINT,  ALT          )
-            .               
+            .
        C
        C     Express the sub-observer point in latitudinal
        C     coordinates.
@@ -167,7 +167,7 @@ KPL/FK
 
        C
        C     Look up the name of the Earth body-fixed frame.
-       C     
+       C
              CALL CNMFRM ( 'EARTH', FRCODE, FRNAME, FOUND )
 
        C
@@ -180,7 +180,7 @@ KPL/FK
              END IF
 
              WRITE(*,*) 'Earth body-fixed frame is ', FRNAME
-             WRITE(*,*) 'Sub-Moon planetocentric longitude (deg):', 
+             WRITE(*,*) 'Sub-Moon planetocentric longitude (deg):',
             .            LON*DPR()
              WRITE(*,*) 'Sub-Moon planetocentric latitude  (deg):',
             .            LAT*DPR()

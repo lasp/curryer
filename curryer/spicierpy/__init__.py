@@ -3,21 +3,30 @@
 
 @author: Brandon Stone
 """
+
 #
 # Import everything from SpiceyPy. Required to "replace" issue methods.
 #
 from spiceypy import *
 
 #
-# Override non-vectorized routines.
-#
-from .vectorized import recgeo  # Utilities
-from .vectorized import sce2c, sct2e, unitim, timout, str2et  # Time-related
-from .vectorized import spkezp, spkezr  # Ephemeris
-from .vectorized import ckgp  # Attitude
-
-#
 # Lastly load in the custom modules.
 #
-from . import obj
-from . import ext
+from . import ext, obj
+
+#
+# Override non-vectorized routines.
+#
+from .vectorized import (  # Time-related  # Ephemeris
+    ckgp,  # Attitude
+    recgeo,  # Utilities
+    sce2c,
+    sct2e,
+    spkezp,
+    spkezr,
+    str2et,
+    timout,
+    unitim,
+)
+
+__all__ = ["ext", "obj", "ckgp", "recgeo", "sce2c", "sct2e", "spkezp", "spkezr", "str2et", "timout", "unitim"]

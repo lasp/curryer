@@ -1,6 +1,6 @@
 # User Documentation (Getting Started)
 
-# Installation 
+# Installation
 
 ```shell
 pip install lasp-curryer
