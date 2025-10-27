@@ -4,13 +4,32 @@ Monte Carlo Pipeline Integration Test
 This test script validates the complete Monte Carlo GCS pipeline using
 validated test data from tests/data/clarreo/image_match/.
 
-It enables testing the majority of the modules in the GCS pipeline (skipping parameter modification, kernel creation,
- and geolocation) all without requiring real production data:
-- Real image matching with test files
+TEST SCOPE vs run_monte_carlo.py:
+--------------------------------
+This test focuses on:
+- Real image matching with pre-geolocated test data
 - Real GCP pairing with spatial matching
 - Error statistics processing
 - NetCDF output generation
-- Parameter variation simulation (apply offsets to image matching results, skipping real geolocation)
+- Parameter variation simulation (fake variations via random offsets)
+
+SKIPPED STEPS (not needed for this test):
+- Kernel creation (test data already has geometry)
+- Geolocation (test data is pre-geolocated)
+- Parameter modification (uses random error injection instead)
+
+run_monte_carlo.py focuses on:
+- Real kernel creation
+- Real geolocation with parameter variations
+- Full end-to-end Monte Carlo workflow
+
+CONFIGURATION:
+-------------
+Both tests now use the clarreo_config module for consistency, but this test:
+- Overrides n_iterations based on test arguments
+- Sets sigma=0 for parameters (no real parameter variation)
+- Uses minimal parameter set (only 1 for structure/metadata)
+- Variations come from randomized image matching errors, not parameters
 
 Usage:
     # Run all tests
@@ -25,6 +44,7 @@ Usage:
 
 import argparse
 import logging
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +68,10 @@ from curryer.correction.data_structures import (
     SearchConfig,
 )
 from curryer.correction.pairing import find_l1a_gcp_pairs
+
+# Add tests directory to path for config module import
+sys.path.insert(0, str(Path(__file__).parent))
+from clarreo_config import create_clarreo_monte_carlo_config
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
@@ -521,39 +545,55 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
 
     # Use paired test cases instead of discovered cases
     n_gcp_pairs = len(paired_test_cases)
-    # Create minimal Monte Carlo configuration
-    # Note: We're not actually using the geo config since we skip geolocation
+
+    # ============================================================================
+    # CREATE CONFIGURATION USING CLARREO CONFIG MODULE
+    # ============================================================================
+    logger.info("=" * 80)
+    logger.info("CREATING TEST CONFIGURATION (based on CLARREO config)")
+    logger.info("=" * 80)
+
+    # Use the CLARREO config module to get base configuration
+    # Note: We're in test mode so we skip actual geolocation/kernel creation
+    root_dir = Path(__file__).parents[2]
     generic_dir = root_dir / 'data' / 'generic'
+    data_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
 
-    geo_config = mc.GeolocationConfig(
-        meta_kernel_file=Path('meta_kernel.json'),  # Not used in test mode
-        generic_kernel_dir=generic_dir,
-        dynamic_kernels=[],
-        instrument_name='CPRS_HYSICS',
-        time_field='corrected_timestamp',
-    )
+    # Create base CLARREO config (this gives us proper structure)
+    base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
-    # Create minimal parameter set for testing
-    # Use zero sigma so all iterations use the same "parameters"
-    # (variations come from image matching randomization)
-    params = [
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.CONSTANT_KERNEL,
-            config_file=Path('cprs_hysics_v01.attitude.ck.json'),
-            data={
-                'current_value': [0.0, 0.0, 0.0],  # Changed from 'center' to 'current_value'
-                'sigma': 0.0,  # No parameter variation in test mode
-                'units': 'arcseconds',
-            }
-        )
-    ]
-
+    # Override settings for test mode:
+    # - Use specified number of iterations
+    # - Set sigma=0 for parameters (no real parameter variation in test mode)
+    # - Keep minimal parameter set (only need 1 for metadata/structure)
     config = mc.MonteCarloConfig(
         seed=42,
         n_iterations=n_iterations,
-        parameters=params,
-        geo=geo_config,
+        parameters=[
+            # Use minimal parameter set for test mode - only need one for structure
+            # Set sigma=0 since variations come from image matching randomization, not parameters
+            mc.ParameterConfig(
+                ptype=mc.ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / 'cprs_hysics_v01.attitude.ck.json',
+                data={
+                    'current_value': [0.0, 0.0, 0.0],
+                    'sigma': 0.0,  # No parameter variation in test mode
+                    'units': 'arcseconds',
+                    'transformation_type': 'dcm_rotation',
+                    'coordinate_frames': ['HYSICS_SLIT', 'CRADLE_ELEVATION']
+                }
+            )
+        ],
+        geo=base_config.geo,  # Use the full geolocation config from CLARREO config
     )
+
+    logger.info(f"Configuration created:")
+    logger.info(f"  Mission: CLARREO (from clarreo_config module)")
+    logger.info(f"  Instrument: {config.geo.instrument_name}")
+    logger.info(f"  Iterations: {config.n_iterations}")
+    logger.info(f"  Parameters: {len(config.parameters)} (minimal for test mode)")
+    logger.info(f"  Test mode: Variations from image matching, not parameter changes")
+    logger.info("=" * 80)
 
     # Cache image matching results for efficiency
     image_match_cache = {}
@@ -665,7 +705,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
 
     # Save NetCDF results
     logger.info("Saving NetCDF results...")
-    netcdf_file = work_dir / "monte_carlo_test_results.nc"
+    netcdf_file = work_dir / "test_monte_carlo_pipeline_results.nc"
     mc._save_netcdf_results(netcdf_data, netcdf_file, config)
 
     logger.info("=" * 80)
