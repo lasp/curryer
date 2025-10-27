@@ -80,7 +80,7 @@ RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_
     && mkdir -p ${PROJ_DOWNLOAD_DIR} \
     && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
 
-ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--disable-warnings", "tests"]
+ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--cov", "--cov-branch", "--cov-report=xml:coverage.xml", "--disable-warnings", "tests"]
 
 # =============================================================================
 # Debug environment.
