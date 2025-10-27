@@ -65,7 +65,7 @@ def setup_directories():
     logger = logging.getLogger(__name__)
 
     # Define directory paths
-    root_dir = Path(__file__).parent.parent
+    root_dir = Path(__file__).parent.parent.parent
     generic_dir = root_dir / 'data' / 'generic'
     data_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
 
@@ -82,7 +82,7 @@ def setup_directories():
         )
 
     # Create output directory with error handling
-    output_dir = root_dir / 'curryer' / 'correction' / 'monte_carlo_results'
+    output_dir = root_dir / 'tests' / 'test_correction' / 'monte_carlo_results'
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError:
@@ -504,7 +504,7 @@ def main():
         generic_dir, data_dir, work_dir = setup_directories()
 
         # Configuration
-        config = create_monte_carlo_config(data_dir, generic_dir, config_output_path='configs/run_monte_carlo_config.json')
+        config = create_monte_carlo_config(data_dir, generic_dir, config_output_path='../../bin/configs/run_monte_carlo_config.json')
 
         # Static kernels
         static_kernels = create_static_kernels(data_dir, generic_dir, work_dir)
