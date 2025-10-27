@@ -412,7 +412,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     # Create or use provided work directory
     if work_dir is None:
         # Default to a real directory instead of temp
-        work_dir = root_dir / 'test_corrections/monte_carlo_results'
+        work_dir = root_dir / 'test_correction/monte_carlo_results'
         work_dir.mkdir(parents=True, exist_ok=True)
         tmp_dir_obj = None
         cleanup_work_dir = False
