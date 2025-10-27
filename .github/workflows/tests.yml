@@ -37,7 +37,15 @@ jobs:
         run: docker build . --file Dockerfile --target test --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-test:latest
 
       - name: Run test docker image
-        run: docker run -i --rm curryer-${{ matrix.python-version }}-test:latest
+        run: docker run -i curryer-${{ matrix.python-version }}-test:latest
+
+      - name: Copy coverage report
+        run: docker cp $(docker ps -alq):/app/curryer/coverage.xml ./coverage.xml
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          oidc: true
 
   demo:
     runs-on: ubuntu-latest
