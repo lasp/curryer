@@ -68,6 +68,7 @@ pytest-cov = "*"
 pytest-randomly = "*"
 ruff = "*"
 ipython = "*"
+responses = "^0.25.8"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'
