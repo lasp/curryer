@@ -2107,9 +2107,14 @@ def _extract_parameter_values(params):
 
 
 def _store_parameter_values(netcdf_data, param_idx, param_values):
-    """Store parameter values in the NetCDF data structure."""
-    # Map parameter names to NetCDF variable names
-    param_mapping = {
+    """Store parameter values in the NetCDF data structure.
+
+    This function maps parameter names to NetCDF variable names for storage.
+    It handles both hardcoded CLARREO names (for backward compatibility) and
+    dynamically generates names for other missions.
+    """
+    # Legacy mapping for CLARREO backward compatibility
+    legacy_param_mapping = {
         'cprs_hysics_v01.attitude.ck_roll': 'param_hysics_roll',
         'cprs_hysics_v01.attitude.ck_pitch': 'param_hysics_pitch',
         'cprs_hysics_v01.attitude.ck_yaw': 'param_hysics_yaw',
@@ -2125,10 +2130,18 @@ def _store_parameter_values(netcdf_data, param_idx, param_values):
     }
 
     for param_name, value in param_values.items():
-        if param_name in param_mapping:
-            netcdf_var = param_mapping[param_name]
-            if netcdf_var in netcdf_data:
-                netcdf_data[netcdf_var][param_idx] = value
+        # Try legacy mapping first for backward compatibility
+        if param_name in legacy_param_mapping:
+            netcdf_var = legacy_param_mapping[param_name]
+        else:
+            # Generate NetCDF variable name dynamically from parameter name
+            # Convert parameter file name to variable name (e.g., "mission_frame_v01.attitude.ck_roll" -> "param_frame_roll")
+            netcdf_var = param_name.replace('.attitude.ck', '').replace('.', '_')
+            if not netcdf_var.startswith('param_'):
+                netcdf_var = f'param_{netcdf_var}'
+
+        if netcdf_var in netcdf_data:
+            netcdf_data[netcdf_var][param_idx] = value
 
 
 def _extract_error_metrics(stats_dataset):

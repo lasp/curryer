@@ -8,12 +8,12 @@ structure but is organized for easy understanding and modification.
 
 GETTING STARTED:
 1. Ensure data directories exist: tests/data/clarreo/gcs/ and data/generic/
-2. Adjust parameters in create_monte_carlo_config() if needed
+2. Adjust parameters in tests/test_correction/clarreo_config.py if needed
 3. Run: python run_monte_carlo.py
 4. Review results in curryer/correction/monte_carlo_results/
 
 USER CONFIGURATION POINTS:
-- edit_monte_carlo_config(): Modify parameters, bounds, sigmas, iterations
+- tests/test_correction/clarreo_config.py: Modify parameters, bounds, sigmas, iterations
 - setup_directories(): Change data/output directory paths
 - prepare_gcp_data_sets(): Add/modify data sets for processing
 
@@ -40,6 +40,9 @@ from curryer import utils, meta
 from curryer import spicierpy as sp
 from curryer.correction import monte_carlo as mc
 from curryer.kernels import create
+
+# Import CLARREO-specific config
+from clarreo_config import create_clarreo_monte_carlo_config
 
 # Configuration and Setup Functions
 
@@ -100,9 +103,15 @@ def setup_directories():
 # =============================================================================
 # Monte Carlo Configuration
 # =============================================================================
+# NOTE: Configuration has been moved to tests/test_correction/clarreo_config.py
+# The function below is kept for reference but is no longer used.
+# Use create_clarreo_monte_carlo_config() from clarreo_config.py instead.
+# =============================================================================
 
 def create_monte_carlo_config(data_dir, generic_dir, config_output_path=None):
     """
+    DEPRECATED: Use create_clarreo_monte_carlo_config() from clarreo_config.py instead.
+
     Create the Monte Carlo configuration with all 12 parameters.
 
     USER CONFIGURATION: This is the main place to adjust Monte Carlo parameters.
@@ -504,7 +513,12 @@ def main():
         generic_dir, data_dir, work_dir = setup_directories()
 
         # Configuration
-        config = create_monte_carlo_config(data_dir, generic_dir, config_output_path='../../bin/configs/run_monte_carlo_config.json')
+        logger.info("Creating CLARREO Monte Carlo configuration...")
+        config = create_clarreo_monte_carlo_config(
+            data_dir,
+            generic_dir,
+            config_output_path=Path(__file__).parent / 'configs' / 'run_monte_carlo_config.json'
+        )
 
         # Static kernels
         static_kernels = create_static_kernels(data_dir, generic_dir, work_dir)
