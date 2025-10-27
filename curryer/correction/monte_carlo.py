@@ -25,6 +25,7 @@ from curryer.correction.image_match import (
 )
 from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig, SearchConfig
 from curryer.correction.pairing import pair_files
+from curryer.correction import correction_config
 
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,15 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in config file {config_path}: {e}")
 
+    # Extract mission configuration and kernel mappings
+    mission_config = correction_config.extract_mission_config(config_data)
+    constant_kernel_map = correction_config.get_kernel_mapping(config_data, 'constant_kernel')
+    offset_kernel_map = correction_config.get_kernel_mapping(config_data, 'offset_kernel')
+
+    logger.debug(f"Mission: {mission_config.get('mission_name', 'UNKNOWN')}")
+    logger.debug(f"Constant kernel mappings: {constant_kernel_map}")
+    logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
+
     # Validate required sections exist
     if 'monte_carlo' not in config_data:
         raise KeyError("Missing required 'monte_carlo' section in config file")
@@ -198,13 +208,13 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
 
             param_groups[base_name]['angles'][angle_type] = param_dict.get('initial_value', 0.0)
 
-            # Determine config file based on base name
-            if 'hysics' in base_name.lower():
-                param_groups[base_name]['config_file'] = Path('cprs_hysics_v01.attitude.ck.json')
-            elif 'yoke' in base_name.lower():
-                param_groups[base_name]['config_file'] = Path('cprs_yoke_v01.attitude.ck.json')
-            elif 'base' in base_name.lower():
-                param_groups[base_name]['config_file'] = Path('cprs_base_v01.attitude.ck.json')
+            # Determine config file based on kernel mapping from config
+            kernel_file = correction_config.find_kernel_file(base_name, constant_kernel_map)
+            if kernel_file:
+                param_groups[base_name]['config_file'] = Path(kernel_file)
+                logger.debug(f"Mapped CONSTANT_KERNEL '{base_name}' → {kernel_file}")
+            else:
+                logger.warning(f"No kernel mapping found for CONSTANT_KERNEL parameter: {base_name}")
 
         else:
             # OFFSET_KERNEL and OFFSET_TIME parameters are individual
@@ -215,10 +225,13 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
             }
 
             if ptype == ParameterType.OFFSET_KERNEL:
-                if 'azimuth' in param_name.lower():
-                    param_groups[param_name]['config_file'] = Path('cprs_az_v01.attitude.ck.json')
-                elif 'elevation' in param_name.lower():
-                    param_groups[param_name]['config_file'] = Path('cprs_el_v01.attitude.ck.json')
+                # Determine config file based on kernel mapping from config
+                kernel_file = correction_config.find_kernel_file(param_name, offset_kernel_map)
+                if kernel_file:
+                    param_groups[param_name]['config_file'] = Path(kernel_file)
+                    logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
+                else:
+                    logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
 
     # Second pass: create ParameterConfig objects from groups
     for group_name, group_data in param_groups.items():
@@ -264,11 +277,13 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     logger.info(f"Loaded {len(parameters)} parameter groups from {len(mc_config.get('parameters', []))} individual parameters")
 
     # Parse geolocation configuration
+    # Use instrument_name from geolocation config, falling back to mission_config, then default
+    default_instrument = mission_config.get('instrument_name', 'CPRS_HYSICS')
     geo = GeolocationConfig(
         meta_kernel_file=Path(geo_config.get('meta_kernel_file', '')),
         generic_kernel_dir=Path(geo_config.get('generic_kernel_dir', '')),
         dynamic_kernels=[Path(k) for k in geo_config.get('dynamic_kernels', [])],
-        instrument_name=geo_config.get('instrument_name', 'CPRS_HYSICS'),
+        instrument_name=geo_config.get('instrument_name', default_instrument),
         time_field=geo_config.get('time_field', 'corrected_timestamp'),
     )
 
