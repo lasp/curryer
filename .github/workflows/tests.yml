@@ -27,20 +27,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgdal-dev libhdf5-dev g++
+
       - name: Install test dependencies
-        run: pip install ".[test]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[test]"
 
       - name: Ruff check linting
         run: ruff check
 
-      - name: Build test docker image
-        run: docker build . --file Dockerfile --target test --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-test:latest
-
-      - name: Run test docker image
-        run: docker run -i curryer-${{ matrix.python-version }}-test:latest
-
-      - name: Copy coverage report
-        run: docker cp $(docker ps -alq):/app/curryer/coverage.xml ./coverage.xml
+      - name: Run tests
+        run: pytest -v --junitxml=junit.xml --cov --cov-branch --cov-report=xml:coverage.xml --disable-warnings tests
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
