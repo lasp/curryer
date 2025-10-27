@@ -780,13 +780,14 @@ def image_matching(
         return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info)
 
 
-def call_error_stats_module(image_matching_results):
+def call_error_stats_module(image_matching_results, geo_config: typing.Optional['GeolocationConfig'] = None):
     """
     Call the REAL error_stats module with image matching output.
 
     Args:
         image_matching_results: Either a single image matching result (xarray.Dataset)
                               or a list of image matching results from multiple GCP pairs
+        geo_config: Optional GeolocationConfig with minimum_correlation for filtering
 
     Returns:
         Aggregate error statistics dataset
@@ -796,10 +797,19 @@ def call_error_stats_module(image_matching_results):
         image_matching_results = [image_matching_results]
 
     try:
-        from curryer.correction.geolocation_error_stats import ErrorStatsProcessor
+        from curryer.correction.geolocation_error_stats import (
+            ErrorStatsProcessor,
+            GeolocationConfig as ErrorStatsGeolocationConfig
+        )
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs (REAL MODULE)")
-        processor = ErrorStatsProcessor()
+
+        # Create error stats config from Monte Carlo geo config
+        error_config = ErrorStatsGeolocationConfig(
+            minimum_correlation=geo_config.minimum_correlation if geo_config else None
+        )
+
+        processor = ErrorStatsProcessor(config=error_config)
 
         if len(image_matching_results) == 1:
             # Single GCP pair case
@@ -965,6 +975,7 @@ class GeolocationConfig:
     dynamic_kernels: [Path]  # Kernels that are dynamic but *NOT* altered by param!
     instrument_name: str
     time_field: str
+    minimum_correlation: typing.Optional[float] = None  # Filter threshold for image matching quality (0.0-1.0)
 
 
 @dataclass
@@ -1522,7 +1533,7 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
 
                     # Convert to appropriate units if needed
                     if param.data.get('units') == 'arcseconds':
-                        current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
+                        current_val_rad = np.deg2rad(current_value / 3600.0) if current_val != 0 else current_val
                     else:
                         current_val_rad = current_value
                     param_vals = current_val_rad
@@ -1985,7 +1996,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         logger.info(f"  Processing aggregate statistics from {len(image_matching_results)} GCP pairs")
 
         # Call error stats module on aggregate of all image matching results
-        aggregate_stats = call_error_stats_module(image_matching_results)
+        aggregate_stats = call_error_stats_module(image_matching_results, geo_config=config.geo)
 
         # Extract aggregate error metrics
         aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
@@ -1997,7 +2008,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         pair_errors = []
         for pair_idx, image_matching_result in enumerate(image_matching_results):
             # Get individual pair error metrics from the single result
-            individual_stats = call_error_stats_module(image_matching_result)
+            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             pair_errors.append(individual_metrics['rms_error_m'])
@@ -2015,7 +2026,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
 
         # Store comprehensive results for backward compatibility
         for pair_idx, (image_matching_result, geo_data) in enumerate(zip(image_matching_results, gcp_pair_geolocation_data)):
-            individual_stats = call_error_stats_module(image_matching_result)
+            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             iteration_result = {
