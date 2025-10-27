@@ -52,7 +52,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Since these are only for testing, we do not care what version they are
-test = ["pre-commit", "pytest", "pytest-cov", "pytest-randomly", "ruff"]
+test = ["pre-commit", "pytest", "pytest-cov", "pytest-randomly", "responses", "ruff"]
 
 [tool.poetry]
 packages = [{ include = "curryer" }]
