@@ -9,12 +9,14 @@
 # -----------------------------------------------------------------------------
 # Python version with which to test (must be supported and available on dockerhub)
 ARG BASE_IMAGE_PYTHON_VERSION
-FROM python:${BASE_IMAGE_PYTHON_VERSION:-3.11}-slim AS test
+FROM python:${BASE_IMAGE_PYTHON_VERSION:-3.11}-slim-bookworm AS test
+# TARGETPLATFORM is passed automatically by docker buildx or manually via --platform
+ARG TARGETPLATFORM
 
 USER root
 
-ENV BASE_DIR /app/curryer
-ENV DATA_DIR $BASE_DIR/data
+ENV BASE_DIR=/app/curryer
+ENV DATA_DIR=$BASE_DIR/data
 WORKDIR $BASE_DIR
 
 # Create virtual environment and permanently activate it for this image
@@ -27,16 +29,34 @@ RUN pip install --upgrade pip
 
 # Update the OS tools and install dependencies.
 RUN apt-get update
-RUN apt-get install -y curl
+RUN apt-get install -y curl wget libgdal-dev build-essential
+
+# Install SPICE toolkit via conda for AMD or ARM architectures
+ENV CONDA_DIR=/root/.local/conda
+RUN <<EOF
+set -ex
+if [ "$TARGETPLATFORM" = "linux/arm64" ] || [ "$TARGETPLATFORM" = "linux/aarch64" ]; then ARCH="aarch64"; else ARCH="x86_64"; fi
+CONDA_INSTALL_SCRIPT=Miniconda3-latest-Linux-$ARCH.sh
+wget -q https://repo.anaconda.com/miniconda/$CONDA_INSTALL_SCRIPT
+bash $CONDA_INSTALL_SCRIPT -b -p $CONDA_DIR
+rm $CONDA_INSTALL_SCRIPT
+export PATH="$CONDA_DIR/bin:$PATH"
+conda tos accept
+conda config --add channels conda-forge
+conda config --set channel_priority strict
+conda install -y cspice
+echo "export CONDA_DIR=$CONDA_DIR" >> /root/.bashrc
+echo ". $CONDA_DIR/etc/profile.d/conda.sh" >> /root/.bashrc
+EOF
+
+# Add Conda to path *after* venv so that venv python is used
+ENV PATH="$PATH:$CONDA_DIR/bin"
 
 # Install poetry and add to path.
 RUN curl -sSL https://install.python-poetry.org | python -
 ENV PATH="$PATH:/root/.local/bin"
 
 # Copy data files.
-RUN mkdir -p $DATA_DIR/generic \
-    && curl https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de430.bsp \
-    --output $DATA_DIR/generic/de430.bsp
 COPY data $DATA_DIR
 
 # Copy library files.
@@ -60,11 +80,7 @@ RUN PROJ_DOWNLOAD_DIR=$(python -c "import pyproj; print(pyproj.datadir.get_user_
     && mkdir -p ${PROJ_DOWNLOAD_DIR} \
     && curl https://cdn.proj.org/us_nga_egm96_15.tif --output ${PROJ_DOWNLOAD_DIR}/us_nga_egm96_15.tif
 
-ENTRYPOINT pytest \
-    -v \
-    --junitxml=junit.xml \
-    --disable-warnings \
-    tests
+ENTRYPOINT ["pytest", "-v", "--junitxml=junit.xml", "--disable-warnings", "tests"]
 
 # =============================================================================
 # Debug environment.

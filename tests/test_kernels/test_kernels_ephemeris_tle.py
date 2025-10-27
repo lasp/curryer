@@ -1,5 +1,4 @@
 import logging
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,8 +19,7 @@ class EphemerisTLETestCase(unittest.TestCase):
         generic_dir = root_dir / "data" / "generic"
         self.assertTrue(generic_dir.is_dir())
 
-        self.bin_dir = root_dir / "bin" / "spice" / ("macintel" if sys.platform == "darwin" else "linux")
-        self.assertTrue(self.bin_dir.is_dir())
+        self.bin_dir = None  # Rely on system SPICE installation.
 
         self.ctim_tle_prop = {
             "input_tle": 52950,
