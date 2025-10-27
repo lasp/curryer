@@ -2,9 +2,10 @@
 
 @author: Brandon Stone
 """
-from enum import IntFlag, unique
-from spiceypy.utils.exceptions import SpiceyError
 
+from enum import IntFlag, unique
+
+from spiceypy.utils.exceptions import SpiceyError
 
 # Time-interval between output samples (TIM/SIM missions only).
 #   Units: Microseconds
@@ -27,7 +28,7 @@ SPEED_OF_LIGHT_KM_PER_S = 299792.458
 WGS84_SEMI_MAJOR_AXIS_KM = 6378.137
 WGS84_SEMI_MINOR_AXIS_KM = 6356.752314245
 WGS84_INVERSE_FLATTENING = 1 / 298.257223563
-WGS84_ECCENTRICITY2 = 2 * WGS84_INVERSE_FLATTENING - WGS84_INVERSE_FLATTENING ** 2
+WGS84_ECCENTRICITY2 = 2 * WGS84_INVERSE_FLATTENING - WGS84_INVERSE_FLATTENING**2
 
 
 @unique
@@ -61,15 +62,15 @@ class SpatialQualityFlags(IntFlag):
         if error is None:
             return cls.GOOD
         if not isinstance(error, SpiceyError):
-            raise TypeError(f'Method requires a SpiceyError, not: {type(error)}')
+            raise TypeError(f"Method requires a SpiceyError, not: {type(error)}")
         # if isinstance(error, NotFoundError):
         #     return cls.SPICE_ERR_NO_LOOKUP_FOUND
-        if 'returns not found' in error.message:
+        if "returns not found" in error.message:
             return cls.SPICE_ERR_NO_RESULTS_FOUND
-        if 'SPICE(SPKINSUFFDATA)' in error.short:
+        if "SPICE(SPKINSUFFDATA)" in error.short:
             return cls.SPICE_ERR_MISSING_EPHEMERIS
-        if 'SPICE(NOFRAMECONNECT)' in error.short:
+        if "SPICE(NOFRAMECONNECT)" in error.short:
             return cls.SPICE_ERR_MISSING_ATTITUDE
-        if 'SPICE(NOTDISJOINT)' in error.short:
+        if "SPICE(NOTDISJOINT)" in error.short:
             return cls.SPICE_ERR_INVALID_LOCATION
         return cls.SPICE_ERR_UNKNOWN_NONSPECIFIC

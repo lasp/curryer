@@ -11,8 +11,7 @@ from pyhdf.SD import SD, SDC
 from pyproj import Transformer
 
 from curryer import utils
-from curryer.compute import elevation, constants
-
+from curryer.compute import constants, elevation
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -24,9 +23,9 @@ np.set_printoptions(linewidth=120)
 class ElevationTestCase(unittest.TestCase):
     def setUp(self) -> None:
         root_dir = Path(__file__).parents[2]
-        self.generic_dir = root_dir / 'data' / 'generic'
-        self.data_dir = root_dir / 'data'
-        self.test_dir = root_dir / 'tests' / 'data'
+        self.generic_dir = root_dir / "data" / "generic"
+        self.data_dir = root_dir / "data"
+        self.test_dir = root_dir / "tests" / "data"
         self.assertTrue(self.generic_dir.is_dir())
         self.assertTrue(self.data_dir.is_dir())
         self.assertTrue(self.test_dir.is_dir())
@@ -44,7 +43,7 @@ class ElevationTestCase(unittest.TestCase):
         self.assertEqual(files, elev._files)
 
         elev._files = None
-        files = elev.locate_files(pattern='*N*W*_gmted_*.tif')
+        files = elev.locate_files(pattern="*N*W*_gmted_*.tif")
         self.assertEqual(24, len(files))
         self.assertEqual(files, elev._files)
 
@@ -55,18 +54,19 @@ class ElevationTestCase(unittest.TestCase):
         metadata = elev.describe_files()
         self.assertIsInstance(metadata, pd.DataFrame)
         self.assertIsInstance(elev._metadata, pd.DataFrame)
-        self.assertListEqual(metadata.columns.to_list(), ['ur_lon', 'ur_lat', 'name'])
+        self.assertListEqual(metadata.columns.to_list(), ["ur_lon", "ur_lat", "name"])
         self.assertTupleEqual(metadata.shape, (108, 3))
 
         metadata = metadata.reset_index()
-        self.assertListEqual(metadata.columns.to_list(),
-                             ['ll_lon', 'll_lat', 'stat', 'arcsec', 'ur_lon', 'ur_lat', 'name'])
+        self.assertListEqual(
+            metadata.columns.to_list(), ["ll_lon", "ll_lat", "stat", "arcsec", "ur_lon", "ur_lat", "name"]
+        )
         self.assertTupleEqual(metadata.shape, (108, 7))
-        self.assertTrue((metadata['stat'] == 'mea').all())
-        self.assertTrue(((metadata['ur_lon'] - metadata['ll_lon']) == 30).all())
-        self.assertTrue(((metadata['ur_lat'] - metadata['ll_lat']) == 20).all())
-        self.assertEqual((metadata['arcsec'] == 15).sum(), 84)
-        self.assertEqual((metadata['arcsec'] == 30).sum(), 24)
+        self.assertTrue((metadata["stat"] == "mea").all())
+        self.assertTrue(((metadata["ur_lon"] - metadata["ll_lon"]) == 30).all())
+        self.assertTrue(((metadata["ur_lat"] - metadata["ll_lat"]) == 20).all())
+        self.assertEqual((metadata["arcsec"] == 15).sum(), 84)
+        self.assertEqual((metadata["arcsec"] == 30).sum(), 24)
 
     def test_elevation_lookup_files(self):
         elev = elevation.Elevation()
@@ -78,15 +78,15 @@ class ElevationTestCase(unittest.TestCase):
         match = elev.lookup_file(2, 3)
         self.assertIsNotNone(match)
         self.assertIsInstance(match, pd.Series)
-        self.assertEqual(match['ur_lon'], 30)
-        self.assertEqual(match['ur_lat'], 10)
-        self.assertEqual(match['name'].name, '10S000E_20101117_gmted_mea150.tif')
+        self.assertEqual(match["ur_lon"], 30)
+        self.assertEqual(match["ur_lat"], 10)
+        self.assertEqual(match["name"].name, "10S000E_20101117_gmted_mea150.tif")
 
         for lon in range(-180, 180, 15):
             for lat in range(-90, 90, 15):
                 match = elev.lookup_file(lon, lat)
-                self.assertIsNotNone(match, msg=f'lon={lon}, lat={lat}')
-                self.assertListEqual(list(match.index), ['ur_lon', 'ur_lat', 'name'])
+                self.assertIsNotNone(match, msg=f"lon={lon}, lat={lat}")
+                self.assertListEqual(list(match.index), ["ur_lon", "ur_lat", "name"])
                 self.assertTupleEqual(match.shape, (3,))
 
         self.assertIsNone(elev.lookup_file(180, 0))
@@ -96,37 +96,37 @@ class ElevationTestCase(unittest.TestCase):
 
         match = elev.lookup_file(180, 0, wrap_lon=True)
         self.assertIsNotNone(match)
-        self.assertEqual(match['name'].name, '10S180W_20101117_gmted_mea150.tif')
+        self.assertEqual(match["name"].name, "10S180W_20101117_gmted_mea150.tif")
 
         match = elev.lookup_file(-180 - 1e-12, 0, wrap_lon=True)
         self.assertIsNotNone(match)
-        self.assertEqual(match['name'].name, '10S150E_20101117_gmted_mea150.tif')
+        self.assertEqual(match["name"].name, "10S150E_20101117_gmted_mea150.tif")
 
         # Modify the metadata to catch more edge cases.
         match1 = elev.lookup_file(0, 10)
-        self.assertEqual(match1['name'].name, '10N000E_20101117_gmted_mea150.tif')
+        self.assertEqual(match1["name"].name, "10N000E_20101117_gmted_mea150.tif")
 
         match2 = match1.copy()
-        match2['name'] = match2['name'].parent / re.sub(r'150', '075', match2['name'].name)
-        elev._metadata.loc[(0, 10, 'mea', 7.5)] = match2
+        match2["name"] = match2["name"].parent / re.sub(r"150", "075", match2["name"].name)
+        elev._metadata.loc[(0, 10, "mea", 7.5)] = match2
 
         match3 = match1.copy()
-        match3['name'] = match3['name'].parent / re.sub(r'mea', 'std', match3['name'].name)
-        elev._metadata.loc[(0, 10, 'std', 15)] = match3
+        match3["name"] = match3["name"].parent / re.sub(r"mea", "std", match3["name"].name)
+        elev._metadata.loc[(0, 10, "std", 15)] = match3
 
         elev._metadata.sort_index(inplace=True)
 
         # Defaults to mean and highest resolution.
         match = elev.lookup_file(0, 10)
-        self.assertEqual(match['name'].name, match2['name'].name)
+        self.assertEqual(match["name"].name, match2["name"].name)
 
         # Force lower resolution.
         match = elev.lookup_file(0, 10, arcsec=15)
-        self.assertEqual(match['name'].name, match1['name'].name)
+        self.assertEqual(match["name"].name, match1["name"].name)
 
         # Force stat other than mean.
-        match = elev.lookup_file(0, 10, stat='std')
-        self.assertEqual(match['name'].name, match3['name'].name)
+        match = elev.lookup_file(0, 10, stat="std")
+        self.assertEqual(match["name"].name, match3["name"].name)
 
     def test_elevation_query_height_simple(self):
         elev = elevation.Elevation()
@@ -144,26 +144,31 @@ class ElevationTestCase(unittest.TestCase):
         elev = elevation.Elevation(meters=True)
 
         # Values taken from an Eng implementation.
-        data = pd.DataFrame(np.asarray([
-            [43.1148139831317, -84.6976955990196, 168.224880218506, 201.75, -33.5251197814941],
-            [30.7142335714838, -118.408357681129, -41.5095481872559, -1, -40.5095481872559],
-            [46.9825861173755, -106.153850751956, 787.063784599304, 802.75, -15.6862154006958],
-            [48.679864955151, -117.691430468442, 1285.94964790344, 1302.25, -16.3003520965576],
-            [43.5747030971555, -115.143410938208, 1953.82563877106, 1967.5, -13.6743612289429],
-            [45.1548026115667, -78.8271085836354, 298.847255706787, 334.5, -35.6527442932129],
-            [44.8626493624983, -85.2585688512091, 198.102993011475, 232.75, -34.6470069885254],
-            [37.8445403906834, -104.145025996957, 1461.82157897949, 1482.75, -20.9284210205078],
-            [43.1095578035511, -72.4888975580822, 288.799005508423, 316.75, -27.9509944915771],
-            [33.4237337562312, -118.277695974855, -38.2005424499512, -1, -37.2005424499512],
-        ]), columns=['lat', 'lon', 'elev', 'ortho', 'geoid'])
+        data = pd.DataFrame(
+            np.asarray(
+                [
+                    [43.1148139831317, -84.6976955990196, 168.224880218506, 201.75, -33.5251197814941],
+                    [30.7142335714838, -118.408357681129, -41.5095481872559, -1, -40.5095481872559],
+                    [46.9825861173755, -106.153850751956, 787.063784599304, 802.75, -15.6862154006958],
+                    [48.679864955151, -117.691430468442, 1285.94964790344, 1302.25, -16.3003520965576],
+                    [43.5747030971555, -115.143410938208, 1953.82563877106, 1967.5, -13.6743612289429],
+                    [45.1548026115667, -78.8271085836354, 298.847255706787, 334.5, -35.6527442932129],
+                    [44.8626493624983, -85.2585688512091, 198.102993011475, 232.75, -34.6470069885254],
+                    [37.8445403906834, -104.145025996957, 1461.82157897949, 1482.75, -20.9284210205078],
+                    [43.1095578035511, -72.4888975580822, 288.799005508423, 316.75, -27.9509944915771],
+                    [33.4237337562312, -118.277695974855, -38.2005424499512, -1, -37.2005424499512],
+                ]
+            ),
+            columns=["lat", "lon", "elev", "ortho", "geoid"],
+        )
 
         out = pd.DataFrame(index=data.index, columns=data.columns, dtype=np.float64)
         self.assertEqual(out.shape[0], data.shape[0])
 
         for ith, pnt in data.iterrows():
-            elev_ht = elev.query(pnt['lon'], pnt['lat'])
-            ortho_ht = elev.query(pnt['lon'], pnt['lat'], orthometric=True)
-            out.loc[ith] = [pnt['lat'], pnt['lon'], elev_ht, ortho_ht, elev_ht - ortho_ht]
+            elev_ht = elev.query(pnt["lon"], pnt["lat"])
+            ortho_ht = elev.query(pnt["lon"], pnt["lat"], orthometric=True)
+            out.loc[ith] = [pnt["lat"], pnt["lon"], elev_ht, ortho_ht, elev_ht - ortho_ht]
 
         npt.assert_allclose(data, out, rtol=1e-1, atol=100)
 
@@ -284,27 +289,27 @@ class ElevationTestCase(unittest.TestCase):
     def test_dem_source_assumptions(self):
         import rioxarray
         import shapefile
-        from pyproj import CRS, Geod
+        from pyproj import Geod
 
         pix_sz = 1 / 60 / 4  # 15-arc sec to degrees
         arc15min = 4 * 60
 
         # Unmodified GMTED2010 DEM from USGS at 15-arcmin resolution.
-        usgs_fn = '30N120W_20101117_gmted_mea150.tif'
-        usgs_rds = rioxarray.open_rasterio(self.test_dir / 'tmp' / 'usgs' / usgs_fn)
+        usgs_fn = "30N120W_20101117_gmted_mea150.tif"
+        usgs_rds = rioxarray.open_rasterio(self.test_dir / "tmp" / "usgs" / usgs_fn)
         usgs_hts_full = usgs_rds.values[0, :, :]
 
         # NASA SDP ToolKit preprocessed DEMs.
-        nasa_fn = 'dem15ARC_W120N45.hdf'
-        nasa_dobj = SD(str(self.test_dir / 'tmp' / '15ARC' / 'GMTED2010' / nasa_fn), SDC.READ)
-        nasa_hts_full = nasa_dobj.select('Elevation')[:]  # 15-arcmin resolution.
-        nasa_geoid_full = nasa_dobj.select('Geoid')[:]  # Global map at 1-deg resolution.
+        nasa_fn = "dem15ARC_W120N45.hdf"
+        nasa_dobj = SD(str(self.test_dir / "tmp" / "15ARC" / "GMTED2010" / nasa_fn), SDC.READ)
+        nasa_hts_full = nasa_dobj.select("Elevation")[:]  # 15-arcmin resolution.
+        nasa_geoid_full = nasa_dobj.select("Geoid")[:]  # Global map at 1-deg resolution.
 
         # Overlapping area (lon=-120:-90, lat=45:30).
-        usgs_hts = usgs_hts_full[int(5 / pix_sz):, :]
-        nasa_hts = nasa_hts_full[:-int(30 / pix_sz), :int(30 / pix_sz)]
+        usgs_hts = usgs_hts_full[int(5 / pix_sz) :, :]
+        nasa_hts = nasa_hts_full[: -int(30 / pix_sz), : int(30 / pix_sz)]
 
-        nasa_geoid_1deg = nasa_geoid_full[90 - 45:90 - 30, 180 - 120:180 - 90]
+        nasa_geoid_1deg = nasa_geoid_full[90 - 45 : 90 - 30, 180 - 120 : 180 - 90]
         nasa_geoid = np.repeat(np.repeat(nasa_geoid_1deg, 4 * 60, axis=0), 4 * 60, axis=1)
 
         self.assertTupleEqual((3600, 7200), usgs_hts.shape)
@@ -320,13 +325,13 @@ class ElevationTestCase(unittest.TestCase):
 
         # Compute Geoid heights assuming all are EGM96.
         transformer = Transformer.from_crs(
-            'EPSG:4326+5773', 'EPSG:4979', always_xy=True, only_best=True, allow_ballpark=False
+            "EPSG:4326+5773", "EPSG:4979", always_xy=True, only_best=True, allow_ballpark=False
         )
         idx = usgs_hts != usgs_rds._FillValue
 
         # Pixel centers with a 1-arcsec N/W offset from -180/90.
-        x = usgs_rds['x'].values
-        y = usgs_rds['y'].values[int(5 / pix_sz):]
+        x = usgs_rds["x"].values
+        y = usgs_rds["y"].values[int(5 / pix_sz) :]
 
         xx = np.tile(x, (y.size, 1))
         yy = np.tile(y, (x.size, 1)).T
@@ -349,7 +354,7 @@ class ElevationTestCase(unittest.TestCase):
         ilat, ilon = imax[0][0] // arc15min, imax[1][0] // arc15min
         self.assertEqual(nasa_geoid_1deg[ilat, ilon], nasa_geoid[imax])  # Sanity check.
 
-        calc_hts_1deg = geoid_hts[ilat * arc15min: (ilat + 1) * arc15min, ilon * arc15min: (ilon + 1) * arc15min]
+        calc_hts_1deg = geoid_hts[ilat * arc15min : (ilat + 1) * arc15min, ilon * arc15min : (ilon + 1) * arc15min]
         self.assertTupleEqual((arc15min, arc15min), calc_hts_1deg.shape)
 
         diffs_1deg_pix = calc_hts_1deg - nasa_geoid_1deg[ilat, ilon]
@@ -358,34 +363,34 @@ class ElevationTestCase(unittest.TestCase):
         self.assertLessEqual(diffs_1deg_pix.mean(), 8.7)
 
         # Much less than the actual DEM variance.
-        nasa_hts_1deg_pix = nasa_hts[ilat * arc15min: (ilat + 1) * arc15min, ilon * arc15min: (ilon + 1) * arc15min]
+        nasa_hts_1deg_pix = nasa_hts[ilat * arc15min : (ilat + 1) * arc15min, ilon * arc15min : (ilon + 1) * arc15min]
         self.assertGreaterEqual(nasa_hts_1deg_pix.min(), 1711)
         self.assertLessEqual(nasa_hts_1deg_pix.max(), 3331)
 
         # Inspect the original metadata.
-        usgs_shp_name = 'GMTED2010_Spatial_Metadata.zip'
-        sf = shapefile.Reader(self.test_dir / 'tmp' / 'usgs' / usgs_shp_name)
+        usgs_shp_name = "GMTED2010_Spatial_Metadata.zip"
+        sf = shapefile.Reader(self.test_dir / "tmp" / "usgs" / usgs_shp_name)
 
         verts = set()
-        for sr in sf.iterShapeRecords(fields=['VERT_DATUM'], bbox=[-120, 30, -90, 45]):
-            verts.add(sr.record['VERT_DATUM'])
+        for sr in sf.iterShapeRecords(fields=["VERT_DATUM"], bbox=[-120, 30, -90, 45]):
+            verts.add(sr.record["VERT_DATUM"])
 
         print(verts)
 
         # Compute area of various vertical datums.
         # WARNING: Takes ~2-min to compute.
-        geod = Geod(ellps='WGS84')
+        geod = Geod(ellps="WGS84")
 
         area = {}
         count = {}
         invalid = []
-        for sr in sf.iterShapeRecords(fields=['VERT_DATUM']):
-            vd = sr.record['VERT_DATUM']
+        for sr in sf.iterShapeRecords(fields=["VERT_DATUM"]):
+            vd = sr.record["VERT_DATUM"]
             if vd not in area:
                 area[vd] = 0.0
                 count[vd] = 0
 
-            a_km2 = geod.polygon_area_perimeter(*zip(*sr.shape.points))[0] / (1e3 ** 2) * -1
+            a_km2 = geod.polygon_area_perimeter(*zip(*sr.shape.points))[0] / (1e3**2) * -1
             if not np.isfinite(a_km2):
                 # One is invalid because it has 44k points? South Pole.
                 invalid.append(sr)
@@ -396,9 +401,9 @@ class ElevationTestCase(unittest.TestCase):
         total_km2 = sum(val for val in area.values())
         parea = {k: v / total_km2 * 100 for k, v in area.items()}
         for key, val in sorted(parea.items(), key=lambda a: a[1] * -1):
-            print(f'{key}[{count[key]}]: {val:.2f}%')
+            print(f"{key}[{count[key]}]: {val:.2f}%")
         return
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

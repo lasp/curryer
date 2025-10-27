@@ -3,10 +3,7 @@ and calculating spatial datasets.
 
 @author: Brandon Stone
 """
-from . import compute
-from . import kernels
-from . import spicetime
-from . import spicierpy
-from . import meta
-from . import tle
-from . import utils
+
+from . import compute, kernels, meta, spicetime, spicierpy, tle, utils
+
+__all__ = ["compute", "kernels", "meta", "spicetime", "spicierpy", "tle", "utils"]
