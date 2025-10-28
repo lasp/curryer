@@ -1366,7 +1366,16 @@ def _apply_error_variation(base_result: xr.Dataset, param_idx: int, test_mode_co
     varied_ccv = np.clip(original_ccv * ccv_factor, 0.0, 1.0) # Keep correlation in valid range
 
     # Update dataset values
-    gcp_center_lat = base_result.attrs['gcp_center_lat']
+    # Get GCP center latitude from multiple possible sources
+    if 'gcp_center_lat' in base_result.attrs:
+        gcp_center_lat = base_result.attrs['gcp_center_lat']
+    elif 'cp_lat_deg' in base_result:
+        gcp_center_lat = float(base_result['cp_lat_deg'].values[0])
+    else:
+        # Fallback to a reasonable default (mid-latitude)
+        logger.error("GCP center latitude not found in dataset.")
+
+
     lat_error_deg = varied_lat_km / 111.0
     lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
     lon_error_deg = varied_lon_km / (lon_radius_km * np.pi / 180.0)
