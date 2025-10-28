@@ -25,7 +25,6 @@ import unittest
 import numpy as np
 
 from curryer.spicetime import convert, utils
-from curryer.spicetime.leapsecond import are_loaded
 from curryer.utils import enable_logging
 
 logger = logging.getLogger(__name__)
@@ -56,9 +55,6 @@ class ConvertFmtStrTestCase(unittest.TestCase):
 
 
 class ConvertTestCase(unittest.TestCase):
-    def setUp(self):
-        self.assertTrue(are_loaded(), "No leapsecond kernel is loaded. Check the `leapsecond` tests.")
-
     def test_utc_to_et_at_19800106(self):
         et = convert.from_utc("1980-01-06 00:00:00.0")
         self.assertEqual(et, -630763148.8159368)
@@ -107,9 +103,6 @@ class ConvertTestCase(unittest.TestCase):
 
 
 class AdaptTestCase(unittest.TestCase):
-    def setUp(self):
-        self.assertTrue(are_loaded(), "No leapsecond kernel is loaded. Check the `leapsecond` tests.")
-
     def test_ugps_to_utc_scalar(self):
         r = convert.adapt(1, "ugps", "utc")
         self.assertIsInstance(r, str)
@@ -161,8 +154,6 @@ class AdaptIntegrationTestCase(unittest.TestCase):
     loggers = {"sds_utils.idl": 15}
 
     def setUp(self):
-        self.assertTrue(are_loaded(), "No leapsecond kernel is loaded. Check the `leapsecond` tests.")
-
         self.ttypes = list(convert.TTYPE_TO_DTYPE.keys())
         self.ttypes.sort()
 
@@ -227,9 +218,6 @@ class AdaptIntegrationTestCase(unittest.TestCase):
 
 
 class SpiceTimeClassTestCase(unittest.TestCase):
-    def setUp(self):
-        self.assertTrue(are_loaded(), "No leapsecond kernel is loaded. Check the `leapsecond` tests.")
-
     def test_ndarray_explicit_creation(self):
         r = convert.SpiceTime(1, "ugps")
         self.assertIsInstance(r, convert.SpiceTime)

@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import time
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -192,21 +191,6 @@ def update_file():
     # Load the new kernel file and update module constant.
     load(kernel_file)
     return kernel_file
-
-
-# Find the library's default leapsecond file when imported.
-#   Then load it into memory (SPICE kernel pool). If the kernel file is older
-#   than 2 years (created/modified), warn that it might be outdated.
-def _quiet_load():
-    """Load the default leapsecond kernel, but suppress missing file errors."""
-    try:
-        load()
-    except FileNotFoundError:
-        logger.exception("An exception occurred while locating the leapsecond file. Suppressing:")
-        warnings.warn("Unable to find the default leapsecond kernel file. No leapsecond kernel was loaded!")
-
-
-_quiet_load()
 
 
 def read_leapseconds(filename=None):

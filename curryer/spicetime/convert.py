@@ -36,7 +36,7 @@ from types import MappingProxyType
 import numpy as np
 
 from .. import spicierpy as sp
-from . import constants, native, utils
+from . import constants, leapsecond, native, utils
 
 
 # TODO: Support format type of a SPICE clock obj (i.e., convert to/from sclk ticks).
@@ -194,6 +194,7 @@ def from_tai(dt_val):
 @utils.InputAsArray(np.str_)
 def from_utc(dt_val):
     """Convert times from UTC string(s) (ISO format)."""
+    leapsecond.load()  # Noop if already loaded.
     return sp.str2et(dt_val)
 
 
@@ -234,6 +235,8 @@ def to_tai(dt_val):
 @utils.InputAsArray(np.float64)
 def to_utc(dt_val, date_format=None):
     """Convert times to UTC strings (ISO format)."""
+    leapsecond.load()  # Noop if already loaded.
+
     # SPICE compatible format string, default to ISO.
     if date_format is None:
         date_format = "YYYY-MM-DD HR:MN:SC.###### ::UTC ::RND"

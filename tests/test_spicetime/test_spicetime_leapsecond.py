@@ -17,7 +17,7 @@ from requests import exceptions
 
 from curryer import utils
 from curryer.spicetime import leapsecond
-from curryer.spicierpy import unitim
+from curryer.spicierpy import kclear, unitim
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -55,10 +55,12 @@ class LeapsecondTestCase(unittest.TestCase):
         self.assertIsInstance(fn, Path)
         self.assertTrue(fn.is_file())
 
-    def test_import_loads_the_leapsecond_kernel(self):
+    def test_import_does_not_load_the_leapsecond_kernel(self):
+        # Unload any previously loaded kernels.
+        kclear()
         # Reload the module, just in case a bad test cleared the kernel pool.
         reload(leapsecond)
-        self.assertTrue(leapsecond.are_loaded())
+        self.assertFalse(leapsecond.are_loaded())
 
     def test_load_actually_works(self):
         leapsecond.load()
@@ -114,14 +116,6 @@ class LeapsecondFakeTestCase(unittest.TestCase):
         self.__tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.__tmp_dir.cleanup)
         self.tmp_dir = Path(self.__tmp_dir.name)
-
-    @patch.object(leapsecond, "_LEAPSECOND_FILE_GLOB", "fake_glob.tls")
-    @patch.object(leapsecond, "are_loaded", autospec=True, return_value=[])
-    def test_quiet_load_warns_about_failed_to_find_file(self, *_):
-        # Mock a fake file glob that causes the warning, and are_loaded to
-        #   trick it into thinking it needs to load a kernel in the first place.
-        with self.assertWarns(UserWarning):
-            leapsecond._quiet_load()
 
     def test_find_default_file_warns_user_if_kernel_is_older_than_2_yrs(self, *_):
         # Create a fake, very old, file (mtime).
