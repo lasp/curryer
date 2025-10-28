@@ -222,8 +222,12 @@ class Elevation:
 
         # Look up files with a matching lower-left corner.
         try:
-            match = self._metadata.loc[(np.round(lon - (lon - self.LON_MID) % self.LON_STEP),
-                                        np.round(lat - (lat - self.LAT_MID) % self.LAT_STEP), stat)
+            match = self._metadata.loc[
+                (
+                    np.round(lon - (lon - self.LON_MID) % self.LON_STEP),
+                    np.round(lat - (lat - self.LAT_MID) % self.LAT_STEP),
+                    stat,
+                )
             ]
         except KeyError:
             return

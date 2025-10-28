@@ -33,7 +33,7 @@ from .constants import SpatialQualityFlags as SQF
 
 logger = logging.getLogger(__name__)
 
-EARTH_FRAME = 'ITRF93'  # High-accuracy, requires extra kernels.
+EARTH_FRAME = "ITRF93"  # High-accuracy, requires extra kernels.
 # 'IAU_EARTH' is low-accuracy, but built-in.
 
 

@@ -129,10 +129,10 @@ class ElevationTestCase(unittest.TestCase):
         self.assertEqual(match["name"].name, match3["name"].name)
 
         # Floating point rounding edge case (without fix no matches are found).
-        match = elev.lookup_file(30., -9.9, stat='mea', wrap_lon=True, degrees=True)
+        match = elev.lookup_file(30.0, -9.9, stat="mea", wrap_lon=True, degrees=True)
         self.assertIsNotNone(match)
-        self.assertEqual(match['ur_lon'], 60)
-        self.assertEqual(match['ur_lat'], 10)
+        self.assertEqual(match["ur_lon"], 60)
+        self.assertEqual(match["ur_lat"], 10)
 
     def test_elevation_query_height_simple(self):
         elev = elevation.Elevation()
