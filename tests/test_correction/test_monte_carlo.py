@@ -466,6 +466,9 @@ def test_upstream_pipeline(
     - Image matching (no valid data)
     - Error statistics (no matched data)
 
+    This follows the same workflow as run_monte_carlo.py but focused on
+    testing the upstream geolocation part of the pipeline.
+
     Args:
         n_iterations: Number of Monte Carlo iterations
         work_dir: Working directory for outputs
@@ -497,35 +500,44 @@ def test_upstream_pipeline(
     logger.info(f"  Mission: CLARREO Pathfinder")
     logger.info(f"  Instrument: {config.geo.instrument_name}")
     logger.info(f"  Parameters: {len(config.parameters)}")
+    logger.info(f"  Iterations: {n_iterations}")
 
-    # TODO: Implement actual upstream pipeline
-    # This would include:
-    # 1. Load telemetry data
-    # 2. Generate parameter sets
-    # 3. For each parameter set:
-    #    - Create dynamic kernels
-    #    - Run geolocation
-    # 4. Save geolocated science frames
+    # Prepare data sets (synthetic GCP pairs since we don't have real data)
+    # For upstream testing, we just need telemetry and science keys
+    tlm_sci_gcp_sets = [
+        ('telemetry_5a', 'science_5a', 'synthetic_gcp_1'),
+    ]
 
-    logger.warning("=" * 80)
-    logger.warning("UPSTREAM IMPLEMENTATION PENDING")
-    logger.warning("Would test: Parameter generation → Kernel creation → Geolocation")
-    logger.warning("Stops here: No valid GCP pairs for downstream testing")
-    logger.warning("=" * 80)
+    logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
 
-    results = {
-        'mode': 'upstream',
-        'iterations': n_iterations,
-        'parameters': len(config.parameters),
-        'status': 'pending_implementation'
-    }
+    # Execute the Monte Carlo loop with CLARREO data loaders
+    # This will test parameter generation, kernel creation, and geolocation
+    logger.info("=" * 80)
+    logger.info("EXECUTING MONTE CARLO UPSTREAM WORKFLOW")
+    logger.info("=" * 80)
 
-    netcdf_data = {}
+    results, netcdf_data = mc.loop(
+        config,
+        work_dir,
+        tlm_sci_gcp_sets,
+        telemetry_loader=load_clarreo_telemetry,
+        science_loader=load_clarreo_science,
+        gcp_loader=load_clarreo_gcp
+    )
+
+    logger.info("=" * 80)
+    logger.info("UPSTREAM PIPELINE COMPLETE")
+    logger.info(f"Processed {len(results)} total iterations")
+    logger.info(f"Generated results for {len(netcdf_data['parameter_set_id'])} parameter sets")
+    logger.info("=" * 80)
+
+    # Save results
     output_file = work_dir / "upstream_results.nc"
+    mc._save_netcdf_results(netcdf_data, output_file, config)
 
-    logger.info(f"Output would be saved to: {output_file}")
+    logger.info(f"Results saved to: {output_file}")
 
-    return [], results, output_file
+    return results, netcdf_data, output_file
 
 
 # =============================================================================
