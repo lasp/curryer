@@ -37,7 +37,7 @@ dependencies = [
     "scipy>=1.9",
     "pandas>=1.5",
     "xarray>=2022.11",
-    "netcdf4>=1.6",
+    "netcdf4>=1.6,<1.7.3",
     "h5py>=3.0",
     "geotiff>=0.2.10",
     "tifffile>=2021.7.4,!=2022.4.28,<2023.7.0",
