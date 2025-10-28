@@ -18,8 +18,9 @@ from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
-import rioxarray
 import xarray as xr
+from affine import Affine
+from geotiff import GeoTiff
 from pyproj import Transformer
 from pyproj.transformer import TransformerGroup
 
@@ -94,6 +95,52 @@ class Elevation:
             # Download extra data layers if missing.
             logger.info("Downloading EGM96 geoid data for pyproj transformer.")
             tg.download_grids(verbose=True)
+
+    def latlon_to_pixel(self, lon: float, lat: float, transform: Affine) -> (int, int):
+        """Convert lon/lat to raster row/col indices using the given Affine transform.
+
+        Parameters
+        ----------
+        lon : float
+            Longitude coordinate in degrees.
+        lat : float
+            Latitude coordinate in degrees.
+        transform : affine.Affine
+            Affine transformation object for coordinate conversion.
+
+        Returns
+        -------
+        tuple of int
+            Row and column indices (row, col) in the raster.
+
+        Notes
+        -----
+        This assumes pixel-center coordinates, so we don't need to add 0.5 offset
+        since our coordinates already represent pixel centers.
+        """
+        inv = ~transform
+        col, row = inv * (lon, lat)
+        return int(row), int(col)
+
+    @track_performance
+    def get_affine_from_geotiff(self, gtiff: GeoTiff) -> Affine:
+        """Extract an Affine transform from a GeoTiff object's transform matrix.
+
+        Parameters
+        ----------
+        gtiff : geotiff.GeoTiff
+            A GeoTiff object read in from the geotiff library.
+
+        Returns
+        -------
+        affine.Affine
+            The corresponding Affine transformation.
+        """
+        matrix = gtiff.tifTrans.transforms[0]
+        a, b, _, c = matrix[0]
+        d, e, _, f = matrix[1]
+        transform = Affine.from_gdal(c, a, b, f, d, e)
+        return transform
 
     @track_performance
     def locate_files(self, pattern: str = "*_gmted_*.tif") -> list[Path]:
@@ -265,7 +312,33 @@ class Elevation:
         name = filepath.name
         if name not in self._cache:
             logger.info("Reading DEM file: %s", filepath)
-            self._cache[name] = rioxarray.open_rasterio(filepath).sel(band=1)
+
+            gtiff = GeoTiff(str(filepath))
+            array = gtiff.read()
+            transform = self.get_affine_from_geotiff(gtiff)
+            height, width = array.shape
+
+            # Calculate coordinates using pixel centers (matching rioxarray behavior)
+            # Pixel centers are at 0.5, 1.5, 2.5, etc. pixel offsets
+            x_coords = [transform * (i + 0.5, 0.5) for i in range(width)]
+            y_coords = [transform * (0.5, j + 0.5) for j in range(height)]
+
+            # Extract just the x and y coordinates from the tuples
+            x_coords = [coord[0] for coord in x_coords]
+            y_coords = [coord[1] for coord in y_coords]
+
+            da = xr.DataArray(
+                array,
+                dims=("y", "x"),
+                coords={"x": x_coords, "y": y_coords},
+                attrs={
+                    "transform": tuple(transform.to_gdal()),
+                    "resolution": (transform.a, transform.e),
+                    "crs": f"EPSG:{gtiff.as_crs}",
+                    "_FillValue": getattr(array, "fill_value", -32768),
+                },
+            )
+            self._cache[name] = da
         return self._cache[name]
 
     @track_performance
@@ -335,9 +408,27 @@ class Elevation:
         if not degrees:
             lon = np.rad2deg(lon)
             lat = np.rad2deg(lat)
+
         rds = self.load_file(filepath)
-        hts = rds.sel(x=lon, y=lat, method="nearest")
-        hts = hts.item()
+
+        # Get the transform from the cached data
+        transform = Affine.from_gdal(*rds.attrs["transform"])
+
+        # Convert lon/lat to pixel coordinates
+        row, col = self.latlon_to_pixel(lon, lat, transform)
+
+        # Check bounds
+        if row < 0 or row >= rds.shape[0] or col < 0 or col >= rds.shape[1]:
+            raise ValueError(f"Coordinates ({lon}, {lat}) fall outside raster bounds")
+
+        # Get the height value directly from the array
+        hts = float(rds.values[row, col])
+
+        # Handle fill values
+        fill_value = rds.attrs.get("_FillValue", -32768)
+        if hts == fill_value:
+            raise ValueError(f"No data available at coordinates ({lon}, {lat})")
+
         return hts if self.meters else hts / 1e3
 
     @track_performance
@@ -420,24 +511,50 @@ class Elevation:
 
     def _slice_file(
         self,
-        rds: xr.Dataset,
+        rds: xr.DataArray,
         min_lon: float,
         max_lon: float,
         min_lat: float,
         max_lat: float,
-        orthometric=False,
+        orthometric: bool = False,
         fill_val: float = None,
     ) -> xr.DataArray:
-        """Subset a file by a min/max lon/lat region."""
-        # Edge case that longitude wrapped the international dateline.
+        r"""
+        Subset a DEM file by a min/max lon/lat region.
+
+        Parameters
+        ----------
+        rds : xr.DataArray
+            DEM data array with 'x' (longitude) and 'y' (latitude) coordinates.
+        min_lon, max_lon : float
+            Longitude bounds in degrees (\[-180, 180\]).
+        min_lat, max_lat : float
+            Latitude bounds in degrees (\[-90, 90\]).
+        orthometric : bool, optional
+            If True, return orthometric heights (DEM only). If False, return ellipsoid heights (DEM + geoid).
+        fill_val : float, optional
+            Fill value to check for consistency.
+
+        Returns
+        -------
+        xr.DataArray
+            Subsetted DEM or ellipsoid heights for the region.
+        """
+
+        # Use xarray's built-in selection instead of rioxarray
+        # Handle edge case that longitude wrapped the international dateline
         if rds["x"].min().item() >= max_lon:
-            dem_hts = rds.rio.slice_xy(minx=min_lon % 360, maxx=180, miny=min_lat, maxy=max_lat)
-
+            # Wrap longitude coordinates for dateline crossing
+            lon_min = min_lon % 360
+            lon_max = 180
+            dem_hts = rds.sel(x=slice(lon_min, lon_max), y=slice(max_lat, min_lat))
         elif rds["x"].max().item() < min_lon:
-            dem_hts = rds.rio.slice_xy(minx=-180, maxx=max_lon % -360, miny=min_lat, maxy=max_lat)
-
+            # Wrap longitude coordinates for dateline crossing
+            lon_min = -180
+            lon_max = max_lon % -360
+            dem_hts = rds.sel(x=slice(lon_min, lon_max), y=slice(max_lat, min_lat))
         else:
-            dem_hts = rds.rio.slice_xy(minx=min_lon, maxx=max_lon, miny=min_lat, maxy=max_lat)
+            dem_hts = rds.sel(x=slice(min_lon, max_lon), y=slice(max_lat, min_lat))
 
         # Handle fill-values.
         if fill_val is not None and fill_val != rds.attrs["_FillValue"]:
@@ -548,7 +665,7 @@ class Elevation:
                 orthometric=orthometric,
                 fill_val=fill_val,
             )
-            resolutions.append(rds.rio.resolution())
+            resolutions.append(rds.resolution)
             fill_val = rds.attrs["_FillValue"]
 
             # Special case of wrapping the dateline.
