@@ -277,14 +277,24 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     logger.info(f"Loaded {len(parameters)} parameter groups from {len(mc_config.get('parameters', []))} individual parameters")
 
     # Parse geolocation configuration
-    # Use instrument_name from geolocation config, falling back to mission_config, then default
-    default_instrument = mission_config.get('instrument_name', 'CPRS_HYSICS')
+    # Use instrument_name from geolocation config, falling back to mission_config
+    # If not specified, raise error - instrument name is required
+    default_instrument = mission_config.get('instrument_name')
+    instrument_name = geo_config.get('instrument_name', default_instrument)
+    if instrument_name is None:
+        raise ValueError("instrument_name must be specified in config (either in geolocation or mission section)")
+
+    # Time field is required - no default to avoid mission-specific assumptions
+    time_field = geo_config.get('time_field')
+    if time_field is None:
+        raise ValueError("time_field must be specified in geolocation config")
+
     geo = GeolocationConfig(
         meta_kernel_file=Path(geo_config.get('meta_kernel_file', '')),
         generic_kernel_dir=Path(geo_config.get('generic_kernel_dir', '')),
         dynamic_kernels=[Path(k) for k in geo_config.get('dynamic_kernels', [])],
-        instrument_name=geo_config.get('instrument_name', default_instrument),
-        time_field=geo_config.get('time_field', 'corrected_timestamp'),
+        instrument_name=instrument_name,
+        time_field=time_field,
     )
 
     # Create MonteCarloConfig
@@ -1013,397 +1023,12 @@ class MonteCarloConfig:
     # stats: ErrorStatsConfig
 
 
-@dataclass
-class TestModeConfig:
-    """
-    Configuration for Monte Carlo test mode (used by test scripts).
-
-    Test mode allows running the Monte Carlo pipeline with validated test data
-    to verify integration without requiring production data.
-    """
-    test_data_dir: Path  # tests/data/clarreo/image_match/
-    test_cases: typing.Optional[typing.List[str]] = None  # Specific cases: ['1', '2'] or None for all
-    randomize_errors: bool = True  # Add variations to simulate parameter effects
-    error_variation_percent: float = 3.0  # Percentage variation to apply (e.g., 3.0 = ±3%)
-    cache_image_match_results: bool = True  # Cache results, apply variations instead of re-running
-
-
-def discover_test_image_match_cases(test_data_dir: Path, test_cases: typing.Optional[typing.List[str]] = None) -> typing.List[dict]:
-    """
-    Discover available image matching test cases.
-
-    This function scans the test data directory for validated image matching
-    test cases and returns metadata about available test files.
-
-    Args:
-        test_data_dir: Root directory for test data (tests/data/clarreo/image_match/)
-        test_cases: Specific test cases to use (e.g., ['1', '2']) or None for all
-
-    Returns:
-        List of test case dictionaries with file paths and metadata
-
-    Example:
-        >>> cases = discover_test_image_match_cases(Path('tests/data/clarreo/image_match'))
-        >>> print(f"Found {len(cases)} test cases")
-        Found 12 test cases
-    """
-    logger.info(f"Discovering image matching test cases in: {test_data_dir}")
-
-    # Shared calibration files (same for all test cases)
-    los_file = test_data_dir / "b_HS.mat"
-    psf_file_unbinned = test_data_dir / "optical_PSF_675nm_upsampled.mat"
-    psf_file_binned = test_data_dir / "optical_PSF_675nm_3_pix_binned_upsampled.mat"
-
-    if not los_file.exists():
-        raise FileNotFoundError(f"LOS vectors file not found: {los_file}")
-    if not psf_file_unbinned.exists():
-        raise FileNotFoundError(f"Optical PSF file not found: {psf_file_unbinned}")
-
-    # Test case metadata (from test_image_match.py)
-    test_case_metadata = {
-        '1': {
-            'name': 'Dili',
-            'gcp_file': 'GCP12055Dili_resampled.mat',
-            'ancil_file': 'R_ISS_midframe_TestCase1.mat',
-            'expected_error_km': (3.0, -3.0),  # (lat, lon)
-            'cases': [
-                {'subimage': 'TestCase1a_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase1b_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase1c_subimage_binned.mat', 'binned': True},
-                {'subimage': 'TestCase1d_subimage_binned.mat', 'binned': True},
-            ]
-        },
-        '2': {
-            'name': 'Maracaibo',
-            'gcp_file': 'GCP10121Maracaibo_resampled.mat',
-            'ancil_file': 'R_ISS_midframe_TestCase2.mat',
-            'expected_error_km': (-3.0, 2.0),
-            'cases': [
-                {'subimage': 'TestCase2a_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase2b_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase2c_subimage_binned.mat', 'binned': True},
-            ]
-        },
-        '3': {
-            'name': 'Algeria3',
-            'gcp_file': 'GCP10181Algeria3_resampled.mat',
-            'ancil_file': 'R_ISS_midframe_TestCase3.mat',
-            'expected_error_km': (2.0, 3.0),
-            'cases': [
-                {'subimage': 'TestCase3a_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase3b_subimage_binned.mat', 'binned': True},
-            ]
-        },
-        '4': {
-            'name': 'Dunhuang',
-            'gcp_file': 'GCP10142Dunhuang_resampled.mat',
-            'ancil_file': 'R_ISS_midframe_TestCase4.mat',
-            'expected_error_km': (-2.0, -3.0),
-            'cases': [
-                {'subimage': 'TestCase4a_subimage.mat', 'binned': False},
-                {'subimage': 'TestCase4b_subimage_binned.mat', 'binned': True},
-            ]
-        },
-        '5': {
-            'name': 'Algeria5',
-            'gcp_file': 'GCP10071Algeria5_resampled.mat',
-            'ancil_file': 'R_ISS_midframe_TestCase5.mat',
-            'expected_error_km': (1.0, -1.0),
-            'cases': [
-                {'subimage': 'TestCase5a_subimage.mat', 'binned': False},
-            ]
-        },
-    }
-
-    # Filter to requested test cases
-    if test_cases is None:
-        test_cases = sorted(test_case_metadata.keys())
-
-    discovered_cases = []
-
-    for case_id in test_cases:
-        if case_id not in test_case_metadata:
-            logger.warning(f"Test case '{case_id}' not found in metadata, skipping")
-            continue
-
-        metadata = test_case_metadata[case_id]
-        case_dir = test_data_dir / case_id
-
-        if not case_dir.is_dir():
-            logger.warning(f"Test case directory not found: {case_dir}, skipping")
-            continue
-
-        # Add each subcase variant (a, b, c, d)
-        for subcase in metadata['cases']:
-            subimage_file = case_dir / subcase['subimage']
-            gcp_file = case_dir / metadata['gcp_file']
-            ancil_file = case_dir / metadata['ancil_file']
-            psf_file = psf_file_binned if subcase['binned'] else psf_file_unbinned
-
-            # Validate all files exist
-            if not subimage_file.exists():
-                logger.warning(f"Subimage file not found: {subimage_file}, skipping")
-                continue
-            if not gcp_file.exists():
-                logger.warning(f"GCP file not found: {gcp_file}, skipping")
-                continue
-            if not ancil_file.exists():
-                logger.warning(f"Ancillary file not found: {ancil_file}, skipping")
-                continue
-
-            discovered_cases.append({
-                'case_id': case_id,
-                'case_name': metadata['name'],
-                'subcase_name': subcase['subimage'],
-                'subimage_file': subimage_file,
-                'gcp_file': gcp_file,
-                'ancil_file': ancil_file,
-                'los_file': los_file,
-                'psf_file': psf_file,
-                'expected_lat_error_km': metadata['expected_error_km'][0],
-                'expected_lon_error_km': metadata['expected_error_km'][1],
-                'binned': subcase['binned'],
-            })
-
-    logger.info(f"Discovered {len(discovered_cases)} test case variants from {len(test_cases)} test case groups")
-    for case in discovered_cases:
-        logger.info(f"  - {case['case_id']}/{case['subcase_name']}: {case['case_name']}, "
-                   f"expected error=({case['expected_lat_error_km']:.1f}, {case['expected_lon_error_km']:.1f}) km")
-
-    return discovered_cases
-
-
-def run_test_mode_image_matching(
-    test_case: dict,
-    param_idx: int,
-    test_mode_config: TestModeConfig,
-    cached_result: typing.Optional[xr.Dataset] = None,
-) -> xr.Dataset:
-    """
-    Run image matching with test data for Monte Carlo testing.
-
-    This function loads validated test files and runs real image matching,
-    optionally applying variations to simulate parameter effects without
-    re-running the full image matching process.
-
-    Args:
-        test_case: Test case dictionary from discover_test_image_match_cases()
-        param_idx: Current parameter set index (for variation seed)
-        test_mode_config: Test mode configuration
-        cached_result: Previously computed result (for efficiency)
-
-    Returns:
-        xarray.Dataset with error measurements in standard format
-    """
-    from scipy.io import loadmat
-    from curryer.correction.image_match import (
-        load_image_grid_from_mat,
-        load_los_vectors_from_mat,
-        load_optical_psf_from_mat,
-    )
-    from curryer.correction.data_structures import ImageGrid
-
-    # If we have a cached result and should apply variations instead of re-running
-    if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
-        if test_mode_config.randomize_errors:
-            logger.info(f"Image Matching: Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
-            return _apply_error_variation(cached_result, param_idx, test_mode_config)
-        else:
-            logger.info(f"Image Matching: Using cached result without variation")
-            return cached_result.copy()
-
-    # Run real image matching
-    logger.info(f"Image Matching: TEST MODE - {test_case['case_name']} ({test_case['subcase_name']})")
-    start_time = time.time()
-
-    try:
-        # 1. Load subimage (pre-geolocated test data)
-        subimage_struct = loadmat(test_case['subimage_file'], squeeze_me=True, struct_as_record=False)["subimage"]
-        subimage = ImageGrid(
-            data=np.asarray(subimage_struct.data),
-            lat=np.asarray(subimage_struct.lat),
-            lon=np.asarray(subimage_struct.lon),
-            h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
-        )
-
-        # 2. Load GCP reference
-        gcp = load_image_grid_from_mat(test_case['gcp_file'], key="GCP")
-        # Get GCP center location (inline calculation)
-        gcp_center_lat = float(np.mean(gcp.lat))
-        gcp_center_lon = float(np.mean(gcp.lon))
-
-        # 3. Load calibration data
-        los_vectors = load_los_vectors_from_mat(test_case['los_file'])
-        optical_psfs = load_optical_psf_from_mat(test_case['psf_file'])
-
-        # 4. Load spacecraft position
-        ancil_data = loadmat(test_case['ancil_file'], squeeze_me=True)
-        r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
-
-        # 5. Run real image matching
-        from curryer.correction.image_match import integrated_image_match
-        from curryer.correction.data_structures import (
-            GeolocationConfig as ImageMatchGeolocationConfig,
-            SearchConfig,
-        )
-
-        result = integrated_image_match(
-            subimage=subimage,
-            gcp=gcp,
-            r_iss_midframe_m=r_iss_midframe,
-            los_vectors_hs=los_vectors,
-            optical_psfs=optical_psfs,
-            geolocation_config=ImageMatchGeolocationConfig(),
-            search_config=SearchConfig(),
-        )
-
-        # 6. Convert to expected output format
-        lat_error_deg = result.lat_error_km / 111.0
-        lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
-        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
-
-        processing_time = time.time() - start_time
-
-        # Log validation against expected errors
-        expected_lat = test_case['expected_lat_error_km']
-        expected_lon = test_case['expected_lon_error_km']
-        lat_diff = abs(result.lat_error_km - expected_lat)
-        lon_diff = abs(result.lon_error_km - expected_lon)
-
-        logger.info(f"  Image matching complete in {processing_time:.2f}s:")
-        logger.info(f"    Lat error: {result.lat_error_km:.3f} km (expected: {expected_lat:.3f}, diff: {lat_diff:.3f})")
-        logger.info(f"    Lon error: {result.lon_error_km:.3f} km (expected: {expected_lon:.3f}, diff: {lon_diff:.3f})")
-        logger.info(f"    Correlation: {result.ccv_final:.4f}")
-        logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
-
-        # 7. Create output dataset (same format as image_matching)
-        # Use realistic transformation matrix and boresight (from error_stats test case 1)
-        # These are reasonable defaults that won't cause NaN in error_stats
-        t_matrix = np.array([
-            [-0.418977524967338, 0.748005379751721, 0.514728846515064],
-            [-0.421890284446342, 0.341604851993858, -0.839830169131854],
-            [-0.804031356019172, -0.569029065124742, 0.172451447025628]
-        ])
-        boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])  # Slight off-nadir
-
-        output = xr.Dataset({
-            'lat_error_deg': (['measurement'], [lat_error_deg]),
-            'lon_error_deg': (['measurement'], [lon_error_deg]),
-            'riss_ctrs': (['measurement', 'xyz'], [r_iss_midframe]),
-            'bhat_hs': (['measurement', 'xyz'], [boresight]),
-            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
-            'cp_lat_deg': (['measurement'], [gcp_center_lat]),
-            'cp_lon_deg': (['measurement'], [gcp_center_lon]),
-            'cp_alt': (['measurement'], [0.0]),
-        }, coords={
-            'measurement': [0],
-            'xyz': ['x', 'y', 'z'],
-            'xyz_from': ['x', 'y', 'z'],
-            'xyz_to': ['x', 'y', 'z']
-        })
-
-        # Add metadata
-        output.attrs.update({
-            'lat_error_km': result.lat_error_km,
-            'lon_error_km': result.lon_error_km,
-            'correlation_ccv': result.ccv_final,
-            'final_grid_step_m': result.final_grid_step_m,
-            'final_index_row': result.final_index_row,
-            'final_index_col': result.final_index_col,
-            'processing_time_s': processing_time,
-            'gcp_file': str(test_case['gcp_file'].name),
-            'gcp_center_lat': gcp_center_lat,
-            'gcp_center_lon': gcp_center_lon,
-            'test_mode': True,
-            'test_case_id': test_case['case_id'],
-            'test_case_name': test_case['case_name'],
-            'expected_lat_error_km': test_case['expected_lat_error_km'],
-            'expected_lon_error_km': test_case['expected_lon_error_km'],
-            'param_idx': param_idx,
-        })
-
-        return output
-
-    except Exception as e:
-        logger.error(f"  Test mode image matching failed: {e}")
-        raise
-
-
-def _apply_error_variation(base_result: xr.Dataset, param_idx: int, test_mode_config: TestModeConfig) -> xr.Dataset:
-    """
-    Apply random variation to image matching results to simulate parameter effects.
-
-    This is used in test mode to simulate how different parameter values would
-    affect geolocation errors, without actually re-running image matching.
-
-    Args:
-        base_result: Original image matching result
-        param_idx: Parameter set index (used as random seed)
-        test_mode_config: Test mode configuration with variation settings
-
-    Returns:
-        New Dataset with varied error values
-    """
-    # Create copy
-    output = base_result.copy(deep=True)
-
-    # Set reproducible random seed based on param_idx
-    np.random.seed(param_idx)
-
-    # Generate variation factors (centered at 1.0, with specified percentage variation)
-    variation_fraction = test_mode_config.error_variation_percent / 100.0
-    lat_factor = 1.0 + np.random.normal(0, variation_fraction)
-    lon_factor = 1.0 + np.random.normal(0, variation_fraction)
-    ccv_factor = 1.0 + np.random.normal(0, variation_fraction / 10.0)  # Smaller variation for correlation
-
-    # Apply variations to error values
-    original_lat_km = base_result.attrs['lat_error_km']
-    original_lon_km = base_result.attrs['lon_error_km']
-    original_ccv = base_result.attrs['correlation_ccv']
-
-    varied_lat_km = original_lat_km * lat_factor
-    varied_lon_km = original_lon_km * lon_factor
-    varied_ccv = np.clip(original_ccv * ccv_factor, 0.0, 1.0) # Keep correlation in valid range
-
-    # Update dataset values
-    # Get GCP center latitude from multiple possible sources
-    if 'gcp_center_lat' in base_result.attrs:
-        gcp_center_lat = base_result.attrs['gcp_center_lat']
-    elif 'cp_lat_deg' in base_result:
-        gcp_center_lat = float(base_result['cp_lat_deg'].values[0])
-    else:
-        # Fallback to a reasonable default (mid-latitude)
-        logger.error("GCP center latitude not found in dataset.")
-
-
-    lat_error_deg = varied_lat_km / 111.0
-    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
-    lon_error_deg = varied_lon_km / (lon_radius_km * np.pi / 180.0)
-
-    output['lat_error_deg'].values[0] = lat_error_deg
-    output['lon_error_deg'].values[0] = lon_error_deg
-
-    # Update attributes
-    output.attrs['lat_error_km'] = varied_lat_km
-    output.attrs['lon_error_km'] = varied_lon_km
-    output.attrs['correlation_ccv'] = varied_ccv
-    output.attrs['param_idx'] = param_idx
-    output.attrs['variation_applied'] = True
-    output.attrs['variation_lat_factor'] = lat_factor
-    output.attrs['variation_lon_factor'] = lon_factor
-
-    logger.info(f"  Applied variation: lat {original_lat_km:.3f} → {varied_lat_km:.3f} km ({(lat_factor-1)*100:+.1f}%), "
-               f"lon {original_lon_km:.3f} → {varied_lon_km:.3f} km ({(lon_factor-1)*100:+.1f}%)")
-
-    return output
-
-
 def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
     """
     Generate random parameter sets for Monte Carlo iterations.
     Each parameter is sampled according to its distribution and bounds.
 
-    The parameter generation now works as follows:
+    The parameter generation works as follows:
     - current_value: The baseline/current parameter value
     - bounds: The limits for random offsets (in same units as current_value and sigma)
     - sigma: Standard deviation for normal distribution of offsets
@@ -1779,6 +1404,9 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             elif config.data.get('units') == 'milliseconds':
                 # Convert milliseconds to seconds
                 offset_value = param_data / 1000.0
+        field_name = config.data.get('field')
+        if not field_name:
+            raise ValueError("OFFSET_TIME parameter requires 'field' to be specified in config")
 
             # Apply additive offset
             logger.info(f"Applying offset {offset_value} to field {field_name}")
@@ -2122,32 +1750,14 @@ def _store_parameter_values(netcdf_data, param_idx, param_values):
     It handles both hardcoded CLARREO names (for backward compatibility) and
     dynamically generates names for other missions.
     """
-    # Legacy mapping for CLARREO backward compatibility
-    legacy_param_mapping = {
-        'cprs_hysics_v01.attitude.ck_roll': 'param_hysics_roll',
-        'cprs_hysics_v01.attitude.ck_pitch': 'param_hysics_pitch',
-        'cprs_hysics_v01.attitude.ck_yaw': 'param_hysics_yaw',
-        'cprs_yoke_v01.attitude.ck_roll': 'param_yoke_roll',
-        'cprs_yoke_v01.attitude.ck_pitch': 'param_yoke_pitch',
-        'cprs_yoke_v01.attitude.ck_yaw': 'param_yoke_yaw',
-        'cprs_base_v01.attitude.ck_roll': 'param_base_roll',
-        'cprs_base_v01.attitude.ck_pitch': 'param_base_pitch',
-        'cprs_base_v01.attitude.ck_yaw': 'param_base_yaw',
-        'cprs_az_v01.attitude.ck': 'param_azimuth_bias',
-        'cprs_el_v01.attitude.ck': 'param_elevation_bias',
-        'time_correction': 'param_time_correction',
-    }
 
     for param_name, value in param_values.items():
-        # Try legacy mapping first for backward compatibility
-        if param_name in legacy_param_mapping:
-            netcdf_var = legacy_param_mapping[param_name]
-        else:
-            # Generate NetCDF variable name dynamically from parameter name
-            # Convert parameter file name to variable name (e.g., "mission_frame_v01.attitude.ck_roll" -> "param_frame_roll")
-            netcdf_var = param_name.replace('.attitude.ck', '').replace('.', '_')
-            if not netcdf_var.startswith('param_'):
-                netcdf_var = f'param_{netcdf_var}'
+
+        # Generate NetCDF variable name dynamically from parameter name
+        # Convert parameter file name to variable name (e.g., "mission_frame_v01.attitude.ck_roll" -> "param_frame_roll")
+        netcdf_var = param_name.replace('.attitude.ck', '').replace('.', '_')
+        if not netcdf_var.startswith('param_'):
+            netcdf_var = f'param_{netcdf_var}'
 
         if netcdf_var in netcdf_data:
             netcdf_data[netcdf_var][param_idx] = value
