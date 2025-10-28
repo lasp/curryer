@@ -177,12 +177,35 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         time_field='corrected_timestamp',
     )
 
+    # NetCDF output configuration (NEW - Phase 1)
+    netcdf_config = mc.NetCDFConfig(
+        title='CLARREO Pathfinder Geolocation Monte Carlo Analysis',
+        description='Parameter sensitivity analysis for CLARREO Pathfinder on ISS',
+        performance_threshold_m=250.0,  # CLARREO requirement
+        parameter_metadata=None  # Auto-generate from parameters
+    )
+
     # Create complete Monte Carlo configuration
     config = mc.MonteCarloConfig(
         seed=42,  # For reproducible results
         n_iterations=5,  # Number of parameter sets to test
         parameters=parameters,
         geo=geo_config,
+
+        # NEW Phase 1 fields
+        performance_threshold_m=250.0,  # CLARREO accuracy requirement
+        netcdf=netcdf_config,
+
+        # Calibration file names (CLARREO/HySICS specific)
+        calibration_file_names={
+            'los_vectors': 'b_HS.mat',  # HySICS boresight vectors
+            'optical_psf': 'optical_PSF_675nm_upsampled.mat',  # 675nm wavelength PSF
+        },
+
+        # Coordinate variable names (ISS/HySICS specific for backward compatibility)
+        spacecraft_position_name='riss_ctrs',  # ISS position in CTRS frame
+        boresight_name='bhat_hs',  # HySICS boresight
+        transformation_matrix_name='t_hs2ctrs',  # HySICS to CTRS transformation
     )
 
     logger.info(f"CLARREO configuration created with {len(parameters)} parameters:")

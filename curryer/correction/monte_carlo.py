@@ -1004,6 +1004,107 @@ class GeolocationConfig:
 
 
 @dataclass
+class NetCDFParameterMetadata:
+    """Metadata for a single parameter in NetCDF output."""
+    variable_name: str  # NetCDF variable name (e.g., 'param_hysics_roll')
+    units: str  # Units (e.g., 'arcseconds', 'milliseconds')
+    long_name: str  # Human-readable description
+
+
+@dataclass
+class NetCDFConfig:
+    """Configuration for NetCDF output structure and metadata.
+
+    This class defines the structure and metadata for NetCDF output files.
+    All mission-specific information should be provided here rather than
+    hardcoded in the monte_carlo module.
+    """
+    title: str = "Monte Carlo Geolocation Analysis Results"
+    description: str = "Parameter sensitivity analysis"
+    performance_threshold_m: float = 250.0
+
+    # Parameter metadata - maps parameter config to NetCDF metadata
+    # If None, will be auto-generated from config.parameters
+    parameter_metadata: typing.Optional[typing.Dict[str, NetCDFParameterMetadata]] = None
+
+    def get_threshold_metric_name(self) -> str:
+        """Generate metric name dynamically from threshold."""
+        threshold_m = int(self.performance_threshold_m)
+        return f'percent_under_{threshold_m}m'
+
+    def get_parameter_netcdf_metadata(self, param_config: ParameterConfig, angle_type: typing.Optional[str] = None) -> NetCDFParameterMetadata:
+        """
+        Get NetCDF metadata for a parameter.
+
+        Args:
+            param_config: Parameter configuration
+            angle_type: For CONSTANT_KERNEL parameters: 'roll', 'pitch', or 'yaw'
+
+        Returns:
+            NetCDFParameterMetadata with variable name, units, and description
+        """
+        # Generate key for lookup
+        if param_config.config_file:
+            param_stem = param_config.config_file.stem
+            if angle_type:
+                lookup_key = f"{param_stem}_{angle_type}"
+            else:
+                lookup_key = param_stem
+        else:
+            lookup_key = f"param_{param_config.ptype.name.lower()}"
+
+        # Try to find in provided metadata
+        if self.parameter_metadata and lookup_key in self.parameter_metadata:
+            return self.parameter_metadata[lookup_key]
+
+        # Auto-generate if not provided
+        return self._auto_generate_metadata(param_config, angle_type, lookup_key)
+
+    def _auto_generate_metadata(self, param_config: ParameterConfig, angle_type: typing.Optional[str], base_key: str) -> NetCDFParameterMetadata:
+        """Auto-generate NetCDF metadata from parameter configuration."""
+
+        # Determine units based on parameter type
+        if param_config.ptype == ParameterType.CONSTANT_KERNEL:
+            units = 'arcseconds'
+        elif param_config.ptype == ParameterType.OFFSET_KERNEL:
+            units = 'arcseconds'  # Typical for angle offsets
+        elif param_config.ptype == ParameterType.OFFSET_TIME:
+            units = 'milliseconds'
+        else:
+            units = 'unknown'
+
+        # Check if units specified in parameter data
+        if isinstance(param_config.data, dict) and 'units' in param_config.data:
+            units = param_config.data['units']
+
+        # Generate variable name (ensure it starts with 'param_')
+        var_name = base_key.replace('.', '_').replace('-', '_')
+        if not var_name.startswith('param_'):
+            var_name = f'param_{var_name}'
+
+        # Generate human-readable description
+        if param_config.config_file:
+            # Extract frame names from config file path
+            file_stem = param_config.config_file.stem
+            # Remove version numbers and file extensions
+            clean_name = file_stem.replace('_v01', '').replace('_v02', '').replace('.attitude.ck', '')
+            clean_name = clean_name.replace('_', ' ').title()
+
+            if angle_type:
+                long_name = f"{clean_name} {angle_type} correction"
+            else:
+                long_name = f"{clean_name} correction"
+        else:
+            long_name = f"{param_config.ptype.name.replace('_', ' ').title()} parameter"
+
+        return NetCDFParameterMetadata(
+            variable_name=var_name,
+            units=units,
+            long_name=long_name
+        )
+
+
+@dataclass
 class MonteCarloConfig:
     seed: typing.Optional[int]  # Used to make param results reproducible.
     n_iterations: int
@@ -1019,8 +1120,39 @@ class MonteCarloConfig:
     pairing_l1a_key: str = "subimage"  # MATLAB struct key for L1A data
     pairing_gcp_key: str = "GCP"  # MATLAB struct key for GCP data
     pairing_gcp_pattern: str = "*_resampled.mat"  # File pattern for GCP discovery
+
+    # Performance metrics (NEW)
+    performance_threshold_m: float = 250.0  # Accuracy threshold for success metrics
+
+    # NetCDF output configuration (NEW)
+    netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata; auto-generated if None
+
+    # Calibration files (mission-specific names) (NEW)
+    calibration_file_names: typing.Optional[typing.Dict[str, str]] = None
+    # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
+
+    # Coordinate frame naming (for outputs) (NEW)
+    spacecraft_position_name: str = 'sc_position'  # Generic default
+    boresight_name: str = 'boresight'  # Generic default
+    transformation_matrix_name: str = 't_inst2ref'  # Generic default
+
     # match: ImageMatchConfig
     # stats: ErrorStatsConfig
+
+    def get_calibration_file(self, file_type: str, default: str = None) -> str:
+        """Get calibration filename for given type with fallback to default."""
+        if self.calibration_file_names and file_type in self.calibration_file_names:
+            return self.calibration_file_names[file_type]
+        if default:
+            return default
+        raise ValueError(f"No calibration file configured for type: {file_type}")
+
+    def ensure_netcdf_config(self):
+        """Ensure NetCDFConfig exists, creating with defaults if needed."""
+        if self.netcdf is None:
+            self.netcdf = NetCDFConfig(
+                performance_threshold_m=self.performance_threshold_m
+            )
 
 
 def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
