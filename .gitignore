@@ -8,6 +8,8 @@ __pycache__
 venv
 .venv
 poetry.lock
+.coverage
+coverage.xml
 
 # Sphinx
 # ------
