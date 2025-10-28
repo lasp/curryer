@@ -584,11 +584,14 @@ def image_matching(
             logger.info("    Using cached calibration data")
         else:
             # Load from files (slow path, for backward compatibility)
-            los_file = calibration_dir / "b_HS.mat"
+            # Phase 5: Use configurable calibration file names
+            los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
+            los_file = calibration_dir / los_filename
             los_vectors = load_los_vectors_from_mat(los_file)
             logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-            psf_file = calibration_dir / "optical_PSF_675nm_upsampled.mat"
+            psf_filename = config.get_calibration_file('optical_psf', default='optical_PSF_675nm_upsampled.mat')
+            psf_file = calibration_dir / psf_filename
             optical_psfs = load_optical_psf_from_mat(psf_file)
             logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
@@ -1616,10 +1619,13 @@ def loop(
         if config.use_real_image_matching and config.calibration_dir:
             logger.info("Loading calibration data once for all GCP pairs...")
 
-            los_file = config.calibration_dir / "b_HS.mat"
+            # Phase 5: Use configurable calibration file names
+            los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
+            los_file = config.calibration_dir / los_filename
             los_vectors_cached = load_los_vectors_from_mat(los_file)
 
-            psf_file = config.calibration_dir / "optical_PSF_675nm_upsampled.mat"
+            psf_filename = config.get_calibration_file('optical_psf', default='optical_PSF_675nm_upsampled.mat')
+            psf_file = config.calibration_dir / psf_filename
             optical_psfs_cached = load_optical_psf_from_mat(psf_file)
 
             logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")
