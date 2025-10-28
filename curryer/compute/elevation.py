@@ -223,7 +223,11 @@ class Elevation:
         # Look up files with a matching lower-left corner.
         try:
             match = self._metadata.loc[
-                (lon - (lon - self.LON_MID) % self.LON_STEP, lat - (lat - self.LAT_MID) % self.LAT_STEP, stat)
+                (
+                    np.round(lon - (lon - self.LON_MID) % self.LON_STEP),
+                    np.round(lat - (lat - self.LAT_MID) % self.LAT_STEP),
+                    stat,
+                )
             ]
         except KeyError:
             return
@@ -392,8 +396,8 @@ class Elevation:
         if not self.degrees:
             min_lon, max_lon, min_lat, max_lat = np.rad2deg((min_lon, max_lon, min_lat, max_lat))
 
-        start_lon = min_lon - (min_lon - self.LON_MID) % self.LON_STEP
-        start_lat = min_lat - (min_lat - self.LAT_MID) % self.LAT_STEP
+        start_lon = np.round(min_lon - (min_lon - self.LON_MID) % self.LON_STEP)
+        start_lat = np.round(min_lat - (min_lat - self.LAT_MID) % self.LAT_STEP)
 
         # Special case of wrapping the dateline.
         if min_lon > max_lon:
