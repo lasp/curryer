@@ -74,6 +74,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from clarreo_config import create_clarreo_monte_carlo_config
 from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science, load_clarreo_gcp
 
+# Import test-specific utilities from test_monte_carlo.py
+from test_monte_carlo import (
+    TestModeConfig,
+    discover_test_image_match_cases,
+    apply_error_variation_for_testing,
+)
+
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
@@ -120,7 +127,7 @@ def apply_geolocation_error_to_subimage(
 def run_test_mode_image_matching_with_applied_errors(
     test_case: dict,
     param_idx: int,
-    test_mode_config: mc.TestModeConfig,
+    test_mode_config: TestModeConfig,
     cached_result: Optional[xr.Dataset] = None,
 ) -> xr.Dataset:
     """
@@ -145,8 +152,8 @@ def run_test_mode_image_matching_with_applied_errors(
     if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
         if test_mode_config.randomize_errors:
             logger.info(f"Image Matching: Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
-            # Use the Monte Carlo module's variation function
-            return mc._apply_error_variation(cached_result, param_idx, test_mode_config)
+            # Use the test utility's variation function
+            return apply_error_variation_for_testing(cached_result, param_idx, test_mode_config)
         else:
             logger.info(f"Image Matching: Using cached result without variation")
             return cached_result.copy()
@@ -284,7 +291,7 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
         """Test that test case discovery works correctly."""
         logger.info("Testing test case discovery...")
 
-        test_cases = mc.discover_test_image_match_cases(self.test_data_dir)
+        test_cases = discover_test_image_match_cases(self.test_data_dir)
 
         # Should find multiple test cases
         self.assertGreater(len(test_cases), 0, "No test cases discovered")
@@ -307,7 +314,7 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
         """Test discovery with specific test case selection."""
         logger.info("Testing specific case discovery...")
 
-        test_cases = mc.discover_test_image_match_cases(
+        test_cases = discover_test_image_match_cases(
             self.test_data_dir,
             test_cases=['1', '2']
         )
@@ -324,14 +331,14 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
         logger.info("Testing image matching with test data...")
 
         # Get first test case
-        test_cases = mc.discover_test_image_match_cases(
+        test_cases = discover_test_image_match_cases(
             self.test_data_dir,
             test_cases=['1']
         )
         self.assertGreater(len(test_cases), 0, "No test cases found")
 
         test_case = test_cases[0]
-        test_config = mc.TestModeConfig(
+        test_config = TestModeConfig(
             test_data_dir=self.test_data_dir,
             test_cases=['1'],
             randomize_errors=False,  # No randomization for validation
@@ -376,12 +383,12 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
         logger.info("Testing error variation...")
 
         # Get test case and run once
-        test_cases = mc.discover_test_image_match_cases(
+        test_cases = discover_test_image_match_cases(
             self.test_data_dir,
             test_cases=['1']
         )
         test_case = test_cases[0]
-        test_config = mc.TestModeConfig(
+        test_config = TestModeConfig(
             test_data_dir=self.test_data_dir,
             test_cases=['1'],
             randomize_errors=True,
@@ -390,10 +397,10 @@ class MonteCarloTestModeTestCase(unittest.TestCase):
         )
 
         # Run first time (no cache)
-        result1 = mc.run_test_mode_image_matching(test_case, 0, test_config)
+        result1 = run_test_mode_image_matching_with_applied_errors(test_case, 0, test_config)
 
         # Run with variation (using cache)
-        result2 = mc.run_test_mode_image_matching(test_case, 1, test_config,
+        result2 = run_test_mode_image_matching_with_applied_errors(test_case, 1, test_config,
                                                   cached_result=result1)
 
         # Results should be different
@@ -454,7 +461,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     logger.info(f"Test cases: {test_cases or 'all'}")
 
     # Create test mode configuration
-    test_config = mc.TestModeConfig(
+    test_config = TestModeConfig(
         test_data_dir=test_data_dir,
         test_cases=test_cases,
         randomize_errors=True,
@@ -463,7 +470,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     )
 
     # Discover test cases
-    discovered_cases = mc.discover_test_image_match_cases(
+    discovered_cases = discover_test_image_match_cases(
         test_data_dir,
         test_cases
     )
@@ -640,7 +647,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
             cached_result = image_match_cache.get(cache_key)
 
             # Run image matching (with caching and variation)
-            image_matching_output = mc.run_test_mode_image_matching(
+            image_matching_output = run_test_mode_image_matching_with_applied_errors(
                 test_case=test_case,
                 param_idx=param_idx,
                 test_mode_config=test_config,
