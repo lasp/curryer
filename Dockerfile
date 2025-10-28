@@ -29,7 +29,7 @@ RUN pip install --upgrade pip
 
 # Update the OS tools and install dependencies.
 RUN apt-get update
-RUN apt-get install -y curl wget libgdal-dev build-essential
+RUN apt-get install -y curl wget libgdal-dev build-essential gcc g++ libc6-dev
 
 # Install SPICE toolkit via conda for AMD or ARM architectures
 ENV CONDA_DIR=/root/.local/conda
