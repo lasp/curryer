@@ -32,6 +32,93 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Standard NetCDF Variable Attributes (Mission-Agnostic)
+# ============================================================================
+
+# Standard metric attributes for NetCDF output
+# These are generic geolocation/error metrics that apply to most missions
+# Missions can override these in their NetCDFConfig if needed
+STANDARD_NETCDF_ATTRIBUTES = {
+    # Geolocation error metrics (per GCP pair)
+    'rms_error_m': {
+        'units': 'meters',
+        'long_name': 'RMS geolocation error'
+    },
+    'mean_error_m': {
+        'units': 'meters',
+        'long_name': 'Mean geolocation error'
+    },
+    'max_error_m': {
+        'units': 'meters',
+        'long_name': 'Maximum geolocation error'
+    },
+    'std_error_m': {
+        'units': 'meters',
+        'long_name': 'Standard deviation of geolocation error'
+    },
+    'n_measurements': {
+        'units': 'count',
+        'long_name': 'Number of measurement points'
+    },
+
+    # Aggregate performance metrics (per parameter set)
+    'mean_rms_all_pairs': {
+        'units': 'meters',
+        'long_name': 'Mean RMS error across all GCP pairs'
+    },
+    'worst_pair_rms': {
+        'units': 'meters',
+        'long_name': 'Worst performing GCP pair RMS error'
+    },
+    'best_pair_rms': {
+        'units': 'meters',
+        'long_name': 'Best performing GCP pair RMS error'
+    },
+
+    # Image matching metrics (per GCP pair)
+    'im_lat_error_km': {
+        'units': 'kilometers',
+        'long_name': 'Image matching latitude error'
+    },
+    'im_lon_error_km': {
+        'units': 'kilometers',
+        'long_name': 'Image matching longitude error'
+    },
+    'im_ccv': {
+        'units': 'dimensionless',
+        'long_name': 'Image matching correlation coefficient'
+    },
+    'im_grid_step_m': {
+        'units': 'meters',
+        'long_name': 'Image matching final grid step size'
+    },
+}
+
+
+# ============================================================================
+# Standard Data Variable Names (Mission-Agnostic Keys)
+# ============================================================================
+
+# Standard variable names that should be present in image matching results
+# Used for extracting data from xarray.Dataset objects
+STANDARD_VAR_NAMES = {
+    # Error measurements (required)
+    'lat_error_deg': 'lat_error_deg',
+    'lon_error_deg': 'lon_error_deg',
+
+    # Spacecraft state (configurable names)
+    'spacecraft_position': 'sc_position',  # Generic default
+    'boresight': 'boresight',              # Generic default
+    'transformation_matrix': 't_inst2ref', # Generic default
+
+    # Control point location (optional)
+    'cp_lat_deg': 'cp_lat_deg',
+    'cp_lon_deg': 'cp_lon_deg',
+    'cp_alt': 'cp_alt',
+}
+
+
+# ============================================================================
 # Internal Adapter Functions (Monte Carlo <-> Image Matching)
 # ============================================================================
 
@@ -309,231 +396,6 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     return config
 
 
-# GCS Module Placeholder Functions
-
-def diagnose_telemetry_data(tlm_dataset: pd.DataFrame, dataset_name: str = "telemetry"):
-    """
-    Diagnose telemetry data for validity issues.
-
-    Checks for:
-    - NaN values
-    - Zero/constant values
-    - Data range issues
-    - Missing required columns
-    """
-    print(f"\n{'='*80}")
-    print(f"=== DIAGNOSING {dataset_name.upper()} DATA ===")
-    print(f"{'='*80}")
-
-    # Basic info
-    print(f"Dataset shape: {tlm_dataset.shape}")
-    print(f"Total columns: {len(tlm_dataset.columns)}")
-    print(f"Index: {tlm_dataset.index.name} (range: {tlm_dataset.index.min()} to {tlm_dataset.index.max()})")
-
-    # Show first few column names
-    print(f"\nFirst 10 columns: {list(tlm_dataset.columns[:10])}")
-    print(f"Last 10 columns: {list(tlm_dataset.columns[-10:])}")
-
-    # Check for NaN values
-    nan_counts = tlm_dataset.isna().sum()
-    nan_cols = nan_counts[nan_counts > 0]
-    if len(nan_cols) > 0:
-        print(f"\n Found NaN values in {len(nan_cols)} columns:")
-        for col, count in nan_cols.items():
-            pct = (count / len(tlm_dataset)) * 100
-            print(f"  {col}: {count} NaNs ({pct:.1f}%)")
-    else:
-        print("\n✓ No NaN values found")
-
-    # Check for zero/constant values in critical columns
-    print(f"\n{'='*80}")
-    print("=== CHECKING CRITICAL COLUMN VALUES ===")
-    print(f"{'='*80}")
-
-    critical_patterns = ['quat', 'ang', 'dcm', 'position', 'velocity']
-    for pattern in critical_patterns:
-        matching_cols = [col for col in tlm_dataset.columns if pattern in col.lower()]
-        if matching_cols:
-            print(f"\n{pattern.upper()} columns ({len(matching_cols)} found):")
-            for col in matching_cols:
-                values = tlm_dataset[col].dropna()
-                if len(values) > 0:
-                    # Check if all zeros
-                    if (values == 0).all():
-                        print(f"{col}: ALL ZEROS!")
-                    # Check if constant
-                    elif values.nunique() == 1:
-                        print(f"{col}: CONSTANT VALUE = {values.iloc[0]}")
-                    # Check if mostly zeros
-                    elif (values == 0).sum() / len(values) > 0.9:
-                        zero_pct = (values == 0).sum() / len(values) * 100
-                        print(f"{col}: {zero_pct:.1f}% zeros (range: {values.min():.6e} to {values.max():.6e})")
-                    else:
-                        print(f"{col}: Valid range [{values.min():.6e}, {values.max():.6e}]")
-                else:
-                    print(f"{col}: No valid (non-NaN) values!")
-
-    # Check for quaternion validity (should have unit norm)
-    print(f"\n{'='*80}")
-    print("=== CHECKING QUATERNION VALIDITY ===")
-    print(f"{'='*80}")
-
-    quat_cols = [col for col in tlm_dataset.columns if 'quat' in col.lower() or '_s' in col or '_i' in col or '_j' in col or '_k' in col]
-    if len(quat_cols) >= 4:
-        # Try to identify quaternion sets
-        quat_sets = {}
-        for col in quat_cols:
-            base_name = col.rsplit('_', 1)[0] if '_' in col else col.rsplit('.', 1)[0]
-            if base_name not in quat_sets:
-                quat_sets[base_name] = []
-            quat_sets[base_name].append(col)
-
-        for base_name, cols in quat_sets.items():
-            if len(cols) == 4:
-                print(f"\nChecking quaternion set: {base_name}")
-                print(f"  Components: {cols}")
-                quat_data = tlm_dataset[cols].dropna()
-                if len(quat_data) > 0:
-                    norms = np.sqrt((quat_data ** 2).sum(axis=1))
-                    if (norms == 0).any():
-                        print(f"{base_name}: Contains zero-norm quaternions!")
-                    elif not np.allclose(norms, 1.0, atol=1e-3):
-                        print(f"{base_name}: Quaternion norms deviate from 1.0")
-                        print(f"Norm range: {norms.min():.6f} to {norms.max():.6f}")
-                    else:
-                        print(f"{base_name}: Valid unit quaternions (norm ≈ 1.0)")
-                else:
-                    print(f"{base_name}: No valid (non-NaN) quaternion data!")
-    else:
-        print("No quaternion columns found")
-
-    # Check time columns
-    print(f"\n{'='*80}")
-    print("=== CHECKING TIME COLUMNS ===")
-    print(f"{'='*80}")
-
-    time_cols = [col for col in tlm_dataset.columns if 'time' in col.lower() or 'tms' in col.lower()]
-    if time_cols:
-        for col in time_cols:
-            values = tlm_dataset[col].dropna()
-            if len(values) > 0:
-                print(f"\n{col}:")
-                print(f"  Valid values: {len(values)}/{len(tlm_dataset)} ({len(values)/len(tlm_dataset)*100:.1f}%)")
-                print(f"  Range: [{values.min():.6e}, {values.max():.6e}]")
-                print(f"  Mean: {values.mean():.6e}")
-            else:
-                print(f"\n{col}: No valid values!")
-    else:
-        print("No time columns found")
-
-    print(f"\n{'='*80}")
-    print(f"=== END {dataset_name.upper()} DIAGNOSIS ===")
-    print(f"{'='*80}\n")
-
-
-def diagnose_science_data(sci_dataset, dataset_name: str = "science"):
-    """
-    Diagnose science data for validity issues.
-    """
-    msg = f"=== DIAGNOSING {dataset_name.upper()} DATA ==="
-    logger.info(msg)
-    print(msg)
-
-    if isinstance(sci_dataset, pd.DataFrame):
-        msg = f"Dataset type: DataFrame"
-        logger.info(msg)
-        print(msg)
-        msg = f"Dataset shape: {sci_dataset.shape}"
-        logger.info(msg)
-        print(msg)
-        msg = f"Columns: {list(sci_dataset.columns)}"
-        logger.info(msg)
-        print(msg)
-
-        # Check time field
-        time_cols = [col for col in sci_dataset.columns if 'time' in col.lower()]
-        for col in time_cols:
-            values = sci_dataset[col].dropna()
-            if len(values) > 0:
-                msg = f"Time column {col}: {len(values)} values, range [{values.min():.6e}, {values.max():.6e}]"
-                logger.info(msg)
-                print(msg)
-
-                # Check for zeros
-                if (values == 0).any():
-                    zero_count = (values == 0).sum()
-                    msg = f"  {col}: Contains {zero_count} zero values!"
-                    logger.warning(msg)
-                    print(f"️   {msg}")
-
-    elif isinstance(sci_dataset, xr.Dataset):
-        msg = f"Dataset type: xarray.Dataset"
-        logger.info(msg)
-        print(msg)
-        msg = f"Dimensions: {dict(sci_dataset.dims)}"
-        logger.info(msg)
-        print(msg)
-        msg = f"Variables: {list(sci_dataset.data_vars)}"
-        logger.info(msg)
-        print(msg)
-        msg = f"Coordinates: {list(sci_dataset.coords)}"
-        logger.info(msg)
-        print(msg)
-
-        for var in sci_dataset.data_vars:
-            values = sci_dataset[var].values
-            msg = f"Variable {var}: shape={values.shape}, dtype={values.dtype}"
-            logger.info(msg)
-            print(msg)
-
-    msg = f"=== END {dataset_name.upper()} DIAGNOSIS ===\n"
-    logger.info(msg)
-    print(msg)
-
-
-def diagnose_kernel_inputs(param_data, param_config: 'ParameterConfig'):
-    """
-    Diagnose kernel input data before creation.
-    """
-    logger.info(f"=== DIAGNOSING KERNEL INPUT: {param_config.config_file.name if param_config.config_file else 'N/A'} ===")
-
-    if isinstance(param_data, pd.DataFrame):
-        logger.info(f"Data type: DataFrame, shape={param_data.shape}")
-        logger.info(f"Columns: {list(param_data.columns)}")
-
-        # Check each column
-        for col in param_data.columns:
-            values = param_data[col]
-            logger.info(f"Column {col}:")
-            logger.info(f"  Range: [{values.min():.6e}, {values.max():.6e}]")
-            logger.info(f"  Unique values: {values.nunique()}")
-
-            # Warn if all same value
-            if values.nunique() == 1:
-                logger.warning(f"All values are constant: {values.iloc[0]}")
-
-            # Warn if all zeros
-            if (values == 0).all():
-                logger.error(f"All values are ZERO!")
-
-        # For attitude kernels, check angle values
-        angle_cols = [col for col in param_data.columns if 'angle' in col.lower()]
-        if angle_cols:
-            logger.info("Angle values (should be in radians):")
-            for col in angle_cols:
-                values = param_data[col]
-                logger.info(f"  {col}: {values.iloc[0]:.6e} rad = {np.degrees(values.iloc[0]):.6f} deg")
-
-    elif isinstance(param_data, (int, float)):
-        logger.info(f"Data type: {type(param_data).__name__}, value={param_data}")
-
-    elif isinstance(param_data, (list, np.ndarray)):
-        logger.info(f"Data type: {type(param_data).__name__}, length={len(param_data)}")
-        logger.info(f"Values: {param_data}")
-
-    logger.info(f"=== END KERNEL INPUT DIAGNOSIS ===\n")
-
-
 def placeholder_gcp_pairing(clarreo_data_files):
     """
     PLACEHOLDER for GCP pairing module.
@@ -559,18 +421,29 @@ def placeholder_gcp_pairing(clarreo_data_files):
     return synthetic_pairs
 
 
-def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info):
+def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info, config: 'MonteCarloConfig'):
     """
     PLACEHOLDER for image matching module.
 
     Real implementation will:
-    - Compare CLARREO geolocated pixels with Landsat GCP references
+    - Compare geolocated pixels with GCP references
     - Perform image correlation/matching
     - Return spatial errors in format expected by error_stats module
 
     For now: Generate synthetic error data matching error_stats test format
+
+    Args:
+        geolocated_data: Geolocated science data
+        gcp_reference_file: Reference GCP data file
+        params_info: Parameter information for this iteration
+        config: MonteCarloConfig with coordinate name mappings (Phase 4)
     """
     logger.info(f"Image Matching: Comparing geolocated pixels with {gcp_reference_file} (PLACEHOLDER)")
+
+    # Get coordinate names from config (Phase 4)
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
 
     # Extract valid geolocation points (non-NaN)
     valid_mask = ~np.isnan(geolocated_data['latitude'].values).any(axis=1)
@@ -621,12 +494,13 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info)
 
     cp_alt = np.random.uniform(0, 1000, n_measurements)
 
+    # Phase 4: Use config names for coordinates instead of hardcoded ISS/HySICS names
     return xr.Dataset({
         'lat_error_deg': (['measurement'], lat_errors),
         'lon_error_deg': (['measurement'], lon_errors),
-        'riss_ctrs': (['measurement', 'xyz'], riss_ctrs),
-        'bhat_hs': (['measurement', 'xyz'], boresights),
-        't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrices),
+        sc_pos_name: (['measurement', 'xyz'], riss_ctrs),
+        boresight_name: (['measurement', 'xyz'], boresights),
+        transform_name: (['xyz_from', 'xyz_to', 'measurement'], t_matrices),
         'cp_lat_deg': (['measurement'], cp_lat),
         'cp_lon_deg': (['measurement'], cp_lon),
         'cp_alt': (['measurement'], cp_alt)
@@ -655,13 +529,14 @@ def image_matching(
     telemetry: pd.DataFrame,
     calibration_dir: Path,
     params_info: list,
+    config: 'MonteCarloConfig',
     los_vectors_cached: Optional[np.ndarray] = None,
     optical_psfs_cached: Optional[List] = None,
 ) -> xr.Dataset:
     """
-    REAL image matching using integrated_image_match() module.
+    Image matching using integrated_image_match() module.
 
-    This function performs actual image correlation between CLARREO geolocated
+    This function performs actual image correlation between geolocated
     pixels and Landsat GCP reference imagery.
 
     Args:
@@ -682,7 +557,7 @@ def image_matching(
         FileNotFoundError: If calibration files are missing
         ValueError: If geolocation data is invalid
     """
-    logger.info(f"Image Matching: REAL correlation with {gcp_reference_file.name}")
+    logger.info(f"Image Matching: correlation with {gcp_reference_file.name}")
     start_time = time.time()
 
     try:
@@ -761,13 +636,18 @@ def image_matching(
         logger.info(f"    Correlation: {result.ccv_final:.4f}")
         logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
 
-        # Create output dataset in error_stats format
+        # Get coordinate names from config (Phase 4)
+        sc_pos_name = config.spacecraft_position_name
+        boresight_name = config.boresight_name
+        transform_name = config.transformation_matrix_name
+
+        # Create output dataset in error_stats format (Phase 4: use config names)
         output = xr.Dataset({
             'lat_error_deg': (['measurement'], [lat_error_deg]),
             'lon_error_deg': (['measurement'], [lon_error_deg]),
-            'riss_ctrs': (['measurement', 'xyz'], [r_iss_midframe]),
-            'bhat_hs': (['measurement', 'xyz'], [boresight]),
-            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
+            sc_pos_name: (['measurement', 'xyz'], [r_iss_midframe]),
+            boresight_name: (['measurement', 'xyz'], [boresight]),
+            transform_name: (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
             'cp_lat_deg': (['measurement'], [gcp_center_lat]),
             'cp_lon_deg': (['measurement'], [gcp_center_lon]),
             'cp_alt': (['measurement'], [0.0]),  # GCP at ground level
@@ -797,27 +677,32 @@ def image_matching(
     except FileNotFoundError as e:
         logger.error(f"  Calibration file not found: {e}")
         logger.warning("  Falling back to placeholder image matching")
-        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info)
+        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info, config)
 
     except Exception as e:
         logger.error(f"  Image matching failed: {e}")
         logger.warning("  Falling back to placeholder image matching")
-        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info)
+        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info, config)
 
 
-def call_error_stats_module(image_matching_results, geo_config: typing.Optional['GeolocationConfig'] = None):
+def call_error_stats_module(
+    image_matching_results,
+    geo_config: typing.Optional['GeolocationConfig'] = None,
+    monte_carlo_config: typing.Optional['MonteCarloConfig'] = None
+):
     """
-    Call the REAL error_stats module with image matching output.
+    Call the error_stats module with image matching output.
 
     Args:
         image_matching_results: Either a single image matching result (xarray.Dataset)
                               or a list of image matching results from multiple GCP pairs
         geo_config: Optional GeolocationConfig with minimum_correlation for filtering
+        monte_carlo_config: Optional MonteCarloConfig for coordinate name mappings (Phase 4)
 
     Returns:
         Aggregate error statistics dataset
     """
-    # Handle both single result (backward compatibility) and list of results
+    # Handle both single result and list of results
     if not isinstance(image_matching_results, list):
         image_matching_results = [image_matching_results]
 
@@ -827,7 +712,7 @@ def call_error_stats_module(image_matching_results, geo_config: typing.Optional[
             GeolocationConfig as ErrorStatsGeolocationConfig
         )
 
-        logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs (REAL MODULE)")
+        logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
         # Create error stats config from Monte Carlo geo config
         error_config = ErrorStatsGeolocationConfig(
@@ -840,8 +725,19 @@ def call_error_stats_module(image_matching_results, geo_config: typing.Optional[
             # Single GCP pair case
             error_results = processor.process_geolocation_errors(image_matching_results[0])
         else:
-            # Multiple GCP pairs - aggregate the data first
-            aggregated_data = _aggregate_image_matching_results(image_matching_results)
+            # Multiple GCP pairs - aggregate the data first (Phase 4: pass config for coordinate names)
+            if monte_carlo_config is None:
+                # Backward compatibility: create minimal config with defaults
+                monte_carlo_config = MonteCarloConfig(
+                    seed=42,
+                    n_iterations=1,
+                    parameters=[],
+                    geo=geo_config if geo_config else GeolocationConfig(
+                        meta_kernel_file=Path('dummy.json'),
+                        generic_kernel_dir=Path('.')
+                    )
+                )
+            aggregated_data = _aggregate_image_matching_results(image_matching_results, monte_carlo_config)
             error_results = processor.process_geolocation_errors(aggregated_data)
 
         return error_results
@@ -882,24 +778,30 @@ def call_error_stats_module(image_matching_results, geo_config: typing.Optional[
         })
 
 
-def _aggregate_image_matching_results(image_matching_results):
+def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarloConfig'):
     """
     Aggregate multiple image matching results into a single dataset for error stats processing.
 
     Args:
         image_matching_results: List of xarray.Dataset objects from image matching
+        config: MonteCarloConfig with coordinate name mappings
 
     Returns:
         Single aggregated xarray.Dataset with all measurements combined
     """
     logger.info(f"Aggregating {len(image_matching_results)} image matching results")
 
+    # Get coordinate names from config (Phase 4)
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
+
     # Combine all measurements into single arrays
     all_lat_errors = []
     all_lon_errors = []
-    all_riss_ctrs = []
-    all_bhat_hs = []
-    all_t_hs2ctrs = []
+    all_sc_positions = []
+    all_boresights = []
+    all_transforms = []
     all_cp_lats = []
     all_cp_lons = []
     all_cp_alts = []
@@ -911,20 +813,20 @@ def _aggregate_image_matching_results(image_matching_results):
         all_lat_errors.extend(result['lat_error_deg'].values)
         all_lon_errors.extend(result['lon_error_deg'].values)
 
-        # Handle coordinate transformation data
+        # Handle coordinate transformation data (Phase 4: use config names)
         # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
-        if 'riss_ctrs' in result:
+        if sc_pos_name in result:
             # Shape: (1, 3) -> extract as (3,) for each measurement
             for j in range(n_measurements):
-                all_riss_ctrs.append(result['riss_ctrs'].values[j])
-        if 'bhat_hs' in result:
+                all_sc_positions.append(result[sc_pos_name].values[j])
+        if boresight_name in result:
             # Shape: (1, 3) -> extract as (3,) for each measurement
             for j in range(n_measurements):
-                all_bhat_hs.append(result['bhat_hs'].values[j])
-        if 't_hs2ctrs' in result:
+                all_boresights.append(result[boresight_name].values[j])
+        if transform_name in result:
             # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
             for j in range(n_measurements):
-                all_t_hs2ctrs.append(result['t_hs2ctrs'].values[:, :, j])
+                all_transforms.append(result[transform_name].values[:, :, j])
         if 'cp_lat_deg' in result:
             all_cp_lats.extend(result['cp_lat_deg'].values)
         if 'cp_lon_deg' in result:
@@ -942,21 +844,21 @@ def _aggregate_image_matching_results(image_matching_results):
         'measurement': np.arange(n_total)
     })
 
-    # Add optional coordinate transformation data if available
+    # Add optional coordinate transformation data if available (Phase 4: use config names)
     # Use dimension names that match error_stats expectations
-    if all_riss_ctrs:
+    if all_sc_positions:
         # Stack into (n_measurements, 3)
-        aggregated['riss_ctrs'] = (['measurement', 'xyz'], np.array(all_riss_ctrs))
+        aggregated[sc_pos_name] = (['measurement', 'xyz'], np.array(all_sc_positions))
         aggregated = aggregated.assign_coords({'xyz': ['x', 'y', 'z']})
 
-    if all_bhat_hs:
+    if all_boresights:
         # Stack into (n_measurements, 3)
-        aggregated['bhat_hs'] = (['measurement', 'xyz'], np.array(all_bhat_hs))
+        aggregated[boresight_name] = (['measurement', 'xyz'], np.array(all_boresights))
 
-    if all_t_hs2ctrs:
+    if all_transforms:
         # Stack into (3, 3, n_measurements) to match error_stats format
-        t_stacked = np.stack(all_t_hs2ctrs, axis=2)
-        aggregated['t_hs2ctrs'] = (['xyz_from', 'xyz_to', 'measurement'], t_stacked)
+        t_stacked = np.stack(all_transforms, axis=2)
+        aggregated[transform_name] = (['xyz_from', 'xyz_to', 'measurement'], t_stacked)
         aggregated = aggregated.assign_coords({
             'xyz_from': ['x', 'y', 'z'],
             'xyz_to': ['x', 'y', 'z']
@@ -1027,10 +929,28 @@ class NetCDFConfig:
     # If None, will be auto-generated from config.parameters
     parameter_metadata: typing.Optional[typing.Dict[str, NetCDFParameterMetadata]] = None
 
+    # Standard variable attributes - allows mission-specific overrides
+    # If None, uses STANDARD_NETCDF_ATTRIBUTES module constant
+    standard_attributes: typing.Optional[typing.Dict[str, typing.Dict[str, str]]] = None
+
     def get_threshold_metric_name(self) -> str:
         """Generate metric name dynamically from threshold."""
         threshold_m = int(self.performance_threshold_m)
         return f'percent_under_{threshold_m}m'
+
+    def get_standard_attributes(self) -> typing.Dict[str, typing.Dict[str, str]]:
+        """
+        Get standard variable attributes, using mission overrides if provided.
+
+        Returns:
+            Dictionary mapping variable names to their attributes (units, long_name)
+        """
+        if self.standard_attributes is not None:
+            # Use mission-specific overrides
+            return self.standard_attributes
+        else:
+            # Use module-level defaults
+            return STANDARD_NETCDF_ATTRIBUTES.copy()
 
     def get_parameter_netcdf_metadata(self, param_config: ParameterConfig, angle_type: typing.Optional[str] = None) -> NetCDFParameterMetadata:
         """
@@ -1376,132 +1296,98 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
     return output
 
 
-def load_telemetry(tlm_key: str, config: MonteCarloConfig) -> pd.DataFrame:
+def load_telemetry(tlm_key: str, config: MonteCarloConfig, loader_func=None) -> pd.DataFrame:
     """
-    Load telemetry data following the example patterns for robust processing.
+    Load telemetry data using provided mission-specific loader function.
+
+    This is a generic interface. The actual telemetry loading logic should be
+    provided by the mission-specific loader function.
 
     Args:
-        tlm_key: Path to telemetry file or identifier (used to construct paths)
-        config: Monte Carlo configuration (currently unused, for future flexibility)
-
-    Returns:
-        DataFrame with merged telemetry data using the example patterns
-    """
-    # Extract the base path from tlm_key or use default test data location
-    if isinstance(tlm_key, (str, Path)):
-        base_path = Path(tlm_key).parent if Path(tlm_key).parent.exists() else Path('tests/data/clarreo/gcs')
-    else:
-        base_path = Path('tests/data/clarreo/gcs')
-
-    logger.info(f"Loading telemetry data from: {base_path}")
-
-    # Load the 4 telemetry CSVs (following example pattern)
-    sc_spk_df = pd.read_csv(base_path / "openloop_tlm_5a_sc_spk_20250521T225242.csv", index_col=0)
-    sc_ck_df = pd.read_csv(base_path / "openloop_tlm_5a_sc_ck_20250521T225242.csv", index_col=0)
-    st_ck_df = pd.read_csv(base_path / "openloop_tlm_5a_st_ck_20250521T225242.csv", index_col=0)
-    azel_ck_df = pd.read_csv(base_path / "openloop_tlm_5a_azel_ck_20250521T225242.csv", index_col=0)
-
-    logger.info(f"Loaded telemetry CSVs - SC_SPK: {sc_spk_df.shape}, SC_CK: {sc_ck_df.shape}, "
-                f"ST_CK: {st_ck_df.shape}, AZEL_CK: {azel_ck_df.shape}")
-
-    # Reverse the direction of the Azimuth element
-    azel_ck_df['hps.az_ang_nonlin'] = azel_ck_df['hps.az_ang_nonlin'] * -1
-
-    # Convert star-tracker from rotation matrix to quaternion (following example pattern)
-    tlm_st_rot = np.vstack([st_ck_df['hps.dcm_base_iss_1_1'].values,
-                            st_ck_df['hps.dcm_base_iss_1_2'].values,
-                            st_ck_df['hps.dcm_base_iss_1_3'].values,
-                            st_ck_df['hps.dcm_base_iss_2_1'].values,
-                            st_ck_df['hps.dcm_base_iss_2_2'].values,
-                            st_ck_df['hps.dcm_base_iss_2_3'].values,
-                            st_ck_df['hps.dcm_base_iss_3_1'].values,
-                            st_ck_df['hps.dcm_base_iss_3_2'].values,
-                            st_ck_df['hps.dcm_base_iss_3_3'].values]).T
-    tlm_st_rot = np.reshape(tlm_st_rot, (-1, 3, 3)).copy()
-
-    # Import spicierpy for quaternion conversion
-    from curryer import spicierpy as sp
-    tlm_st_rot_q = np.vstack([sp.m2q(tlm_st_rot[i, :, :]) for i in range(tlm_st_rot.shape[0])])
-    st_ck_df['hps.dcm_base_iss_s'] = tlm_st_rot_q[:, 0]
-    st_ck_df['hps.dcm_base_iss_i'] = tlm_st_rot_q[:, 1]
-    st_ck_df['hps.dcm_base_iss_j'] = tlm_st_rot_q[:, 2]
-    st_ck_df['hps.dcm_base_iss_k'] = tlm_st_rot_q[:, 3]
-
-    # Use example pattern: start with left_df and merge with outer joins
-    left_df = sc_spk_df
-    for right_df in [sc_ck_df, st_ck_df, azel_ck_df]:
-        left_df = pd.merge(left_df, right_df, on='ert', how='outer')
-    left_df = left_df.sort_values('ert')
-
-    # Compute combined second and subsecond timetags (following example pattern exactly)
-    for col in list(left_df):
-        if col in ('hps.bad_ps_tms', 'hps.corrected_tms', 'hps.resolver_tms', 'hps.st_quat_coi_tms'):
-            assert col + 's' in left_df.columns, col
-
-            if col == 'hps.bad_ps_tms':
-                left_df[col + '_tmss'] = left_df[col] + left_df[col + 's'] / 256
-            elif col in ('hps.corrected_tms', 'hps.resolver_tms', 'hps.st_quat_coi_tms'):
-                left_df[col + '_tmss'] = left_df[col] + left_df[col + 's'] / 2 ** 32
-            else:
-                raise ValueError('Missing if for expected column...')
-
-    logger.info(f"Final telemetry shape: {left_df.shape}")
-    return left_df
-
-
-
-def load_science(sci_key: str, config: MonteCarloConfig) -> pd.DataFrame:
-    """
-    Load science frame timing data.
-
-    Args:
-        sci_key: Path to science file or identifier
+        tlm_key: Identifier for telemetry data (path, key, etc.)
         config: Monte Carlo configuration
+        loader_func: Mission-specific loader function(tlm_key, config) -> DataFrame
 
     Returns:
-        DataFrame with science frame timestamps
+        DataFrame with telemetry data
+
+    Raises:
+        ValueError: If no loader function provided
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_telemetry
+        tlm_data = load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)
     """
-    # Extract the base path from sci_key or use default test data location
-    if isinstance(sci_key, (str, Path)):
-        base_path = Path(sci_key).parent if Path(sci_key).parent.exists() else Path('tests/data/clarreo/gcs')
-    else:
-        base_path = Path('tests/data/clarreo/gcs')
+    if loader_func is None:
+        raise ValueError(
+            "No telemetry loader function provided. "
+            "Pass loader_func parameter with mission-specific loader.\n"
+            "Example: load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)"
+        )
 
-    logger.info(f"Loading science data from: {base_path}")
-
-    sci_time_df = pd.read_csv(base_path / "openloop_tlm_5a_sci_times_20250521T225242.csv", index_col=0)
-
-    # Frame times are GPS seconds, geolocation expects uGPS (microseconds)
-    sci_time_df['corrected_timestamp'] *= 1e6
-
-    logger.info(f"Science data shape: {sci_time_df.shape}")
-    logger.info(f"corrected_timestamp range: {sci_time_df['corrected_timestamp'].min():.2e} to "
-                f"{sci_time_df['corrected_timestamp'].max():.2e} uGPS")
-
-    return sci_time_df
+    return loader_func(tlm_key, config)
 
 
-def load_gcp(gcp_key: str, config: MonteCarloConfig):
+def load_science(sci_key: str, config: MonteCarloConfig, loader_func=None) -> pd.DataFrame:
     """
-    Load Ground Control Point (GCP) reference data.
+    Load science data using provided mission-specific loader function.
 
-    PLACEHOLDER - Real implementation will:
-    - Load Landsat GCP reference images/coordinates
-    - Extract georeferenced control points
-    - Return spatially/temporally matched reference data
+    This is a generic interface. The actual science data loading logic should be
+    provided by the mission-specific loader function.
 
     Args:
-        gcp_key: Path to GCP file or identifier
+        sci_key: Identifier for science data (path, key, etc.)
         config: Monte Carlo configuration
+        loader_func: Mission-specific loader function(sci_key, config) -> DataFrame
 
     Returns:
-        GCP reference data (format TBD based on GCP pairing module requirements)
-    """
-    logger.info(f"Loading GCP data from: {gcp_key} (PLACEHOLDER)")
+        DataFrame with science data
 
-    # For testing purposes, return None - the GCP pairing module will handle this
-    # In real implementation, this would load and process GCP reference data
-    return None
+    Raises:
+        ValueError: If no loader function provided
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_science
+        sci_data = load_science(sci_key, config, loader_func=load_clarreo_science)
+    """
+    if loader_func is None:
+        raise ValueError(
+            "No science loader function provided. "
+            "Pass loader_func parameter with mission-specific loader.\n"
+            "Example: load_science(sci_key, config, loader_func=load_clarreo_science)"
+        )
+
+    return loader_func(sci_key, config)
+
+
+
+def load_gcp(gcp_key: str, config: MonteCarloConfig, loader_func=None):
+    """
+    Load Ground Control Point (GCP) reference data using mission-specific loader.
+
+    This is a generic interface. The actual GCP loading logic should be
+    provided by the mission-specific loader function.
+
+    Args:
+        gcp_key: Identifier for GCP data (path, key, etc.)
+        config: Monte Carlo configuration
+        loader_func: Mission-specific loader function(gcp_key, config) -> GCP data
+
+    Returns:
+        GCP reference data (format defined by mission)
+
+    Note:
+        If loader_func is None, returns None (allows placeholder behavior)
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_gcp
+        gcp_data = load_gcp(gcp_key, config, loader_func=load_clarreo_gcp)
+    """
+    if loader_func is None:
+        logger.info(f"No GCP loader provided for: {gcp_key} (returning None)")
+        return None
+
+    return loader_func(gcp_key, config)
 
 
 def apply_offset(config: ParameterConfig, param_data, input_data):
@@ -1571,7 +1457,131 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     return modified_data
 
 
-def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)]):
+def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_pairs: int) -> typing.Dict:
+    """
+    Build NetCDF data structure dynamically from configuration.
+
+    This creates the netcdf_data dictionary with proper variable names based on
+    the parameters defined in the configuration, avoiding hardcoded mission-specific names.
+
+    Args:
+        config: MonteCarloConfig with parameters and optional NetCDF config
+        n_param_sets: Number of parameter sets (iterations)
+        n_gcp_pairs: Number of GCP pairs
+
+    Returns:
+        Dictionary with initialized arrays for all NetCDF variables
+    """
+    logger.info(f"Building NetCDF data structure for {n_param_sets} parameter sets × {n_gcp_pairs} GCP pairs")
+
+    # Ensure NetCDFConfig exists
+    config.ensure_netcdf_config()
+
+    # Start with coordinate dimensions
+    netcdf_data = {
+        'parameter_set_id': np.arange(n_param_sets),
+        'gcp_pair_id': np.arange(n_gcp_pairs),
+    }
+
+    # Add parameter variables dynamically based on config.parameters
+    param_count = 0
+    for param in config.parameters:
+        if param.ptype == ParameterType.CONSTANT_KERNEL:
+            # CONSTANT_KERNEL parameters have roll, pitch, yaw components
+            for angle in ['roll', 'pitch', 'yaw']:
+                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                var_name = metadata.variable_name
+                netcdf_data[var_name] = np.full(n_param_sets, np.nan)
+                logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
+                param_count += 1
+        else:
+            # OFFSET_KERNEL and OFFSET_TIME are single values
+            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            var_name = metadata.variable_name
+            netcdf_data[var_name] = np.full(n_param_sets, np.nan)
+            logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
+            param_count += 1
+
+    logger.info(f"  Created {param_count} parameter variables from {len(config.parameters)} parameter configs")
+
+    # Add standard error statistics (2D: parameter_set_id × gcp_pair_id)
+    error_metrics = {
+        'rms_error_m': 'RMS geolocation error',
+        'mean_error_m': 'Mean geolocation error',
+        'max_error_m': 'Maximum geolocation error',
+        'std_error_m': 'Standard deviation of geolocation error',
+        'n_measurements': 'Number of measurement points',
+    }
+
+    for var_name, description in error_metrics.items():
+        if var_name == 'n_measurements':
+            netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), 0, dtype=int)
+        else:
+            netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), np.nan)
+        logger.debug(f"  Added error metric: {var_name}")
+
+    # Add image matching results (2D: parameter_set_id × gcp_pair_id)
+    image_match_vars = {
+        'im_lat_error_km': 'Image matching latitude error',
+        'im_lon_error_km': 'Image matching longitude error',
+        'im_ccv': 'Image matching correlation coefficient',
+        'im_grid_step_m': 'Image matching final grid step size',
+    }
+
+    for var_name, description in image_match_vars.items():
+        netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), np.nan)
+        logger.debug(f"  Added image matching variable: {var_name}")
+
+    # Add overall performance metrics (1D: parameter_set_id)
+    # Use dynamic threshold metric name
+    threshold_metric = config.netcdf.get_threshold_metric_name()
+    overall_metrics = {
+        threshold_metric: f'Percentage of pairs with error < {config.performance_threshold_m}m',
+        'mean_rms_all_pairs': 'Mean RMS error across all GCP pairs',
+        'worst_pair_rms': 'Worst performing GCP pair RMS error',
+        'best_pair_rms': 'Best performing GCP pair RMS error',
+    }
+
+    for var_name, description in overall_metrics.items():
+        netcdf_data[var_name] = np.full(n_param_sets, np.nan)
+        logger.debug(f"  Added overall metric: {var_name}")
+
+    logger.info(f"NetCDF data structure created with {len(netcdf_data)} variables")
+
+    return netcdf_data
+
+
+def loop(
+    config: MonteCarloConfig,
+    work_dir: Path,
+    tlm_sci_gcp_sets: [(str, str, str)],
+    telemetry_loader=None,
+    science_loader=None,
+    gcp_loader=None
+):
+    """
+    Main Monte Carlo loop for parameter sensitivity analysis.
+
+    Args:
+        config: Monte Carlo configuration
+        work_dir: Working directory for temporary files
+        tlm_sci_gcp_sets: List of (telemetry_key, science_key, gcp_key) tuples
+        telemetry_loader: Optional mission-specific telemetry loader function
+        science_loader: Optional mission-specific science loader function
+        gcp_loader: Optional mission-specific GCP loader function
+
+    Returns:
+        Tuple of (results, netcdf_data)
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+
+        results, netcdf_data = loop(
+            config, work_dir, tlm_sci_gcp_sets,
+            telemetry_loader=load_clarreo_telemetry,
+            science_loader=load_clarreo_science
+        )
+    """
     # Initialize the entire set of parameters.
     params_set = load_param_sets(config)
 
@@ -1582,47 +1592,8 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
     n_param_sets = len(params_set)
     n_gcp_pairs = len(tlm_sci_gcp_sets)
 
-    # Initialize arrays for NetCDF output
-    netcdf_data = {
-        # Parameter set dimension (outer layer)
-        'parameter_set_id': np.arange(n_param_sets),
-        'gcp_pair_id': np.arange(n_gcp_pairs),
-
-        # Parameter values (12 parameters) - stored once per parameter set
-        'param_hysics_roll': np.full(n_param_sets, np.nan),
-        'param_hysics_pitch': np.full(n_param_sets, np.nan),
-        'param_hysics_yaw': np.full(n_param_sets, np.nan),
-        'param_yoke_roll': np.full(n_param_sets, np.nan),
-        'param_yoke_pitch': np.full(n_param_sets, np.nan),
-        'param_yoke_yaw': np.full(n_param_sets, np.nan),
-        'param_base_roll': np.full(n_param_sets, np.nan),
-        'param_base_pitch': np.full(n_param_sets, np.nan),
-        'param_base_yaw': np.full(n_param_sets, np.nan),
-        'param_azimuth_bias': np.full(n_param_sets, np.nan),
-        'param_elevation_bias': np.full(n_param_sets, np.nan),
-        'param_time_correction': np.full(n_param_sets, np.nan),
-
-        # Error statistics per GCP pair (2D arrays: [parameter_set_id, gcp_pair_id])
-        'rms_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'mean_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'max_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'std_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'n_measurements': np.full((n_param_sets, n_gcp_pairs), 0, dtype=int),
-
-        # Fix #3 Part A: Per-GCP-pair image matching results
-        'im_lat_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_lon_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_ccv': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_grid_step_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-
-        # Overall performance metrics per parameter set
-        'percent_under_250m': np.full(n_param_sets, np.nan),
-        'mean_rms_all_pairs': np.full(n_param_sets, np.nan),
-        'worst_pair_rms': np.full(n_param_sets, np.nan),
-        'best_pair_rms': np.full(n_param_sets, np.nan),
-    }
-
-    logger.info(f"Initialized NetCDF data structure: {n_param_sets} parameter sets × {n_gcp_pairs} GCP pairs")
+    # Build NetCDF data structure dynamically from configuration (Phase 2)
+    netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
 
     # Prepare meta kernel details and kernel writer.
     mkrn = meta.MetaKernel.from_json(
@@ -1662,11 +1633,11 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
             logger.info(f"  Processing GCP pair {pair_idx + 1}/{len(tlm_sci_gcp_sets)}: {sci_key}")
 
-            # Load telemetry (L1) telemetry...
-            tlm_dataset = load_telemetry(tlm_key, config)
+            # Load telemetry (L1) data using mission-specific loader
+            tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
 
-            # Load science (L1A) dataset...
-            sci_dataset = load_science(sci_key, config)
+            # Load science (L1A) data using mission-specific loader
+            sci_dataset = load_science(sci_key, config, loader_func=science_loader)
             ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps.
 
             # === GCP PAIRING MODULE (PLACEHOLDER) ===
@@ -1738,7 +1709,8 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
                             gcp_reference_file=gcp_file,
                             telemetry=tlm_dataset,
                             calibration_dir=config.calibration_dir,
-                            params_info=params
+                            params_info=params,
+                            config=config  # Phase 4: pass config for coordinate names
                         )
                         logger.info(f"    REAL image matching complete")
                     except Exception as e:
@@ -1747,16 +1719,24 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
                         image_matching_output = placeholder_image_matching(
                             geo_dataset,
                             gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                            params
+                            params,
+                            config  # Phase 4: pass config for coordinate names
                         )
                 else:
                     # Use placeholder image matching
+                    image_matching_output = placeholder_image_matching(
+                        geo_dataset,
+                        gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
+                        params,
+                        config  # Phase 4: pass config for coordinate names
+                    )
                     if config.use_real_image_matching:
                         logger.warning("    Real image matching requested but calibration_dir not set - using placeholder")
                     image_matching_output = placeholder_image_matching(
                         geo_dataset,
                         gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                        params
+                        params,
+                        config  # Phase 4: pass config for coordinate names
                     )
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
@@ -1779,8 +1759,8 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         logger.info(f"  === ERROR STATISTICS MODULE (AGGREGATE) ===")
         logger.info(f"  Processing aggregate statistics from {len(image_matching_results)} GCP pairs")
 
-        # Call error stats module on aggregate of all image matching results
-        aggregate_stats = call_error_stats_module(image_matching_results, geo_config=config.geo)
+        # Call error stats module on aggregate of all image matching results (Phase 4: pass config for coordinate names)
+        aggregate_stats = call_error_stats_module(image_matching_results, geo_config=config.geo, monte_carlo_config=config)
 
         # Extract aggregate error metrics
         aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
@@ -1791,8 +1771,8 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
         # Process individual GCP pair results for detailed NetCDF storage
         pair_errors = []
         for pair_idx, image_matching_result in enumerate(image_matching_results):
-            # Get individual pair error metrics from the single result
-            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo)
+            # Get individual pair error metrics from the single result (Phase 4: pass config for coordinate names)
+            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             pair_errors.append(individual_metrics['rms_error_m'])
@@ -1810,7 +1790,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
 
         # Store comprehensive results for backward compatibility
         for pair_idx, (image_matching_result, geo_data) in enumerate(zip(image_matching_results, gcp_pair_geolocation_data)):
-            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo)
+            individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             iteration_result = {
@@ -1829,7 +1809,7 @@ def loop(config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str,
             results.append(iteration_result)
 
         # Compute overall performance metrics for this parameter set
-        _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors)
+        _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=config.performance_threshold_m)
 
         # Log parameter set summary with both individual and aggregate metrics
         percent_under_250 = netcdf_data['percent_under_250m'][param_idx]
@@ -1926,15 +1906,31 @@ def _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics):
     netcdf_data['n_measurements'][param_idx, pair_idx] = error_metrics['n_measurements']
 
 
-def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors):
-    """Compute overall performance metrics for a parameter set."""
+def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=250.0):
+    """
+    Compute overall performance metrics for a parameter set.
+
+    Args:
+        netcdf_data: NetCDF data dictionary
+        param_idx: Parameter set index
+        pair_errors: Array of RMS errors for each GCP pair
+        threshold_m: Performance threshold in meters
+    """
     pair_errors = np.array(pair_errors)
     valid_errors = pair_errors[~np.isnan(pair_errors)]
 
     if len(valid_errors) > 0:
-        # Percentage of pairs with error < 250m
-        percent_under_250 = (valid_errors < 250.0).sum() / len(valid_errors) * 100
-        netcdf_data['percent_under_250m'][param_idx] = percent_under_250
+        # Percentage of pairs with error < threshold
+        # Find the threshold metric key dynamically
+        threshold_metric = None
+        for key in netcdf_data.keys():
+            if key.startswith('percent_under_') and key.endswith('m'):
+                threshold_metric = key
+                break
+
+        if threshold_metric:
+            percent_under_threshold = (valid_errors < threshold_m).sum() / len(valid_errors) * 100
+            netcdf_data[threshold_metric][param_idx] = percent_under_threshold
 
         # Mean RMS across all pairs
         netcdf_data['mean_rms_all_pairs'][param_idx] = np.mean(valid_errors)
@@ -1945,8 +1941,24 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors):
 
 
 def _save_netcdf_results(netcdf_data, output_file, config):
-    """Save results to NetCDF file with proper dimensions and metadata."""
+    """
+    Save results to NetCDF file using config-driven metadata.
+
+    This function dynamically builds the NetCDF file structure from the
+    netcdf_data dictionary, using configuration for all metadata rather
+    than hardcoding mission-specific values.
+
+    Args:
+        netcdf_data: Dictionary with all NetCDF variables and data
+        output_file: Path to output NetCDF file
+        config: MonteCarloConfig with NetCDF metadata
+    """
     import xarray as xr
+
+    logger.info(f"Saving NetCDF results to: {output_file}")
+
+    # Ensure NetCDFConfig exists
+    config.ensure_netcdf_config()
 
     # Create coordinate arrays
     coords = {
@@ -1954,86 +1966,74 @@ def _save_netcdf_results(netcdf_data, output_file, config):
         'gcp_pair_id': netcdf_data['gcp_pair_id'],
     }
 
-    # Create data variables
+    # Build variable list dynamically from netcdf_data keys
     data_vars = {}
 
-    # Parameter values (1D: parameter_set_id)
-    param_vars = ['param_hysics_roll', 'param_hysics_pitch', 'param_hysics_yaw',
-                  'param_yoke_roll', 'param_yoke_pitch', 'param_yoke_yaw',
-                  'param_base_roll', 'param_base_pitch', 'param_base_yaw',
-                  'param_azimuth_bias', 'param_elevation_bias', 'param_time_correction']
+    # Add all non-coordinate variables, determining dimensions from array shape
+    for var_name, var_data in netcdf_data.items():
+        if var_name not in coords:
+            # Determine dimensions from array shape
+            if isinstance(var_data, np.ndarray):
+                if var_data.ndim == 1:
+                    data_vars[var_name] = (['parameter_set_id'], var_data)
+                elif var_data.ndim == 2:
+                    data_vars[var_name] = (['parameter_set_id', 'gcp_pair_id'], var_data)
 
-    for var in param_vars:
-        if var in netcdf_data:
-            data_vars[var] = (['parameter_set_id'], netcdf_data[var])
-
-    # Error metrics (2D: parameter_set_id, gcp_pair_id)
-    error_vars = ['rms_error_m', 'mean_error_m', 'max_error_m', 'std_error_m', 'n_measurements']
-    for var in error_vars:
-        if var in netcdf_data:
-            data_vars[var] = (['parameter_set_id', 'gcp_pair_id'], netcdf_data[var])
-
-    # Fix #3 Part A: Per-GCP-pair image matching results
-    image_matching_vars = ['im_lat_error_km', 'im_lon_error_km', 'im_ccv', 'im_grid_step_m']
-    for var in image_matching_vars:
-        if var in netcdf_data:
-            data_vars[var] = (['parameter_set_id', 'gcp_pair_id'], netcdf_data[var])
-
-    # Overall metrics (1D: parameter_set_id)
-    overall_vars = ['percent_under_250m', 'mean_rms_all_pairs', 'worst_pair_rms', 'best_pair_rms']
-    for var in overall_vars:
-        if var in netcdf_data:
-            data_vars[var] = (['parameter_set_id'], netcdf_data[var])
+    logger.info(f"  Creating dataset with {len(data_vars)} data variables")
 
     # Create dataset
     ds = xr.Dataset(data_vars, coords=coords)
 
-    # Add metadata - handle None values properly for NetCDF
+    # Add global metadata from config
     ds.attrs.update({
-        'title': 'CLARREO Geolocation Monte Carlo Analysis Results',
-        'description': 'Parameter sensitivity analysis for CLARREO geolocation system',
+        'title': config.netcdf.title,
+        'description': config.netcdf.description,
         'created': pd.Timestamp.now().isoformat(),
         'monte_carlo_iterations': config.n_iterations,
-        'performance_threshold_m': 250.0,
+        'performance_threshold_m': config.netcdf.performance_threshold_m,
         'parameter_count': len(config.parameters),
-        'random_seed': config.seed if config.seed is not None else 'None',  # Convert None to string
+        'random_seed': str(config.seed) if config.seed is not None else 'None',
     })
 
-    # Add variable attributes
-    var_attrs = {
-        'param_hysics_roll': {'units': 'arcseconds', 'long_name': 'HySICS to cradle roll correction'},
-        'param_hysics_pitch': {'units': 'arcseconds', 'long_name': 'HySICS to cradle pitch correction'},
-        'param_hysics_yaw': {'units': 'arcseconds', 'long_name': 'HySICS to cradle yaw correction'},
-        'param_yoke_roll': {'units': 'arcseconds', 'long_name': 'Yoke elevation to azimuth roll correction'},
-        'param_yoke_pitch': {'units': 'arcseconds', 'long_name': 'Yoke elevation to azimuth pitch correction'},
-        'param_yoke_yaw': {'units': 'arcseconds', 'long_name': 'Yoke elevation to azimuth yaw correction'},
-        'param_base_roll': {'units': 'arcseconds', 'long_name': 'Base azimuth to cube roll correction'},
-        'param_base_pitch': {'units': 'arcseconds', 'long_name': 'Base azimuth to cube pitch correction'},
-        'param_base_yaw': {'units': 'arcseconds', 'long_name': 'Base azimuth to cube yaw correction'},
-        'param_azimuth_bias': {'units': 'arcseconds', 'long_name': 'Azimuth angle bias correction'},
-        'param_elevation_bias': {'units': 'arcseconds', 'long_name': 'Elevation angle bias correction'},
-        'param_time_correction': {'units': 'milliseconds', 'long_name': 'Science frame time correction'},
-        'rms_error_m': {'units': 'meters', 'long_name': 'RMS geolocation error'},
-        'mean_error_m': {'units': 'meters', 'long_name': 'Mean geolocation error'},
-        'max_error_m': {'units': 'meters', 'long_name': 'Maximum geolocation error'},
-        'std_error_m': {'units': 'meters', 'long_name': 'Standard deviation of geolocation error'},
-        'n_measurements': {'units': 'count', 'long_name': 'Number of measurement points'},
-        'percent_under_250m': {'units': 'percent', 'long_name': 'Percentage of pairs with error < 250m'},
-        'mean_rms_all_pairs': {'units': 'meters', 'long_name': 'Mean RMS error across all GCP pairs'},
-        'worst_pair_rms': {'units': 'meters', 'long_name': 'Worst performing GCP pair RMS error'},
-        'best_pair_rms': {'units': 'meters', 'long_name': 'Best performing GCP pair RMS error'},
-        'im_lat_error_km': {'units': 'kilometers', 'long_name': 'Image matching latitude error'},
-        'im_lon_error_km': {'units': 'kilometers', 'long_name': 'Image matching longitude error'},
-        'im_ccv': {'units': 'N/A', 'long_name': 'Image matching correlation coefficient'},
-        'im_grid_step_m': {'units': 'meters', 'long_name': 'Image matching final grid step size'},
+    # Add parameter variable attributes from config
+    for param in config.parameters:
+        if param.ptype == ParameterType.CONSTANT_KERNEL:
+            # Add metadata for roll, pitch, yaw components
+            for angle in ['roll', 'pitch', 'yaw']:
+                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                if metadata.variable_name in ds.data_vars:
+                    ds[metadata.variable_name].attrs.update({
+                        'units': metadata.units,
+                        'long_name': metadata.long_name
+                    })
+        else:
+            # Add metadata for single-value parameters
+            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            if metadata.variable_name in ds.data_vars:
+                ds[metadata.variable_name].attrs.update({
+                    'units': metadata.units,
+                    'long_name': metadata.long_name
+                })
+
+    # Add standard metric attributes from config (allows mission overrides)
+    standard_attrs = config.netcdf.get_standard_attributes()
+
+    # Add dynamic threshold metric
+    threshold_metric = config.netcdf.get_threshold_metric_name()
+    standard_attrs[threshold_metric] = {
+        'units': 'percent',
+        'long_name': f'Percentage of pairs with error < {config.performance_threshold_m}m'
     }
 
-    for var, attrs in var_attrs.items():
+    for var, attrs in standard_attrs.items():
         if var in ds.data_vars:
             ds[var].attrs.update(attrs)
 
     # Save to file
     output_file.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(output_file)
-    logger.info(f"NetCDF file saved: {ds.sizes}")
-    logger.info(f"Data variables: {list(ds.data_vars.keys())}")
+
+    logger.info(f"  NetCDF file saved successfully")
+    logger.info(f"  Dimensions: {dict(ds.sizes)}")
+    logger.info(f"  Data variables: {len(list(ds.data_vars.keys()))}")
+    logger.info(f"  File: {output_file}")
