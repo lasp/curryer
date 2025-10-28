@@ -41,8 +41,9 @@ from curryer import spicierpy as sp
 from curryer.correction import monte_carlo as mc
 from curryer.kernels import create
 
-# Import CLARREO-specific config
+# Import CLARREO-specific config and data loaders
 from clarreo_config import create_clarreo_monte_carlo_config
+from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science, load_clarreo_gcp
 
 # Configuration and Setup Functions
 
@@ -406,8 +407,15 @@ def run_monte_carlo_analysis(config, work_dir, tlm_sci_gcp_sets):
     logger.info(f"Configuration: {config.n_iterations} iterations, {len(config.parameters)} parameters")
     logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} GCP pairs")
 
-    # Execute the main Monte Carlo loop
-    results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets)
+    # Execute the main Monte Carlo loop with CLARREO-specific data loaders (Phase 3)
+    results, netcdf_data = mc.loop(
+        config,
+        work_dir,
+        tlm_sci_gcp_sets,
+        telemetry_loader=load_clarreo_telemetry,
+        science_loader=load_clarreo_science,
+        gcp_loader=load_clarreo_gcp
+    )
 
     logger.info("=== MONTE CARLO ANALYSIS COMPLETE ===")
     logger.info(f"Processed {len(results)} total iterations")
@@ -419,9 +427,13 @@ def run_monte_carlo_analysis(config, work_dir, tlm_sci_gcp_sets):
 # Results Analysis
 # =============================================================================
 
-def analyze_results(netcdf_data):
+def analyze_results(netcdf_data, config):
     """
     Analyze the Monte Carlo results and identify the best parameter set.
+
+    Args:
+        netcdf_data: Dictionary with NetCDF variables and data
+        config: MonteCarloConfig with performance threshold and metadata
     """
     logger = logging.getLogger(__name__)
     logger.info("=== ANALYZING RESULTS ===")
@@ -436,26 +448,38 @@ def analyze_results(netcdf_data):
 
     best_idx = np.nanargmin(mean_rms_errors)
     best_rms = mean_rms_errors[best_idx]
-    best_percent_under_250 = netcdf_data['percent_under_250m'][best_idx]
 
-    logger.info(f"Best parameter set: #{best_idx}")
-    logger.info(f"  Mean RMS error: {best_rms:.2f} meters")
-    logger.info(f"  Percent under 250m: {best_percent_under_250:.1f}%")
-    logger.info(f"  Meets CLARREO requirement: {'YES' if best_percent_under_250 >= 39.0 else 'NO'}")
+    # Use dynamic threshold metric name (Phase 2)
+    threshold_metric = None
+    for key in netcdf_data.keys():
+        if key.startswith('percent_under_') and key.endswith('m'):
+            threshold_metric = key
+            break
 
-    # Log best parameter values
+    if threshold_metric:
+        best_percent_under_threshold = netcdf_data[threshold_metric][best_idx]
+        threshold_value = config.performance_threshold_m
+        logger.info(f"Best parameter set: #{best_idx}")
+        logger.info(f"  Mean RMS error: {best_rms:.2f} meters")
+        logger.info(f"  Percent under {threshold_value}m: {best_percent_under_threshold:.1f}%")
+        logger.info(f"  Meets CLARREO requirement: {'YES' if best_percent_under_threshold >= 39.0 else 'NO'}")
+    else:
+        logger.warning("Threshold metric not found in netcdf_data")
+        logger.info(f"Best parameter set: #{best_idx}")
+        logger.info(f"  Mean RMS error: {best_rms:.2f} meters")
+
+    # Log best parameter values dynamically (Phase 2)
     logger.info("Best parameter values:")
-    param_names = ['hysics_roll', 'hysics_pitch', 'hysics_yaw',
-                   'yoke_roll', 'yoke_pitch', 'yoke_yaw',
-                   'base_roll', 'base_pitch', 'base_yaw',
-                   'azimuth_bias', 'elevation_bias', 'time_correction']
 
-    for param_name in param_names:
-        netcdf_key = f'param_{param_name}'
-        if netcdf_key in netcdf_data:
-            value = netcdf_data[netcdf_key][best_idx]
-            if not np.isnan(value):
-                logger.info(f"  {param_name}: {value:.6f}")
+    # Get all parameter variable names from netcdf_data
+    param_vars = sorted([k for k in netcdf_data.keys() if k.startswith('param_')])
+
+    for param_var in param_vars:
+        value = netcdf_data[param_var][best_idx]
+        if not np.isnan(value):
+            # Clean up variable name for display
+            display_name = param_var.replace('param_', '').replace('_', ' ')
+            logger.info(f"  {display_name}: {value:.6f}")
 
     # Performance summary
     logger.info("\nPerformance Summary:")
@@ -529,8 +553,8 @@ def main():
         # Monte Carlo execution
         results, netcdf_data = run_monte_carlo_analysis(config, work_dir, tlm_sci_gcp_sets)
 
-        # Results analysis
-        best_idx = analyze_results(netcdf_data)
+        # Results analysis (Phase 2: Pass config for dynamic threshold)
+        best_idx = analyze_results(netcdf_data, config)
 
         # Save results
         results_file = save_results(netcdf_data, work_dir, config)
@@ -543,8 +567,20 @@ def main():
         print(f"Results file: {results_file}")
         if best_idx is not None:
             best_rms = netcdf_data['mean_rms_all_pairs'][best_idx]
-            best_percent = netcdf_data['percent_under_250m'][best_idx]
-            print(f"Best parameter set: #{best_idx} (RMS: {best_rms:.2f}m, {best_percent:.1f}% under 250m)")
+
+            # Find threshold metric dynamically (Phase 2)
+            threshold_metric = None
+            for key in netcdf_data.keys():
+                if key.startswith('percent_under_') and key.endswith('m'):
+                    threshold_metric = key
+                    break
+
+            if threshold_metric:
+                best_percent = netcdf_data[threshold_metric][best_idx]
+                threshold_value = config.performance_threshold_m
+                print(f"Best parameter set: #{best_idx} (RMS: {best_rms:.2f}m, {best_percent:.1f}% under {threshold_value}m)")
+            else:
+                print(f"Best parameter set: #{best_idx} (RMS: {best_rms:.2f}m)")
         print("="*80)
 
         return 0

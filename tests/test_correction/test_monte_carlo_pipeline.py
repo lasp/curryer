@@ -72,6 +72,7 @@ from curryer.correction.pairing import find_l1a_gcp_pairs
 # Add tests directory to path for config module import
 sys.path.insert(0, str(Path(__file__).parent))
 from clarreo_config import create_clarreo_monte_carlo_config
+from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science, load_clarreo_gcp
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
@@ -559,7 +560,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     generic_dir = root_dir / 'data' / 'generic'
     data_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
 
-    # Create base CLARREO config (this gives us proper structure)
+    # Create base CLARREO config (Phase 1 - includes all new features)
     base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
     # Override settings for test mode:
@@ -585,6 +586,13 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
             )
         ],
         geo=base_config.geo,  # Use the full geolocation config from CLARREO config
+        # Phase 1 features from base_config
+        performance_threshold_m=base_config.performance_threshold_m,
+        netcdf=base_config.netcdf,
+        calibration_file_names=base_config.calibration_file_names,
+        spacecraft_position_name=base_config.spacecraft_position_name,
+        boresight_name=base_config.boresight_name,
+        transformation_matrix_name=base_config.transformation_matrix_name,
     )
 
     logger.info(f"Configuration created:")
@@ -592,6 +600,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     logger.info(f"  Instrument: {config.geo.instrument_name}")
     logger.info(f"  Iterations: {config.n_iterations}")
     logger.info(f"  Parameters: {len(config.parameters)} (minimal for test mode)")
+    logger.info(f"  Performance threshold: {config.performance_threshold_m}m (Phase 1)")
     logger.info(f"  Test mode: Variations from image matching, not parameter changes")
     logger.info("=" * 80)
 
@@ -601,31 +610,17 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
     # Initialize results storage
     results = []
 
-    # Prepare NetCDF data structure
+    # Prepare NetCDF data structure using Phase 2 dynamic builder
     n_param_sets = n_iterations
     n_gcp_pairs = len(discovered_cases)
 
-    netcdf_data = {
-        'parameter_set_id': np.arange(n_param_sets),
-        'gcp_pair_id': np.arange(n_gcp_pairs),
-        'param_hysics_roll': np.full(n_param_sets, 0.0),
-        'param_hysics_pitch': np.full(n_param_sets, 0.0),
-        'param_hysics_yaw': np.full(n_param_sets, 0.0),
-        'rms_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'mean_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'max_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'std_error_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'n_measurements': np.full((n_param_sets, n_gcp_pairs), 0, dtype=int),
-        'im_lat_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_lon_error_km': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_ccv': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'im_grid_step_m': np.full((n_param_sets, n_gcp_pairs), np.nan),
-        'percent_under_250m': np.full(n_param_sets, np.nan),
-        'mean_rms_all_pairs': np.full(n_param_sets, np.nan),
-        'worst_pair_rms': np.full(n_param_sets, np.nan),
-        'best_pair_rms': np.full(n_param_sets, np.nan),
-    }
+    # Phase 2: Use dynamic NetCDF structure builder
+    netcdf_data = mc._build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+    logger.info(f"NetCDF structure built dynamically with {len(netcdf_data)} variables (Phase 2)")
 
+    # Get threshold metric name dynamically (Phase 2)
+    threshold_metric = config.netcdf.get_threshold_metric_name()
+    logger.info(f"Using threshold metric: {threshold_metric}")
     logger.info(f"Initialized NetCDF structure: {n_param_sets} iterations × {n_gcp_pairs} test pairs")
 
     # Run Monte Carlo iterations
@@ -692,14 +687,17 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
             error_stats = mc.call_error_stats_module(image_matching_results)
             print("ERROR_STATS CALLED \n")
             print(error_stats)
-            percent_under_250 = (valid_errors < 250.0).sum() / len(valid_errors) * 100
-            netcdf_data['percent_under_250m'][param_idx] = percent_under_250
+
+            # Phase 2: Use dynamic threshold from config
+            threshold_value = config.performance_threshold_m
+            percent_under_threshold = (valid_errors < threshold_value).sum() / len(valid_errors) * 100
+            netcdf_data[threshold_metric][param_idx] = percent_under_threshold
             netcdf_data['mean_rms_all_pairs'][param_idx] = np.mean(valid_errors)
             netcdf_data['best_pair_rms'][param_idx] = np.min(valid_errors)
             netcdf_data['worst_pair_rms'][param_idx] = np.max(valid_errors)
 
             logger.info(f"Iteration {param_idx + 1} complete:")
-            logger.info(f"  {percent_under_250:.1f}% under 250m threshold")
+            logger.info(f"  {percent_under_threshold:.1f}% under {threshold_value}m threshold")
             logger.info(f"  Mean RMS: {np.mean(valid_errors):.2f}m")
             logger.info(f"  Range: [{np.min(valid_errors):.2f}, {np.max(valid_errors):.2f}]m")
 
