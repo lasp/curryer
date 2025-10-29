@@ -1059,6 +1059,9 @@ class MonteCarloConfig:
     boresight_name: str = 'boresight'  # Generic default
     transformation_matrix_name: str = 't_inst2ref'  # Generic default
 
+    # Output filename configuration
+    output_filename: typing.Optional[str] = None  # If None, auto-generates with timestamp
+
     # match: ImageMatchConfig
     # stats: ErrorStatsConfig
 
@@ -1076,6 +1079,47 @@ class MonteCarloConfig:
             self.netcdf = NetCDFConfig(
                 performance_threshold_m=self.performance_threshold_m
             )
+
+    def get_output_filename(self, default: str = "monte_carlo_results.nc") -> str:
+        """
+        Get output filename with optional auto-generation.
+
+        Args:
+            default: Default filename if output_filename is None
+
+        Returns:
+            Filename string (can include timestamp/parameters if configured)
+        """
+        if self.output_filename:
+            return self.output_filename
+        return default
+
+    @staticmethod
+    def generate_timestamped_filename(prefix: str = "monte_carlo", suffix: str = "") -> str:
+        """
+        Generate a timestamped output filename for production use.
+
+        This prevents overwriting previous results and provides unique identifiers.
+
+        Args:
+            prefix: Filename prefix (e.g., 'monte_carlo', 'clarreo_gcs')
+            suffix: Optional suffix before extension (e.g., 'upstream', 'test')
+
+        Returns:
+            Filename with format: {prefix}_YYYYMMDD_HHMMSS[_{suffix}].nc
+
+        Examples:
+            >>> MonteCarloConfig.generate_timestamped_filename()
+            'monte_carlo_20251029_143022.nc'
+
+            >>> MonteCarloConfig.generate_timestamped_filename('clarreo_gcs', 'production')
+            'clarreo_gcs_20251029_143022_production.nc'
+        """
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        if suffix:
+            return f"{prefix}_{timestamp}_{suffix}.nc"
+        return f"{prefix}_{timestamp}.nc"
 
 
 def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
@@ -1560,7 +1604,8 @@ def loop(
     tlm_sci_gcp_sets: [(str, str, str)],
     telemetry_loader=None,
     science_loader=None,
-    gcp_loader=None
+    gcp_loader=None,
+    resume_from_checkpoint: bool = False
 ):
     """
     Main Monte Carlo loop for parameter sensitivity analysis.
@@ -1572,6 +1617,7 @@ def loop(
         telemetry_loader: Optional mission-specific telemetry loader function
         science_loader: Optional mission-specific science loader function
         gcp_loader: Optional mission-specific GCP loader function
+        resume_from_checkpoint: If True, resume from checkpoint if it exists
 
     Returns:
         Tuple of (results, netcdf_data)
@@ -1582,7 +1628,8 @@ def loop(
         results, netcdf_data = loop(
             config, work_dir, tlm_sci_gcp_sets,
             telemetry_loader=load_clarreo_telemetry,
-            science_loader=load_clarreo_science
+            science_loader=load_clarreo_science,
+            resume_from_checkpoint=True  # Resume if interrupted
         )
     """
     # Initialize the entire set of parameters.
@@ -1595,8 +1642,22 @@ def loop(
     n_param_sets = len(params_set)
     n_gcp_pairs = len(tlm_sci_gcp_sets)
 
-    # Build NetCDF data structure dynamically from configuration (Phase 2)
-    netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+    # Determine output file and try to load checkpoint
+    # Use configurable filename from config
+    output_filename = config.get_output_filename()
+    output_file = work_dir / output_filename
+    start_param_idx = 0
+
+    if resume_from_checkpoint:
+        netcdf_data, start_param_idx = _load_checkpoint(output_file, config)
+        if netcdf_data is not None:
+            logger.info(f"Resuming from parameter set {start_param_idx + 1}/{n_param_sets}")
+        else:
+            logger.info("No valid checkpoint found, starting from beginning")
+            netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+    else:
+        # Build NetCDF data structure dynamically from configuration
+        netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
 
     # Prepare meta kernel details and kernel writer.
     mkrn = meta.MetaKernel.from_json(
@@ -1604,15 +1665,20 @@ def loop(
     )
     creator = create.KernelCreator(overwrite=True, append=False)
 
-    # Process each parameter set (Monte Carlo iteration)
+    # Process each parameter set (starting from checkpoint if resuming)
     for param_idx, params in enumerate(params_set):
+        # Skip already completed parameter sets when resuming
+        if param_idx < start_param_idx:
+            logger.info(f"=== Parameter Set {param_idx + 1}/{len(params_set)} - Skipped (already completed) ===")
+            continue
+
         logger.info(f"=== Parameter Set {param_idx + 1}/{len(params_set)} ===")
 
         # Extract and store parameter values for this set
         param_values = _extract_parameter_values(params)
         _store_parameter_values(netcdf_data, param_idx, param_values)
 
-        # Fix #2 Part A: Load calibration data ONCE per parameter set (before GCP pair loop)
+        # Load calibration data ONCE per parameter set (before GCP pair loop)
         los_vectors_cached = None
         optical_psfs_cached = None
 
@@ -1825,10 +1891,15 @@ def loop(
         logger.info(f"  Aggregate - RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
                    f"total measurements = {aggregate_error_metrics['n_measurements']}")
 
-    # Save NetCDF results
-    output_file = work_dir / "monte_carlo_results.nc"
+        # Save checkpoint after each parameter set
+        _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx)
+
+    # Save final NetCDF results (output_file defined above)
     _save_netcdf_results(netcdf_data, output_file, config)
     logger.info(f"Saved NetCDF results to: {output_file}")
+
+    # Clean up checkpoint file after successful completion
+    _cleanup_checkpoint(output_file)
 
     logger.info(f"=== GCS Loop Complete: Processed {len(params_set)} parameter sets × {len(tlm_sci_gcp_sets)} GCP pairs ===")
     return results, netcdf_data
@@ -1865,20 +1936,22 @@ def _store_parameter_values(netcdf_data, param_idx, param_values):
     """Store parameter values in the NetCDF data structure.
 
     This function maps parameter names to NetCDF variable names for storage.
-    It handles both hardcoded CLARREO names (for backward compatibility) and
-    dynamically generates names for other missions.
+    It handles the naming convention used by _build_netcdf_structure.
     """
 
     for param_name, value in param_values.items():
-
-        # Generate NetCDF variable name dynamically from parameter name
-        # Convert parameter file name to variable name (e.g., "mission_frame_v01.attitude.ck_roll" -> "param_frame_roll")
-        netcdf_var = param_name.replace('.attitude.ck', '').replace('.', '_')
+        # Generate NetCDF variable name using same logic as _build_netcdf_structure
+        # Replace dots and dashes with underscores, ensure param_ prefix
+        netcdf_var = param_name.replace('.', '_').replace('-', '_')
         if not netcdf_var.startswith('param_'):
             netcdf_var = f'param_{netcdf_var}'
 
         if netcdf_var in netcdf_data:
             netcdf_data[netcdf_var][param_idx] = value
+            logger.debug(f"  Stored {netcdf_var}[{param_idx}] = {value}")
+        else:
+            # Try to find a matching variable with debug info
+            logger.warning(f"  Parameter variable '{netcdf_var}' not found in netcdf_data. Available keys: {[k for k in netcdf_data.keys() if k.startswith('param_')]}")
 
 
 def _extract_error_metrics(stats_dataset):
@@ -1944,6 +2017,177 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
         # Best and worst pair performance
         netcdf_data['best_pair_rms'][param_idx] = np.min(valid_errors)
         netcdf_data['worst_pair_rms'][param_idx] = np.max(valid_errors)
+
+
+# =============================================================================
+# Incremental NetCDF Saving (Checkpoint/Resume)
+# =============================================================================
+
+def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_completed):
+    """
+    Save NetCDF checkpoint with partial results after each parameter set.
+
+    This enables resuming Monte Carlo runs if they are interrupted.
+
+    Args:
+        netcdf_data: Dictionary with current NetCDF data
+        output_file: Path to final output file (checkpoint uses .checkpoint.nc suffix)
+        config: MonteCarloConfig with metadata
+        param_idx_completed: Index of the last completed parameter set
+    """
+    import xarray as xr
+
+    checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
+
+    # Ensure NetCDFConfig exists
+    config.ensure_netcdf_config()
+
+    # Create coordinate arrays
+    coords = {
+        'parameter_set_id': netcdf_data['parameter_set_id'],
+        'gcp_pair_id': netcdf_data['gcp_pair_id'],
+    }
+
+    # Build variable list dynamically from netcdf_data keys
+    data_vars = {}
+    for var_name, var_data in netcdf_data.items():
+        if var_name not in coords:
+            if isinstance(var_data, np.ndarray):
+                if var_data.ndim == 1:
+                    data_vars[var_name] = (['parameter_set_id'], var_data)
+                elif var_data.ndim == 2:
+                    data_vars[var_name] = (['parameter_set_id', 'gcp_pair_id'], var_data)
+
+    # Create dataset
+    ds = xr.Dataset(data_vars, coords=coords)
+
+    # Add regular metadata
+    ds.attrs.update({
+        'title': config.netcdf.title,
+        'description': config.netcdf.description,
+        'created': pd.Timestamp.now().isoformat(),
+        'monte_carlo_iterations': config.n_iterations,
+        'performance_threshold_m': config.netcdf.performance_threshold_m,
+        'parameter_count': len(config.parameters),
+        'random_seed': str(config.seed) if config.seed is not None else 'None',
+    })
+
+    # Add checkpoint-specific metadata (NetCDF-compatible types)
+    ds.attrs['checkpoint'] = 1  # Use integer instead of boolean for NetCDF compatibility
+    ds.attrs['completed_parameter_sets'] = int(param_idx_completed + 1)
+    ds.attrs['total_parameter_sets'] = int(len(netcdf_data['parameter_set_id']))
+    ds.attrs['checkpoint_timestamp'] = pd.Timestamp.now().isoformat()
+
+    # Add parameter variable attributes from config
+    for param in config.parameters:
+        if param.ptype == ParameterType.CONSTANT_KERNEL:
+            for angle in ['roll', 'pitch', 'yaw']:
+                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                if metadata.variable_name in ds.data_vars:
+                    ds[metadata.variable_name].attrs.update({
+                        'units': metadata.units,
+                        'long_name': metadata.long_name
+                    })
+        else:
+            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            if metadata.variable_name in ds.data_vars:
+                ds[metadata.variable_name].attrs.update({
+                    'units': metadata.units,
+                    'long_name': metadata.long_name
+                })
+
+    # Add standard metric attributes
+    standard_attrs = config.netcdf.get_standard_attributes()
+    threshold_metric = config.netcdf.get_threshold_metric_name()
+    standard_attrs[threshold_metric] = {
+        'units': 'percent',
+        'long_name': f'Percentage of pairs with error < {config.performance_threshold_m}m'
+    }
+    for var, attrs in standard_attrs.items():
+        if var in ds.data_vars:
+            ds[var].attrs.update(attrs)
+
+    # Save to file in one operation
+    checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(checkpoint_file, mode='w')  # Force overwrite mode
+    ds.close()
+
+    logger.info(f"  Checkpoint saved: {param_idx_completed + 1}/{len(netcdf_data['parameter_set_id'])} parameter sets complete")
+
+
+def _load_checkpoint(output_file, config):
+    """
+    Load checkpoint if it exists and convert back to netcdf_data dict.
+
+    Args:
+        output_file: Path to final output file (will check for .checkpoint.nc)
+        config: MonteCarloConfig for structure information
+
+    Returns:
+        Tuple of (netcdf_data dict, start_idx) or (None, 0) if no checkpoint
+    """
+    import xarray as xr
+
+    checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
+
+    if not checkpoint_file.exists():
+        return None, 0
+
+    logger.info(f"Found checkpoint file: {checkpoint_file}")
+
+    try:
+        ds = xr.open_dataset(checkpoint_file)
+
+        # Verify this is actually a checkpoint (checkpoint attribute is 1 for true, 0 or missing for false)
+        checkpoint_flag = ds.attrs.get('checkpoint', 0)
+        if not checkpoint_flag:  # Will be True if checkpoint=1, False if checkpoint=0 or missing
+            logger.warning("File exists but is not marked as checkpoint, ignoring")
+            ds.close()
+            return None, 0
+
+        completed = ds.attrs.get('completed_parameter_sets', 0)
+        total = ds.attrs.get('total_parameter_sets', 0)
+        timestamp = ds.attrs.get('checkpoint_timestamp', 'unknown')
+
+        logger.info(f"Checkpoint from {timestamp}: {completed}/{total} parameter sets complete")
+
+        # Convert xarray.Dataset back to netcdf_data dictionary
+        netcdf_data = {}
+
+        # Add coordinates
+        netcdf_data['parameter_set_id'] = ds.coords['parameter_set_id'].values
+        netcdf_data['gcp_pair_id'] = ds.coords['gcp_pair_id'].values
+
+        # Add all data variables
+        for var_name in ds.data_vars:
+            netcdf_data[var_name] = ds[var_name].values
+
+        ds.close()
+
+        logger.info(f"Checkpoint loaded successfully, resuming from parameter set {completed}")
+
+        return netcdf_data, completed
+
+    except Exception as e:
+        logger.error(f"Failed to load checkpoint: {e}")
+        return None, 0
+
+
+def _cleanup_checkpoint(output_file):
+    """
+    Remove checkpoint file after successful completion.
+
+    Args:
+        output_file: Path to final output file (will remove .checkpoint.nc)
+    """
+    checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
+
+    if checkpoint_file.exists():
+        try:
+            checkpoint_file.unlink()
+            logger.info(f"Checkpoint file cleaned up: {checkpoint_file}")
+        except Exception as e:
+            logger.warning(f"Failed to remove checkpoint file: {e}")
 
 
 def _save_netcdf_results(netcdf_data, output_file, config):
