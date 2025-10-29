@@ -62,7 +62,7 @@ from curryer.correction.data_structures import (
 )
 from curryer.correction.pairing import find_l1a_gcp_pairs
 
-# Import CLARREO config and data loaders (Phase 1, 3)
+# Import CLARREO config and data loaders
 sys.path.insert(0, str(Path(__file__).parent))
 from clarreo_config import create_clarreo_monte_carlo_config
 from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science, load_clarreo_gcp
@@ -675,7 +675,7 @@ def test_downstream_pipeline(
     logger.info("STEP 2: CONFIGURATION")
     logger.info("=" * 80)
 
-    # Create base CLARREO config (Phase 1 - includes all new config features)
+    # Create base CLARREO config
     base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
     # Override for test mode (minimal parameters, zero sigma)
@@ -696,7 +696,7 @@ def test_downstream_pipeline(
             )
         ],
         geo=base_config.geo,
-        # Phase 1 features from base_config
+        # features from base_config
         performance_threshold_m=base_config.performance_threshold_m,
         netcdf=base_config.netcdf,
         calibration_file_names=base_config.calibration_file_names,
@@ -711,7 +711,7 @@ def test_downstream_pipeline(
     logger.info(f"  Iterations: {config.n_iterations}")
     logger.info(f"  Parameters: {len(config.parameters)} (minimal for test mode)")
     logger.info(f"  Sigma: 0.0 (variations from randomization, not parameters)")
-    logger.info(f"  Performance threshold: {config.performance_threshold_m}m (Phase 1)")
+    logger.info(f"  Performance threshold: {config.performance_threshold_m}m")
 
     # ==========================================================================
     # STEP 3: MONTE CARLO ITERATIONS
@@ -723,11 +723,11 @@ def test_downstream_pipeline(
     n_param_sets = n_iterations
     n_gcp_pairs = len(paired_test_cases)
 
-    # Phase 2: Use dynamic NetCDF structure builder instead of hardcoded
+    # Use dynamic NetCDF structure builder instead of hardcoded
     netcdf_data = mc._build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
-    logger.info(f"NetCDF structure built dynamically with {len(netcdf_data)} variables (Phase 2)")
+    logger.info(f"NetCDF structure built dynamically with {len(netcdf_data)} variables")
 
-    # Get threshold metric name dynamically (Phase 2)
+    # Get threshold metric name dynamically
     threshold_metric = config.netcdf.get_threshold_metric_name()
     logger.info(f"Using threshold metric: {threshold_metric}")
 
@@ -773,7 +773,7 @@ def test_downstream_pipeline(
             netcdf_data['im_ccv'][param_idx, pair_idx] = image_matching_output.attrs['correlation_ccv']
             netcdf_data['im_grid_step_m'][param_idx, pair_idx] = image_matching_output.attrs['final_grid_step_m']
 
-        # Compute aggregate metrics (Phase 2: use dynamic threshold)
+        # Compute aggregate metrics (use dynamic threshold)
         pair_errors = np.array(pair_errors)
         valid_errors = pair_errors[~np.isnan(pair_errors)]
 

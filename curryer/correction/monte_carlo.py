@@ -436,11 +436,11 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
         geolocated_data: Geolocated science data
         gcp_reference_file: Reference GCP data file
         params_info: Parameter information for this iteration
-        config: MonteCarloConfig with coordinate name mappings (Phase 4)
+        config: MonteCarloConfig with coordinate name mappings
     """
     logger.info(f"Image Matching: Comparing geolocated pixels with {gcp_reference_file} (PLACEHOLDER)")
 
-    # Get coordinate names from config (Phase 4)
+    # Get coordinate names from config
     sc_pos_name = config.spacecraft_position_name
     boresight_name = config.boresight_name
     transform_name = config.transformation_matrix_name
@@ -494,7 +494,7 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
 
     cp_alt = np.random.uniform(0, 1000, n_measurements)
 
-    # Phase 4: Use config names for coordinates instead of hardcoded ISS/HySICS names
+    # Use config names for coordinates instead of hardcoded ISS/HySICS names
     return xr.Dataset({
         'lat_error_deg': (['measurement'], lat_errors),
         'lon_error_deg': (['measurement'], lon_errors),
@@ -584,7 +584,7 @@ def image_matching(
             logger.info("    Using cached calibration data")
         else:
             # Load from files (slow path, for backward compatibility)
-            # Phase 5: Use configurable calibration file names
+            # Use configurable calibration file names
             los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
             los_file = calibration_dir / los_filename
             los_vectors = load_los_vectors_from_mat(los_file)
@@ -639,12 +639,12 @@ def image_matching(
         logger.info(f"    Correlation: {result.ccv_final:.4f}")
         logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
 
-        # Get coordinate names from config (Phase 4)
+        # Get coordinate names from config
         sc_pos_name = config.spacecraft_position_name
         boresight_name = config.boresight_name
         transform_name = config.transformation_matrix_name
 
-        # Create output dataset in error_stats format (Phase 4: use config names)
+        # Create output dataset in error_stats format (use config names)
         output = xr.Dataset({
             'lat_error_deg': (['measurement'], [lat_error_deg]),
             'lon_error_deg': (['measurement'], [lon_error_deg]),
@@ -700,7 +700,7 @@ def call_error_stats_module(
         image_matching_results: Either a single image matching result (xarray.Dataset)
                               or a list of image matching results from multiple GCP pairs
         geo_config: Optional GeolocationConfig with minimum_correlation for filtering
-        monte_carlo_config: Optional MonteCarloConfig for coordinate name mappings (Phase 4)
+        monte_carlo_config: Optional MonteCarloConfig for coordinate name mappings
 
     Returns:
         Aggregate error statistics dataset
@@ -728,7 +728,7 @@ def call_error_stats_module(
             # Single GCP pair case
             error_results = processor.process_geolocation_errors(image_matching_results[0])
         else:
-            # Multiple GCP pairs - aggregate the data first (Phase 4: pass config for coordinate names)
+            # Multiple GCP pairs - aggregate the data first (pass config for coordinate names)
             if monte_carlo_config is None:
                 # Backward compatibility: create minimal config with defaults
                 monte_carlo_config = MonteCarloConfig(
@@ -794,7 +794,7 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
     """
     logger.info(f"Aggregating {len(image_matching_results)} image matching results")
 
-    # Get coordinate names from config (Phase 4)
+    # Get coordinate names from config
     sc_pos_name = config.spacecraft_position_name
     boresight_name = config.boresight_name
     transform_name = config.transformation_matrix_name
@@ -816,7 +816,7 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
         all_lat_errors.extend(result['lat_error_deg'].values)
         all_lon_errors.extend(result['lon_error_deg'].values)
 
-        # Handle coordinate transformation data (Phase 4: use config names)
+        # Handle coordinate transformation data (use config names)
         # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
         if sc_pos_name in result:
             # Shape: (1, 3) -> extract as (3,) for each measurement
@@ -847,7 +847,7 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
         'measurement': np.arange(n_total)
     })
 
-    # Add optional coordinate transformation data if available (Phase 4: use config names)
+    # Add optional coordinate transformation data if available (use config names)
     # Use dimension names that match error_stats expectations
     if all_sc_positions:
         # Stack into (n_measurements, 3)
@@ -1685,7 +1685,7 @@ def loop(
         if config.use_real_image_matching and config.calibration_dir:
             logger.info("Loading calibration data once for all GCP pairs...")
 
-            # Phase 5: Use configurable calibration file names
+            # Use configurable calibration file names
             los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
             los_file = config.calibration_dir / los_filename
             los_vectors_cached = load_los_vectors_from_mat(los_file)
@@ -1782,7 +1782,7 @@ def loop(
                             telemetry=tlm_dataset,
                             calibration_dir=config.calibration_dir,
                             params_info=params,
-                            config=config  # Phase 4: pass config for coordinate names
+                            config=config  # pass config for coordinate names
                         )
                         logger.info(f"    REAL image matching complete")
                     except Exception as e:
@@ -1792,7 +1792,7 @@ def loop(
                             geo_dataset,
                             gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                             params,
-                            config  # Phase 4: pass config for coordinate names
+                            config  # pass config for coordinate names
                         )
                 else:
                     # Use placeholder image matching
@@ -1800,7 +1800,7 @@ def loop(
                         geo_dataset,
                         gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                         params,
-                        config  # Phase 4: pass config for coordinate names
+                        config  # pass config for coordinate names
                     )
                     if config.use_real_image_matching:
                         logger.warning("    Real image matching requested but calibration_dir not set - using placeholder")
@@ -1808,7 +1808,7 @@ def loop(
                         geo_dataset,
                         gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                         params,
-                        config  # Phase 4: pass config for coordinate names
+                        config  # pass config for coordinate names
                     )
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
@@ -1831,7 +1831,7 @@ def loop(
         logger.info(f"  === ERROR STATISTICS MODULE (AGGREGATE) ===")
         logger.info(f"  Processing aggregate statistics from {len(image_matching_results)} GCP pairs")
 
-        # Call error stats module on aggregate of all image matching results (Phase 4: pass config for coordinate names)
+        # Call error stats module on aggregate of all image matching results (pass config for coordinate names)
         aggregate_stats = call_error_stats_module(image_matching_results, geo_config=config.geo, monte_carlo_config=config)
 
         # Extract aggregate error metrics
@@ -1843,7 +1843,7 @@ def loop(
         # Process individual GCP pair results for detailed NetCDF storage
         pair_errors = []
         for pair_idx, image_matching_result in enumerate(image_matching_results):
-            # Get individual pair error metrics from the single result (Phase 4: pass config for coordinate names)
+            # Get individual pair error metrics from the single result (pass config for coordinate names)
             individual_stats = call_error_stats_module(image_matching_result, geo_config=config.geo, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
