@@ -495,6 +495,8 @@ def test_upstream_pipeline(
     # Create configuration using CLARREO config
     config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
     config.n_iterations = n_iterations
+    # Set output filename for test (consistent name for version control)
+    config.output_filename = "upstream_results.nc"
 
     logger.info(f"Configuration loaded:")
     logger.info(f"  Mission: CLARREO Pathfinder")
@@ -531,13 +533,19 @@ def test_upstream_pipeline(
     logger.info(f"Generated results for {len(netcdf_data['parameter_set_id'])} parameter sets")
     logger.info("=" * 80)
 
-    # Save results
-    output_file = work_dir / "upstream_results.nc"
-    mc._save_netcdf_results(netcdf_data, output_file, config)
-
+    # Output file is determined by config and saved by loop()
+    output_file = work_dir / config.get_output_filename()
     logger.info(f"Results saved to: {output_file}")
 
-    return results, netcdf_data, output_file
+    # Create results summary dict for consistency with downstream
+    results_summary = {
+        'mode': 'upstream',
+        'iterations': n_iterations,
+        'parameter_sets': len(netcdf_data['parameter_set_id']),
+        'status': 'complete'
+    }
+
+    return results, results_summary, output_file
 
 
 # =============================================================================
@@ -1003,6 +1011,9 @@ python test_monte_carlo.py --mode upstream --iterations 5
 
         logger.info(f"\n✅ Upstream test complete!")
         logger.info(f"Status: {results_dict['status']}")
+        logger.info(f"Iterations: {results_dict['iterations']}")
+        logger.info(f"Parameter sets: {results_dict['parameter_sets']}")
+        logger.info(f"Output file: {output_file}")
 
     elif args.mode == 'downstream':
         # Run downstream test
