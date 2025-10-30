@@ -192,8 +192,14 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         parameters=parameters,
         geo=geo_config,
 
-        # NEW Phase 1 fields
-        performance_threshold_m=250.0,  # CLARREO accuracy requirement
+        # Performance metrics (CLARREO requirements)
+        performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
+        performance_spec_percent=39.0,  # CLARREO requirement: 39% of measurements under threshold
+
+        # Geodetic parameters (WGS84)
+        earth_radius_m=6378140.0,  # WGS84 Earth radius in meters
+
+        # NetCDF output configuration
         netcdf=netcdf_config,
 
         # Calibration file names (CLARREO/HySICS specific)
@@ -212,6 +218,10 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     for i, param in enumerate(parameters):
         param_name = param.config_file.name if param.config_file else "time_correction"
         logger.info(f"  {i+1}. {param_name} ({param.ptype.name})")
+
+    # Validate configuration
+    config.validate()
+    logger.info("✓ Configuration validation passed")
 
     # Save configuration to file if path is provided
     if config_output_path is not None:
@@ -238,6 +248,9 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
             "monte_carlo": {
                 "seed": config.seed,
                 "n_iterations": config.n_iterations,
+                "performance_threshold_m": config.performance_threshold_m,
+                "performance_spec_percent": config.performance_spec_percent,
+                "earth_radius_m": config.earth_radius_m,
                 "parameters": []
             },
             "geolocation": {
