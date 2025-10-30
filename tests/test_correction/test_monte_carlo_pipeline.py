@@ -111,7 +111,9 @@ def apply_geolocation_error_to_subimage(
     mid_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
 
     # Convert km to degrees using Earth radius and local curvature
-    earth_radius_km = 6378.137  # WGS84 semi-major axis
+    # Note: Using CLARREO standard WGS84 semi-major axis (6378.137 km)
+    # This matches config.earth_radius_m / 1000.0 from CLARREO config
+    earth_radius_km = 6378.140  # WGS84 semi-major axis (matches CLARREO config: 6378140.0 m)
     lat_offset_deg = lat_error_km / earth_radius_km * (180.0 / np.pi)
     lon_radius_km = earth_radius_km * np.cos(np.deg2rad(mid_lat))
     lon_offset_deg = lon_error_km / lon_radius_km * (180.0 / np.pi)
