@@ -16,7 +16,6 @@ import xarray as xr
 from curryer.correction.geolocation_error_stats import (
     ErrorStatsProcessor,
     GeolocationConfig,
-    process_test_data
 )
 
 
@@ -25,6 +24,248 @@ logger = logging.getLogger(__name__)
 # Configure display options for better test output
 xr.set_options(display_width=120)
 np.set_printoptions(linewidth=120)
+
+
+# ============================================================================
+# TEST HELPER FUNCTIONS
+# ============================================================================
+
+def _create_test_config(**overrides):
+    """
+    Create GeolocationConfig for testing with CLARREO defaults.
+
+    Note: These hardcoded values are appropriate for TESTS, not production code.
+    Tests should be explicit about their test data.
+
+    Args:
+        **overrides: Override any default values
+
+    Returns:
+        GeolocationConfig with test values
+    """
+    defaults = {
+        'earth_radius_m': 6378140.0,  # WGS84
+        'performance_threshold_m': 250.0,  # CLARREO requirement
+        'performance_spec_percent': 39.0,  # CLARREO spec
+        'variable_names': {
+            'spacecraft_position': 'riss_ctrs',
+            'boresight': 'bhat_hs',
+            'transformation_matrix': 't_hs2ctrs'
+        }
+    }
+    defaults.update(overrides)
+    return GeolocationConfig(**defaults)
+
+
+def create_test_dataset_13_cases() -> xr.Dataset:
+    """
+    Create test dataset with the original 13 hardcoded test cases.
+
+    This is the reference test data moved from production code.
+    These cases validate the processor against known MATLAB results.
+    """
+    # Test case data (from original MATLAB script)
+    test_data = {
+        'lat_error_deg': [0.026980, -0.0269188, 0.009040, -0.008925, 0.022515,
+                         0.001, -0.0015, -0.002, 0.002, 0.001, -0.001, 0.0011, 0.0025],
+        'lon_error_deg': [-0.027266, 0.018384, 0.010851, -0.026241, 0.000992,
+                         0.0005, 0.0015, 0.0, -0.0005, 0.001, -0.0015, 0.0011, 0.0],
+        'cp_lat_deg': [-8.57802802047, 10.9913499301, 33.9986324792, 31.1629017783, -69.6971234613,
+                      34.2, -19.7, -49.5, -8.2, 46.0, 32.5, -20.33, -47.6],
+        'cp_lon_deg': [125.482222317, -71.8457829833, -120.248435967, -8.7815788192, -15.2311156066,
+                      42.5, -51.1, -178.3, 70.0, -29.0, -170.4, 95.4, -30.87],
+        'cp_alt': [44, 4, 0, 894, 3925, 0, 1000, 500, 500, 50, 100, 100, 100]
+    }
+
+    # RISS_CTRS positions (satellite positions)
+    riss_ctrs_data = np.array([
+        [-3888220.86746399, 5466997.0490439, -1000356.92985575],
+        [2138128.91767507, -6313660.02871594, 1241996.71916521],
+        [-2836930.06048711, -4869372.01247407, 3765186.91739563],
+        [5764626.80186185, -843462.027662883, 3457275.08087601],
+        [2210828.23546441, -6156903.77352567, -1818743.37976767],
+        [4160733.71254889, 3708441.12891715, 3850046.48797648],
+        [4060487.97522754, -4920200.36807653, -2308736.58835498],
+        [-4274543.69565126, -116765.394831108, -5276242.10262264],
+        [2520101.83352962, 6230331.37805726, -961492.530214298],
+        [4248835.7920035, -2447631.1800248, 4676942.35070364],
+        [-5515282.275281, -925908.369707886, 3822512.18293707],
+        [-824875.850002718, 6312906.79811629, -2344264.22196647],
+        [3675746.11507236, -2198122.65541618, -5270960.3157354]
+    ])
+
+    # Boresight vectors in HS coordinate system
+    bhat_hs_data = np.array([
+        [0, 0.0625969755450201, 0.99803888634292],
+        [0, 0.0313138440396569, 0.999509601340307],
+        [0, 0.000368458389306164, 0.999999932119205],
+        [0, -0.0368375032472, 0.999321268839262],
+        [0, -0.0699499255109834, 0.997550503945042],
+        [0, -0.0368375032472, 0.999321268839262],
+        [0, -0.0257892283106606, 0.999667402541035],
+        [0, 0.0257892283106606, 0.999667402541035],
+        [0, 0.0625969755450201, 0.99803888634292],
+        [0, 0.0552406262884485, 0.998473070847311],
+        [0, -0.0147378023382108, 0.999891392693346],
+        [0, -0.0221057030926655, 0.999755639089262],
+        [0, -0.0221057030926655, 0.999755639089262]
+    ])
+
+    # Transformation matrices from HS to CTRS (3x3x13)
+    t_hs2ctrs_data = np.zeros((3, 3, 13))
+
+    # Test case 1
+    t_hs2ctrs_data[:, :, 0] = [
+        [-0.418977524967338, 0.748005379751721, 0.514728846515064],
+        [-0.421890284446342, 0.341604851993858, -0.839830169131854],
+        [-0.804031356019172, -0.569029065124742, 0.172451447025628]
+    ]
+
+    # Test case 2
+    t_hs2ctrs_data[:, :, 1] = [
+        [0.509557370616697, 0.714990103896663, -0.478686157497828],
+        [0.336198439435013, 0.346660121582392, 0.875669669125261],
+        [0.792036549265032, -0.607137473258174, -0.0637353370903461]
+    ]
+
+    # Test case 3
+    t_hs2ctrs_data[:, :, 2] = [
+        [0.436608377090994, -0.795688667243495, 0.419824570355571],
+        [-0.682818757213707, 0.0107593091164333, 0.730508577680278],
+        [-0.585774418911493, -0.605610255930006, -0.53861354240429]
+    ]
+
+    # Test case 4
+    t_hs2ctrs_data[:, :, 3] = [
+        [-0.275228112982228, 0.368161232084539, -0.888091658002842],
+        [0.740939532874243, 0.669849578957866, 0.0480640218257623],
+        [0.612583132683508, -0.644793648200697, -0.457146646921637]
+    ]
+
+    # Test case 5
+    t_hs2ctrs_data[:, :, 4] = [
+        [0.497596843733441, -0.8343127195548, -0.237317650198193],
+        [0.404893735025568, -0.0185495841473054, 0.914175571903453],
+        [-0.767110451267327, -0.550979308973609, 0.328577778675617]
+    ]
+
+    # Test case 6
+    t_hs2ctrs_data[:, :, 5] = [
+        [-0.765506977045252, 0.0328563789337692, -0.642588135250651],
+        [0.295444324153605, 0.905137001368494, -0.305678298647175],
+        [0.571587018239969, -0.423847628778339, -0.702596052277786]
+    ]
+
+    # Test case 7
+    t_hs2ctrs_data[:, :, 6] = [
+        [0.629603159973548, 0.368109063956699, -0.684174861189846],
+        [0.215915166022854, 0.763032030046674, 0.609230735287836],
+        [0.746311263503805, -0.531296841841519, 0.400927218783918]
+    ]
+
+    # Test case 8
+    t_hs2ctrs_data[:, :, 7] = [
+        [0.194530273749036, 0.949748975936332, 0.245223854916003],
+        [-0.978512013106359, 0.205316430746179, -0.0189577388931897],
+        [-0.0683535866042618, -0.236266544212139, 0.969281089206121]
+    ]
+
+    # Test case 9
+    t_hs2ctrs_data[:, :, 8] = [
+        [-0.446421529583839, 0.413968410219497, -0.793307812225063],
+        [0.384674732015686, -0.711668847399292, -0.587837230750712],
+        [-0.807919035840032, -0.56758835193185, 0.158460875505101]
+    ]
+
+    # Test case 10
+    t_hs2ctrs_data[:, :, 9] = [
+        [0.632159685228781, -0.204512480192889, -0.747361135669863],
+        [0.598189792213041, -0.48424547358001, 0.638493680968301],
+        [-0.492486654503011, -0.850693598485042, -0.183784021560657]
+    ]
+
+    # Test case 11
+    t_hs2ctrs_data[:, :, 10] = [
+        [0.753428906287479, -0.49153961754033, 0.436730605865421],
+        [-0.565149851875981, -0.823589060852856, 0.0480236900131712],
+        [0.336081133202996, -0.283000352923251, -0.898309519920648]
+    ]
+
+    # Test case 12
+    t_hs2ctrs_data[:, :, 11] = [
+        [-0.585265557251293, -0.595045400433036, 0.550803349451662],
+        [-0.109341614649782, -0.615175192945938, -0.780771245706364],
+        [0.803435522491452, -0.517183787785386, 0.294977548217097]
+    ]
+
+    # Test case 13
+    t_hs2ctrs_data[:, :, 12] = [
+        [0.292122841971449, -0.95622050459562, 0.017506859615382],
+        [0.95633436246494, 0.291879296125504, -0.0152004494429911],
+        [0.00942509242927969, 0.0211828985704245, 0.999731155222533]
+    ]
+
+    # Create coordinates
+    measurements = np.arange(13)
+
+    # Create dataset
+    dataset = xr.Dataset(
+        {
+            'lat_error_deg': (['measurement'], test_data['lat_error_deg']),
+            'lon_error_deg': (['measurement'], test_data['lon_error_deg']),
+            'riss_ctrs': (['measurement', 'xyz'], riss_ctrs_data),
+            'bhat_hs': (['measurement', 'xyz'], bhat_hs_data),
+            't_hs2ctrs': (['xyz_from', 'xyz_to', 'measurement'], t_hs2ctrs_data),
+            'cp_lat_deg': (['measurement'], test_data['cp_lat_deg']),
+            'cp_lon_deg': (['measurement'], test_data['cp_lon_deg']),
+            'cp_alt': (['measurement'], test_data['cp_alt'])
+        },
+        coords={
+            'measurement': measurements,
+            'xyz': ['x', 'y', 'z'],
+            'xyz_from': ['x', 'y', 'z'],
+            'xyz_to': ['x', 'y', 'z']
+        },
+        attrs={
+            'title': 'Test Dataset for Geolocation Error Statistics',
+            'description': 'Original 13 hardcoded test cases from MATLAB implementation',
+            'n_measurements': 13
+        }
+    )
+
+    return dataset
+
+
+def process_test_data(display_results: bool = True) -> xr.Dataset:
+    """
+    Process the original 13 test cases using the processor.
+
+    Helper function for regression testing against known values.
+    """
+    config = _create_test_config()
+    processor = ErrorStatsProcessor(config=config)
+    test_data = create_test_dataset_13_cases()
+
+    results = processor.process_geolocation_errors(test_data)
+
+    if display_results:
+        print(f"Processing Results Summary:")
+        print(f"=" * 50)
+        print(f"Total measurements: {results.attrs['total_measurements']}")
+        print(f"Mean error distance: {results.attrs['mean_error_distance_m']:.2f} m")
+        print(f"Std error distance: {results.attrs['std_error_distance_m']:.2f} m")
+        print(f"Min/Max error: {results.attrs['min_error_distance_m']:.2f} / {results.attrs['max_error_distance_m']:.2f} m")
+        print(f"Errors < 250m: {results.attrs['num_below_250m']} ({results.attrs['percent_below_250m']:.1f}%)")
+
+        spec_status = "✓ PASS" if results.attrs['performance_spec_met'] else "✗ FAIL"
+        print(f"Performance spec (>39% < 250m): {spec_status}")
+
+    return results
+
+
+# ============================================================================
+# TEST CASES
+# ============================================================================
 
 
 class GeolocationErrorStatsTestCase(unittest.TestCase):
@@ -41,8 +282,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         # Verify directories exist
         self.assertTrue(self.error_stats_dir.is_dir())
 
-        # Create default processor
-        self.processor = ErrorStatsProcessor()
+        # Create default processor with test config
+        self.config = _create_test_config()
+        self.processor = ErrorStatsProcessor(config=self.config)
 
         # Create minimal test dataset
         self.minimal_test_data = self._create_minimal_test_data()
@@ -82,14 +324,14 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         - 250m threshold: nadir equivalent accuracy requirement
         - 39%: project performance requirement (>39% of measurements must be <250m)
         """
-        config = GeolocationConfig()
+        config = _create_test_config()
         self.assertEqual(config.earth_radius_m, 6378140.0)
         self.assertEqual(config.performance_threshold_m, 250.0)
         self.assertEqual(config.performance_spec_percent, 39.0)
 
     def test_geolocation_config_custom(self):
         """Test custom configuration values."""
-        config = GeolocationConfig(
+        config = _create_test_config(
             earth_radius_m=6371000.0,
             performance_threshold_m=200.0,
             performance_spec_percent=40.0
@@ -100,17 +342,18 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
 
     def test_processor_initialization_default(self):
         """Test processor initialization with default config."""
-        processor = ErrorStatsProcessor()
+        config = _create_test_config()
+        processor = ErrorStatsProcessor(config=config)
         self.assertIsInstance(processor.config, GeolocationConfig)
         self.assertEqual(processor.config.earth_radius_m, 6378140.0)
 
     def test_processor_initialization_custom(self):
         """Test processor initialization with custom config."""
-        config = GeolocationConfig(
+        config = _create_test_config(
             earth_radius_m=6371000.0,
             performance_threshold_m=200.0
         )
-        processor = ErrorStatsProcessor(config)
+        processor = ErrorStatsProcessor(config=config)
         self.assertEqual(processor.config.earth_radius_m, 6371000.0)
         self.assertEqual(processor.config.performance_threshold_m, 200.0)
 
@@ -281,7 +524,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
 
     def test_end_to_end_processing(self):
         """Test complete processing pipeline with test data."""
-        test_data = ErrorStatsProcessor.create_test_dataset()
+        test_data = create_test_dataset_13_cases()
 
         results = self.processor.process_geolocation_errors(test_data)
 
@@ -312,9 +555,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
 
     def test_custom_config_processing(self):
         """Test processing with custom configuration."""
-        custom_config = GeolocationConfig(performance_threshold_m=300.0)
+        custom_config = _create_test_config(performance_threshold_m=300.0)
         processor = ErrorStatsProcessor(custom_config)
-        test_data = ErrorStatsProcessor.create_test_dataset()
+        test_data = create_test_dataset_13_cases()
 
         results = processor.process_geolocation_errors(test_data)
 
@@ -406,7 +649,8 @@ class TestCorrelationFiltering(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.processor = ErrorStatsProcessor()
+        self.config = _create_test_config()
+        self.processor = ErrorStatsProcessor(config=self.config)
 
     def _create_test_data_with_correlation(self, n_measurements=10):
         """Create test dataset with correlation values."""
@@ -434,19 +678,19 @@ class TestCorrelationFiltering(unittest.TestCase):
 
     def test_correlation_config_default(self):
         """Test that minimum_correlation defaults to None."""
-        config = GeolocationConfig()
+        config = _create_test_config()
         self.assertIsNone(config.minimum_correlation)
 
     def test_correlation_config_custom(self):
         """Test setting custom correlation threshold."""
-        config = GeolocationConfig(minimum_correlation=0.6)
+        config = _create_test_config(minimum_correlation=0.6)
         self.assertEqual(config.minimum_correlation, 0.6)
 
     def test_no_filtering_when_threshold_is_none(self):
         """Test that no filtering occurs when minimum_correlation is None."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)
 
-        config = GeolocationConfig(minimum_correlation=None)
+        config = _create_test_config(minimum_correlation=None)
         processor = ErrorStatsProcessor(config=config)
 
         results = processor.process_geolocation_errors(test_data)
@@ -460,7 +704,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         test_data = self._create_test_data_with_correlation(n_measurements=10)
         # Correlation values: [0.2, 0.289, 0.378, 0.467, 0.556, 0.644, 0.733, 0.822, 0.911, 1.0]
 
-        config = GeolocationConfig(minimum_correlation=0.5)
+        config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
         results = processor.process_geolocation_errors(test_data)
@@ -475,7 +719,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         """Test filtering with stricter correlation threshold of 0.8."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)
 
-        config = GeolocationConfig(minimum_correlation=0.8)
+        config = _create_test_config(minimum_correlation=0.8)
         processor = ErrorStatsProcessor(config=config)
 
         results = processor.process_geolocation_errors(test_data)
@@ -491,7 +735,7 @@ class TestCorrelationFiltering(unittest.TestCase):
             # Rename correlation variable
             test_data = test_data.rename({'correlation': var_name})
 
-            config = GeolocationConfig(minimum_correlation=0.5)
+            config = _create_test_config(minimum_correlation=0.5)
             processor = ErrorStatsProcessor(config=config)
 
             results = processor.process_geolocation_errors(test_data)
@@ -505,7 +749,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         # Remove correlation variable
         test_data = test_data.drop_vars('correlation')
 
-        config = GeolocationConfig(minimum_correlation=0.5)
+        config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
         # Should process without filtering (and log warning)
@@ -519,7 +763,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         test_data = self._create_test_data_with_correlation(n_measurements=10)
 
         # Set impossibly high threshold
-        config = GeolocationConfig(minimum_correlation=1.1)
+        config = _create_test_config(minimum_correlation=1.1)
         processor = ErrorStatsProcessor(config=config)
 
         with self.assertRaises(ValueError) as context:
@@ -530,7 +774,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         """Test that correlation values are preserved in output dataset."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)
 
-        config = GeolocationConfig(minimum_correlation=0.5)
+        config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
         results = processor.process_geolocation_errors(test_data)
@@ -546,7 +790,8 @@ class TestNetCDFReprocessing(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.processor = ErrorStatsProcessor()
+        self.config = _create_test_config()
+        self.processor = ErrorStatsProcessor(config=self.config)
         self.test_dir = Path(__file__).parent.parent / "test_outputs"
         self.test_dir.mkdir(exist_ok=True, parents=True)
 
@@ -644,7 +889,7 @@ class TestNetCDFReprocessing(unittest.TestCase):
         self._create_test_netcdf(netcdf_path, include_correlation=True, n_measurements=10)
 
         # Create processor with initial threshold
-        config = GeolocationConfig(minimum_correlation=0.3)
+        config = _create_test_config(minimum_correlation=0.3)
         processor = ErrorStatsProcessor(config=config)
 
         # Reprocess with override
@@ -659,7 +904,7 @@ class TestNetCDFReprocessing(unittest.TestCase):
         self._create_test_netcdf(netcdf_path, include_correlation=False, n_measurements=10)
 
         # Should process without filtering (log warning)
-        config = GeolocationConfig(minimum_correlation=0.5)
+        config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
         results = processor.process_from_netcdf(netcdf_path)
