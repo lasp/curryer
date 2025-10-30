@@ -34,23 +34,26 @@ def _create_test_config(**overrides):
     """
     Create GeolocationConfig for testing with CLARREO defaults.
 
-    Note: These hardcoded values are appropriate for TESTS, not production code.
-    Tests should be explicit about their test data.
+    These values come from the CLARREO mission configuration and are appropriate
+    for testing CLARREO-specific scenarios. Tests can override individual values
+    to test edge cases or alternative configurations.
 
     Args:
         **overrides: Override any default values
 
     Returns:
-        GeolocationConfig with test values
+        GeolocationConfig with CLARREO test values
     """
+    # CLARREO mission defaults (from clarreo_monte_carlo_config.json)
+    # These values should match the canonical CLARREO configuration
     defaults = {
-        'earth_radius_m': 6378140.0,  # WGS84
-        'performance_threshold_m': 250.0,  # CLARREO requirement
-        'performance_spec_percent': 39.0,  # CLARREO spec
+        'earth_radius_m': 6378140.0,  # WGS84 Earth radius (CLARREO standard)
+        'performance_threshold_m': 250.0,  # CLARREO accuracy requirement
+        'performance_spec_percent': 39.0,  # CLARREO performance spec
         'variable_names': {
-            'spacecraft_position': 'riss_ctrs',
-            'boresight': 'bhat_hs',
-            'transformation_matrix': 't_hs2ctrs'
+            'spacecraft_position': 'riss_ctrs',  # CLARREO/ISS variable name
+            'boresight': 'bhat_hs',  # HySICS boresight variable name
+            'transformation_matrix': 't_hs2ctrs'  # HySICS to CTRS transform
         }
     }
     defaults.update(overrides)
