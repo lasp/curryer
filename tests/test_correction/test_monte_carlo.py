@@ -446,6 +446,126 @@ def run_image_matching_with_applied_errors(
 
 
 # =============================================================================
+# CONFIGURATION GENERATION TEST
+# =============================================================================
+
+def test_generate_clarreo_config_json():
+    """Generate CLARREO config JSON and validate structure.
+
+    This test generates the canonical CLARREO configuration JSON file
+    that is used by all other CLARREO tests. The generated JSON is
+    saved to configs/ and can be committed for version control.
+
+    This ensures:
+    - Single source of truth for CLARREO configuration
+    - Programmatic config matches JSON config
+    - JSON structure is valid and complete
+    """
+    import json
+
+    logger.info("=" * 80)
+    logger.info("TEST: Generate CLARREO Configuration JSON")
+    logger.info("=" * 80)
+
+    # Define paths
+    data_dir = Path(__file__).parent.parent / "data/clarreo/gcs"
+    generic_dir = Path("data/generic")
+    output_path = Path(__file__).parent / "configs/clarreo_monte_carlo_config.json"
+
+    logger.info(f"Data directory: {data_dir}")
+    logger.info(f"Generic kernels: {generic_dir}")
+    logger.info(f"Output path: {output_path}")
+
+    # Generate config programmatically
+    logger.info("\n1. Generating config programmatically...")
+    config = create_clarreo_monte_carlo_config(
+        data_dir,
+        generic_dir,
+        config_output_path=output_path
+    )
+
+    logger.info(f"✓ Config created: {len(config.parameters)} parameter groups, "
+                f"{config.n_iterations} iterations")
+
+    # Validate the generated JSON exists
+    logger.info("\n2. Validating generated JSON file...")
+    assert output_path.exists(), f"Config JSON not created: {output_path}"
+    logger.info(f"✓ JSON file exists: {output_path}")
+
+    # Reload and verify structure
+    logger.info("\n3. Reloading and validating JSON structure...")
+    with open(output_path, 'r') as f:
+        config_data = json.load(f)
+
+    # Validate top-level sections
+    assert 'mission_config' in config_data, "Missing 'mission_config' section"
+    assert 'monte_carlo' in config_data, "Missing 'monte_carlo' section"
+    assert 'geolocation' in config_data, "Missing 'geolocation' section"
+    logger.info("✓ All required top-level sections present")
+
+    # Validate mission config
+    mission_cfg = config_data['mission_config']
+    assert mission_cfg['mission_name'] == 'CLARREO_Pathfinder'
+    assert 'kernel_mappings' in mission_cfg
+    logger.info(f"✓ Mission: {mission_cfg['mission_name']}")
+
+    # Validate monte_carlo config
+    mc_cfg = config_data['monte_carlo']
+    assert 'parameters' in mc_cfg
+    assert isinstance(mc_cfg['parameters'], list)
+    assert len(mc_cfg['parameters']) > 0
+    assert 'seed' in mc_cfg
+    assert 'n_iterations' in mc_cfg
+
+    # NEW: Validate required fields are present
+    assert 'earth_radius_m' in mc_cfg, "Missing 'earth_radius_m' in monte_carlo config"
+    assert 'performance_threshold_m' in mc_cfg, "Missing 'performance_threshold_m'"
+    assert 'performance_spec_percent' in mc_cfg, "Missing 'performance_spec_percent'"
+
+    assert mc_cfg['earth_radius_m'] == 6378140.0
+    assert mc_cfg['performance_threshold_m'] == 250.0
+    assert mc_cfg['performance_spec_percent'] == 39.0
+
+    logger.info(f"✓ Monte Carlo config: {len(mc_cfg['parameters'])} parameters, "
+                f"{mc_cfg['n_iterations']} iterations")
+    logger.info(f"✓ Required fields: earth_radius={mc_cfg['earth_radius_m']}, "
+                f"threshold={mc_cfg['performance_threshold_m']}m, "
+                f"spec={mc_cfg['performance_spec_percent']}%")
+
+    # Validate geolocation config
+    geo_cfg = config_data['geolocation']
+    assert 'meta_kernel_file' in geo_cfg
+    assert 'instrument_name' in geo_cfg
+    assert geo_cfg['instrument_name'] == 'CPRS_HYSICS'
+    logger.info(f"✓ Geolocation config: instrument={geo_cfg['instrument_name']}")
+
+    # Test that JSON can be loaded back into MonteCarloConfig
+    logger.info("\n4. Testing JSON → MonteCarloConfig loading...")
+    reloaded_config = mc.load_config_from_json(output_path)
+    assert reloaded_config.n_iterations == config.n_iterations
+    assert len(reloaded_config.parameters) == len(config.parameters)
+    assert reloaded_config.earth_radius_m == 6378140.0
+    assert reloaded_config.performance_threshold_m == 250.0
+    assert reloaded_config.performance_spec_percent == 39.0
+    logger.info("✓ JSON successfully loads into MonteCarloConfig")
+
+    # Validate reloaded config
+    logger.info("\n5. Validating reloaded config...")
+    reloaded_config.validate()
+    logger.info("✓ Reloaded config passes validation")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("✓ CONFIG GENERATION TEST PASSED")
+    logger.info(f"✓ Canonical config saved: {output_path}")
+    logger.info(f"✓ File size: {output_path.stat().st_size / 1024:.1f} KB")
+    logger.info("=" * 80)
+    
+    # Note: Test functions should not return values per pytest best practices
+    # All validation is performed via assert statements above
+
+
+
+# =============================================================================
 # UPSTREAM TESTING (Kernel Creation + Geolocation)
 # =============================================================================
 
