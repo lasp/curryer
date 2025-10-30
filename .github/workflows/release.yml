@@ -11,6 +11,7 @@ on:
       - edited
 
 jobs:
+  timeout-minutes: 25
   build_sdist:
     name: Build source distribution
     runs-on: ubuntu-latest
