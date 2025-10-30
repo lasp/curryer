@@ -691,7 +691,7 @@ def run_full_pipeline_test(n_iterations=5, test_cases=None, work_dir=None):
         valid_errors = pair_errors[~np.isnan(pair_errors)]
 
         if len(valid_errors) > 0:
-            error_stats = mc.call_error_stats_module(image_matching_results, )
+            error_stats = mc.call_error_stats_module(image_matching_results, monte_carlo_config=config)
             print("ERROR_STATS CALLED \n")
             print(error_stats)
 
