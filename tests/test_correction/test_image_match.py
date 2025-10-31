@@ -1,3 +1,30 @@
+"""
+Tests for image_match.py module
+
+This module tests the integrated image matching functionality, including:
+- Image grid loading from MATLAB files
+- Geolocation error application for testing
+- Image matching algorithm validation
+- Cross-correlation and grid search
+
+Running Tests:
+-------------
+# Via pytest (recommended)
+pytest tests/test_correction/test_image_match.py -v
+
+# Run specific test
+pytest tests/test_correction/test_image_match.py::TestImageMatch::test_integrated_match_case_1 -v
+
+# Standalone execution
+python tests/test_correction/test_image_match.py
+
+Requirements:
+-----------------
+These tests validate image matching algorithms against known test cases,
+demonstrating that the Python implementation correctly identifies geolocation
+errors through image cross-correlation.
+"""
+
 import logging
 import tempfile
 import unittest

@@ -19,18 +19,24 @@ This module consolidates two complementary Monte Carlo test approaches:
 Both tests share the same CLARREO configuration base but configure differently
 for their specific testing needs.
 
-Usage:
-    # Run all tests
-    pytest tests/test_correction/test_monte_carlo.py -v
+Running Tests:
+-------------
+# Via pytest (recommended)
+pytest tests/test_correction/test_monte_carlo.py -v
 
-    # Run specific test
-    pytest tests/test_correction/test_monte_carlo.py::test_downstream_pipeline -v
+# Run specific test
+pytest tests/test_correction/test_monte_carlo.py::test_upstream_pipeline -v
+pytest tests/test_correction/test_monte_carlo.py::test_downstream_pipeline -v
 
-    # Run standalone with arguments
-    python tests/test_correction/test_monte_carlo.py --mode downstream --quick
+# Standalone execution with arguments
+python tests/test_correction/test_monte_carlo.py --mode downstream --quick
 
-Author: Matthew Maclay
-Date: October 27, 2025
+Requirements:
+-----------------
+These tests validate the complete Monte Carlo geolocation pipeline,
+demonstrating parameter sensitivity analysis and error statistics
+computation for mission requirements validation.
+
 """
 
 import argparse

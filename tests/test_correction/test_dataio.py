@@ -1,3 +1,29 @@
+"""
+Tests for dataio.py module
+
+This module tests data I/O functionality:
+- S3 object discovery and download
+- NetCDF file handling
+- Configuration management
+- File path operations
+
+Running Tests:
+-------------
+# Via pytest (recommended)
+pytest tests/test_correction/test_dataio.py -v
+
+# Run specific test
+pytest tests/test_correction/test_dataio.py::DataIOTestCase::test_find_objects -v
+
+# Standalone execution
+python tests/test_correction/test_dataio.py
+
+Notes:
+-----
+These tests use mock S3 clients to avoid requiring AWS credentials
+or network access during testing.
+"""
+
 from __future__ import annotations
 
 import datetime as dt

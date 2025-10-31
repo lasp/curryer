@@ -1,3 +1,29 @@
+"""
+Tests for pairing.py module
+
+This module tests the GCP (Ground Control Point) pairing functionality:
+- Spatial pairing of L1A science data with GCP reference imagery
+- File discovery and matching
+- Geographic overlap detection
+- Pairing validation
+
+Running Tests:
+-------------
+# Via pytest (recommended)
+pytest tests/test_correction/test_pairing.py -v
+
+# Run specific test
+pytest tests/test_correction/test_pairing.py::PairingTestCase::test_find_l1a_gcp_pairs -v
+
+# Standalone execution
+python tests/test_correction/test_pairing.py
+
+Requirements:
+-----------------
+These tests validate that GCP pairing correctly identifies which reference
+images overlap with science data, ensuring accurate geolocation validation.
+"""
+
 from __future__ import annotations
 
 import logging
