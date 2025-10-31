@@ -26,8 +26,8 @@ or network access during testing.
 
 from __future__ import annotations
 
-import os
 import datetime as dt
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,14 +82,20 @@ class DataIOTestCase(unittest.TestCase):
             end_date=dt.date(2018, 12, 26),
             s3_client=client,
         )
-        self.assertListEqual(keys, [
-            "L1a/nadir/20181225/file1.nc",
-            "L1a/nadir/20181226/file3.nc",
-        ])
-        self.assertListEqual(client.list_calls, [
-            ("test-bucket", "L1a/nadir/20181225/"),
-            ("test-bucket", "L1a/nadir/20181226/"),
-        ])
+        self.assertListEqual(
+            keys,
+            [
+                "L1a/nadir/20181225/file1.nc",
+                "L1a/nadir/20181226/file3.nc",
+            ],
+        )
+        self.assertListEqual(
+            client.list_calls,
+            [
+                ("test-bucket", "L1a/nadir/20181225/"),
+                ("test-bucket", "L1a/nadir/20181226/"),
+            ],
+        )
 
     def test_download_netcdf_objects_writes_files(self):
         config = S3Configuration("test-bucket", "L1a/nadir")
@@ -112,10 +118,11 @@ class DataIOTestCase(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.getenv("AWS_ACCESS_KEY_ID", "") and
-    os.getenv("AWS_SECRET_ACCESS_KEY", "") and
-    os.getenv("AWS_SESSION_TOKEN", ""),
-    "Requires tester to set AWS access key environment variables.")
+    os.getenv("AWS_ACCESS_KEY_ID", "")
+    and os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    and os.getenv("AWS_SESSION_TOKEN", ""),
+    "Requires tester to set AWS access key environment variables.",
+)
 class ClarreoDataIOTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.__tmp_dir = tempfile.TemporaryDirectory()
@@ -129,9 +136,9 @@ class ClarreoDataIOTestCase(unittest.TestCase):
             start_date=dt.date(2017, 1, 15),
             end_date=dt.date(2017, 1, 15),
         )
-        self.assertListEqual(keys, [
-            "L0/telemetry/hps_navigation/20170115/CPF_TLM_L0.V00-000.hps_navigation-20170115-0.0.0.nc"
-        ])
+        self.assertListEqual(
+            keys, ["L0/telemetry/hps_navigation/20170115/CPF_TLM_L0.V00-000.hps_navigation-20170115-0.0.0.nc"]
+        )
 
     def test_l1a(self):
         config = S3Configuration("clarreo", "L1a/nadir/")
@@ -144,5 +151,5 @@ class ClarreoDataIOTestCase(unittest.TestCase):
         self.assertIn("L1a/nadir/20220603/nadir-20220603T235952-step22-geolocation_creation-0.0.0.nc", keys)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
