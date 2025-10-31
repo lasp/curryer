@@ -33,10 +33,6 @@ tmp/
 data/generic/de430.bsp
 
 # Large test files
-data/generic/earth_000101_221016_220723.bpc
-data/generic/earth_200101_990628_predict.bpc
-data/generic/earth_720101_070426.bpc
-data/generic/moon_pa_de421_1900-2050.bpc
 data/gmted/10N000E_20101117_gmted_mea150.tif
 data/gmted/10N030E_20101117_gmted_mea150.tif
 data/gmted/10N030W_20101117_gmted_mea150.tif
