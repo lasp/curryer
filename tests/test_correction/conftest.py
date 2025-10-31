@@ -5,10 +5,12 @@ This module provides shared fixtures used across multiple test files to ensure
 consistent configuration and data loading.
 """
 
-import pytest
 from pathlib import Path
-from curryer.correction import monte_carlo as mc
+
+import pytest
 from clarreo_config import create_clarreo_monte_carlo_config
+
+from curryer.correction import monte_carlo as mc
 
 
 @pytest.fixture(scope="session")
@@ -24,8 +26,7 @@ def clarreo_config_from_json():
     config_path = Path(__file__).parent / "configs/clarreo_monte_carlo_config.json"
 
     if not config_path.exists():
-        pytest.skip(f"Config file not found: {config_path}. "
-                   f"Run test_generate_clarreo_config_json() first.")
+        pytest.skip(f"Config file not found: {config_path}. Run test_generate_clarreo_config_json() first.")
 
     return mc.load_config_from_json(config_path)
 
@@ -105,13 +106,6 @@ def temp_work_dir(tmp_path):
 # Configuration for pytest
 def pytest_configure(config):
     """Configure pytest with custom markers."""
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
-    )
-    config.addinivalue_line(
-        "markers", "integration: marks tests as integration tests"
-    )
-    config.addinivalue_line(
-        "markers", "requires_gcs: marks tests that require GCS credentials"
-    )
-
+    config.addinivalue_line("markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')")
+    config.addinivalue_line("markers", "integration: marks tests as integration tests")
+    config.addinivalue_line("markers", "requires_gcs: marks tests that require GCS credentials")

@@ -61,12 +61,8 @@ class PSFGrid:
 
     def _validate_shapes(self) -> None:
         data_shape = self.data.shape
-        valid_lat = self.lat.shape == data_shape or (
-            self.lat.ndim == 1 and self.lat.size in data_shape
-        )
-        valid_lon = self.lon.shape == data_shape or (
-            self.lon.ndim == 1 and self.lon.size in data_shape
-        )
+        valid_lat = self.lat.shape == data_shape or (self.lat.ndim == 1 and self.lat.size in data_shape)
+        valid_lon = self.lon.shape == data_shape or (self.lon.ndim == 1 and self.lon.size in data_shape)
         if not valid_lat or not valid_lon:
             raise ValueError(
                 "Latitude/longitude arrays must either match PSF data shape or "
@@ -101,9 +97,7 @@ class OpticalPSFEntry:
         self.x = np.asarray(self.x, dtype=float)
         self.field_angle = np.asarray(self.field_angle, dtype=float)
         if self.data.shape != (self.field_angle.size, self.x.size):
-            raise ValueError(
-                "Optical PSF data must have shape (len(field_angle), len(x))."
-            )
+            raise ValueError("Optical PSF data must have shape (len(field_angle), len(x)).")
 
 
 @dataclass

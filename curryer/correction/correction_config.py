@@ -7,7 +7,7 @@ configuration files. It contains NO mission-specific logic.
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +24,14 @@ def load_config_schema() -> Dict[str, Any]:
             "optional": ["instrument_name"],
             "kernel_mappings": {
                 "constant_kernel": "Dict[str, str] - Frame names to kernel files",
-                "offset_kernel": "Dict[str, str] - Sensor names to kernel files"
-            }
+                "offset_kernel": "Dict[str, str] - Sensor names to kernel files",
+            },
         },
-        "monte_carlo": {
-            "required": ["parameters"],
-            "optional": ["seed", "n_iterations"]
-        },
+        "monte_carlo": {"required": ["parameters"], "optional": ["seed", "n_iterations"]},
         "geolocation": {
             "required": ["meta_kernel_file", "generic_kernel_dir", "instrument_name", "time_field"],
-            "optional": ["dynamic_kernels", "minimum_correlation"]
-        }
+            "optional": ["dynamic_kernels", "minimum_correlation"],
+        },
     }
 
 
@@ -55,7 +52,7 @@ def validate_config_file(config_path: Path) -> bool:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             json.load(f)
         return True
     except json.JSONDecodeError as e:
@@ -74,15 +71,15 @@ def extract_mission_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
     Raises:
         KeyError: If mission_config section is missing
     """
-    if 'mission_config' not in config_data:
+    if "mission_config" not in config_data:
         raise KeyError("Missing required 'mission_config' section in config file")
 
-    mission_config = config_data['mission_config']
+    mission_config = config_data["mission_config"]
 
-    if 'mission_name' not in mission_config:
+    if "mission_name" not in mission_config:
         raise KeyError("Missing required 'mission_name' in mission_config")
 
-    if 'kernel_mappings' not in mission_config:
+    if "kernel_mappings" not in mission_config:
         raise KeyError("Missing required 'kernel_mappings' in mission_config")
 
     logger.info(f"Loaded mission config for: {mission_config.get('mission_name', 'UNKNOWN')}")
@@ -99,8 +96,8 @@ def get_kernel_mapping(config_data: Dict[str, Any], kernel_type: str) -> Dict[st
     Returns:
         Dict mapping names to kernel files (e.g., {'hysics': 'cprs_hysics_v01.attitude.ck.json'})
     """
-    mission_config = config_data.get('mission_config', {})
-    kernel_mappings = mission_config.get('kernel_mappings', {})
+    mission_config = config_data.get("mission_config", {})
+    kernel_mappings = mission_config.get("kernel_mappings", {})
     return kernel_mappings.get(kernel_type, {})
 
 
@@ -128,4 +125,3 @@ def find_kernel_file(name: str, kernel_mapping: Dict[str, str]) -> Optional[str]
             return kernel_file
 
     return None
-

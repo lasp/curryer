@@ -6,9 +6,7 @@
       "input_frame": "ISS_ISSACS",
       "input_data_type": "SPICE QUATERNIONS",
       "input_time_type": "gps",
-      "input_time_columns": [
-        "gps"
-      ],
+      "input_time_columns": ["gps"],
       "input_angular_rate": "MAKE UP",
       "input_gap_threshold": "30s",
       "ck_type": "LINEAR_QUAT",

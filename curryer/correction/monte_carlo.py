@@ -51,14 +51,14 @@ Core modules in curryer/correction/ are generic. Mission-specific code belongs i
 your test or application directories (e.g., tests/test_correction/clarreo_*).
 """
 
-import logging
-import typing
 import json
+import logging
 import time
+import typing
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import List, Tuple, Optional, Any
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -67,22 +67,20 @@ import xarray as xr
 from curryer import meta
 from curryer import spicierpy as sp
 from curryer.compute import spatial
-from curryer.kernels import create
+from curryer.correction import correction_config
+from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig
+from curryer.correction.data_structures import SearchConfig
 
 # Import image matching modules
 from curryer.correction.image_match import (
     integrated_image_match,
     load_image_grid_from_mat,
-    load_optical_psf_from_mat,
     load_los_vectors_from_mat,
+    load_optical_psf_from_mat,
 )
-from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig, SearchConfig
-from curryer.correction.pairing import pair_files
-from curryer.correction import correction_config
-
+from curryer.kernels import create
 
 logger = logging.getLogger(__name__)
-
 
 
 # ============================================================================
@@ -94,58 +92,20 @@ logger = logging.getLogger(__name__)
 # Missions can override these in their NetCDFConfig if needed
 STANDARD_NETCDF_ATTRIBUTES = {
     # Geolocation error metrics (per GCP pair)
-    'rms_error_m': {
-        'units': 'meters',
-        'long_name': 'RMS geolocation error'
-    },
-    'mean_error_m': {
-        'units': 'meters',
-        'long_name': 'Mean geolocation error'
-    },
-    'max_error_m': {
-        'units': 'meters',
-        'long_name': 'Maximum geolocation error'
-    },
-    'std_error_m': {
-        'units': 'meters',
-        'long_name': 'Standard deviation of geolocation error'
-    },
-    'n_measurements': {
-        'units': 'count',
-        'long_name': 'Number of measurement points'
-    },
-
+    "rms_error_m": {"units": "meters", "long_name": "RMS geolocation error"},
+    "mean_error_m": {"units": "meters", "long_name": "Mean geolocation error"},
+    "max_error_m": {"units": "meters", "long_name": "Maximum geolocation error"},
+    "std_error_m": {"units": "meters", "long_name": "Standard deviation of geolocation error"},
+    "n_measurements": {"units": "count", "long_name": "Number of measurement points"},
     # Aggregate performance metrics (per parameter set)
-    'mean_rms_all_pairs': {
-        'units': 'meters',
-        'long_name': 'Mean RMS error across all GCP pairs'
-    },
-    'worst_pair_rms': {
-        'units': 'meters',
-        'long_name': 'Worst performing GCP pair RMS error'
-    },
-    'best_pair_rms': {
-        'units': 'meters',
-        'long_name': 'Best performing GCP pair RMS error'
-    },
-
+    "mean_rms_all_pairs": {"units": "meters", "long_name": "Mean RMS error across all GCP pairs"},
+    "worst_pair_rms": {"units": "meters", "long_name": "Worst performing GCP pair RMS error"},
+    "best_pair_rms": {"units": "meters", "long_name": "Best performing GCP pair RMS error"},
     # Image matching metrics (per GCP pair)
-    'im_lat_error_km': {
-        'units': 'kilometers',
-        'long_name': 'Image matching latitude error'
-    },
-    'im_lon_error_km': {
-        'units': 'kilometers',
-        'long_name': 'Image matching longitude error'
-    },
-    'im_ccv': {
-        'units': 'dimensionless',
-        'long_name': 'Image matching correlation coefficient'
-    },
-    'im_grid_step_m': {
-        'units': 'meters',
-        'long_name': 'Image matching final grid step size'
-    },
+    "im_lat_error_km": {"units": "kilometers", "long_name": "Image matching latitude error"},
+    "im_lon_error_km": {"units": "kilometers", "long_name": "Image matching longitude error"},
+    "im_ccv": {"units": "dimensionless", "long_name": "Image matching correlation coefficient"},
+    "im_grid_step_m": {"units": "meters", "long_name": "Image matching final grid step size"},
 }
 
 
@@ -157,24 +117,23 @@ STANDARD_NETCDF_ATTRIBUTES = {
 # Used for extracting data from xarray.Dataset objects
 STANDARD_VAR_NAMES = {
     # Error measurements (required)
-    'lat_error_deg': 'lat_error_deg',
-    'lon_error_deg': 'lon_error_deg',
-
+    "lat_error_deg": "lat_error_deg",
+    "lon_error_deg": "lon_error_deg",
     # Spacecraft state (configurable names)
-    'spacecraft_position': 'sc_position',  # Generic default
-    'boresight': 'boresight',              # Generic default
-    'transformation_matrix': 't_inst2ref', # Generic default
-
+    "spacecraft_position": "sc_position",  # Generic default
+    "boresight": "boresight",  # Generic default
+    "transformation_matrix": "t_inst2ref",  # Generic default
     # Control point location (optional)
-    'cp_lat_deg': 'cp_lat_deg',
-    'cp_lon_deg': 'cp_lon_deg',
-    'cp_alt': 'cp_alt',
+    "cp_lat_deg": "cp_lat_deg",
+    "cp_lon_deg": "cp_lon_deg",
+    "cp_alt": "cp_alt",
 }
 
 
 # ============================================================================
 # Internal Adapter Functions (Monte Carlo <-> Image Matching)
 # ============================================================================
+
 
 def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
     """
@@ -191,22 +150,22 @@ def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
     """
     from curryer.correction.data_structures import ImageGrid
 
-    lat = geo_dataset['latitude'].values
-    lon = geo_dataset['longitude'].values
+    lat = geo_dataset["latitude"].values
+    lon = geo_dataset["longitude"].values
 
     # Try different field names for altitude/height
-    if 'altitude' in geo_dataset:
-        h = geo_dataset['altitude'].values
-    elif 'height' in geo_dataset:
-        h = geo_dataset['height'].values
+    if "altitude" in geo_dataset:
+        h = geo_dataset["altitude"].values
+    elif "height" in geo_dataset:
+        h = geo_dataset["height"].values
     else:
         h = np.zeros_like(lat)
 
     # Get actual radiance/reflectance data when available
-    if 'radiance' in geo_dataset:
-        data = geo_dataset['radiance'].values
-    elif 'reflectance' in geo_dataset:
-        data = geo_dataset['reflectance'].values
+    if "radiance" in geo_dataset:
+        data = geo_dataset["radiance"].values
+    elif "reflectance" in geo_dataset:
+        data = geo_dataset["reflectance"].values
     else:
         data = np.ones_like(lat)
 
@@ -233,10 +192,10 @@ def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray
 
     # Try common column name patterns
     position_patterns = [
-        ['sc_pos_x', 'sc_pos_y', 'sc_pos_z'],
-        ['position_x', 'position_y', 'position_z'],
-        ['r_x', 'r_y', 'r_z'],
-        ['pos_x', 'pos_y', 'pos_z'],
+        ["sc_pos_x", "sc_pos_y", "sc_pos_z"],
+        ["position_x", "position_y", "position_z"],
+        ["r_x", "r_y", "r_z"],
+        ["pos_x", "pos_y", "pos_z"],
     ]
 
     for cols in position_patterns:
@@ -246,20 +205,18 @@ def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray
             return position
 
     # If patterns don't match, try to find any column containing 'pos' or 'r_'
-    pos_cols = [c for c in telemetry.columns if 'pos' in c.lower() or c.startswith('r_')]
+    pos_cols = [c for c in telemetry.columns if "pos" in c.lower() or c.startswith("r_")]
     if len(pos_cols) >= 3:
         logger.warning(f"Using first 3 position-like columns: {pos_cols[:3]}")
         return telemetry[pos_cols[:3]].iloc[mid_idx].values.astype(np.float64)
 
-    raise ValueError(
-        f"Cannot find position columns in telemetry. "
-        f"Available columns: {telemetry.columns.tolist()}"
-    )
+    raise ValueError(f"Cannot find position columns in telemetry. Available columns: {telemetry.columns.tolist()}")
 
 
 # Configuration Loading Functions
 
-def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
+
+def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
     """Load Monte Carlo configuration from a JSON file.
 
     Args:
@@ -281,36 +238,36 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     logger.info(f"Loading Monte Carlo configuration from: {config_path}")
 
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path) as f:
             config_data = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in config file {config_path}: {e}")
 
     # Extract mission configuration and kernel mappings
     mission_config = correction_config.extract_mission_config(config_data)
-    constant_kernel_map = correction_config.get_kernel_mapping(config_data, 'constant_kernel')
-    offset_kernel_map = correction_config.get_kernel_mapping(config_data, 'offset_kernel')
+    constant_kernel_map = correction_config.get_kernel_mapping(config_data, "constant_kernel")
+    offset_kernel_map = correction_config.get_kernel_mapping(config_data, "offset_kernel")
 
     logger.debug(f"Mission: {mission_config.get('mission_name', 'UNKNOWN')}")
     logger.debug(f"Constant kernel mappings: {constant_kernel_map}")
     logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
 
     # Validate required sections exist
-    if 'monte_carlo' not in config_data:
+    if "monte_carlo" not in config_data:
         raise KeyError("Missing required 'monte_carlo' section in config file")
-    if 'geolocation' not in config_data:
+    if "geolocation" not in config_data:
         raise KeyError("Missing required 'geolocation' section in config file")
 
     # Extract monte_carlo section
-    mc_config = config_data.get('monte_carlo', {})
-    geo_config = config_data.get('geolocation', {})
+    mc_config = config_data.get("monte_carlo", {})
+    geo_config = config_data.get("geolocation", {})
 
     # Validate monte_carlo section
-    if 'parameters' not in mc_config:
+    if "parameters" not in mc_config:
         raise KeyError("Missing required 'parameters' in monte_carlo section")
-    if not isinstance(mc_config['parameters'], list):
+    if not isinstance(mc_config["parameters"], list):
         raise ValueError("'parameters' must be a list")
-    if len(mc_config['parameters']) == 0:
+    if len(mc_config["parameters"]) == 0:
         raise ValueError("No parameters defined in configuration")
 
     # Parse parameters and group related ones together
@@ -318,143 +275,130 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     param_groups = {}
 
     # First pass: group parameters by their base name and type
-    for param_dict in mc_config.get('parameters', []):
-        param_name = param_dict.get('name', '')
-        ptype_str = param_dict.get('parameter_type', 'CONSTANT_KERNEL')
+    for param_dict in mc_config.get("parameters", []):
+        param_name = param_dict.get("name", "")
+        ptype_str = param_dict.get("parameter_type", "CONSTANT_KERNEL")
         ptype = ParameterType[ptype_str]
 
         # Group CONSTANT_KERNEL parameters by their base frame name
         if ptype == ParameterType.CONSTANT_KERNEL:
             # Extract base name (e.g., "hysics_to_cradle" from "hysics_to_cradle_roll")
-            if '_roll' in param_name:
-                base_name = param_name.replace('_roll', '')
-                angle_type = 'roll'
-            elif '_pitch' in param_name:
-                base_name = param_name.replace('_pitch', '')
-                angle_type = 'pitch'
-            elif '_yaw' in param_name:
-                base_name = param_name.replace('_yaw', '')
-                angle_type = 'yaw'
+            if "_roll" in param_name:
+                base_name = param_name.replace("_roll", "")
+                angle_type = "roll"
+            elif "_pitch" in param_name:
+                base_name = param_name.replace("_pitch", "")
+                angle_type = "pitch"
+            elif "_yaw" in param_name:
+                base_name = param_name.replace("_yaw", "")
+                angle_type = "yaw"
             else:
                 base_name = param_name
-                angle_type = 'single'
+                angle_type = "single"
 
             if base_name not in param_groups:
-                param_groups[base_name] = {
-                    'type': ptype,
-                    'angles': {},
-                    'template': param_dict,
-                    'config_file': None
-                }
+                param_groups[base_name] = {"type": ptype, "angles": {}, "template": param_dict, "config_file": None}
 
-            param_groups[base_name]['angles'][angle_type] = param_dict.get('initial_value', 0.0)
+            param_groups[base_name]["angles"][angle_type] = param_dict.get("initial_value", 0.0)
 
             # Determine config file based on kernel mapping from config
             kernel_file = correction_config.find_kernel_file(base_name, constant_kernel_map)
             if kernel_file:
-                param_groups[base_name]['config_file'] = Path(kernel_file)
+                param_groups[base_name]["config_file"] = Path(kernel_file)
                 logger.debug(f"Mapped CONSTANT_KERNEL '{base_name}' → {kernel_file}")
             else:
                 logger.warning(f"No kernel mapping found for CONSTANT_KERNEL parameter: {base_name}")
 
         else:
             # OFFSET_KERNEL and OFFSET_TIME parameters are individual
-            param_groups[param_name] = {
-                'type': ptype,
-                'param_dict': param_dict,
-                'config_file': None
-            }
+            param_groups[param_name] = {"type": ptype, "param_dict": param_dict, "config_file": None}
 
             if ptype == ParameterType.OFFSET_KERNEL:
                 # Determine config file based on kernel mapping from config
                 kernel_file = correction_config.find_kernel_file(param_name, offset_kernel_map)
                 if kernel_file:
-                    param_groups[param_name]['config_file'] = Path(kernel_file)
+                    param_groups[param_name]["config_file"] = Path(kernel_file)
                     logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
                 else:
                     logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
 
     # Second pass: create ParameterConfig objects from groups
     for group_name, group_data in param_groups.items():
-        if group_data['type'] == ParameterType.CONSTANT_KERNEL:
+        if group_data["type"] == ParameterType.CONSTANT_KERNEL:
             # For CONSTANT_KERNEL, combine roll/pitch/yaw into a single parameter
-            template = group_data['template']
-            angles = group_data['angles']
+            template = group_data["template"]
+            angles = group_data["angles"]
 
             # Create center values array [roll, pitch, yaw] with defaults of 0.0
-            center_values = [
-                angles.get('roll', 0.0),
-                angles.get('pitch', 0.0),
-                angles.get('yaw', 0.0)
-            ]
+            center_values = [angles.get("roll", 0.0), angles.get("pitch", 0.0), angles.get("yaw", 0.0)]
 
             param_data = {
-                'center': center_values,
-                'arange': template.get('bounds', [-100, 100]),
-                'sigma': template.get('sigma'),
-                'units': template.get('units', 'arcseconds'),
-                'distribution': template.get('distribution_type', 'normal'),
-                'field': template.get('application_target', {}).get('field_name', None),
+                "center": center_values,
+                "arange": template.get("bounds", [-100, 100]),
+                "sigma": template.get("sigma"),
+                "units": template.get("units", "arcseconds"),
+                "distribution": template.get("distribution_type", "normal"),
+                "field": template.get("application_target", {}).get("field_name", None),
             }
 
         else:
             # For OFFSET_KERNEL and OFFSET_TIME, use the parameter as-is
-            param_dict = group_data['param_dict']
+            param_dict = group_data["param_dict"]
             param_data = {
-                'center': param_dict.get('initial_value', 0.0),
-                'arange': param_dict.get('bounds', [-100, 100]),
-                'sigma': param_dict.get('sigma'),
-                'units': param_dict.get('units', 'radians'),
-                'distribution': param_dict.get('distribution_type', 'normal'),
-                'field': param_dict.get('application_target', {}).get('field_name', None),
+                "center": param_dict.get("initial_value", 0.0),
+                "arange": param_dict.get("bounds", [-100, 100]),
+                "sigma": param_dict.get("sigma"),
+                "units": param_dict.get("units", "radians"),
+                "distribution": param_dict.get("distribution_type", "normal"),
+                "field": param_dict.get("application_target", {}).get("field_name", None),
             }
 
-        parameters.append(ParameterConfig(
-            ptype=group_data['type'],
-            config_file=group_data['config_file'],
-            data=param_data
-        ))
+        parameters.append(
+            ParameterConfig(ptype=group_data["type"], config_file=group_data["config_file"], data=param_data)
+        )
 
-    logger.info(f"Loaded {len(parameters)} parameter groups from {len(mc_config.get('parameters', []))} individual parameters")
+    logger.info(
+        f"Loaded {len(parameters)} parameter groups from {len(mc_config.get('parameters', []))} individual parameters"
+    )
 
     # Parse geolocation configuration
     # Use instrument_name from geolocation config, falling back to mission_config
     # If not specified, raise error - instrument name is required
-    default_instrument = mission_config.get('instrument_name')
-    instrument_name = geo_config.get('instrument_name', default_instrument)
+    default_instrument = mission_config.get("instrument_name")
+    instrument_name = geo_config.get("instrument_name", default_instrument)
     if instrument_name is None:
         raise ValueError("instrument_name must be specified in config (either in geolocation or mission section)")
 
     # Time field is required - no default to avoid mission-specific assumptions
-    time_field = geo_config.get('time_field')
+    time_field = geo_config.get("time_field")
     if time_field is None:
         raise ValueError("time_field must be specified in geolocation config")
 
     geo = GeolocationConfig(
-        meta_kernel_file=Path(geo_config.get('meta_kernel_file', '')),
-        generic_kernel_dir=Path(geo_config.get('generic_kernel_dir', '')),
-        dynamic_kernels=[Path(k) for k in geo_config.get('dynamic_kernels', [])],
+        meta_kernel_file=Path(geo_config.get("meta_kernel_file", "")),
+        generic_kernel_dir=Path(geo_config.get("generic_kernel_dir", "")),
+        dynamic_kernels=[Path(k) for k in geo_config.get("dynamic_kernels", [])],
         instrument_name=instrument_name,
         time_field=time_field,
     )
 
     # Extract required mission-specific parameters from monte_carlo section
     # These MUST be provided in the config file - no defaults
-    earth_radius_m = mc_config.get('earth_radius_m')
+    earth_radius_m = mc_config.get("earth_radius_m")
     if earth_radius_m is None:
         raise KeyError(
             "Missing required 'earth_radius_m' in monte_carlo config section. "
             "This must be specified for your mission (e.g., 6378140.0 for WGS84)."
         )
 
-    performance_threshold_m = mc_config.get('performance_threshold_m')
+    performance_threshold_m = mc_config.get("performance_threshold_m")
     if performance_threshold_m is None:
         raise KeyError(
             "Missing required 'performance_threshold_m' in monte_carlo config section. "
             "This must be specified for your mission (e.g., 250.0 meters for CLARREO)."
         )
 
-    performance_spec_percent = mc_config.get('performance_spec_percent')
+    performance_spec_percent = mc_config.get("performance_spec_percent")
     if performance_spec_percent is None:
         raise KeyError(
             "Missing required 'performance_spec_percent' in monte_carlo config section. "
@@ -463,8 +407,8 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
 
     # Create MonteCarloConfig
     config = MonteCarloConfig(
-        seed=mc_config.get('seed'),
-        n_iterations=mc_config.get('n_iterations', 10),
+        seed=mc_config.get("seed"),
+        n_iterations=mc_config.get("n_iterations", 10),
         parameters=parameters,
         geo=geo,
         earth_radius_m=earth_radius_m,
@@ -475,8 +419,10 @@ def load_config_from_json(config_path: Path) -> 'MonteCarloConfig':
     # Validate the loaded configuration
     config.validate()
 
-    logger.info(f"Configuration loaded and validated: {config.n_iterations} iterations, "
-                f"{len(config.parameters)} parameter groups")
+    logger.info(
+        f"Configuration loaded and validated: {config.n_iterations} iterations, "
+        f"{len(config.parameters)} parameter groups"
+    )
     return config
 
 
@@ -545,13 +491,12 @@ def placeholder_gcp_pairing(science_data_files):
     logger.info("GCP Pairing: Finding overlapping image pairs (PLACEHOLDER)")
 
     # Generate synthetic pairs - one GCP per science file
-    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif")
-                       for i, sci_file in enumerate(science_data_files)]
+    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif") for i, sci_file in enumerate(science_data_files)]
 
     return synthetic_pairs
 
 
-def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info, config: 'MonteCarloConfig'):
+def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info, config: "MonteCarloConfig"):
     """
     PLACEHOLDER for image matching module - generates SYNTHETIC error data.
 
@@ -597,7 +542,7 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     transform_name = config.transformation_matrix_name
 
     # Extract valid geolocation points (non-NaN)
-    valid_mask = ~np.isnan(geolocated_data['latitude'].values).any(axis=1)
+    valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
     n_valid = valid_mask.sum()
 
     if n_valid == 0:
@@ -619,8 +564,10 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     # Generate synthetic errors based on parameter variations
     # Errors should vary based on how far parameters are from optimal values
     base_error = placeholder_cfg.base_error_m
-    param_contribution = sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p)
-                           for _, p in params_info) * placeholder_cfg.param_error_scale
+    param_contribution = (
+        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
+        * placeholder_cfg.param_error_scale
+    )
 
     error_magnitude = base_error + param_contribution
 
@@ -633,16 +580,14 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
 
     # Generate spacecraft position vectors (configurable orbit altitude)
     riss_ctrs = np.random.uniform(
-        placeholder_cfg.orbit_altitude_min_m,
-        placeholder_cfg.orbit_altitude_max_m,
-        (n_measurements, 3)
+        placeholder_cfg.orbit_altitude_min_m, placeholder_cfg.orbit_altitude_max_m, (n_measurements, 3)
     )
 
     # Extract corresponding geolocation data
     if n_valid > 0:
         valid_indices = np.where(valid_mask)[0][:n_measurements]
-        cp_lat = geolocated_data['latitude'].values[valid_indices, 0]  # Use first pixel
-        cp_lon = geolocated_data['longitude'].values[valid_indices, 0]
+        cp_lat = geolocated_data["latitude"].values[valid_indices, 0]  # Use first pixel
+        cp_lon = geolocated_data["longitude"].values[valid_indices, 0]
     else:
         # Use configured geographic bounds for synthetic control points
         cp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
@@ -651,21 +596,24 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     cp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
 
     # Use config names for coordinates instead of hardcoded ISS/HySICS names
-    return xr.Dataset({
-        'lat_error_deg': (['measurement'], lat_errors),
-        'lon_error_deg': (['measurement'], lon_errors),
-        sc_pos_name: (['measurement', 'xyz'], riss_ctrs),
-        boresight_name: (['measurement', 'xyz'], boresights),
-        transform_name: (['xyz_from', 'xyz_to', 'measurement'], t_matrices),
-        'cp_lat_deg': (['measurement'], cp_lat),
-        'cp_lon_deg': (['measurement'], cp_lon),
-        'cp_alt': (['measurement'], cp_alt)
-    }, coords={
-        'measurement': range(n_measurements),
-        'xyz': ['x', 'y', 'z'],
-        'xyz_from': ['x', 'y', 'z'],
-        'xyz_to': ['x', 'y', 'z']
-    })
+    return xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], lat_errors),
+            "lon_error_deg": (["measurement"], lon_errors),
+            sc_pos_name: (["measurement", "xyz"], riss_ctrs),
+            boresight_name: (["measurement", "xyz"], boresights),
+            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrices),
+            "cp_lat_deg": (["measurement"], cp_lat),
+            "cp_lon_deg": (["measurement"], cp_lon),
+            "cp_alt": (["measurement"], cp_alt),
+        },
+        coords={
+            "measurement": range(n_measurements),
+            "xyz": ["x", "y", "z"],
+            "xyz_from": ["x", "y", "z"],
+            "xyz_to": ["x", "y", "z"],
+        },
+    )
 
 
 def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.1):
@@ -690,14 +638,13 @@ def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad
     for i in range(n_measurements):
         # Generate random off-nadir angles (SYNTHETIC - not real pointing data)
         theta = np.random.uniform(0, max_off_nadir_rad)
-        phi = np.random.uniform(0, 2*np.pi)
-        boresights[i] = [np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)]
+        phi = np.random.uniform(0, 2 * np.pi)
+        boresights[i] = [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
     return boresights
 
 
 def _extract_boresight_and_transform_from_geolocation(
-    geo_dataset: xr.Dataset,
-    config: 'MonteCarloConfig'
+    geo_dataset: xr.Dataset, config: "MonteCarloConfig"
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract boresight vector and transformation matrix from geolocation data.
@@ -715,17 +662,18 @@ def _extract_boresight_and_transform_from_geolocation(
             - t_matrix: (3, 3) array - transformation matrix
     """
     # Try to extract attitude/transformation matrix from geolocation
-    if 'attitude' in geo_dataset:
+    if "attitude" in geo_dataset:
         # Geolocation provides attitude matrix (ex, ey, ez)
         # This is the transformation from instrument to reference frame
-        mid_idx = len(geo_dataset['frame']) // 2 if 'frame' in geo_dataset.dims else 0
-        t_matrix = geo_dataset['attitude'].values[mid_idx]
+        mid_idx = len(geo_dataset["frame"]) // 2 if "frame" in geo_dataset.dims else 0
+        t_matrix = geo_dataset["attitude"].values[mid_idx]
 
         logger.debug(f"Extracted transformation matrix from geolocation data (frame {mid_idx})")
 
         # For boresight, if we have SPICE loaded, we can query instrument boresight
         try:
             import spicierpy
+
             instrument_id = spicierpy.bodn2c(config.geo.instrument_name)
             # getfov returns: (shape, frame_name, boresight, bounds)
             _, _, boresight_inst, _ = spicierpy.getfov(instrument_id)
@@ -751,7 +699,7 @@ def image_matching(
     telemetry: pd.DataFrame,
     calibration_dir: Path,
     params_info: list,
-    config: 'MonteCarloConfig',
+    config: "MonteCarloConfig",
     los_vectors_cached: Optional[np.ndarray] = None,
     optical_psfs_cached: Optional[List] = None,
 ) -> xr.Dataset:
@@ -807,12 +755,12 @@ def image_matching(
         else:
             # Load from files
             # Use configurable calibration file names
-            los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
+            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
             los_file = calibration_dir / los_filename
             los_vectors = load_los_vectors_from_mat(los_file)
             logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-            psf_filename = config.get_calibration_file('optical_psf', default='optical_PSF_675nm_upsampled.mat')
+            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
             psf_file = calibration_dir / psf_filename
             optical_psfs = load_optical_psf_from_mat(psf_file)
             logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
@@ -882,35 +830,35 @@ def image_matching(
         transform_name = config.transformation_matrix_name
 
         # Create output dataset in error_stats format (use config names)
-        output = xr.Dataset({
-            'lat_error_deg': (['measurement'], [lat_error_deg]),
-            'lon_error_deg': (['measurement'], [lon_error_deg]),
-            sc_pos_name: (['measurement', 'xyz'], [r_iss_midframe]),
-            boresight_name: (['measurement', 'xyz'], [boresight]),
-            transform_name: (['xyz_from', 'xyz_to', 'measurement'], t_matrix[:, :, np.newaxis]),
-            'cp_lat_deg': (['measurement'], [gcp_center_lat]),
-            'cp_lon_deg': (['measurement'], [gcp_center_lon]),
-            'cp_alt': (['measurement'], [0.0]),  # GCP at ground level
-        }, coords={
-            'measurement': [0],
-            'xyz': ['x', 'y', 'z'],
-            'xyz_from': ['x', 'y', 'z'],
-            'xyz_to': ['x', 'y', 'z']
-        })
+        output = xr.Dataset(
+            {
+                "lat_error_deg": (["measurement"], [lat_error_deg]),
+                "lon_error_deg": (["measurement"], [lon_error_deg]),
+                sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
+                boresight_name: (["measurement", "xyz"], [boresight]),
+                transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+                "cp_lat_deg": (["measurement"], [gcp_center_lat]),
+                "cp_lon_deg": (["measurement"], [gcp_center_lon]),
+                "cp_alt": (["measurement"], [0.0]),  # GCP at ground level
+            },
+            coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
+        )
 
         # Add detailed metadata (Fix #3 Part B: Add km errors to attrs)
-        output.attrs.update({
-            'lat_error_km': result.lat_error_km,
-            'lon_error_km': result.lon_error_km,
-            'correlation_ccv': result.ccv_final,
-            'final_grid_step_m': result.final_grid_step_m,
-            'final_index_row': result.final_index_row,
-            'final_index_col': result.final_index_col,
-            'processing_time_s': processing_time,
-            'gcp_file': str(gcp_reference_file.name),
-            'gcp_center_lat': gcp_center_lat,
-            'gcp_center_lon': gcp_center_lon,
-        })
+        output.attrs.update(
+            {
+                "lat_error_km": result.lat_error_km,
+                "lon_error_km": result.lon_error_km,
+                "correlation_ccv": result.ccv_final,
+                "final_grid_step_m": result.final_grid_step_m,
+                "final_index_row": result.final_index_row,
+                "final_index_col": result.final_index_col,
+                "processing_time_s": processing_time,
+                "gcp_file": str(gcp_reference_file.name),
+                "gcp_center_lat": gcp_center_lat,
+                "gcp_center_lon": gcp_center_lon,
+            }
+        )
 
         return output
 
@@ -925,10 +873,7 @@ def image_matching(
         return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info, config)
 
 
-def call_error_stats_module(
-    image_matching_results,
-    monte_carlo_config: 'MonteCarloConfig'
-):
+def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCarloConfig"):
     """
     Call the error_stats module with image matching output.
 
@@ -945,10 +890,8 @@ def call_error_stats_module(
         image_matching_results = [image_matching_results]
 
     try:
-        from curryer.correction.geolocation_error_stats import (
-            ErrorStatsProcessor,
-            GeolocationConfig as ErrorStatsGeolocationConfig
-        )
+        from curryer.correction.geolocation_error_stats import ErrorStatsProcessor
+        from curryer.correction.geolocation_error_stats import GeolocationConfig as ErrorStatsGeolocationConfig
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
@@ -977,8 +920,8 @@ def call_error_stats_module(
         total_measurements = 0
 
         for result in image_matching_results:
-            lat_errors = result['lat_error_deg'].values
-            lon_errors = result['lon_error_deg'].values
+            lat_errors = result["lat_error_deg"].values
+            lon_errors = result["lon_error_deg"].values
             all_lat_errors.extend(lat_errors)
             all_lon_errors.extend(lon_errors)
             total_measurements += len(lat_errors)
@@ -995,16 +938,18 @@ def call_error_stats_module(
         rms_error = float(np.sqrt(np.mean(total_error_m**2)))
         std_error = float(np.std(total_error_m))
 
-        return xr.Dataset({
-            'mean_error': mean_error,
-            'rms_error': rms_error,
-            'std_error': std_error,
-            'max_error': float(np.max(total_error_m)),
-            'min_error': float(np.min(total_error_m)),
-        })
+        return xr.Dataset(
+            {
+                "mean_error": mean_error,
+                "rms_error": rms_error,
+                "std_error": std_error,
+                "max_error": float(np.max(total_error_m)),
+                "min_error": float(np.min(total_error_m)),
+            }
+        )
 
 
-def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarloConfig'):
+def _aggregate_image_matching_results(image_matching_results, config: "MonteCarloConfig"):
     """
     Aggregate multiple image matching results into a single dataset for error stats processing.
 
@@ -1034,10 +979,10 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
 
     for i, result in enumerate(image_matching_results):
         # Add GCP pair identifier to track source
-        n_measurements = len(result['lat_error_deg'])
+        n_measurements = len(result["lat_error_deg"])
 
-        all_lat_errors.extend(result['lat_error_deg'].values)
-        all_lon_errors.extend(result['lon_error_deg'].values)
+        all_lat_errors.extend(result["lat_error_deg"].values)
+        all_lon_errors.extend(result["lon_error_deg"].values)
 
         # Handle coordinate transformation data (use config names)
         # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
@@ -1053,52 +998,50 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
             # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
             for j in range(n_measurements):
                 all_transforms.append(result[transform_name].values[:, :, j])
-        if 'cp_lat_deg' in result:
-            all_cp_lats.extend(result['cp_lat_deg'].values)
-        if 'cp_lon_deg' in result:
-            all_cp_lons.extend(result['cp_lon_deg'].values)
-        if 'cp_alt' in result:
-            all_cp_alts.extend(result['cp_alt'].values)
+        if "cp_lat_deg" in result:
+            all_cp_lats.extend(result["cp_lat_deg"].values)
+        if "cp_lon_deg" in result:
+            all_cp_lons.extend(result["cp_lon_deg"].values)
+        if "cp_alt" in result:
+            all_cp_alts.extend(result["cp_alt"].values)
 
     n_total = len(all_lat_errors)
 
     # Create aggregated dataset with correct dimension names for error_stats
-    aggregated = xr.Dataset({
-        'lat_error_deg': (['measurement'], np.array(all_lat_errors)),
-        'lon_error_deg': (['measurement'], np.array(all_lon_errors)),
-    }, coords={
-        'measurement': np.arange(n_total)
-    })
+    aggregated = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], np.array(all_lat_errors)),
+            "lon_error_deg": (["measurement"], np.array(all_lon_errors)),
+        },
+        coords={"measurement": np.arange(n_total)},
+    )
 
     # Add optional coordinate transformation data if available (use config names)
     # Use dimension names that match error_stats expectations
     if all_sc_positions:
         # Stack into (n_measurements, 3)
-        aggregated[sc_pos_name] = (['measurement', 'xyz'], np.array(all_sc_positions))
-        aggregated = aggregated.assign_coords({'xyz': ['x', 'y', 'z']})
+        aggregated[sc_pos_name] = (["measurement", "xyz"], np.array(all_sc_positions))
+        aggregated = aggregated.assign_coords({"xyz": ["x", "y", "z"]})
 
     if all_boresights:
         # Stack into (n_measurements, 3)
-        aggregated[boresight_name] = (['measurement', 'xyz'], np.array(all_boresights))
+        aggregated[boresight_name] = (["measurement", "xyz"], np.array(all_boresights))
 
     if all_transforms:
         # Stack into (3, 3, n_measurements) to match error_stats format
         t_stacked = np.stack(all_transforms, axis=2)
-        aggregated[transform_name] = (['xyz_from', 'xyz_to', 'measurement'], t_stacked)
-        aggregated = aggregated.assign_coords({
-            'xyz_from': ['x', 'y', 'z'],
-            'xyz_to': ['x', 'y', 'z']
-        })
+        aggregated[transform_name] = (["xyz_from", "xyz_to", "measurement"], t_stacked)
+        aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
 
     if all_cp_lats:
-        aggregated['cp_lat_deg'] = (['measurement'], np.array(all_cp_lats))
+        aggregated["cp_lat_deg"] = (["measurement"], np.array(all_cp_lats))
     if all_cp_lons:
-        aggregated['cp_lon_deg'] = (['measurement'], np.array(all_cp_lons))
+        aggregated["cp_lon_deg"] = (["measurement"], np.array(all_cp_lons))
     if all_cp_alts:
-        aggregated['cp_alt'] = (['measurement'], np.array(all_cp_alts))
+        aggregated["cp_alt"] = (["measurement"], np.array(all_cp_alts))
 
-    aggregated.attrs['source_gcp_pairs'] = len(image_matching_results)
-    aggregated.attrs['total_measurements'] = n_total
+    aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
+    aggregated.attrs["total_measurements"] = n_total
 
     logger.info(f"  Aggregated dataset: {n_total} measurements from {len(image_matching_results)} GCP pairs")
     logger.info(f"  Dimensions: {dict(aggregated.sizes)}")
@@ -1107,6 +1050,7 @@ def _aggregate_image_matching_results(image_matching_results, config: 'MonteCarl
 
 
 # Original Functions
+
 
 class ParameterType(Enum):
     CONSTANT_KERNEL = auto()  # Set a specific value.
@@ -1134,6 +1078,7 @@ class GeolocationConfig:
 @dataclass
 class NetCDFParameterMetadata:
     """Metadata for a single parameter in NetCDF output."""
+
     variable_name: str  # NetCDF variable name (e.g., 'param_hysics_roll')
     units: str  # Units (e.g., 'arcseconds', 'milliseconds')
     long_name: str  # Human-readable description
@@ -1151,6 +1096,7 @@ class NetCDFConfig:
     MonteCarloConfig. It's used to generate threshold-specific variable names
     in the NetCDF output (e.g., "percent_under_250m").
     """
+
     performance_threshold_m: float  # Required: accuracy threshold in meters
     title: str = "Monte Carlo Geolocation Analysis Results"
     description: str = "Parameter sensitivity analysis"
@@ -1166,7 +1112,7 @@ class NetCDFConfig:
     def get_threshold_metric_name(self) -> str:
         """Generate metric name dynamically from threshold."""
         threshold_m = int(self.performance_threshold_m)
-        return f'percent_under_{threshold_m}m'
+        return f"percent_under_{threshold_m}m"
 
     def get_standard_attributes(self) -> typing.Dict[str, typing.Dict[str, str]]:
         """
@@ -1182,7 +1128,9 @@ class NetCDFConfig:
             # Use module-level defaults
             return STANDARD_NETCDF_ATTRIBUTES.copy()
 
-    def get_parameter_netcdf_metadata(self, param_config: ParameterConfig, angle_type: typing.Optional[str] = None) -> NetCDFParameterMetadata:
+    def get_parameter_netcdf_metadata(
+        self, param_config: ParameterConfig, angle_type: typing.Optional[str] = None
+    ) -> NetCDFParameterMetadata:
         """
         Get NetCDF metadata for a parameter.
 
@@ -1210,35 +1158,37 @@ class NetCDFConfig:
         # Auto-generate if not provided
         return self._auto_generate_metadata(param_config, angle_type, lookup_key)
 
-    def _auto_generate_metadata(self, param_config: ParameterConfig, angle_type: typing.Optional[str], base_key: str) -> NetCDFParameterMetadata:
+    def _auto_generate_metadata(
+        self, param_config: ParameterConfig, angle_type: typing.Optional[str], base_key: str
+    ) -> NetCDFParameterMetadata:
         """Auto-generate NetCDF metadata from parameter configuration."""
 
         # Determine units based on parameter type
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            units = 'arcseconds'
+            units = "arcseconds"
         elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            units = 'arcseconds'  # Typical for angle offsets
+            units = "arcseconds"  # Typical for angle offsets
         elif param_config.ptype == ParameterType.OFFSET_TIME:
-            units = 'milliseconds'
+            units = "milliseconds"
         else:
-            units = 'unknown'
+            units = "unknown"
 
         # Check if units specified in parameter data
-        if isinstance(param_config.data, dict) and 'units' in param_config.data:
-            units = param_config.data['units']
+        if isinstance(param_config.data, dict) and "units" in param_config.data:
+            units = param_config.data["units"]
 
         # Generate variable name (ensure it starts with 'param_')
-        var_name = base_key.replace('.', '_').replace('-', '_')
-        if not var_name.startswith('param_'):
-            var_name = f'param_{var_name}'
+        var_name = base_key.replace(".", "_").replace("-", "_")
+        if not var_name.startswith("param_"):
+            var_name = f"param_{var_name}"
 
         # Generate human-readable description
         if param_config.config_file:
             # Extract frame names from config file path
             file_stem = param_config.config_file.stem
             # Remove version numbers and file extensions
-            clean_name = file_stem.replace('_v01', '').replace('_v02', '').replace('.attitude.ck', '')
-            clean_name = clean_name.replace('_', ' ').title()
+            clean_name = file_stem.replace("_v01", "").replace("_v02", "").replace(".attitude.ck", "")
+            clean_name = clean_name.replace("_", " ").title()
 
             if angle_type:
                 long_name = f"{clean_name} {angle_type} correction"
@@ -1247,11 +1197,7 @@ class NetCDFConfig:
         else:
             long_name = f"{param_config.ptype.name.replace('_', ' ').title()} parameter"
 
-        return NetCDFParameterMetadata(
-            variable_name=var_name,
-            units=units,
-            long_name=long_name
-        )
+        return NetCDFParameterMetadata(variable_name=var_name, units=units, long_name=long_name)
 
 
 @dataclass
@@ -1261,6 +1207,7 @@ class PlaceholderConfig:
     This allows customization of SYNTHETIC data generation for different mission
     characteristics without hardcoding values.
     """
+
     # Synthetic error generation
     base_error_m: float = 50.0  # Base RMS error in meters
     param_error_scale: float = 10.0  # How much parameters affect error (meters per parameter unit)
@@ -1300,6 +1247,7 @@ class MonteCarloConfig:
     Optional Fields (with defaults):
         [See individual field documentation below]
     """
+
     # REQUIRED FIELDS (no defaults - must be provided by mission config)
     seed: typing.Optional[int]  # Random seed for reproducibility, or None
     n_iterations: int  # Number of Monte Carlo iterations
@@ -1321,7 +1269,6 @@ class MonteCarloConfig:
     pairing_gcp_key: str = "GCP"  # MATLAB struct key for GCP data
     pairing_gcp_pattern: str = "*_resampled.mat"  # File pattern for GCP discovery
 
-
     # NetCDF output configuration (NEW)
     netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata; auto-generated if None
 
@@ -1330,9 +1277,9 @@ class MonteCarloConfig:
     # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
 
     # Coordinate frame naming (for outputs) (NEW)
-    spacecraft_position_name: str = 'sc_position'  # Generic default
-    boresight_name: str = 'boresight'  # Generic default
-    transformation_matrix_name: str = 't_inst2ref'  # Generic default
+    spacecraft_position_name: str = "sc_position"  # Generic default
+    boresight_name: str = "boresight"  # Generic default
+    transformation_matrix_name: str = "t_inst2ref"  # Generic default
 
     # Output filename configuration
     output_filename: typing.Optional[str] = None  # If None, auto-generates with timestamp
@@ -1389,9 +1336,7 @@ class MonteCarloConfig:
     def ensure_netcdf_config(self):
         """Ensure NetCDFConfig exists, creating with defaults if needed."""
         if self.netcdf is None:
-            self.netcdf = NetCDFConfig(
-                performance_threshold_m=self.performance_threshold_m
-            )
+            self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
 
     def get_output_filename(self, default: str = "monte_carlo_results.nc") -> str:
         """
@@ -1429,6 +1374,7 @@ class MonteCarloConfig:
             'clarreo_gcs_20251029_143022_production.nc'
         """
         import datetime
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         if suffix:
             return f"{prefix}_{timestamp}_{suffix}.nc"
@@ -1462,11 +1408,13 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
     logger.info(f"Generating {config.n_iterations} parameter sets for {len(config.parameters)} parameters:")
     for i, param in enumerate(config.parameters):
         param_name = param.config_file.name if param.config_file else f"param_{i}"
-        current_value = param.data.get('current_value', param.data.get('center', 0.0))
-        bounds = param.data.get('bounds', param.data.get('arange', [-1.0, 1.0]))
-        logger.info(f"  {i+1}. {param_name} ({param.ptype.name}): "
-                   f"current_value={current_value}, sigma={param.data.get('sigma', 'N/A')}, "
-                   f"bounds={bounds}, units={param.data.get('units', 'N/A')}")
+        current_value = param.data.get("current_value", param.data.get("center", 0.0))
+        bounds = param.data.get("bounds", param.data.get("arange", [-1.0, 1.0]))
+        logger.info(
+            f"  {i + 1}. {param_name} ({param.ptype.name}): "
+            f"current_value={current_value}, sigma={param.data.get('sigma', 'N/A')}, "
+            f"bounds={bounds}, units={param.data.get('units', 'N/A')}"
+        )
 
     for ith in range(config.n_iterations):
         out_set = []
@@ -1474,8 +1422,8 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
 
         for param_idx, param in enumerate(config.parameters):
             # Get parameter configuration with backward compatibility
-            current_value = param.data.get('current_value', param.data.get('center', 0.0))
-            bounds = param.data.get('bounds', param.data.get('arange', [-1.0, 1.0]))
+            current_value = param.data.get("current_value", param.data.get("center", 0.0))
+            bounds = param.data.get("bounds", param.data.get("arange", [-1.0, 1.0]))
 
             # Handle different parameter structure types
             if param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -1485,18 +1433,17 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                     param_vals = []
                     for i, current_val in enumerate(current_value):
                         # Check if parameter should be varied
-                        if ('sigma' in param.data and param.data['sigma'] is not None and
-                            param.data['sigma'] > 0):
+                        if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
                             # Apply variation: Generate offset around 0, then apply to current_value
-                            if param.data.get('units') == 'arcseconds':
+                            if param.data.get("units") == "arcseconds":
                                 # Convert arcsec to radians for sampling
-                                sigma_rad = np.deg2rad(param.data['sigma'] / 3600.0)
+                                sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                                 # Convert bounds from arcsec to radians (these are offset bounds around 0)
                                 bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                             else:
                                 # Assume all values are already in radians
-                                sigma_rad = param.data['sigma']
+                                sigma_rad = param.data["sigma"]
                                 current_val_rad = current_val
                                 bounds_rad = bounds
 
@@ -1506,13 +1453,15 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                             param_vals.append(current_val_rad + offset)
                         else:
                             # No variation: use current_value directly
-                            if 'sigma' not in param.data or param.data['sigma'] is None:
-                                logger.debug(f"  Parameter {param_idx} axis {i}: No sigma specified, using fixed current_value")
-                            elif param.data['sigma'] == 0:
+                            if "sigma" not in param.data or param.data["sigma"] is None:
+                                logger.debug(
+                                    f"  Parameter {param_idx} axis {i}: No sigma specified, using fixed current_value"
+                                )
+                            elif param.data["sigma"] == 0:
                                 logger.debug(f"  Parameter {param_idx} axis {i}: sigma=0, using fixed current_value")
 
                             # Convert to appropriate units if needed
-                            if param.data.get('units') == 'arcseconds':
+                            if param.data.get("units") == "arcseconds":
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                             else:
                                 current_val_rad = current_val
@@ -1520,15 +1469,16 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                 else:
                     # Single angle or default to zero for each axis
                     param_vals = [0.0, 0.0, 0.0]  # [roll, pitch, yaw]
-                    if ('sigma' in param.data and param.data['sigma'] is not None and
-                        param.data['sigma'] > 0):
+                    if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
                         # Apply variation
-                        if param.data.get('units') == 'arcseconds':
-                            sigma_rad = np.deg2rad(param.data['sigma'] / 3600.0)
+                        if param.data.get("units") == "arcseconds":
+                            sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
                             bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
-                            current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
+                            current_val_rad = (
+                                np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
+                            )
                         else:
-                            sigma_rad = param.data['sigma']
+                            sigma_rad = param.data["sigma"]
                             bounds_rad = bounds
                             current_val_rad = current_value
 
@@ -1539,14 +1489,16 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                             param_vals[i] = current_val_rad + offset
                     else:
                         # No variation: use current_value directly for all axes
-                        if 'sigma' not in param.data or param.data['sigma'] is None:
+                        if "sigma" not in param.data or param.data["sigma"] is None:
                             logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                        elif param.data['sigma'] == 0:
+                        elif param.data["sigma"] == 0:
                             logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
 
                         # Convert to appropriate units if needed
-                        if param.data.get('units') == 'arcseconds':
-                            current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
+                        if param.data.get("units") == "arcseconds":
+                            current_val_rad = (
+                                np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
+                            )
                         else:
                             current_val_rad = current_value
 
@@ -1554,30 +1506,33 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                         param_vals = [current_val_rad, current_val_rad, current_val_rad]
 
                 # Convert to DataFrame format expected by kernel creation
-                param_vals = pd.DataFrame({
-                    "ugps": [0, 2209075218000000],  # Start and end times
-                    "angle_x": [param_vals[0], param_vals[0]],  # Roll (constant over time)
-                    "angle_y": [param_vals[1], param_vals[1]],  # Pitch (constant over time)
-                    "angle_z": [param_vals[2], param_vals[2]],  # Yaw (constant over time)
-                })
+                param_vals = pd.DataFrame(
+                    {
+                        "ugps": [0, 2209075218000000],  # Start and end times
+                        "angle_x": [param_vals[0], param_vals[0]],  # Roll (constant over time)
+                        "angle_y": [param_vals[1], param_vals[1]],  # Pitch (constant over time)
+                        "angle_z": [param_vals[2], param_vals[2]],  # Yaw (constant over time)
+                    }
+                )
 
-                logger.debug(f"  CONSTANT_KERNEL {param_idx}: angles=[{param_vals['angle_x'].iloc[0]:.6e}, "
-                           f"{param_vals['angle_y'].iloc[0]:.6e}, {param_vals['angle_z'].iloc[0]:.6e}] rad")
+                logger.debug(
+                    f"  CONSTANT_KERNEL {param_idx}: angles=[{param_vals['angle_x'].iloc[0]:.6e}, "
+                    f"{param_vals['angle_y'].iloc[0]:.6e}, {param_vals['angle_z'].iloc[0]:.6e}] rad"
+                )
 
             elif param.ptype == ParameterType.OFFSET_KERNEL:
                 # OFFSET_KERNEL parameters are angle biases (single values)
-                if ('sigma' in param.data and param.data['sigma'] is not None and
-                    param.data['sigma'] > 0):
+                if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
                     # Apply variation: Generate offset around 0, then apply to current_value
-                    if param.data.get('units') == 'arcseconds':
+                    if param.data.get("units") == "arcseconds":
                         # Convert arcsec to radians for sampling
-                        sigma_rad = np.deg2rad(param.data['sigma'] / 3600.0)
+                        sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                         # Convert bounds from arcsec to radians (these are offset bounds around 0)
                         bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                     else:
                         # Assume all values are already in radians
-                        sigma_rad = param.data['sigma']
+                        sigma_rad = param.data["sigma"]
                         current_val_rad = current_value
                         bounds_rad = bounds
 
@@ -1587,13 +1542,13 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                     param_vals = current_val_rad + offset
                 else:
                     # No variation: use current_value directly
-                    if 'sigma' not in param.data or param.data['sigma'] is None:
+                    if "sigma" not in param.data or param.data["sigma"] is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.data['sigma'] == 0:
+                    elif param.data["sigma"] == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
 
                     # Convert to appropriate units if needed
-                    if param.data.get('units') == 'arcseconds':
+                    if param.data.get("units") == "arcseconds":
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_val != 0 else current_val
                     else:
                         current_val_rad = current_value
@@ -1603,27 +1558,26 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
 
             elif param.ptype == ParameterType.OFFSET_TIME:
                 # OFFSET_TIME parameters are timing corrections (single values)
-                if ('sigma' in param.data and param.data['sigma'] is not None and
-                    param.data['sigma'] > 0):
+                if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
                     # Apply variation: Generate offset around 0, then apply to current_value
-                    if param.data.get('units') == 'seconds':
+                    if param.data.get("units") == "seconds":
                         # Time parameters typically use seconds, no conversion needed
-                        sigma_time = param.data['sigma']
+                        sigma_time = param.data["sigma"]
                         current_val_time = current_value
                         bounds_time = bounds
-                    elif param.data.get('units') == 'milliseconds':
+                    elif param.data.get("units") == "milliseconds":
                         # Convert milliseconds to seconds
-                        sigma_time = param.data['sigma'] / 1000.0
+                        sigma_time = param.data["sigma"] / 1000.0
                         current_val_time = current_value / 1000.0
                         bounds_time = [bounds[0] / 1000.0, bounds[1] / 1000.0]
-                    elif param.data.get('units') == 'microseconds':
+                    elif param.data.get("units") == "microseconds":
                         # Convert microseconds to seconds
-                        sigma_time = param.data['sigma'] / 1000000.0
+                        sigma_time = param.data["sigma"] / 1000000.0
                         current_val_time = current_value / 1000000.0
                         bounds_time = [bounds[0] / 1000000.0, bounds[1] / 1000000.0]
                     else:
                         # Default to seconds if units not specified
-                        sigma_time = param.data['sigma']
+                        sigma_time = param.data["sigma"]
                         current_val_time = current_value
                         bounds_time = bounds
 
@@ -1633,15 +1587,15 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
                     param_vals = current_val_time + offset
                 else:
                     # No variation: use current_value directly
-                    if 'sigma' not in param.data or param.data['sigma'] is None:
+                    if "sigma" not in param.data or param.data["sigma"] is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.data['sigma'] == 0:
+                    elif param.data["sigma"] == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
 
                     # Convert to appropriate units if needed
-                    if param.data.get('units') == 'milliseconds':
+                    if param.data.get("units") == "milliseconds":
                         current_val_time = current_value / 1000.0
-                    elif param.data.get('units') == 'microseconds':
+                    elif param.data.get("units") == "microseconds":
                         current_val_time = current_value / 1000000.0
                     else:
                         current_val_time = current_value
@@ -1720,7 +1674,6 @@ def load_science(sci_key: str, config: MonteCarloConfig, loader_func=None) -> pd
     return loader_func(sci_key, config)
 
 
-
 def load_gcp(gcp_key: str, config: MonteCarloConfig, loader_func=None):
     """
     Load Ground Control Point (GCP) reference data using mission-specific loader.
@@ -1768,21 +1721,21 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     if isinstance(input_data, pd.DataFrame):
         modified_data = input_data.copy()
     else:
-        modified_data = input_data.copy() if hasattr(input_data, 'copy') else input_data
+        modified_data = input_data.copy() if hasattr(input_data, "copy") else input_data
 
     if config.ptype == ParameterType.OFFSET_KERNEL:
         # Apply offset to telemetry fields for dynamic kernels (azimuth/elevation angles)
-        field_name = config.data.get('field')
+        field_name = config.data.get("field")
         if field_name and field_name in modified_data.columns:
             # Convert parameter value to appropriate units
             offset_value = param_data
-            if config.data.get('units') == 'arcseconds':
+            if config.data.get("units") == "arcseconds":
                 # Convert arcseconds to radians for application
                 offset_value = np.deg2rad(param_data / 3600.0)
-            elif config.data.get('units') == 'milliseconds':
+            elif config.data.get("units") == "milliseconds":
                 # Convert milliseconds to seconds
                 offset_value = param_data / 1000.0
-        field_name = config.data.get('field')
+        field_name = config.data.get("field")
         if not field_name:
             raise ValueError("OFFSET_TIME parameter requires 'field' to be specified in config")
 
@@ -1795,10 +1748,10 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
     elif config.ptype == ParameterType.OFFSET_TIME:
         # Apply time offset to science frame timing
-        field_name = config.data.get('field', 'corrected_timestamp')
-        if hasattr(modified_data, '__getitem__') and field_name in modified_data:
+        field_name = config.data.get("field", "corrected_timestamp")
+        if hasattr(modified_data, "__getitem__") and field_name in modified_data:
             offset_value = param_data
-            if config.data.get('units') == 'milliseconds':
+            if config.data.get("units") == "milliseconds":
                 # Convert milliseconds to microseconds (uGPS)
                 offset_value = param_data * 1000.0
 
@@ -1808,7 +1761,9 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     elif config.ptype == ParameterType.CONSTANT_KERNEL:
         # For constant kernels, param_data should already be in the correct format
         # (DataFrame with ugps, angle_x, angle_y, angle_z columns)
-        logger.info(f"Using constant kernel data with {len(param_data) if hasattr(param_data, '__len__') else 1} entries")
+        logger.info(
+            f"Using constant kernel data with {len(param_data) if hasattr(param_data, '__len__') else 1} entries"
+        )
         modified_data = param_data
 
     else:
@@ -1839,8 +1794,8 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
 
     # Start with coordinate dimensions
     netcdf_data = {
-        'parameter_set_id': np.arange(n_param_sets),
-        'gcp_pair_id': np.arange(n_gcp_pairs),
+        "parameter_set_id": np.arange(n_param_sets),
+        "gcp_pair_id": np.arange(n_gcp_pairs),
     }
 
     # Add parameter variables dynamically based on config.parameters
@@ -1848,7 +1803,7 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
     for param in config.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
             # CONSTANT_KERNEL parameters have roll, pitch, yaw components
-            for angle in ['roll', 'pitch', 'yaw']:
+            for angle in ["roll", "pitch", "yaw"]:
                 metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
                 var_name = metadata.variable_name
                 netcdf_data[var_name] = np.full(n_param_sets, np.nan)
@@ -1866,15 +1821,15 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
 
     # Add standard error statistics (2D: parameter_set_id × gcp_pair_id)
     error_metrics = {
-        'rms_error_m': 'RMS geolocation error',
-        'mean_error_m': 'Mean geolocation error',
-        'max_error_m': 'Maximum geolocation error',
-        'std_error_m': 'Standard deviation of geolocation error',
-        'n_measurements': 'Number of measurement points',
+        "rms_error_m": "RMS geolocation error",
+        "mean_error_m": "Mean geolocation error",
+        "max_error_m": "Maximum geolocation error",
+        "std_error_m": "Standard deviation of geolocation error",
+        "n_measurements": "Number of measurement points",
     }
 
     for var_name, description in error_metrics.items():
-        if var_name == 'n_measurements':
+        if var_name == "n_measurements":
             netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), 0, dtype=int)
         else:
             netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), np.nan)
@@ -1882,10 +1837,10 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
 
     # Add image matching results (2D: parameter_set_id × gcp_pair_id)
     image_match_vars = {
-        'im_lat_error_km': 'Image matching latitude error',
-        'im_lon_error_km': 'Image matching longitude error',
-        'im_ccv': 'Image matching correlation coefficient',
-        'im_grid_step_m': 'Image matching final grid step size',
+        "im_lat_error_km": "Image matching latitude error",
+        "im_lon_error_km": "Image matching longitude error",
+        "im_ccv": "Image matching correlation coefficient",
+        "im_grid_step_m": "Image matching final grid step size",
     }
 
     for var_name, description in image_match_vars.items():
@@ -1896,10 +1851,10 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
     # Use dynamic threshold metric name
     threshold_metric = config.netcdf.get_threshold_metric_name()
     overall_metrics = {
-        threshold_metric: f'Percentage of pairs with error < {config.performance_threshold_m}m',
-        'mean_rms_all_pairs': 'Mean RMS error across all GCP pairs',
-        'worst_pair_rms': 'Worst performing GCP pair RMS error',
-        'best_pair_rms': 'Best performing GCP pair RMS error',
+        threshold_metric: f"Percentage of pairs with error < {config.performance_threshold_m}m",
+        "mean_rms_all_pairs": "Mean RMS error across all GCP pairs",
+        "worst_pair_rms": "Worst performing GCP pair RMS error",
+        "best_pair_rms": "Best performing GCP pair RMS error",
     }
 
     for var_name, description in overall_metrics.items():
@@ -1918,7 +1873,7 @@ def loop(
     telemetry_loader=None,
     science_loader=None,
     gcp_loader=None,
-    resume_from_checkpoint: bool = False
+    resume_from_checkpoint: bool = False,
 ):
     """
     Main Monte Carlo loop for parameter sensitivity analysis.
@@ -1974,7 +1929,9 @@ def loop(
 
     # Prepare meta kernel details and kernel writer.
     mkrn = meta.MetaKernel.from_json(
-        config.geo.meta_kernel_file, relative=True, sds_dir=config.geo.generic_kernel_dir,
+        config.geo.meta_kernel_file,
+        relative=True,
+        sds_dir=config.geo.generic_kernel_dir,
     )
     creator = create.KernelCreator(overwrite=True, append=False)
 
@@ -2002,11 +1959,11 @@ def loop(
             logger.info("Loading calibration data once for all GCP pairs...")
 
             # Use configurable calibration file names
-            los_filename = config.get_calibration_file('los_vectors', default='b_HS.mat')
+            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
             los_file = config.calibration_dir / los_filename
             los_vectors_cached = load_los_vectors_from_mat(los_file)
 
-            psf_filename = config.get_calibration_file('optical_psf', default='optical_PSF_675nm_upsampled.mat')
+            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
             psf_file = config.calibration_dir / psf_filename
             optical_psfs_cached = load_optical_psf_from_mat(psf_file)
 
@@ -2043,33 +2000,44 @@ def loop(
             logger.info("    Creating dynamic kernels from telemetry...")
             dynamic_kernels = []
             for kernel_config in config.geo.dynamic_kernels:
-                dynamic_kernels.append(creator.write_from_json(
-                    kernel_config, output_kernel=work_dir, input_data=tlm_dataset,
-                ))
+                dynamic_kernels.append(
+                    creator.write_from_json(
+                        kernel_config,
+                        output_kernel=work_dir,
+                        input_data=tlm_dataset,
+                    )
+                )
             logger.info(f"    Created {len(dynamic_kernels)} dynamic kernels")
 
             # Apply parameter changes for this parameter set
             param_kernels = []
-            ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, 'copy') else ugps_times
+            ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
 
             # Apply each individual parameter change.
-            print('Applying parameter changes:')
+            print("Applying parameter changes:")
             for a_param, p_data in params:  # [ParameterConfig, typing.Any]
-
                 # Create static changing SPICE kernels.
                 if a_param.ptype == ParameterType.CONSTANT_KERNEL:
                     # Aka: BASE-CK, YOKE-CK, HYSICS-CK
-                    param_kernels.append(creator.write_from_json(
-                        a_param.config_file, output_kernel=work_dir, input_data=p_data,
-                    ))
+                    param_kernels.append(
+                        creator.write_from_json(
+                            a_param.config_file,
+                            output_kernel=work_dir,
+                            input_data=p_data,
+                        )
+                    )
 
                 # Create dynamic changing SPICE kernels.
                 elif a_param.ptype == ParameterType.OFFSET_KERNEL:
                     # Aka: AZ-CK, EL-CK
                     tlm_dataset_alt = apply_offset(a_param, p_data, tlm_dataset)
-                    param_kernels.append(creator.write_from_json(
-                        a_param.config_file, output_kernel=work_dir, input_data=tlm_dataset_alt,
-                    ))
+                    param_kernels.append(
+                        creator.write_from_json(
+                            a_param.config_file,
+                            output_kernel=work_dir,
+                            input_data=tlm_dataset_alt,
+                        )
+                    )
 
                 # Alter non-kernel data.
                 elif a_param.ptype == ParameterType.OFFSET_TIME:
@@ -2103,7 +2071,7 @@ def loop(
                             telemetry=tlm_dataset,
                             calibration_dir=config.calibration_dir,
                             params_info=params,
-                            config=config  # pass config for coordinate names
+                            config=config,  # pass config for coordinate names
                         )
                         logger.info(f"    REAL image matching complete")
                     except Exception as e:
@@ -2114,7 +2082,7 @@ def loop(
                             geo_dataset,
                             gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                             params,
-                            config  # pass config for coordinate names
+                            config,  # pass config for coordinate names
                         )
                 else:
                     # Use placeholder image matching
@@ -2123,30 +2091,34 @@ def loop(
                         geo_dataset,
                         gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                         params,
-                        config  # pass config for coordinate names
+                        config,  # pass config for coordinate names
                     )
                     if config.use_real_image_matching:
-                        logger.warning("    Real image matching requested but calibration_dir not set - using placeholder")
+                        logger.warning(
+                            "    Real image matching requested but calibration_dir not set - using placeholder"
+                        )
                     image_matching_output = placeholder_image_matching(
                         geo_dataset,
                         gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                         params,
-                        config  # pass config for coordinate names
+                        config,  # pass config for coordinate names
                     )
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
 
                 # Store image matching result for aggregate processing
-                image_matching_output.attrs['gcp_pair_index'] = pair_idx
-                image_matching_output.attrs['gcp_pair_id'] = f"{sci_key}_pair_{pair_idx}"
+                image_matching_output.attrs["gcp_pair_index"] = pair_idx
+                image_matching_output.attrs["gcp_pair_id"] = f"{sci_key}_pair_{pair_idx}"
                 image_matching_results.append(image_matching_output)
 
                 # Store geolocation data for backward compatibility
-                gcp_pair_geolocation_data.append({
-                    'pair_index': pair_idx,
-                    'geolocation': geo_dataset,
-                    'gcp_pairs': gcp_pairs,
-                })
+                gcp_pair_geolocation_data.append(
+                    {
+                        "pair_index": pair_idx,
+                        "geolocation": geo_dataset,
+                        "gcp_pairs": gcp_pairs,
+                    }
+                )
 
                 logger.info(f"    GCP pair {pair_idx + 1} image matching complete")
 
@@ -2160,8 +2132,10 @@ def loop(
         # Extract aggregate error metrics
         aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
 
-        logger.info(f"  Aggregate error statistics: RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
-                   f"measurements = {aggregate_error_metrics['n_measurements']}")
+        logger.info(
+            f"  Aggregate error statistics: RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
+            f"measurements = {aggregate_error_metrics['n_measurements']}"
+        )
 
         # Process individual GCP pair results for detailed NetCDF storage
         pair_errors = []
@@ -2170,36 +2144,44 @@ def loop(
             individual_stats = call_error_stats_module(image_matching_result, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
-            pair_errors.append(individual_metrics['rms_error_m'])
+            pair_errors.append(individual_metrics["rms_error_m"])
 
             # Store individual results in NetCDF structure
             _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
 
             # Store per-GCP-pair image matching results
-            netcdf_data['im_lat_error_km'][param_idx, pair_idx] = image_matching_result.attrs.get('lat_error_km', np.nan)
-            netcdf_data['im_lon_error_km'][param_idx, pair_idx] = image_matching_result.attrs.get('lon_error_km', np.nan)
-            netcdf_data['im_ccv'][param_idx, pair_idx] = image_matching_result.attrs.get('correlation_ccv', np.nan)
-            netcdf_data['im_grid_step_m'][param_idx, pair_idx] = image_matching_result.attrs.get('final_grid_step_m', np.nan)
+            netcdf_data["im_lat_error_km"][param_idx, pair_idx] = image_matching_result.attrs.get(
+                "lat_error_km", np.nan
+            )
+            netcdf_data["im_lon_error_km"][param_idx, pair_idx] = image_matching_result.attrs.get(
+                "lon_error_km", np.nan
+            )
+            netcdf_data["im_ccv"][param_idx, pair_idx] = image_matching_result.attrs.get("correlation_ccv", np.nan)
+            netcdf_data["im_grid_step_m"][param_idx, pair_idx] = image_matching_result.attrs.get(
+                "final_grid_step_m", np.nan
+            )
 
             logger.info(f"    GCP pair {pair_idx + 1}: RMS = {individual_metrics['rms_error_m']:.2f}m")
 
         # Store comprehensive results for backward compatibility
-        for pair_idx, (image_matching_result, geo_data) in enumerate(zip(image_matching_results, gcp_pair_geolocation_data)):
+        for pair_idx, (image_matching_result, geo_data) in enumerate(
+            zip(image_matching_results, gcp_pair_geolocation_data)
+        ):
             individual_stats = call_error_stats_module(image_matching_result, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             iteration_result = {
-                'iteration': len(results),
-                'pair_index': pair_idx,
-                'param_index': param_idx,
-                'parameters': param_values,
-                'geolocation': geo_data['geolocation'],
-                'gcp_pairs': geo_data['gcp_pairs'],
-                'image_matching': image_matching_result,
-                'error_stats': individual_stats,
-                'aggregate_error_stats': aggregate_stats,  # NEW: Include aggregate statistics
-                'rms_error_m': individual_metrics['rms_error_m'],
-                'aggregate_rms_error_m': aggregate_error_metrics['rms_error_m']  # NEW: Include aggregate RMS
+                "iteration": len(results),
+                "pair_index": pair_idx,
+                "param_index": param_idx,
+                "parameters": param_values,
+                "geolocation": geo_data["geolocation"],
+                "gcp_pairs": geo_data["gcp_pairs"],
+                "image_matching": image_matching_result,
+                "error_stats": individual_stats,
+                "aggregate_error_stats": aggregate_stats,  # NEW: Include aggregate statistics
+                "rms_error_m": individual_metrics["rms_error_m"],
+                "aggregate_rms_error_m": aggregate_error_metrics["rms_error_m"],  # NEW: Include aggregate RMS
             }
             results.append(iteration_result)
 
@@ -2207,12 +2189,14 @@ def loop(
         _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=config.performance_threshold_m)
 
         # Log parameter set summary with both individual and aggregate metrics
-        percent_under_250 = netcdf_data['percent_under_250m'][param_idx]
-        mean_rms = netcdf_data['mean_rms_all_pairs'][param_idx]
+        percent_under_250 = netcdf_data["percent_under_250m"][param_idx]
+        mean_rms = netcdf_data["mean_rms_all_pairs"][param_idx]
         logger.info(f"Parameter set {param_idx + 1} complete:")
         logger.info(f"  Individual pairs - {percent_under_250:.1f}% under 250m, mean RMS = {mean_rms:.2f}m")
-        logger.info(f"  Aggregate - RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
-                   f"total measurements = {aggregate_error_metrics['n_measurements']}")
+        logger.info(
+            f"  Aggregate - RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
+            f"total measurements = {aggregate_error_metrics['n_measurements']}"
+        )
 
         # Save checkpoint after each parameter set
         _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx)
@@ -2249,7 +2233,9 @@ def loop(
     # Clean up checkpoint file after successful completion
     _cleanup_checkpoint(output_file)
 
-    logger.info(f"=== GCS Loop Complete: Processed {len(params_set)} parameter sets × {len(tlm_sci_gcp_sets)} GCP pairs ===")
+    logger.info(
+        f"=== GCS Loop Complete: Processed {len(params_set)} parameter sets × {len(tlm_sci_gcp_sets)} GCP pairs ==="
+    )
     return results, netcdf_data
 
 
@@ -2263,11 +2249,11 @@ def _extract_parameter_values(params):
 
             if param_config.ptype == ParameterType.CONSTANT_KERNEL:
                 # Extract roll, pitch, yaw from DataFrame
-                if isinstance(param_data, pd.DataFrame) and 'angle_x' in param_data.columns:
+                if isinstance(param_data, pd.DataFrame) and "angle_x" in param_data.columns:
                     # Convert back to arcseconds for storage
-                    param_values[f"{param_name}_roll"] = np.degrees(param_data['angle_x'].iloc[0]) * 3600
-                    param_values[f"{param_name}_pitch"] = np.degrees(param_data['angle_y'].iloc[0]) * 3600
-                    param_values[f"{param_name}_yaw"] = np.degrees(param_data['angle_z'].iloc[0]) * 3600
+                    param_values[f"{param_name}_roll"] = np.degrees(param_data["angle_x"].iloc[0]) * 3600
+                    param_values[f"{param_name}_pitch"] = np.degrees(param_data["angle_y"].iloc[0]) * 3600
+                    param_values[f"{param_name}_yaw"] = np.degrees(param_data["angle_z"].iloc[0]) * 3600
 
             elif param_config.ptype == ParameterType.OFFSET_KERNEL:
                 # Single bias value (keep in original units)
@@ -2290,47 +2276,49 @@ def _store_parameter_values(netcdf_data, param_idx, param_values):
     for param_name, value in param_values.items():
         # Generate NetCDF variable name using same logic as _build_netcdf_structure
         # Replace dots and dashes with underscores, ensure param_ prefix
-        netcdf_var = param_name.replace('.', '_').replace('-', '_')
-        if not netcdf_var.startswith('param_'):
-            netcdf_var = f'param_{netcdf_var}'
+        netcdf_var = param_name.replace(".", "_").replace("-", "_")
+        if not netcdf_var.startswith("param_"):
+            netcdf_var = f"param_{netcdf_var}"
 
         if netcdf_var in netcdf_data:
             netcdf_data[netcdf_var][param_idx] = value
             logger.debug(f"  Stored {netcdf_var}[{param_idx}] = {value}")
         else:
             # Try to find a matching variable with debug info
-            logger.warning(f"  Parameter variable '{netcdf_var}' not found in netcdf_data. Available keys: {[k for k in netcdf_data.keys() if k.startswith('param_')]}")
+            logger.warning(
+                f"  Parameter variable '{netcdf_var}' not found in netcdf_data. Available keys: {[k for k in netcdf_data.keys() if k.startswith('param_')]}"
+            )
 
 
 def _extract_error_metrics(stats_dataset):
     """Extract error metrics from error statistics dataset."""
-    if hasattr(stats_dataset, 'attrs'):
+    if hasattr(stats_dataset, "attrs"):
         # Real error stats module
         return {
-            'rms_error_m': stats_dataset.attrs.get('rms_error_m', np.nan),
-            'mean_error_m': stats_dataset.attrs.get('mean_error_m', np.nan),
-            'max_error_m': stats_dataset.attrs.get('max_error_m', np.nan),
-            'std_error_m': stats_dataset.attrs.get('std_error_m', np.nan),
-            'n_measurements': stats_dataset.attrs.get('total_measurements', 0),
+            "rms_error_m": stats_dataset.attrs.get("rms_error_m", np.nan),
+            "mean_error_m": stats_dataset.attrs.get("mean_error_m", np.nan),
+            "max_error_m": stats_dataset.attrs.get("max_error_m", np.nan),
+            "std_error_m": stats_dataset.attrs.get("std_error_m", np.nan),
+            "n_measurements": stats_dataset.attrs.get("total_measurements", 0),
         }
     else:
         # Fallback for placeholder
         return {
-            'rms_error_m': float(stats_dataset.get('rms_error', np.nan)),
-            'mean_error_m': float(stats_dataset.get('mean_error', np.nan)),
-            'max_error_m': float(stats_dataset.get('max_error', np.nan)),
-            'std_error_m': float(stats_dataset.get('std_error', np.nan)),
-            'n_measurements': int(stats_dataset.get('n_measurements', 0)),
+            "rms_error_m": float(stats_dataset.get("rms_error", np.nan)),
+            "mean_error_m": float(stats_dataset.get("mean_error", np.nan)),
+            "max_error_m": float(stats_dataset.get("max_error", np.nan)),
+            "std_error_m": float(stats_dataset.get("std_error", np.nan)),
+            "n_measurements": int(stats_dataset.get("n_measurements", 0)),
         }
 
 
 def _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics):
     """Store GCP pair results in the NetCDF data structure."""
-    netcdf_data['rms_error_m'][param_idx, pair_idx] = error_metrics['rms_error_m']
-    netcdf_data['mean_error_m'][param_idx, pair_idx] = error_metrics['mean_error_m']
-    netcdf_data['max_error_m'][param_idx, pair_idx] = error_metrics['max_error_m']
-    netcdf_data['std_error_m'][param_idx, pair_idx] = error_metrics['std_error_m']
-    netcdf_data['n_measurements'][param_idx, pair_idx] = error_metrics['n_measurements']
+    netcdf_data["rms_error_m"][param_idx, pair_idx] = error_metrics["rms_error_m"]
+    netcdf_data["mean_error_m"][param_idx, pair_idx] = error_metrics["mean_error_m"]
+    netcdf_data["max_error_m"][param_idx, pair_idx] = error_metrics["max_error_m"]
+    netcdf_data["std_error_m"][param_idx, pair_idx] = error_metrics["std_error_m"]
+    netcdf_data["n_measurements"][param_idx, pair_idx] = error_metrics["n_measurements"]
 
 
 def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=250.0):
@@ -2351,7 +2339,7 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
         # Find the threshold metric key dynamically
         threshold_metric = None
         for key in netcdf_data.keys():
-            if key.startswith('percent_under_') and key.endswith('m'):
+            if key.startswith("percent_under_") and key.endswith("m"):
                 threshold_metric = key
                 break
 
@@ -2360,16 +2348,17 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
             netcdf_data[threshold_metric][param_idx] = percent_under_threshold
 
         # Mean RMS across all pairs
-        netcdf_data['mean_rms_all_pairs'][param_idx] = np.mean(valid_errors)
+        netcdf_data["mean_rms_all_pairs"][param_idx] = np.mean(valid_errors)
 
         # Best and worst pair performance
-        netcdf_data['best_pair_rms'][param_idx] = np.min(valid_errors)
-        netcdf_data['worst_pair_rms'][param_idx] = np.max(valid_errors)
+        netcdf_data["best_pair_rms"][param_idx] = np.min(valid_errors)
+        netcdf_data["worst_pair_rms"][param_idx] = np.max(valid_errors)
 
 
 # =============================================================================
 # Incremental NetCDF Saving (Checkpoint/Resume)
 # =============================================================================
+
 
 def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_completed):
     """
@@ -2392,8 +2381,8 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
 
     # Create coordinate arrays
     coords = {
-        'parameter_set_id': netcdf_data['parameter_set_id'],
-        'gcp_pair_id': netcdf_data['gcp_pair_id'],
+        "parameter_set_id": netcdf_data["parameter_set_id"],
+        "gcp_pair_id": netcdf_data["gcp_pair_id"],
     }
 
     # Build variable list dynamically from netcdf_data keys
@@ -2402,54 +2391,50 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
         if var_name not in coords:
             if isinstance(var_data, np.ndarray):
                 if var_data.ndim == 1:
-                    data_vars[var_name] = (['parameter_set_id'], var_data)
+                    data_vars[var_name] = (["parameter_set_id"], var_data)
                 elif var_data.ndim == 2:
-                    data_vars[var_name] = (['parameter_set_id', 'gcp_pair_id'], var_data)
+                    data_vars[var_name] = (["parameter_set_id", "gcp_pair_id"], var_data)
 
     # Create dataset
     ds = xr.Dataset(data_vars, coords=coords)
 
     # Add regular metadata
-    ds.attrs.update({
-        'title': config.netcdf.title,
-        'description': config.netcdf.description,
-        'created': pd.Timestamp.now().isoformat(),
-        'monte_carlo_iterations': config.n_iterations,
-        'performance_threshold_m': config.netcdf.performance_threshold_m,
-        'parameter_count': len(config.parameters),
-        'random_seed': str(config.seed) if config.seed is not None else 'None',
-    })
+    ds.attrs.update(
+        {
+            "title": config.netcdf.title,
+            "description": config.netcdf.description,
+            "created": pd.Timestamp.now().isoformat(),
+            "monte_carlo_iterations": config.n_iterations,
+            "performance_threshold_m": config.netcdf.performance_threshold_m,
+            "parameter_count": len(config.parameters),
+            "random_seed": str(config.seed) if config.seed is not None else "None",
+        }
+    )
 
     # Add checkpoint-specific metadata (NetCDF-compatible types)
-    ds.attrs['checkpoint'] = 1  # Use integer instead of boolean for NetCDF compatibility
-    ds.attrs['completed_parameter_sets'] = int(param_idx_completed + 1)
-    ds.attrs['total_parameter_sets'] = int(len(netcdf_data['parameter_set_id']))
-    ds.attrs['checkpoint_timestamp'] = pd.Timestamp.now().isoformat()
+    ds.attrs["checkpoint"] = 1  # Use integer instead of boolean for NetCDF compatibility
+    ds.attrs["completed_parameter_sets"] = int(param_idx_completed + 1)
+    ds.attrs["total_parameter_sets"] = int(len(netcdf_data["parameter_set_id"]))
+    ds.attrs["checkpoint_timestamp"] = pd.Timestamp.now().isoformat()
 
     # Add parameter variable attributes from config
     for param in config.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
-            for angle in ['roll', 'pitch', 'yaw']:
+            for angle in ["roll", "pitch", "yaw"]:
                 metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
                 if metadata.variable_name in ds.data_vars:
-                    ds[metadata.variable_name].attrs.update({
-                        'units': metadata.units,
-                        'long_name': metadata.long_name
-                    })
+                    ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
         else:
             metadata = config.netcdf.get_parameter_netcdf_metadata(param)
             if metadata.variable_name in ds.data_vars:
-                ds[metadata.variable_name].attrs.update({
-                    'units': metadata.units,
-                    'long_name': metadata.long_name
-                })
+                ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes
     standard_attrs = config.netcdf.get_standard_attributes()
     threshold_metric = config.netcdf.get_threshold_metric_name()
     standard_attrs[threshold_metric] = {
-        'units': 'percent',
-        'long_name': f'Percentage of pairs with error < {config.performance_threshold_m}m'
+        "units": "percent",
+        "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",
     }
     for var, attrs in standard_attrs.items():
         if var in ds.data_vars:
@@ -2457,10 +2442,12 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
 
     # Save to file in one operation
     checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(checkpoint_file, mode='w')  # Force overwrite mode
+    ds.to_netcdf(checkpoint_file, mode="w")  # Force overwrite mode
     ds.close()
 
-    logger.info(f"  Checkpoint saved: {param_idx_completed + 1}/{len(netcdf_data['parameter_set_id'])} parameter sets complete")
+    logger.info(
+        f"  Checkpoint saved: {param_idx_completed + 1}/{len(netcdf_data['parameter_set_id'])} parameter sets complete"
+    )
 
 
 def _load_checkpoint(output_file, config):
@@ -2487,15 +2474,15 @@ def _load_checkpoint(output_file, config):
         ds = xr.open_dataset(checkpoint_file)
 
         # Verify this is actually a checkpoint (checkpoint attribute is 1 for true, 0 or missing for false)
-        checkpoint_flag = ds.attrs.get('checkpoint', 0)
+        checkpoint_flag = ds.attrs.get("checkpoint", 0)
         if not checkpoint_flag:  # Will be True if checkpoint=1, False if checkpoint=0 or missing
             logger.warning("File exists but is not marked as checkpoint, ignoring")
             ds.close()
             return None, 0
 
-        completed = ds.attrs.get('completed_parameter_sets', 0)
-        total = ds.attrs.get('total_parameter_sets', 0)
-        timestamp = ds.attrs.get('checkpoint_timestamp', 'unknown')
+        completed = ds.attrs.get("completed_parameter_sets", 0)
+        total = ds.attrs.get("total_parameter_sets", 0)
+        timestamp = ds.attrs.get("checkpoint_timestamp", "unknown")
 
         logger.info(f"Checkpoint from {timestamp}: {completed}/{total} parameter sets complete")
 
@@ -2503,8 +2490,8 @@ def _load_checkpoint(output_file, config):
         netcdf_data = {}
 
         # Add coordinates
-        netcdf_data['parameter_set_id'] = ds.coords['parameter_set_id'].values
-        netcdf_data['gcp_pair_id'] = ds.coords['gcp_pair_id'].values
+        netcdf_data["parameter_set_id"] = ds.coords["parameter_set_id"].values
+        netcdf_data["gcp_pair_id"] = ds.coords["gcp_pair_id"].values
 
         # Add all data variables
         for var_name in ds.data_vars:
@@ -2560,8 +2547,8 @@ def _save_netcdf_results(netcdf_data, output_file, config):
 
     # Create coordinate arrays
     coords = {
-        'parameter_set_id': netcdf_data['parameter_set_id'],
-        'gcp_pair_id': netcdf_data['gcp_pair_id'],
+        "parameter_set_id": netcdf_data["parameter_set_id"],
+        "gcp_pair_id": netcdf_data["gcp_pair_id"],
     }
 
     # Build variable list dynamically from netcdf_data keys
@@ -2573,9 +2560,9 @@ def _save_netcdf_results(netcdf_data, output_file, config):
             # Determine dimensions from array shape
             if isinstance(var_data, np.ndarray):
                 if var_data.ndim == 1:
-                    data_vars[var_name] = (['parameter_set_id'], var_data)
+                    data_vars[var_name] = (["parameter_set_id"], var_data)
                 elif var_data.ndim == 2:
-                    data_vars[var_name] = (['parameter_set_id', 'gcp_pair_id'], var_data)
+                    data_vars[var_name] = (["parameter_set_id", "gcp_pair_id"], var_data)
 
     logger.info(f"  Creating dataset with {len(data_vars)} data variables")
 
@@ -2583,35 +2570,31 @@ def _save_netcdf_results(netcdf_data, output_file, config):
     ds = xr.Dataset(data_vars, coords=coords)
 
     # Add global metadata from config
-    ds.attrs.update({
-        'title': config.netcdf.title,
-        'description': config.netcdf.description,
-        'created': pd.Timestamp.now().isoformat(),
-        'monte_carlo_iterations': config.n_iterations,
-        'performance_threshold_m': config.netcdf.performance_threshold_m,
-        'parameter_count': len(config.parameters),
-        'random_seed': str(config.seed) if config.seed is not None else 'None',
-    })
+    ds.attrs.update(
+        {
+            "title": config.netcdf.title,
+            "description": config.netcdf.description,
+            "created": pd.Timestamp.now().isoformat(),
+            "monte_carlo_iterations": config.n_iterations,
+            "performance_threshold_m": config.netcdf.performance_threshold_m,
+            "parameter_count": len(config.parameters),
+            "random_seed": str(config.seed) if config.seed is not None else "None",
+        }
+    )
 
     # Add parameter variable attributes from config
     for param in config.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
             # Add metadata for roll, pitch, yaw components
-            for angle in ['roll', 'pitch', 'yaw']:
+            for angle in ["roll", "pitch", "yaw"]:
                 metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
                 if metadata.variable_name in ds.data_vars:
-                    ds[metadata.variable_name].attrs.update({
-                        'units': metadata.units,
-                        'long_name': metadata.long_name
-                    })
+                    ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
         else:
             # Add metadata for single-value parameters
             metadata = config.netcdf.get_parameter_netcdf_metadata(param)
             if metadata.variable_name in ds.data_vars:
-                ds[metadata.variable_name].attrs.update({
-                    'units': metadata.units,
-                    'long_name': metadata.long_name
-                })
+                ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes from config (allows mission overrides)
     standard_attrs = config.netcdf.get_standard_attributes()
@@ -2619,8 +2602,8 @@ def _save_netcdf_results(netcdf_data, output_file, config):
     # Add dynamic threshold metric
     threshold_metric = config.netcdf.get_threshold_metric_name()
     standard_attrs[threshold_metric] = {
-        'units': 'percent',
-        'long_name': f'Percentage of pairs with error < {config.performance_threshold_m}m'
+        "units": "percent",
+        "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",
     }
 
     for var, attrs in standard_attrs.items():

@@ -79,7 +79,7 @@ EXPECTED_MATCHES = {
 class PairingTestCase(unittest.TestCase):
     def setUp(self) -> None:
         root_dir = Path(__file__).parent.parent.parent
-        self.test_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'image_match'
+        self.test_dir = root_dir / "tests" / "data" / "clarreo" / "image_match"
         self.assertTrue(self.test_dir.is_dir(), self.test_dir)
 
     def _load_image_grid(self, relative_path: str, key: str) -> NamedImageGrid:
@@ -166,5 +166,5 @@ class PairingTestCase(unittest.TestCase):
         assert result.matches == []
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

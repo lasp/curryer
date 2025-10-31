@@ -13,10 +13,11 @@ The main processing pipeline:
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple, Union
+
 import numpy as np
 import xarray as xr
-from typing import Dict, Optional, Tuple, Union
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class GeolocationConfig:
 
     All values should be provided from MonteCarloConfig - no hardcoded defaults.
     """
+
     earth_radius_m: float  # Earth radius in meters (e.g., WGS84: 6378140.0)
     performance_threshold_m: float  # Accuracy threshold (e.g., 250.0)
     performance_spec_percent: float  # Performance requirement percentage (e.g., 39.0)
@@ -37,7 +39,7 @@ class GeolocationConfig:
     variable_names: Optional[Dict[str, str]] = None  # If None, uses CLARREO defaults
 
     @classmethod
-    def from_monte_carlo_config(cls, mc_config) -> 'GeolocationConfig':
+    def from_monte_carlo_config(cls, mc_config) -> "GeolocationConfig":
         """
         Create GeolocationConfig from MonteCarloConfig.
 
@@ -52,9 +54,9 @@ class GeolocationConfig:
         """
         # Create variable name mapping
         variable_names = {
-            'spacecraft_position': mc_config.spacecraft_position_name,
-            'boresight': mc_config.boresight_name,
-            'transformation_matrix': mc_config.transformation_matrix_name,
+            "spacecraft_position": mc_config.spacecraft_position_name,
+            "boresight": mc_config.boresight_name,
+            "transformation_matrix": mc_config.transformation_matrix_name,
         }
 
         return cls(
@@ -62,7 +64,7 @@ class GeolocationConfig:
             performance_threshold_m=mc_config.performance_threshold_m,
             performance_spec_percent=mc_config.performance_spec_percent,
             minimum_correlation=mc_config.geo.minimum_correlation,
-            variable_names=variable_names
+            variable_names=variable_names,
         )
 
     def get_variable_name(self, semantic_name: str) -> str:
@@ -115,7 +117,7 @@ class ErrorStatsProcessor:
 
         # Check for correlation variable (try multiple names)
         corr_var = None
-        for var_name in ['correlation', 'ccv', 'im_ccv']:
+        for var_name in ["correlation", "ccv", "im_ccv"]:
             if var_name in data.data_vars:
                 corr_var = var_name
                 break
@@ -130,8 +132,9 @@ class ErrorStatsProcessor:
         filtered_data = data.where(valid_mask, drop=True)
         n_after = len(filtered_data.measurement)
 
-        logger.info(f"Correlation filtering: {n_before} → {n_after} measurements "
-                    f"(threshold={self.config.minimum_correlation})")
+        logger.info(
+            f"Correlation filtering: {n_before} → {n_after} measurements (threshold={self.config.minimum_correlation})"
+        )
 
         return filtered_data
 
@@ -158,9 +161,9 @@ class ErrorStatsProcessor:
         n_measurements = len(filtered_data.measurement)
 
         # Get actual variable names from config
-        sc_pos_var = self.config.get_variable_name('spacecraft_position')
-        boresight_var = self.config.get_variable_name('boresight')
-        transform_var = self.config.get_variable_name('transformation_matrix')
+        sc_pos_var = self.config.get_variable_name("spacecraft_position")
+        boresight_var = self.config.get_variable_name("boresight")
+        transform_var = self.config.get_variable_name("transformation_matrix")
 
         # Convert angular errors to distance errors
         lat_error_rad = np.deg2rad(filtered_data.lat_error_deg.values)
@@ -174,22 +177,25 @@ class ErrorStatsProcessor:
 
         # Transform boresight vectors using configurable variable names
         bhat_ctrs = self._transform_boresight_vectors(
-            filtered_data[boresight_var].values,
-            filtered_data[transform_var].values
+            filtered_data[boresight_var].values, filtered_data[transform_var].values
         )
 
         # Process each measurement to nadir-equivalent using configurable variable name
         results = self._process_to_nadir_equivalent(
-            ns_error_dist_m, ew_error_dist_m,
-            filtered_data[sc_pos_var].values, bhat_ctrs,
-            cp_lat_rad, cp_lon_rad, n_measurements
+            ns_error_dist_m,
+            ew_error_dist_m,
+            filtered_data[sc_pos_var].values,
+            bhat_ctrs,
+            cp_lat_rad,
+            cp_lon_rad,
+            n_measurements,
         )
 
         # Create output dataset
         output_data = self._create_output_dataset(filtered_data, results)
 
         # Add statistics as global attributes
-        stats = self._calculate_statistics(results['nadir_equiv_total_error_m'])
+        stats = self._calculate_statistics(results["nadir_equiv_total_error_m"])
         output_data.attrs.update(stats)
 
         return output_data
@@ -197,13 +203,19 @@ class ErrorStatsProcessor:
     def _validate_input_data(self, data: xr.Dataset) -> None:
         """Validate that input dataset contains all required variables."""
         # Get actual variable names from config
-        sc_pos_var = self.config.get_variable_name('spacecraft_position')
-        boresight_var = self.config.get_variable_name('boresight')
-        transform_var = self.config.get_variable_name('transformation_matrix')
+        sc_pos_var = self.config.get_variable_name("spacecraft_position")
+        boresight_var = self.config.get_variable_name("boresight")
+        transform_var = self.config.get_variable_name("transformation_matrix")
 
         required_vars = [
-            'lat_error_deg', 'lon_error_deg', sc_pos_var, boresight_var,
-            transform_var, 'cp_lat_deg', 'cp_lon_deg', 'cp_alt'
+            "lat_error_deg",
+            "lon_error_deg",
+            sc_pos_var,
+            boresight_var,
+            transform_var,
+            "cp_lat_deg",
+            "cp_lon_deg",
+            "cp_alt",
         ]
 
         missing_vars = [var for var in required_vars if var not in data.data_vars]
@@ -211,7 +223,7 @@ class ErrorStatsProcessor:
             raise ValueError(f"Missing required input variables: {missing_vars}")
 
         # Check dimensions
-        if 'measurement' not in data.dims:
+        if "measurement" not in data.dims:
             raise ValueError("Input data must have 'measurement' dimension")
 
     def _transform_boresight_vectors(self, bhat_hs: np.ndarray, t_hs2ctrs: np.ndarray) -> np.ndarray:
@@ -224,22 +236,28 @@ class ErrorStatsProcessor:
 
         return bhat_ctrs
 
-    def _process_to_nadir_equivalent(self, ns_error_m: np.ndarray, ew_error_m: np.ndarray,
-                                   riss_ctrs: np.ndarray, bhat_ctrs: np.ndarray,
-                                   cp_lat_rad: np.ndarray, cp_lon_rad: np.ndarray,
-                                   n_measurements: int) -> Dict[str, np.ndarray]:
+    def _process_to_nadir_equivalent(
+        self,
+        ns_error_m: np.ndarray,
+        ew_error_m: np.ndarray,
+        riss_ctrs: np.ndarray,
+        bhat_ctrs: np.ndarray,
+        cp_lat_rad: np.ndarray,
+        cp_lon_rad: np.ndarray,
+        n_measurements: int,
+    ) -> Dict[str, np.ndarray]:
         """Process error measurements to nadir-equivalent values."""
 
         # Initialize result arrays
         results = {
-            'vp_error_m': np.zeros(n_measurements),
-            'xvp_error_m': np.zeros(n_measurements),
-            'off_nadir_angle_rad': np.zeros(n_measurements),
-            'vp_scaling_factor': np.zeros(n_measurements),
-            'xvp_scaling_factor': np.zeros(n_measurements),
-            'nadir_equiv_vp_error_m': np.zeros(n_measurements),
-            'nadir_equiv_xvp_error_m': np.zeros(n_measurements),
-            'nadir_equiv_total_error_m': np.zeros(n_measurements)
+            "vp_error_m": np.zeros(n_measurements),
+            "xvp_error_m": np.zeros(n_measurements),
+            "off_nadir_angle_rad": np.zeros(n_measurements),
+            "vp_scaling_factor": np.zeros(n_measurements),
+            "xvp_scaling_factor": np.zeros(n_measurements),
+            "nadir_equiv_vp_error_m": np.zeros(n_measurements),
+            "nadir_equiv_xvp_error_m": np.zeros(n_measurements),
+            "nadir_equiv_total_error_m": np.zeros(n_measurements),
         }
 
         for i in range(n_measurements):
@@ -260,26 +278,23 @@ class ErrorStatsProcessor:
             # Transform error distances to view-plane coordinates
             error_uen = np.array([0, ew_error_m[i], ns_error_m[i]])
             error_uxv = error_uen @ t_uen2uxv.T
-            results['xvp_error_m'][i] = error_uxv[1]  # Cross-view-plane error
-            results['vp_error_m'][i] = error_uxv[2]   # View-plane error
+            results["xvp_error_m"][i] = error_uxv[1]  # Cross-view-plane error
+            results["vp_error_m"][i] = error_uxv[2]  # View-plane error
 
             # Calculate off-nadir angle and scaling factors
             rhat = riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
-            results['off_nadir_angle_rad'][i] = np.arccos(np.dot(bhat_ctrs[i], -rhat))
+            results["off_nadir_angle_rad"][i] = np.arccos(np.dot(bhat_ctrs[i], -rhat))
 
             # Calculate nadir-equivalent scaling factors
-            scaling_factors = self._calculate_scaling_factors(
-                riss_ctrs[i], results['off_nadir_angle_rad'][i]
-            )
-            results['vp_scaling_factor'][i] = scaling_factors[0]
-            results['xvp_scaling_factor'][i] = scaling_factors[1]
+            scaling_factors = self._calculate_scaling_factors(riss_ctrs[i], results["off_nadir_angle_rad"][i])
+            results["vp_scaling_factor"][i] = scaling_factors[0]
+            results["xvp_scaling_factor"][i] = scaling_factors[1]
 
             # Apply scaling to get nadir-equivalent errors
-            results['nadir_equiv_vp_error_m'][i] = results['vp_error_m'][i] * scaling_factors[0]
-            results['nadir_equiv_xvp_error_m'][i] = results['xvp_error_m'][i] * scaling_factors[1]
-            results['nadir_equiv_total_error_m'][i] = np.sqrt(
-                results['nadir_equiv_vp_error_m'][i]**2 +
-                results['nadir_equiv_xvp_error_m'][i]**2
+            results["nadir_equiv_vp_error_m"][i] = results["vp_error_m"][i] * scaling_factors[0]
+            results["nadir_equiv_xvp_error_m"][i] = results["xvp_error_m"][i] * scaling_factors[1]
+            results["nadir_equiv_total_error_m"][i] = np.sqrt(
+                results["nadir_equiv_vp_error_m"][i] ** 2 + results["nadir_equiv_xvp_error_m"][i] ** 2
             )
 
         return results
@@ -289,32 +304,20 @@ class ErrorStatsProcessor:
         t_ctrs2uen = np.zeros((3, 3))
 
         # Up direction (radial outward)
-        t_ctrs2uen[0] = [
-            np.cos(lon_rad) * np.cos(lat_rad),
-            np.sin(lon_rad) * np.cos(lat_rad),
-            np.sin(lat_rad)
-        ]
+        t_ctrs2uen[0] = [np.cos(lon_rad) * np.cos(lat_rad), np.sin(lon_rad) * np.cos(lat_rad), np.sin(lat_rad)]
 
         # East direction
-        t_ctrs2uen[1] = [
-            -np.sin(lon_rad),
-            np.cos(lon_rad),
-            0
-        ]
+        t_ctrs2uen[1] = [-np.sin(lon_rad), np.cos(lon_rad), 0]
 
         # North direction
-        t_ctrs2uen[2] = [
-            -np.cos(lon_rad) * np.sin(lat_rad),
-            -np.sin(lon_rad) * np.sin(lat_rad),
-            np.cos(lat_rad)
-        ]
+        t_ctrs2uen[2] = [-np.cos(lon_rad) * np.sin(lat_rad), -np.sin(lon_rad) * np.sin(lat_rad), np.cos(lat_rad)]
 
         return t_ctrs2uen
 
     def _calculate_view_plane_vectors(self, bhat_uen: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Calculate view-plane and cross-view-plane unit vectors in UEN coordinates."""
         # Calculate normalization factor for horizontal components
-        norm_factor = np.sqrt(bhat_uen[1]**2 + bhat_uen[2]**2)
+        norm_factor = np.sqrt(bhat_uen[1] ** 2 + bhat_uen[2] ** 2)
 
         # View-plane direction (in the direction of boresight horizontal projection)
         v_uen = np.array([0, bhat_uen[1], bhat_uen[2]]) / norm_factor
@@ -330,64 +333,70 @@ class ErrorStatsProcessor:
         f = r_magnitude / self.config.earth_radius_m
         h = r_magnitude - self.config.earth_radius_m
 
-        temp1 = np.sqrt(1 - f**2 * np.sin(theta)**2)
+        temp1 = np.sqrt(1 - f**2 * np.sin(theta) ** 2)
 
         # View-plane scaling factor
         vp_factor = h / self.config.earth_radius_m / (-1 + f * np.cos(theta) / temp1)
 
         # Cross-view-plane scaling factor
-        xvp_factor = (h / self.config.earth_radius_m / np.cos(theta) /
-                     (f * np.cos(theta) - temp1))
+        xvp_factor = h / self.config.earth_radius_m / np.cos(theta) / (f * np.cos(theta) - temp1)
 
         return vp_factor, xvp_factor
 
-    def _create_output_dataset(self, input_data: xr.Dataset,
-                             results: Dict[str, np.ndarray]) -> xr.Dataset:
+    def _create_output_dataset(self, input_data: xr.Dataset, results: Dict[str, np.ndarray]) -> xr.Dataset:
         """Create output Xarray Dataset with processing results."""
 
         # Create data variables for output
         data_vars = {}
 
         # Nadir-equivalent errors (main results)
-        data_vars['nadir_equiv_total_error_m'] = (
-            ['measurement'], results['nadir_equiv_total_error_m'],
-            {'units': 'meters', 'long_name': 'Total nadir-equivalent geolocation error'}
+        data_vars["nadir_equiv_total_error_m"] = (
+            ["measurement"],
+            results["nadir_equiv_total_error_m"],
+            {"units": "meters", "long_name": "Total nadir-equivalent geolocation error"},
         )
 
-        data_vars['nadir_equiv_vp_error_m'] = (
-            ['measurement'], results['nadir_equiv_vp_error_m'],
-            {'units': 'meters', 'long_name': 'View-plane nadir-equivalent error'}
+        data_vars["nadir_equiv_vp_error_m"] = (
+            ["measurement"],
+            results["nadir_equiv_vp_error_m"],
+            {"units": "meters", "long_name": "View-plane nadir-equivalent error"},
         )
 
-        data_vars['nadir_equiv_xvp_error_m'] = (
-            ['measurement'], results['nadir_equiv_xvp_error_m'],
-            {'units': 'meters', 'long_name': 'Cross-view-plane nadir-equivalent error'}
+        data_vars["nadir_equiv_xvp_error_m"] = (
+            ["measurement"],
+            results["nadir_equiv_xvp_error_m"],
+            {"units": "meters", "long_name": "Cross-view-plane nadir-equivalent error"},
         )
 
         # Intermediate processing results
-        data_vars['vp_error_m'] = (
-            ['measurement'], results['vp_error_m'],
-            {'units': 'meters', 'long_name': 'View-plane error distance'}
+        data_vars["vp_error_m"] = (
+            ["measurement"],
+            results["vp_error_m"],
+            {"units": "meters", "long_name": "View-plane error distance"},
         )
 
-        data_vars['xvp_error_m'] = (
-            ['measurement'], results['xvp_error_m'],
-            {'units': 'meters', 'long_name': 'Cross-view-plane error distance'}
+        data_vars["xvp_error_m"] = (
+            ["measurement"],
+            results["xvp_error_m"],
+            {"units": "meters", "long_name": "Cross-view-plane error distance"},
         )
 
-        data_vars['off_nadir_angle_deg'] = (
-            ['measurement'], np.rad2deg(results['off_nadir_angle_rad']),
-            {'units': 'degrees', 'long_name': 'Off-nadir viewing angle'}
+        data_vars["off_nadir_angle_deg"] = (
+            ["measurement"],
+            np.rad2deg(results["off_nadir_angle_rad"]),
+            {"units": "degrees", "long_name": "Off-nadir viewing angle"},
         )
 
-        data_vars['vp_scaling_factor'] = (
-            ['measurement'], results['vp_scaling_factor'],
-            {'units': 'dimensionless', 'long_name': 'View-plane nadir scaling factor'}
+        data_vars["vp_scaling_factor"] = (
+            ["measurement"],
+            results["vp_scaling_factor"],
+            {"units": "dimensionless", "long_name": "View-plane nadir scaling factor"},
         )
 
-        data_vars['xvp_scaling_factor'] = (
-            ['measurement'], results['xvp_scaling_factor'],
-            {'units': 'dimensionless', 'long_name': 'Cross-view-plane nadir scaling factor'}
+        data_vars["xvp_scaling_factor"] = (
+            ["measurement"],
+            results["xvp_scaling_factor"],
+            {"units": "dimensionless", "long_name": "Cross-view-plane nadir scaling factor"},
         )
 
         # Preserve original input data as reference
@@ -400,17 +409,17 @@ class ErrorStatsProcessor:
             data_vars=data_vars,
             coords=input_data.coords,
             attrs={
-                'title': 'Geolocation Error Statistics Results',
-                'processing_timestamp': np.datetime64('now'),
-                'earth_radius_m': self.config.earth_radius_m,
-                'performance_threshold_m': self.config.performance_threshold_m
-            }
+                "title": "Geolocation Error Statistics Results",
+                "processing_timestamp": np.datetime64("now"),
+                "earth_radius_m": self.config.earth_radius_m,
+                "performance_threshold_m": self.config.performance_threshold_m,
+            },
         )
 
         # Add correlation filtering metadata if applied
         if self.config.minimum_correlation is not None:
-            output_ds.attrs['minimum_correlation_threshold'] = self.config.minimum_correlation
-            output_ds.attrs['correlation_filtering_applied'] = True
+            output_ds.attrs["minimum_correlation_threshold"] = self.config.minimum_correlation
+            output_ds.attrs["correlation_filtering_applied"] = True
 
         return output_ds
 
@@ -422,23 +431,23 @@ class ErrorStatsProcessor:
 
         # Calculate statistics
         stats = {
-            'mean_error_distance_m': float(np.mean(nadir_equiv_errors_m)),
-            'std_error_distance_m': float(np.std(nadir_equiv_errors_m)),
-            'min_error_distance_m': float(np.min(nadir_equiv_errors_m)),
-            'max_error_distance_m': float(np.max(nadir_equiv_errors_m)),
-            'percent_below_250m': float(num_below_threshold / len(nadir_equiv_errors_m) * 100),
-            'num_below_250m': int(num_below_threshold),
-            'total_measurements': int(len(nadir_equiv_errors_m)),
-            'performance_spec_met': bool(
+            "mean_error_distance_m": float(np.mean(nadir_equiv_errors_m)),
+            "std_error_distance_m": float(np.std(nadir_equiv_errors_m)),
+            "min_error_distance_m": float(np.min(nadir_equiv_errors_m)),
+            "max_error_distance_m": float(np.max(nadir_equiv_errors_m)),
+            "percent_below_250m": float(num_below_threshold / len(nadir_equiv_errors_m) * 100),
+            "num_below_250m": int(num_below_threshold),
+            "total_measurements": int(len(nadir_equiv_errors_m)),
+            "performance_spec_met": bool(
                 num_below_threshold / len(nadir_equiv_errors_m) * 100 > self.config.performance_spec_percent
-            )
+            ),
         }
 
         return stats
 
-    def process_from_netcdf(self,
-                           filepath: Union[str, 'Path'],
-                           minimum_correlation: Optional[float] = None) -> xr.Dataset:
+    def process_from_netcdf(
+        self, filepath: Union[str, "Path"], minimum_correlation: Optional[float] = None
+    ) -> xr.Dataset:
         """
         Load previous results from NetCDF and reprocess error statistics.
 
@@ -477,8 +486,7 @@ class ErrorStatsProcessor:
         original_threshold = self.config.minimum_correlation
         if minimum_correlation is not None:
             self.config.minimum_correlation = minimum_correlation
-            logger.info(f"Overriding correlation threshold: "
-                       f"{original_threshold} → {minimum_correlation}")
+            logger.info(f"Overriding correlation threshold: {original_threshold} → {minimum_correlation}")
 
         # Validate that required variables exist
         try:
@@ -493,10 +501,10 @@ class ErrorStatsProcessor:
         results = self.process_geolocation_errors(input_data)
 
         # Add metadata about reprocessing
-        results.attrs['reprocessed_from'] = str(filepath)
-        results.attrs['reprocessing_date'] = str(np.datetime64('now'))
+        results.attrs["reprocessed_from"] = str(filepath)
+        results.attrs["reprocessing_date"] = str(np.datetime64("now"))
         if minimum_correlation is not None:
-            results.attrs['correlation_threshold_override'] = minimum_correlation
+            results.attrs["correlation_threshold_override"] = minimum_correlation
 
         # Restore original threshold
         self.config.minimum_correlation = original_threshold

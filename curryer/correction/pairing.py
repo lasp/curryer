@@ -9,18 +9,19 @@ returns a many-to-many mapping between the supplied L1A and GCP collections.
 File-based utilities (discover_gcp_files, pair_files) provide higher-level
 wrappers for working with MATLAB .mat files on disk.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
-from .data_structures import ImageGrid, NamedImageGrid
 from ..compute.spatial import geodetic_to_ecef
-
+from .data_structures import ImageGrid, NamedImageGrid
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,12 @@ def enu_rotation_matrix(lat_deg: float, lon_deg: float) -> np.ndarray:
 
 
 def geodetic_to_enu(
-        lat_deg: np.ndarray,
-        lon_deg: np.ndarray,
-        h_m: np.ndarray,
-        origin_lat_deg: float,
-        origin_lon_deg: float,
-        origin_h_m: float = 0.0,
+    lat_deg: np.ndarray,
+    lon_deg: np.ndarray,
+    h_m: np.ndarray,
+    origin_lat_deg: float,
+    origin_lon_deg: float,
+    origin_h_m: float = 0.0,
 ) -> np.ndarray:
     """Convert geodetic coordinates to local ENU (East–North–Up) coordinates.
 
@@ -234,10 +235,10 @@ def _distance_point_to_segment(point_xy: np.ndarray, a_xy: np.ndarray, b_xy: np.
 
 
 def _distance_point_to_polygon_m(
-        point_lat: float,
-        point_lon: float,
-        point_h: float,
-        polygon_latlon: Sequence[tuple[float, float]],
+    point_lat: float,
+    point_lon: float,
+    point_h: float,
+    polygon_latlon: Sequence[tuple[float, float]],
 ) -> float:
     """Return the distance from a point to a polygon in meters.
 
@@ -328,9 +329,9 @@ def _build_gcp_metadata(index: int, image: NamedImageGrid) -> GCPMetadata:
 
 
 def find_l1a_gcp_pairs(
-        l1a_images: Iterable[NamedImageGrid],
-        gcp_images: Iterable[NamedImageGrid],
-        max_distance_m: float,
+    l1a_images: Iterable[NamedImageGrid],
+    gcp_images: Iterable[NamedImageGrid],
+    max_distance_m: float,
 ) -> PairingResult:
     """Find all L1A/GCP pairs within a distance threshold.
 
@@ -367,11 +368,12 @@ def find_l1a_gcp_pairs(
             lat_c, lon_c = gcp.center
             margin = _distance_point_to_polygon_m(lat_c, lon_c, 0.0, l1a.corners)
             if margin >= max_distance_m:
-                logger.info('Paired [%s] to [%s] within [%s m]', l1a.name, gcp.name, margin)
+                logger.info("Paired [%s] to [%s] within [%s m]", l1a.name, gcp.name, margin)
                 matches.append(PairMatch(l1a.index, gcp.index, margin))
             else:
-                logger.debug('No-pair [%s] to [%s] because [%s m] >= [%s m]',
-                             l1a.name, gcp.name, margin, max_distance_m)
+                logger.debug(
+                    "No-pair [%s] to [%s] because [%s m] >= [%s m]", l1a.name, gcp.name, margin, max_distance_m
+                )
 
     return PairingResult(l1a_meta, gcp_meta, matches)
 
@@ -380,10 +382,8 @@ def find_l1a_gcp_pairs(
 # File-Based Pairing Utilities
 # ============================================================================
 
-def discover_gcp_files(
-    gcp_directory: Path,
-    pattern: str = "*_resampled.mat"
-) -> List[Path]:
+
+def discover_gcp_files(gcp_directory: Path, pattern: str = "*_resampled.mat") -> List[Path]:
     """
     Find all GCP files in a directory matching a pattern.
 
@@ -416,7 +416,7 @@ def pair_files(
     max_distance_m: float = 0.0,
     l1a_key: str = "subimage",
     gcp_key: str = "GCP",
-    gcp_pattern: str = "*_resampled.mat"
+    gcp_pattern: str = "*_resampled.mat",
 ) -> List[Tuple[Path, Path]]:
     """
     Find L1A-GCP pairs based on spatial overlap and return as file path tuples.
@@ -462,12 +462,7 @@ def pair_files(
     l1a_images = []
     for l1a_file in l1a_files:
         try:
-            img = load_image_grid_from_mat(
-                l1a_file,
-                key=l1a_key,
-                name=str(l1a_file),
-                as_named=True
-            )
+            img = load_image_grid_from_mat(l1a_file, key=l1a_key, name=str(l1a_file), as_named=True)
             l1a_images.append(img)
         except Exception as e:
             logger.warning(f"Failed to load L1A file {l1a_file}: {e}")
@@ -485,12 +480,7 @@ def pair_files(
     gcp_images = []
     for gcp_file in gcp_files:
         try:
-            img = load_image_grid_from_mat(
-                gcp_file,
-                key=gcp_key,
-                name=str(gcp_file),
-                as_named=True
-            )
+            img = load_image_grid_from_mat(gcp_file, key=gcp_key, name=str(gcp_file), as_named=True)
             gcp_images.append(img)
         except Exception as e:
             logger.warning(f"Failed to load GCP file {gcp_file}: {e}")
@@ -517,10 +507,6 @@ def pair_files(
         l1a_file = l1a_files[match.l1a_index]
         gcp_file = gcp_files[match.gcp_index]
         pairs.append((l1a_file, gcp_file))
-        logger.debug(
-            f"  Paired: {l1a_file.name} → {gcp_file.name} "
-            f"(margin={match.distance_m:.1f}m)"
-        )
+        logger.debug(f"  Paired: {l1a_file.name} → {gcp_file.name} (margin={match.distance_m:.1f}m)")
 
     return pairs
-

@@ -31,7 +31,6 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import numpy.testing as npt
 import xarray as xr
 from scipy.io import loadmat
 
@@ -73,9 +72,7 @@ def great_circle_displacement_deg(lat_km: float, lon_km: float, reference_lat_de
 def apply_geolocation_error(subimage: ImageGrid, gcp: ImageGrid, lat_error_km: float, lon_error_km: float):
     """Return a copy of the subimage with imposed geolocation error."""
     mid_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-    lat_offset_deg, lon_offset_deg = great_circle_displacement_deg(
-        lat_error_km, lon_error_km, mid_lat
-    )
+    lat_offset_deg, lon_offset_deg = great_circle_displacement_deg(lat_error_km, lon_error_km, mid_lat)
     return ImageGrid(
         data=subimage.data.copy(),
         lat=subimage.lat + lat_offset_deg,
@@ -87,7 +84,7 @@ def apply_geolocation_error(subimage: ImageGrid, gcp: ImageGrid, lat_error_km: f
 class ImageMatchTestCase(unittest.TestCase):
     def setUp(self) -> None:
         root_dir = Path(__file__).parent.parent.parent
-        self.test_dir = root_dir / 'tests' / 'data' / 'clarreo' / 'image_match'
+        self.test_dir = root_dir / "tests" / "data" / "clarreo" / "image_match"
         self.assertTrue(self.test_dir.is_dir(), self.test_dir)
 
         self.__tmp_dir = tempfile.TemporaryDirectory()
@@ -129,13 +126,13 @@ class ImageMatchTestCase(unittest.TestCase):
             search_config=SearchConfig(),
         )
 
-        logger.info(f'Image file: {subimg_file.name}')
-        logger.info(f'GCP file: {gcp_file.name}')
-        logger.info(f'Lat Error (km): {result.lat_error_km:+6.3f} (exp={lat_lon_err[0]:+6.3f})')
-        logger.info(f'Lon Error (km): {result.lon_error_km:+6.3f} (exp={lat_lon_err[1]:+6.3f})')
-        logger.info(f'   CCV (final): {result.ccv_final}')
-        logger.info(f'   Pixel (row): {result.final_index_row}')
-        logger.info(f'   Pixel (col): {result.final_index_col}')
+        logger.info(f"Image file: {subimg_file.name}")
+        logger.info(f"GCP file: {gcp_file.name}")
+        logger.info(f"Lat Error (km): {result.lat_error_km:+6.3f} (exp={lat_lon_err[0]:+6.3f})")
+        logger.info(f"Lon Error (km): {result.lon_error_km:+6.3f} (exp={lat_lon_err[1]:+6.3f})")
+        logger.info(f"   CCV (final): {result.ccv_final}")
+        logger.info(f"   Pixel (row): {result.final_index_row}")
+        logger.info(f"   Pixel (col): {result.final_index_col}")
         return result
 
     def test_case_1a_unbinned(self):
@@ -459,5 +456,5 @@ class ImageMatchTestCase(unittest.TestCase):
         np.testing.assert_allclose(result.final_index_col, 22)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

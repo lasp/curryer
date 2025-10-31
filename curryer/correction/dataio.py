@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 # TODO: Remove if boto3 is made a required dependency!
 try:  # pragma: no cover - exercised indirectly when boto3 is available
@@ -37,9 +38,7 @@ def _require_client(client: Optional[object]) -> object:
     if client is not None:
         return client
     if boto3 is None:
-        raise RuntimeError(
-            "boto3 is not available. Install boto3 or provide an explicit s3_client."
-        )
+        raise RuntimeError("boto3 is not available. Install boto3 or provide an explicit s3_client.")
     return boto3.client("s3")
 
 

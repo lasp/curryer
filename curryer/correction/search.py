@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 
 import numpy as np
@@ -32,9 +33,7 @@ def emulate_image(test_lon: np.ndarray, test_lat: np.ndarray, gcp: ImageGrid) ->
         if not np.all(np.diff(lon_axis_work) > 0):
             raise ValueError("GCP longitude axis must be monotonic.")
 
-    interpolant = RegularGridInterpolator(
-        (lat_axis_work, lon_axis_work), data_work, bounds_error=False, fill_value=0.0
-    )
+    interpolant = RegularGridInterpolator((lat_axis_work, lon_axis_work), data_work, bounds_error=False, fill_value=0.0)
     points = np.stack((test_lat.ravel(), test_lon.ravel()), axis=-1)
     values = interpolant(points)
     return values.reshape(test_lat.shape)
@@ -97,9 +96,9 @@ def im_search(
         new_image_lon = new_image_lon + lon_shift
         lat_spacing *= config.reduction_factor
 
-        logger.debug('Best point in grid = %s', best_grid)
-        logger.debug('CCVmax= %s', ccv_max)
-        logger.debug('Set dgrid to [m]= %s', lat_spacing * np.pi / 180 * (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0))
+        logger.debug("Best point in grid = %s", best_grid)
+        logger.debug("CCVmax= %s", ccv_max)
+        logger.debug("Set dgrid to [m]= %s", lat_spacing * np.pi / 180 * (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0))
 
     lat_error_km = (
         (subimage.lat[midframe, midrow] - new_image_lat[midframe, midrow])

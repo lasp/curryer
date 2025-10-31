@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 from scipy.interpolate import (
@@ -56,10 +57,7 @@ def project_psf(
     center_los = los_set[midrow]
     center_field_angle = np.arctan2(center_los[1], center_los[2])
 
-    psf_diffs = [
-        abs(np.deg2rad(np.mean(entry.field_angle)) - center_field_angle)
-        for entry in psf_list
-    ]
+    psf_diffs = [abs(np.deg2rad(np.mean(entry.field_angle)) - center_field_angle) for entry in psf_list]
     psf_idx = int(np.argmin(psf_diffs))
     entry = psf_list[psf_idx]
 
@@ -121,26 +119,25 @@ def project_psf(
 
     for i in range(ny):
         for j in range(nx):
-            plos_hs = np.array([
-                np.sin(xangb + xang[j]),
-                np.sin(yangb + yang[i]),
-                0.0,
-            ])
+            plos_hs = np.array(
+                [
+                    np.sin(xangb + xang[j]),
+                    np.sin(yangb + yang[i]),
+                    0.0,
+                ]
+            )
             plos_hs[2] = np.sqrt(max(0.0, 1.0 - plos_hs[0] ** 2 - plos_hs[1] ** 2))
 
             plos_ctrs = t_hs_to_ctrs @ plos_hs
 
             a = (plos_ctrs[0] / re) ** 2 + (plos_ctrs[1] / re) ** 2 + (plos_ctrs[2] / rp) ** 2
-            b = (
-                2.0 * (r_iss[0] * plos_ctrs[0] + r_iss[1] * plos_ctrs[1]) / (re**2)
-                + 2.0 * r_iss[2] * plos_ctrs[2] / (rp**2)
+            b = 2.0 * (r_iss[0] * plos_ctrs[0] + r_iss[1] * plos_ctrs[1]) / (re**2) + 2.0 * r_iss[2] * plos_ctrs[2] / (
+                rp**2
             )
             c = (r_iss[0] / re) ** 2 + (r_iss[1] / re) ** 2 + (r_iss[2] / rp) ** 2 - 1.0
             discriminant = b * b - 4.0 * a * c
             if discriminant < 0:
-                raise RuntimeError(
-                    "Pseudo line of sight does not intersect the Earth ellipsoid."
-                )
+                raise RuntimeError("Pseudo line of sight does not intersect the Earth ellipsoid.")
             slant_range = (-b - np.sqrt(discriminant)) / (2.0 * a)
             p_surface = r_iss + slant_range * plos_ctrs
             # llh = ecef_to_lla(p_surface)  # lat first instead of lon!!!
@@ -167,7 +164,7 @@ def convolve_psf_with_spacecraft_motion(
 ) -> PSFGrid:
     """Apply spacecraft motion blur to the projected PSF."""
 
-    logger.debug('Convolve with SC - Init')
+    logger.debug("Convolve with SC - Init")
     lat_motion = np.mean(np.diff(composite_img.lat, axis=1))
     lon_motion = np.mean(np.diff(composite_img.lon, axis=1))
 
@@ -181,11 +178,9 @@ def convolve_psf_with_spacecraft_motion(
     psf_mid_lat = np.mean(psf_lat)
 
     rot_angle = np.deg2rad(-theta_deg)
-    rot_mat = np.array(
-        [[np.cos(rot_angle), -np.sin(rot_angle)], [np.sin(rot_angle), np.cos(rot_angle)]]
-    )
+    rot_mat = np.array([[np.cos(rot_angle), -np.sin(rot_angle)], [np.sin(rot_angle), np.cos(rot_angle)]])
 
-    logger.debug('Convolve with SC - Forward prep')
+    logger.debug("Convolve with SC - Forward prep")
     coords = np.vstack((psf_lon.ravel() - psf_mid_lon, psf_lat.ravel() - psf_mid_lat))
     rotated = rot_mat @ coords
     psf_lon_rot = rotated[0].reshape(psf_lon.shape) + psf_mid_lon
@@ -202,19 +197,17 @@ def convolve_psf_with_spacecraft_motion(
     y = np.arange(psf_lat_rot.min(), psf_lat_rot.max() + dlat, dlat)
     X, Y = np.meshgrid(x, y)
 
-    logger.debug('Convolve with SC - Nearest interp')
-    nearest = NearestNDInterpolator(
-        np.column_stack((psf_lon_rot.ravel(), psf_lat_rot.ravel())), psf.data.ravel()
-    )
+    logger.debug("Convolve with SC - Nearest interp")
+    nearest = NearestNDInterpolator(np.column_stack((psf_lon_rot.ravel(), psf_lat_rot.ravel())), psf.data.ravel())
     psf_interp = nearest(X, Y)
     psf_interp = np.nan_to_num(psf_interp, nan=0.0)
 
-    logger.debug('Convolve with SC - Convolve 2d')
+    logger.debug("Convolve with SC - Convolve 2d")
     num_steps = max(1, int(round(abs(dist / dlon))))
     kernel = np.ones((1, num_steps), dtype=float)
     psf_map = convolve2d(psf_interp, kernel, mode="same", boundary="fill", fillvalue=0.0)
 
-    logger.debug('Convolve with SC - Linear interp')  # TODO: Orig impl was slow!!!
+    logger.debug("Convolve with SC - Linear interp")  # TODO: Orig impl was slow!!!
     # # Original implementation.
     # rot_angle_back = np.deg2rad(theta_deg)
     # rot_mat_back = np.array(
@@ -263,7 +256,7 @@ def convolve_psf_with_spacecraft_motion(
         cval=0.0,
     ).reshape(X.shape)
 
-    logger.debug('Convolve with SC - End')
+    logger.debug("Convolve with SC - End")
     return PSFGrid(data=data, lat=y, lon=x)
 
 
@@ -299,9 +292,7 @@ def zero_pad_psf(psf: PSFGrid) -> PSFGrid:
     x_new = x_center + np.arange(-half_count_x, half_count_x + 1) * grid_step_x
     y_new = y_center + np.arange(-half_count_y, half_count_y + 1) * grid_step_y
 
-    interpolant = RegularGridInterpolator(
-        (y, x), psf.data, bounds_error=False, fill_value=0.0
-    )
+    interpolant = RegularGridInterpolator((y, x), psf.data, bounds_error=False, fill_value=0.0)
     Y_new, X_new = np.meshgrid(y_new, x_new, indexing="ij")
     data_new = interpolant(np.stack((Y_new.ravel(), X_new.ravel()), axis=-1)).reshape(Y_new.shape)
 
@@ -335,4 +326,3 @@ def normalize_psf(psf: PSFGrid) -> PSFGrid:
         raise ValueError("Cannot normalize PSF with zero total power.")
     psf.data = psf.data / total
     return psf
-

@@ -65,7 +65,6 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     parameters = [
         # ===== CONSTANT_KERNEL Parameters (9 total) =====
         # These are fixed attitude corrections for instrument frames
-
         # BASE frame corrections (roll, pitch, yaw)
         mc.ParameterConfig(
             ptype=mc.ParameterType.CONSTANT_KERNEL,
@@ -74,13 +73,12 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values in arcseconds
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
                 sigma=30.0,  # Standard deviation for offset sampling (arcseconds)
-                units='arcseconds',
-                distribution='normal',
-                transformation_type='dcm_rotation',
-                coordinate_frames=['BASE_AZIMUTH', 'BASE_CUBE']
+                units="arcseconds",
+                distribution="normal",
+                transformation_type="dcm_rotation",
+                coordinate_frames=["BASE_AZIMUTH", "BASE_CUBE"],
             ),
         ),
-
         # YOKE frame corrections (roll, pitch, yaw)
         mc.ParameterConfig(
             ptype=mc.ParameterType.CONSTANT_KERNEL,
@@ -89,13 +87,12 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
                 bounds=[-200.0, 200.0],  # Smaller offset range for yoke
                 sigma=20.0,
-                units='arcseconds',
-                distribution='normal',
-                transformation_type='dcm_rotation',
-                coordinate_frames=['YOKE_ELEVATION', 'YOKE_AZIMUTH']
+                units="arcseconds",
+                distribution="normal",
+                transformation_type="dcm_rotation",
+                coordinate_frames=["YOKE_ELEVATION", "YOKE_AZIMUTH"],
             ),
         ),
-
         # HYSICS frame corrections (roll, pitch, yaw)
         mc.ParameterConfig(
             ptype=mc.ParameterType.CONSTANT_KERNEL,
@@ -104,16 +101,14 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
                 bounds=[-300.0, 300.0],  # Offset range for HySICS instrument
                 sigma=30.0,
-                units='arcseconds',
-                distribution='normal',
-                transformation_type='dcm_rotation',
-                coordinate_frames=['HYSICS_SLIT', 'CRADLE_ELEVATION']
+                units="arcseconds",
+                distribution="normal",
+                transformation_type="dcm_rotation",
+                coordinate_frames=["HYSICS_SLIT", "CRADLE_ELEVATION"],
             ),
         ),
-
         # ===== OFFSET_KERNEL Parameters (2 total) =====
         # These are dynamic angle biases applied to telemetry
-
         # Azimuth angle bias correction
         mc.ParameterConfig(
             ptype=mc.ParameterType.OFFSET_KERNEL,
@@ -123,13 +118,12 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=0.0,  # Baseline azimuth bias (arcseconds)
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
                 sigma=30.0,  # Standard deviation for offset sampling
-                units='arcseconds',
-                distribution='normal',
-                transformation_type='angle_bias',
-                coordinate_frames=['YOKE_AZIMUTH']
+                units="arcseconds",
+                distribution="normal",
+                transformation_type="angle_bias",
+                coordinate_frames=["YOKE_AZIMUTH"],
             ),
         ),
-
         # Elevation angle bias correction
         mc.ParameterConfig(
             ptype=mc.ParameterType.OFFSET_KERNEL,
@@ -139,16 +133,14 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=0.0,  # Baseline elevation bias (arcseconds)
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
                 sigma=30.0,
-                units='arcseconds',
-                distribution='normal',
-                transformation_type='angle_bias',
-                coordinate_frames=['YOKE_ELEVATION']
+                units="arcseconds",
+                distribution="normal",
+                transformation_type="angle_bias",
+                coordinate_frames=["YOKE_ELEVATION"],
             ),
         ),
-
         # ===== OFFSET_TIME Parameters (1 total) =====
         # Timing corrections for science frames
-
         # Science frame timing correction
         mc.ParameterConfig(
             ptype=mc.ParameterType.OFFSET_TIME,
@@ -158,31 +150,31 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 current_value=0.0,  # Baseline timing offset (milliseconds)
                 bounds=[-50.0, 50.0],  # Offset limits in milliseconds (around 0)
                 sigma=7.0,  # Standard deviation for offset sampling
-                units='milliseconds',
-                distribution='normal'
+                units="milliseconds",
+                distribution="normal",
             ),
         ),
     ]
 
     # Geolocation configuration
     geo_config = mc.GeolocationConfig(
-        meta_kernel_file=data_dir / 'cprs_v01.kernels.tm.json',
+        meta_kernel_file=data_dir / "cprs_v01.kernels.tm.json",
         generic_kernel_dir=generic_dir,
         dynamic_kernels=[
             data_dir / "iss_sc_v01.ephemeris.spk.json",  # Spacecraft position kernel
-            data_dir / "iss_sc_v01.attitude.ck.json",   # Spacecraft attitude kernel
+            data_dir / "iss_sc_v01.attitude.ck.json",  # Spacecraft attitude kernel
             data_dir / "cprs_st_v01.attitude.ck.json",  # Star tracker attitude kernel
         ],
-        instrument_name='CPRS_HYSICS',
-        time_field='corrected_timestamp',
+        instrument_name="CPRS_HYSICS",
+        time_field="corrected_timestamp",
     )
 
     # NetCDF output configuration (NEW - Phase 1)
     netcdf_config = mc.NetCDFConfig(
-        title='CLARREO Pathfinder Geolocation Monte Carlo Analysis',
-        description='Parameter sensitivity analysis for CLARREO Pathfinder on ISS',
+        title="CLARREO Pathfinder Geolocation Monte Carlo Analysis",
+        description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
         performance_threshold_m=250.0,  # CLARREO requirement
-        parameter_metadata=None  # Auto-generate from parameters
+        parameter_metadata=None,  # Auto-generate from parameters
     )
 
     # Create complete Monte Carlo configuration
@@ -191,33 +183,28 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         n_iterations=5,  # Number of parameter sets to test
         parameters=parameters,
         geo=geo_config,
-
         # Performance metrics (CLARREO requirements)
         performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
         performance_spec_percent=39.0,  # CLARREO requirement: 39% of measurements under threshold
-
         # Geodetic parameters (WGS84)
         earth_radius_m=6378140.0,  # WGS84 Earth radius in meters
-
         # NetCDF output configuration
         netcdf=netcdf_config,
-
         # Calibration file names (CLARREO/HySICS specific)
         calibration_file_names={
-            'los_vectors': 'b_HS.mat',  # HySICS boresight vectors
-            'optical_psf': 'optical_PSF_675nm_upsampled.mat',  # 675nm wavelength PSF
+            "los_vectors": "b_HS.mat",  # HySICS boresight vectors
+            "optical_psf": "optical_PSF_675nm_upsampled.mat",  # 675nm wavelength PSF
         },
-
         # Coordinate variable names (ISS/HySICS specific for backward compatibility)
-        spacecraft_position_name='riss_ctrs',  # ISS position in CTRS frame
-        boresight_name='bhat_hs',  # HySICS boresight
-        transformation_matrix_name='t_hs2ctrs',  # HySICS to CTRS transformation
+        spacecraft_position_name="riss_ctrs",  # ISS position in CTRS frame
+        boresight_name="bhat_hs",  # HySICS boresight
+        transformation_matrix_name="t_hs2ctrs",  # HySICS to CTRS transformation
     )
 
     logger.info(f"CLARREO configuration created with {len(parameters)} parameters:")
     for i, param in enumerate(parameters):
         param_name = param.config_file.name if param.config_file else "time_correction"
-        logger.info(f"  {i+1}. {param_name} ({param.ptype.name})")
+        logger.info(f"  {i + 1}. {param_name} ({param.ptype.name})")
 
     # Validate configuration
     config.validate()
@@ -237,13 +224,13 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                     "constant_kernel": {
                         "hysics": "cprs_hysics_v01.attitude.ck.json",
                         "yoke": "cprs_yoke_v01.attitude.ck.json",
-                        "base": "cprs_base_v01.attitude.ck.json"
+                        "base": "cprs_base_v01.attitude.ck.json",
                     },
                     "offset_kernel": {
                         "azimuth": "cprs_az_v01.attitude.ck.json",
-                        "elevation": "cprs_el_v01.attitude.ck.json"
-                    }
-                }
+                        "elevation": "cprs_el_v01.attitude.ck.json",
+                    },
+                },
             },
             "monte_carlo": {
                 "seed": config.seed,
@@ -251,15 +238,15 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 "performance_threshold_m": config.performance_threshold_m,
                 "performance_spec_percent": config.performance_spec_percent,
                 "earth_radius_m": config.earth_radius_m,
-                "parameters": []
+                "parameters": [],
             },
             "geolocation": {
                 "meta_kernel_file": str(config.geo.meta_kernel_file),
                 "generic_kernel_dir": str(config.geo.generic_kernel_dir),
                 "dynamic_kernels": [str(k) for k in config.geo.dynamic_kernels],
                 "instrument_name": config.geo.instrument_name,
-                "time_field": config.geo.time_field
-            }
+                "time_field": config.geo.time_field,
+            },
         }
 
         # Convert parameters to JSON format
@@ -268,29 +255,28 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                 "name": param.config_file.name if param.config_file else f"time_correction_{i}",
                 "parameter_type": param.ptype.name,
                 "config_file": str(param.config_file) if param.config_file else None,
-                "current_value": param.data.get('current_value'),
-                "bounds": param.data.get('bounds'),
-                "sigma": param.data.get('sigma'),
-                "units": param.data.get('units'),
-                "distribution": param.data.get('distribution'),
-                "field": param.data.get('field')
+                "current_value": param.data.get("current_value"),
+                "bounds": param.data.get("bounds"),
+                "sigma": param.data.get("sigma"),
+                "units": param.data.get("units"),
+                "distribution": param.data.get("distribution"),
+                "field": param.data.get("field"),
             }
 
             # Add optional fields if they exist
-            if 'transformation_type' in param.data:
-                param_dict['transformation_type'] = param.data['transformation_type']
-            if 'coordinate_frames' in param.data:
-                param_dict['coordinate_frames'] = param.data['coordinate_frames']
+            if "transformation_type" in param.data:
+                param_dict["transformation_type"] = param.data["transformation_type"]
+            if "coordinate_frames" in param.data:
+                param_dict["coordinate_frames"] = param.data["coordinate_frames"]
 
             config_dict["monte_carlo"]["parameters"].append(param_dict)
 
         # Write to file
         config_output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_output_path, 'w') as f:
+        with open(config_output_path, "w") as f:
             json.dump(config_dict, f, indent=2)
 
         logger.info(f"Configuration saved to: {config_output_path}")
         logger.info(f"File size: {config_output_path.stat().st_size / 1024:.1f} KB")
 
     return config
-

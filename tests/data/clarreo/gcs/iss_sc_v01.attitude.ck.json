@@ -6,9 +6,7 @@
       "input_frame": "J2000",
       "input_data_type": "FLIP SPICE QUATERNIONS",
       "input_time_type": "gps",
-      "input_time_columns": [
-        "gps"
-      ],
+      "input_time_columns": ["gps"],
       "input_angular_rate": "YES",
       "input_gap_threshold": "30s",
       "ck_type": "LINEAR_QUAT",

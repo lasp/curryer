@@ -19,9 +19,10 @@ Date: October 28, 2025
 """
 
 import logging
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
     # Extract the base path from config or construct from tlm_key
     # For test cases, tlm_key is often just a string identifier like 'telemetry_5a'
     # The actual data location comes from config.geo.meta_kernel_file or we use default
-    if hasattr(config.geo, 'meta_kernel_file') and config.geo.meta_kernel_file:
+    if hasattr(config.geo, "meta_kernel_file") and config.geo.meta_kernel_file:
         # Get directory from meta kernel file path
         base_path = config.geo.meta_kernel_file.parent
     elif isinstance(tlm_key, Path) and tlm_key.is_dir():
@@ -57,7 +58,7 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
     else:
         # Fallback: construct absolute path to test data
         script_dir = Path(__file__).parent.parent.parent
-        base_path = script_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
+        base_path = script_dir / "tests" / "data" / "clarreo" / "gcs"
 
     logger.info(f"Loading CLARREO telemetry data from: {base_path}")
 
@@ -71,49 +72,56 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
     st_ck_df = pd.read_csv(base_path / "openloop_tlm_5a_st_ck_20250521T225242.csv", index_col=0)
     azel_ck_df = pd.read_csv(base_path / "openloop_tlm_5a_azel_ck_20250521T225242.csv", index_col=0)
 
-    logger.info(f"Loaded telemetry CSVs - SC_SPK: {sc_spk_df.shape}, SC_CK: {sc_ck_df.shape}, "
-                f"ST_CK: {st_ck_df.shape}, AZEL_CK: {azel_ck_df.shape}")
+    logger.info(
+        f"Loaded telemetry CSVs - SC_SPK: {sc_spk_df.shape}, SC_CK: {sc_ck_df.shape}, "
+        f"ST_CK: {st_ck_df.shape}, AZEL_CK: {azel_ck_df.shape}"
+    )
 
     # CLARREO-specific: Reverse the direction of the Azimuth element
-    azel_ck_df['hps.az_ang_nonlin'] = azel_ck_df['hps.az_ang_nonlin'] * -1
+    azel_ck_df["hps.az_ang_nonlin"] = azel_ck_df["hps.az_ang_nonlin"] * -1
 
     # CLARREO-specific: Convert star-tracker from rotation matrix to quaternion
-    tlm_st_rot = np.vstack([st_ck_df['hps.dcm_base_iss_1_1'].values,
-                            st_ck_df['hps.dcm_base_iss_1_2'].values,
-                            st_ck_df['hps.dcm_base_iss_1_3'].values,
-                            st_ck_df['hps.dcm_base_iss_2_1'].values,
-                            st_ck_df['hps.dcm_base_iss_2_2'].values,
-                            st_ck_df['hps.dcm_base_iss_2_3'].values,
-                            st_ck_df['hps.dcm_base_iss_3_1'].values,
-                            st_ck_df['hps.dcm_base_iss_3_2'].values,
-                            st_ck_df['hps.dcm_base_iss_3_3'].values]).T
+    tlm_st_rot = np.vstack(
+        [
+            st_ck_df["hps.dcm_base_iss_1_1"].values,
+            st_ck_df["hps.dcm_base_iss_1_2"].values,
+            st_ck_df["hps.dcm_base_iss_1_3"].values,
+            st_ck_df["hps.dcm_base_iss_2_1"].values,
+            st_ck_df["hps.dcm_base_iss_2_2"].values,
+            st_ck_df["hps.dcm_base_iss_2_3"].values,
+            st_ck_df["hps.dcm_base_iss_3_1"].values,
+            st_ck_df["hps.dcm_base_iss_3_2"].values,
+            st_ck_df["hps.dcm_base_iss_3_3"].values,
+        ]
+    ).T
     tlm_st_rot = np.reshape(tlm_st_rot, (-1, 3, 3)).copy()
 
     # Import spicierpy for quaternion conversion
     from curryer import spicierpy as sp
+
     tlm_st_rot_q = np.vstack([sp.m2q(tlm_st_rot[i, :, :]) for i in range(tlm_st_rot.shape[0])])
-    st_ck_df['hps.dcm_base_iss_s'] = tlm_st_rot_q[:, 0]
-    st_ck_df['hps.dcm_base_iss_i'] = tlm_st_rot_q[:, 1]
-    st_ck_df['hps.dcm_base_iss_j'] = tlm_st_rot_q[:, 2]
-    st_ck_df['hps.dcm_base_iss_k'] = tlm_st_rot_q[:, 3]
+    st_ck_df["hps.dcm_base_iss_s"] = tlm_st_rot_q[:, 0]
+    st_ck_df["hps.dcm_base_iss_i"] = tlm_st_rot_q[:, 1]
+    st_ck_df["hps.dcm_base_iss_j"] = tlm_st_rot_q[:, 2]
+    st_ck_df["hps.dcm_base_iss_k"] = tlm_st_rot_q[:, 3]
 
     # CLARREO-specific: Merge all telemetry sources with outer joins
     left_df = sc_spk_df
     for right_df in [sc_ck_df, st_ck_df, azel_ck_df]:
-        left_df = pd.merge(left_df, right_df, on='ert', how='outer')
-    left_df = left_df.sort_values('ert')
+        left_df = pd.merge(left_df, right_df, on="ert", how="outer")
+    left_df = left_df.sort_values("ert")
 
     # CLARREO-specific: Compute combined second and subsecond timetags
     for col in list(left_df):
-        if col in ('hps.bad_ps_tms', 'hps.corrected_tms', 'hps.resolver_tms', 'hps.st_quat_coi_tms'):
-            assert col + 's' in left_df.columns, f"Missing subsecond column for {col}"
+        if col in ("hps.bad_ps_tms", "hps.corrected_tms", "hps.resolver_tms", "hps.st_quat_coi_tms"):
+            assert col + "s" in left_df.columns, f"Missing subsecond column for {col}"
 
-            if col == 'hps.bad_ps_tms':
-                left_df[col + '_tmss'] = left_df[col] + left_df[col + 's'] / 256
-            elif col in ('hps.corrected_tms', 'hps.resolver_tms', 'hps.st_quat_coi_tms'):
-                left_df[col + '_tmss'] = left_df[col] + left_df[col + 's'] / 2 ** 32
+            if col == "hps.bad_ps_tms":
+                left_df[col + "_tmss"] = left_df[col] + left_df[col + "s"] / 256
+            elif col in ("hps.corrected_tms", "hps.resolver_tms", "hps.st_quat_coi_tms"):
+                left_df[col + "_tmss"] = left_df[col] + left_df[col + "s"] / 2**32
             else:
-                raise ValueError(f'Missing conversion for expected column: {col}')
+                raise ValueError(f"Missing conversion for expected column: {col}")
 
     logger.info(f"Final CLARREO telemetry shape: {left_df.shape}")
     return left_df
@@ -135,7 +143,7 @@ def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
         DataFrame with science frame timestamps
     """
     # Extract the base path from config or construct from sci_key
-    if hasattr(config.geo, 'meta_kernel_file') and config.geo.meta_kernel_file:
+    if hasattr(config.geo, "meta_kernel_file") and config.geo.meta_kernel_file:
         base_path = config.geo.meta_kernel_file.parent
     elif isinstance(sci_key, Path) and sci_key.is_dir():
         base_path = sci_key
@@ -144,7 +152,7 @@ def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
     else:
         # Fallback: construct absolute path to test data
         script_dir = Path(__file__).parent.parent.parent
-        base_path = script_dir / 'tests' / 'data' / 'clarreo' / 'gcs'
+        base_path = script_dir / "tests" / "data" / "clarreo" / "gcs"
 
     logger.info(f"Loading CLARREO science data from: {base_path}")
 
@@ -152,11 +160,13 @@ def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
     sci_time_df = pd.read_csv(base_path / "openloop_tlm_5a_sci_times_20250521T225242.csv", index_col=0)
 
     # CLARREO-specific: Frame times are GPS seconds, geolocation expects uGPS (microseconds)
-    sci_time_df['corrected_timestamp'] *= 1e6
+    sci_time_df["corrected_timestamp"] *= 1e6
 
     logger.info(f"CLARREO science data shape: {sci_time_df.shape}")
-    logger.info(f"corrected_timestamp range: {sci_time_df['corrected_timestamp'].min():.2e} to "
-                f"{sci_time_df['corrected_timestamp'].max():.2e} uGPS")
+    logger.info(
+        f"corrected_timestamp range: {sci_time_df['corrected_timestamp'].min():.2e} to "
+        f"{sci_time_df['corrected_timestamp'].max():.2e} uGPS"
+    )
 
     return sci_time_df
 
@@ -182,4 +192,3 @@ def load_clarreo_gcp(gcp_key: str, config):
     # For testing purposes, return None - the GCP pairing module will handle this
     # In real implementation, this would load and process GCP reference data
     return None
-

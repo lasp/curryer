@@ -1,9 +1,10 @@
 from __future__ import annotations
-import logging
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
 
@@ -56,25 +57,25 @@ def integrated_image_match(
     geo_config = geolocation_config or GeolocationConfig()
     search_cfg = search_config or SearchConfig()
 
-    logger.debug('Projecting the PSF...')
+    logger.debug("Projecting the PSF...")
     projected_psf = project_psf(r_iss_midframe_m, optical_psfs, subimage, los_vectors_hs)
-    
-    logger.debug('Convolving the PSF with the Spacecraft...')
+
+    logger.debug("Convolving the PSF with the Spacecraft...")
     dynamic_psf = convolve_psf_with_spacecraft_motion(projected_psf, subimage, geo_config)
 
-    logger.debug('Zero padding the PSF...')
+    logger.debug("Zero padding the PSF...")
     dynamic_psf = zero_pad_psf(dynamic_psf)
 
-    logger.debug('Resampling the PSG to the GCP resolution...')
+    logger.debug("Resampling the PSG to the GCP resolution...")
     dynamic_psf = resample_psf_to_gcp_resolution(dynamic_psf, gcp)
 
-    logger.debug('Normalizing the PSF...')
+    logger.debug("Normalizing the PSF...")
     dynamic_psf = normalize_psf(dynamic_psf)
 
-    logger.debug('Convolving the GCP with the PSF...')
+    logger.debug("Convolving the GCP with the PSF...")
     gcp_convolved = convolve_gcp_with_psf(gcp, dynamic_psf)
 
-    logger.debug('Performing image search...')
+    logger.debug("Performing image search...")
     (
         lat_error_est,
         lon_error_est,
@@ -101,11 +102,9 @@ def integrated_image_match(
 # MATLAB File Loading Utilities
 # ============================================================================
 
+
 def load_image_grid_from_mat(
-    mat_file: Path,
-    key: str = "subimage",
-    name: Optional[str] = None,
-    as_named: bool = False
+    mat_file: Path, key: str = "subimage", name: Optional[str] = None, as_named: bool = False
 ) -> Union[ImageGrid, NamedImageGrid]:
     """
     Load ImageGrid or NamedImageGrid from MATLAB .mat file.
@@ -143,33 +142,27 @@ def load_image_grid_from_mat(
     mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
 
     if key not in mat_data:
-        available_keys = [k for k in mat_data.keys() if not k.startswith('__')]
-        raise KeyError(
-            f"Key '{key}' not found in {mat_file.name}. "
-            f"Available keys: {available_keys}"
-        )
+        available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
+        raise KeyError(f"Key '{key}' not found in {mat_file.name}. Available keys: {available_keys}")
 
     struct = mat_data[key]
     h = getattr(struct, "h", None)
 
     grid_kwargs = {
-        'data': np.asarray(struct.data),
-        'lat': np.asarray(struct.lat),
-        'lon': np.asarray(struct.lon),
-        'h': np.asarray(h) if h is not None else None,
+        "data": np.asarray(struct.data),
+        "lat": np.asarray(struct.lat),
+        "lon": np.asarray(struct.lon),
+        "h": np.asarray(h) if h is not None else None,
     }
 
     if as_named:
-        grid_kwargs['name'] = name or str(mat_file)
+        grid_kwargs["name"] = name or str(mat_file)
         return NamedImageGrid(**grid_kwargs)
     else:
         return ImageGrid(**grid_kwargs)
 
 
-def load_optical_psf_from_mat(
-    mat_file: Path,
-    key: str = "PSF_struct_675nm"
-) -> List[OpticalPSFEntry]:
+def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> List[OpticalPSFEntry]:
     """
     Load optical PSF entries from MATLAB .mat file.
 
@@ -196,7 +189,7 @@ def load_optical_psf_from_mat(
     mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
 
     # Try common keys in order of preference
-    for try_key in [key, 'PSF_struct_675nm', 'optical_PSF', 'PSF']:
+    for try_key in [key, "PSF_struct_675nm", "optical_PSF", "PSF"]:
         if try_key in mat_data:
             psf_struct = mat_data[try_key]
             psf_entries_raw = np.atleast_1d(psf_struct)
@@ -205,39 +198,32 @@ def load_optical_psf_from_mat(
             for entry in psf_entries_raw:
                 # Handle both 'FA' and 'field_angle' attribute names
                 # Check if attribute exists first to avoid NumPy array boolean ambiguity
-                field_angle = getattr(entry, 'FA', None)
+                field_angle = getattr(entry, "FA", None)
                 if field_angle is None or (
-                        isinstance(field_angle, (list, tuple, np.ndarray)) and len(field_angle) == 0
+                    isinstance(field_angle, (list, tuple, np.ndarray)) and len(field_angle) == 0
                 ):
                     # Fallback if FA is missing, None, or empty
-                    field_angle = getattr(entry, 'field_angle', None)
+                    field_angle = getattr(entry, "field_angle", None)
 
                 if field_angle is None:
-                    raise ValueError(
-                        f"PSF entry missing field angle attribute "
-                        f"(tried 'FA' and 'field_angle')"
-                    )
+                    raise ValueError(f"PSF entry missing field angle attribute (tried 'FA' and 'field_angle')")
 
-                psf_entries.append(OpticalPSFEntry(
-                    data=np.asarray(entry.data),
-                    x=np.asarray(entry.x).ravel(),
-                    field_angle=np.asarray(field_angle).ravel(),
-                ))
+                psf_entries.append(
+                    OpticalPSFEntry(
+                        data=np.asarray(entry.data),
+                        x=np.asarray(entry.x).ravel(),
+                        field_angle=np.asarray(field_angle).ravel(),
+                    )
+                )
 
             logger.info(f"Loaded {len(psf_entries)} optical PSF entries from {mat_file.name}")
             return psf_entries
 
-    available_keys = [k for k in mat_data.keys() if not k.startswith('__')]
-    raise KeyError(
-        f"No PSF data found in {mat_file.name}. "
-        f"Available keys: {available_keys}"
-    )
+    available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
+    raise KeyError(f"No PSF data found in {mat_file.name}. Available keys: {available_keys}")
 
 
-def load_los_vectors_from_mat(
-    mat_file: Path,
-    key: str = "b_HS"
-) -> np.ndarray:
+def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
     """
     Load line-of-sight vectors from MATLAB .mat file.
 
@@ -260,7 +246,7 @@ def load_los_vectors_from_mat(
     mat_data = loadmat(str(mat_file))
 
     # Try common keys in order of preference
-    for try_key in [key, 'b_HS', 'los_vectors', 'pixel_vectors']:
+    for try_key in [key, "b_HS", "los_vectors", "pixel_vectors"]:
         if try_key in mat_data:
             los = mat_data[try_key]
 
@@ -271,8 +257,5 @@ def load_los_vectors_from_mat(
             logger.info(f"Loaded LOS vectors from {mat_file.name}: shape {los.shape}")
             return los
 
-    available_keys = [k for k in mat_data.keys() if not k.startswith('__')]
-    raise KeyError(
-        f"No LOS vectors found in {mat_file.name}. "
-        f"Available keys: {available_keys}"
-    )
+    available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
+    raise KeyError(f"No LOS vectors found in {mat_file.name}. Available keys: {available_keys}")
