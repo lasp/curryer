@@ -155,7 +155,8 @@ class PairingTestCase(unittest.TestCase):
         result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=100_000.0)
         assert len(result.matches) == 1
         match = result.matches[0]
-        assert match.l1a_index == 0 and match.gcp_index == 0
+        assert match.l1a_index == 0
+        assert match.gcp_index == 0
         assert match.distance_m >= 100_000.0
 
     def test_synthetic_pairing_partial_threshold_not_met(self):

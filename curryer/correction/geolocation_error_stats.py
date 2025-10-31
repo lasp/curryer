@@ -14,7 +14,7 @@ The main processing pipeline:
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import numpy as np
 import xarray as xr
@@ -36,7 +36,7 @@ class GeolocationConfig:
 
     # Mission-agnostic variable name mappings
     # Maps semantic names to actual variable names in the dataset
-    variable_names: Optional[Dict[str, str]] = None  # If None, uses CLARREO defaults
+    variable_names: Optional[dict[str, str]] = None  # If None, uses CLARREO defaults
 
     @classmethod
     def from_monte_carlo_config(cls, mc_config) -> "GeolocationConfig":
@@ -245,7 +245,7 @@ class ErrorStatsProcessor:
         cp_lat_rad: np.ndarray,
         cp_lon_rad: np.ndarray,
         n_measurements: int,
-    ) -> Dict[str, np.ndarray]:
+    ) -> dict[str, np.ndarray]:
         """Process error measurements to nadir-equivalent values."""
 
         # Initialize result arrays
@@ -314,7 +314,7 @@ class ErrorStatsProcessor:
 
         return t_ctrs2uen
 
-    def _calculate_view_plane_vectors(self, bhat_uen: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _calculate_view_plane_vectors(self, bhat_uen: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Calculate view-plane and cross-view-plane unit vectors in UEN coordinates."""
         # Calculate normalization factor for horizontal components
         norm_factor = np.sqrt(bhat_uen[1] ** 2 + bhat_uen[2] ** 2)
@@ -327,7 +327,7 @@ class ErrorStatsProcessor:
 
         return v_uen, x_uen
 
-    def _calculate_scaling_factors(self, riss_ctrs: np.ndarray, theta: float) -> Tuple[float, float]:
+    def _calculate_scaling_factors(self, riss_ctrs: np.ndarray, theta: float) -> tuple[float, float]:
         """Calculate scaling factors for nadir-equivalent transformation."""
         r_magnitude = np.linalg.norm(riss_ctrs)
         f = r_magnitude / self.config.earth_radius_m
@@ -343,7 +343,7 @@ class ErrorStatsProcessor:
 
         return vp_factor, xvp_factor
 
-    def _create_output_dataset(self, input_data: xr.Dataset, results: Dict[str, np.ndarray]) -> xr.Dataset:
+    def _create_output_dataset(self, input_data: xr.Dataset, results: dict[str, np.ndarray]) -> xr.Dataset:
         """Create output Xarray Dataset with processing results."""
 
         # Create data variables for output
@@ -423,7 +423,7 @@ class ErrorStatsProcessor:
 
         return output_ds
 
-    def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> Dict[str, Union[float, int]]:
+    def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> dict[str, Union[float, int]]:
         """Calculate performance statistics on nadir-equivalent errors."""
 
         # Count errors below threshold

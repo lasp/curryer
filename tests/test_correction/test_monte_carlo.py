@@ -46,7 +46,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import xarray as xr
@@ -96,13 +96,13 @@ class TestModeConfig:
     """
 
     test_data_dir: Path  # tests/data/clarreo/image_match/
-    test_cases: Optional[List[str]] = None  # Specific cases: ['1', '2'] or None for all
+    test_cases: Optional[list[str]] = None  # Specific cases: ['1', '2'] or None for all
     randomize_errors: bool = True  # Add variations to simulate parameter effects
     error_variation_percent: float = 3.0  # Percentage variation to apply (e.g., 3.0 = ±3%)
     cache_image_match_results: bool = True  # Cache results, apply variations instead of re-running
 
 
-def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[List[str]] = None) -> List[dict]:
+def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[list[str]] = None) -> list[dict]:
     """
     Discover available image matching test cases.
 
@@ -582,7 +582,7 @@ def test_generate_clarreo_config_json():
 # =============================================================================
 
 
-def test_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None) -> Tuple[List, Dict, Path]:
+def test_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None) -> tuple[list, dict, Path]:
     """
     Test UPSTREAM segment of Monte Carlo pipeline.
 
@@ -684,8 +684,8 @@ def test_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = Non
 
 
 def test_downstream_pipeline(
-    n_iterations: int = 5, test_cases: Optional[List[str]] = None, work_dir: Optional[Path] = None
-) -> Tuple[List, Dict, Path]:
+    n_iterations: int = 5, test_cases: Optional[list[str]] = None, work_dir: Optional[Path] = None
+) -> tuple[list, dict, Path]:
     """
     Test DOWNSTREAM segment of Monte Carlo pipeline.
 

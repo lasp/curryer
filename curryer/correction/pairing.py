@@ -16,7 +16,6 @@ import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
 
 import numpy as np
 
@@ -118,7 +117,7 @@ class ImageMetadata:
 
     index: int
     name: str
-    corners: List[tuple[float, float]]
+    corners: list[tuple[float, float]]
     center: tuple[float, float]
     bbox: tuple[float, float, float, float]
 
@@ -158,12 +157,12 @@ class PairMatch:
 class PairingResult:
     """Container for the output of :func:`find_l1a_gcp_pairs`."""
 
-    l1a_images: List[ImageMetadata]
-    gcp_images: List[GCPMetadata]
-    matches: List[PairMatch]
+    l1a_images: list[ImageMetadata]
+    gcp_images: list[GCPMetadata]
+    matches: list[PairMatch]
 
 
-def _image_corners(image: ImageGrid) -> List[tuple[float, float]]:
+def _image_corners(image: ImageGrid) -> list[tuple[float, float]]:
     """Return the four corner latitude/longitude pairs of ``image``."""
 
     lat = image.lat
@@ -353,8 +352,8 @@ def find_l1a_gcp_pairs(
         within ``max_distance_m``.
     """
 
-    l1a_meta: List[ImageMetadata] = []
-    gcp_meta: List[GCPMetadata] = []
+    l1a_meta: list[ImageMetadata] = []
+    gcp_meta: list[GCPMetadata] = []
 
     for idx, image in enumerate(l1a_images):
         l1a_meta.append(_build_image_metadata(idx, image))
@@ -362,7 +361,7 @@ def find_l1a_gcp_pairs(
     for idx, image in enumerate(gcp_images):
         gcp_meta.append(_build_gcp_metadata(idx, image))
 
-    matches: List[PairMatch] = []
+    matches: list[PairMatch] = []
     for l1a in l1a_meta:
         for gcp in gcp_meta:
             lat_c, lon_c = gcp.center
@@ -383,7 +382,7 @@ def find_l1a_gcp_pairs(
 # ============================================================================
 
 
-def discover_gcp_files(gcp_directory: Path, pattern: str = "*_resampled.mat") -> List[Path]:
+def discover_gcp_files(gcp_directory: Path, pattern: str = "*_resampled.mat") -> list[Path]:
     """
     Find all GCP files in a directory matching a pattern.
 
@@ -411,13 +410,13 @@ def discover_gcp_files(gcp_directory: Path, pattern: str = "*_resampled.mat") ->
 
 
 def pair_files(
-    l1a_files: List[Path],
+    l1a_files: list[Path],
     gcp_directory: Path,
     max_distance_m: float = 0.0,
     l1a_key: str = "subimage",
     gcp_key: str = "GCP",
     gcp_pattern: str = "*_resampled.mat",
-) -> List[Tuple[Path, Path]]:
+) -> list[tuple[Path, Path]]:
     """
     Find L1A-GCP pairs based on spatial overlap and return as file path tuples.
 

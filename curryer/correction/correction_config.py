@@ -7,12 +7,12 @@ configuration files. It contains NO mission-specific logic.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def load_config_schema() -> Dict[str, Any]:
+def load_config_schema() -> dict[str, Any]:
     """Return the expected configuration schema.
 
     Returns:
@@ -59,7 +59,7 @@ def validate_config_file(config_path: Path) -> bool:
         raise ValueError(f"Invalid JSON in {config_path}: {e}")
 
 
-def extract_mission_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
+def extract_mission_config(config_data: dict[str, Any]) -> dict[str, Any]:
     """Extract mission configuration from config dictionary.
 
     Args:
@@ -86,7 +86,7 @@ def extract_mission_config(config_data: Dict[str, Any]) -> Dict[str, Any]:
     return mission_config
 
 
-def get_kernel_mapping(config_data: Dict[str, Any], kernel_type: str) -> Dict[str, str]:
+def get_kernel_mapping(config_data: dict[str, Any], kernel_type: str) -> dict[str, str]:
     """Get kernel mappings for a specific kernel type.
 
     Args:
@@ -101,7 +101,7 @@ def get_kernel_mapping(config_data: Dict[str, Any], kernel_type: str) -> Dict[st
     return kernel_mappings.get(kernel_type, {})
 
 
-def find_kernel_file(name: str, kernel_mapping: Dict[str, str]) -> Optional[str]:
+def find_kernel_file(name: str, kernel_mapping: dict[str, str]) -> Optional[str]:
     """Find kernel file for a given name using substring matching.
 
     Performs case-insensitive matching against kernel mapping keys.

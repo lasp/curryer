@@ -4,7 +4,6 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Union
 
 import numpy as np
 
@@ -49,8 +48,8 @@ def integrated_image_match(
     r_iss_midframe_m: np.ndarray,
     los_vectors_hs: np.ndarray,
     optical_psfs: Iterable[OpticalPSFEntry],
-    geolocation_config: Optional[GeolocationConfig] = None,
-    search_config: Optional[SearchConfig] = None,
+    geolocation_config: GeolocationConfig | None = None,
+    search_config: SearchConfig | None = None,
 ) -> IntegratedImageMatchResult:
     """Replicate the MATLAB IntegratedImageMatch workflow in Python."""
 
@@ -104,8 +103,8 @@ def integrated_image_match(
 
 
 def load_image_grid_from_mat(
-    mat_file: Path, key: str = "subimage", name: Optional[str] = None, as_named: bool = False
-) -> Union[ImageGrid, NamedImageGrid]:
+    mat_file: Path, key: str = "subimage", name: str | None = None, as_named: bool = False
+) -> ImageGrid | NamedImageGrid:
     """
     Load ImageGrid or NamedImageGrid from MATLAB .mat file.
 
@@ -162,7 +161,7 @@ def load_image_grid_from_mat(
         return ImageGrid(**grid_kwargs)
 
 
-def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> List[OpticalPSFEntry]:
+def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
     """
     Load optical PSF entries from MATLAB .mat file.
 

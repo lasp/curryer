@@ -1326,7 +1326,7 @@ class TestNetCDFReprocessing(unittest.TestCase):
         processor = ErrorStatsProcessor(config=config)
 
         # Reprocess with override
-        results = processor.process_from_netcdf(netcdf_path, minimum_correlation=0.7)
+        processor.process_from_netcdf(netcdf_path, minimum_correlation=0.7)
 
         # Original config should be restored
         self.assertEqual(processor.config.minimum_correlation, 0.3)

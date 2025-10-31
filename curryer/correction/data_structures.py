@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -13,7 +12,7 @@ class ImageGrid:
     data: np.ndarray
     lat: np.ndarray
     lon: np.ndarray
-    h: Optional[np.ndarray] = None
+    h: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.data = np.asarray(self.data, dtype=float)
@@ -42,7 +41,7 @@ class ImageGrid:
 class NamedImageGrid(ImageGrid):
     """Image grid with an associated descriptive name."""
 
-    name: Optional[str] = None
+    name: str | None = None
 
 
 @dataclass
@@ -74,7 +73,7 @@ class PSFGrid:
 class ProjectedPSF(PSFGrid):
     """PSF sampled on the Earth's surface, optionally carrying heights."""
 
-    height: Optional[np.ndarray] = None
+    height: np.ndarray | None = None
 
     def __post_init__(self) -> None:  # type: ignore[override]
         super().__post_init__()

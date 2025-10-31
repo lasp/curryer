@@ -58,7 +58,7 @@ import typing
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -645,7 +645,7 @@ def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad
 
 def _extract_boresight_and_transform_from_geolocation(
     geo_dataset: xr.Dataset, config: "MonteCarloConfig"
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Extract boresight vector and transformation matrix from geolocation data.
 
@@ -701,7 +701,7 @@ def image_matching(
     params_info: list,
     config: "MonteCarloConfig",
     los_vectors_cached: Optional[np.ndarray] = None,
-    optical_psfs_cached: Optional[List] = None,
+    optical_psfs_cached: Optional[list] = None,
 ) -> xr.Dataset:
     """
     Image matching using integrated_image_match() module.
@@ -788,7 +788,6 @@ def image_matching(
         logger.info("  Converting results to error_stats format...")
 
         # Create single measurement result (image matching produces one correlation per GCP)
-        n_measurements = 1
 
         # NOTE: Boresight and transformation matrix for error_stats module
         # ----------------------------------------------------------------
@@ -1103,18 +1102,18 @@ class NetCDFConfig:
 
     # Parameter metadata - maps parameter config to NetCDF metadata
     # If None, will be auto-generated from config.parameters
-    parameter_metadata: typing.Optional[typing.Dict[str, NetCDFParameterMetadata]] = None
+    parameter_metadata: typing.Optional[dict[str, NetCDFParameterMetadata]] = None
 
     # Standard variable attributes - allows mission-specific overrides
     # If None, uses STANDARD_NETCDF_ATTRIBUTES module constant
-    standard_attributes: typing.Optional[typing.Dict[str, typing.Dict[str, str]]] = None
+    standard_attributes: typing.Optional[dict[str, dict[str, str]]] = None
 
     def get_threshold_metric_name(self) -> str:
         """Generate metric name dynamically from threshold."""
         threshold_m = int(self.performance_threshold_m)
         return f"percent_under_{threshold_m}m"
 
-    def get_standard_attributes(self) -> typing.Dict[str, typing.Dict[str, str]]:
+    def get_standard_attributes(self) -> dict[str, dict[str, str]]:
         """
         Get standard variable attributes, using mission overrides if provided.
 
@@ -1219,9 +1218,9 @@ class PlaceholderConfig:
     orbit_altitude_max_m: float = 6778e3  # Max altitude (typical LEO ~400 km above surface)
 
     # Geographic bounds for synthetic control points
-    latitude_range: typing.Tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
-    longitude_range: typing.Tuple[float, float] = (-180.0, 180.0)  # Full longitude range
-    altitude_range: typing.Tuple[float, float] = (0.0, 1000.0)  # GCP altitude range (meters)
+    latitude_range: tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
+    longitude_range: tuple[float, float] = (-180.0, 180.0)  # Full longitude range
+    altitude_range: tuple[float, float] = (0.0, 1000.0)  # GCP altitude range (meters)
 
     # Boresight pointing (for nadir-looking instruments)
     max_off_nadir_rad: float = 0.1  # Maximum off-nadir angle (radians, ~6 degrees)
@@ -1251,7 +1250,7 @@ class MonteCarloConfig:
     # REQUIRED FIELDS (no defaults - must be provided by mission config)
     seed: typing.Optional[int]  # Random seed for reproducibility, or None
     n_iterations: int  # Number of Monte Carlo iterations
-    parameters: typing.List[ParameterConfig]  # Parameters to vary
+    parameters: list[ParameterConfig]  # Parameters to vary
     geo: GeolocationConfig  # SPICE kernels and instrument configuration
     performance_threshold_m: float  # Accuracy threshold (e.g., 250.0 meters for CLARREO)
     performance_spec_percent: float  # Performance requirement (e.g., 39.0% for CLARREO)
@@ -1273,7 +1272,7 @@ class MonteCarloConfig:
     netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata; auto-generated if None
 
     # Calibration files (mission-specific names) (NEW)
-    calibration_file_names: typing.Optional[typing.Dict[str, str]] = None
+    calibration_file_names: typing.Optional[dict[str, str]] = None
     # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
 
     # Coordinate frame naming (for outputs) (NEW)
@@ -1772,7 +1771,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     return modified_data
 
 
-def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_pairs: int) -> typing.Dict:
+def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_pairs: int) -> dict:
     """
     Build NetCDF data structure dynamically from configuration.
 

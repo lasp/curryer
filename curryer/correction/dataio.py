@@ -12,7 +12,6 @@ import datetime as _dt
 import os
 from collections.abc import Iterable
 from pathlib import Path
-from typing import List, Optional
 
 # TODO: Remove if boto3 is made a required dependency!
 try:  # pragma: no cover - exercised indirectly when boto3 is available
@@ -34,7 +33,7 @@ class S3Configuration:
         return f"{self.base_prefix}/{date:%Y%m%d}/"
 
 
-def _require_client(client: Optional[object]) -> object:
+def _require_client(client: object | None) -> object:
     if client is not None:
         return client
     if boto3 is None:
@@ -56,7 +55,7 @@ def find_netcdf_objects(
     end_date: _dt.date,
     *,
     s3_client=None,
-) -> List[str]:
+) -> list[str]:
     """Return S3 object keys for NetCDF files in the given date range.
 
     Parameters
@@ -70,7 +69,7 @@ def find_netcdf_objects(
     """
 
     client = _require_client(s3_client)
-    keys: List[str] = []
+    keys: list[str] = []
     for date in _iter_dates(start_date, end_date):
         prefix = config.date_prefix(date)
         continuation_token = None
@@ -95,7 +94,7 @@ def download_netcdf_objects(
     destination: os.PathLike[str] | str,
     *,
     s3_client=None,
-) -> List[Path]:
+) -> list[Path]:
     """Download the specified S3 objects to ``destination``.
 
     Parameters
@@ -114,7 +113,7 @@ def download_netcdf_objects(
     dest_root = Path(destination)
     dest_root.mkdir(parents=True, exist_ok=True)
 
-    downloaded: List[Path] = []
+    downloaded: list[Path] = []
     for key in object_keys:
         filename = Path(key).name
         local_path = dest_root / filename
