@@ -593,8 +593,8 @@ def test_upstream_pipeline(
     - Image matching (no valid data)
     - Error statistics (no matched data)
 
-    This follows the same workflow as run_monte_carlo.py but focused on
-    testing the upstream geolocation part of the pipeline.
+    This is focused on testing the upstream kernel creation
+    and geolocation part of the pipeline.
 
     Args:
         n_iterations: Number of Monte Carlo iterations
