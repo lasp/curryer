@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import numpy.testing as npt
 import pandas as pd
+import pytest
 import xarray as xr
 
 from curryer import meta, spicetime, spicierpy, utils
@@ -497,6 +498,7 @@ class SpatialTestCase(unittest.TestCase):
         self.assertTrue(np.isfinite(out_srf_loc[:4, :]).all())
         self.assertTrue(np.isnan(out_srf_loc[4, :]).all())
 
+    @pytest.mark.extra
     def test_terrain_correct_performance(self):
         elev = elevation.Elevation(meters=False, degrees=False)
         self.assertIsNotNone(elev)
