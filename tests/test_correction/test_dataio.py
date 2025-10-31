@@ -26,6 +26,7 @@ or network access during testing.
 
 from __future__ import annotations
 
+import os
 import datetime as dt
 import tempfile
 import unittest
@@ -108,6 +109,39 @@ class DataIOTestCase(unittest.TestCase):
         self.assertSetEqual({p.name for p in output_paths}, {"file1.nc", "file2.nc"})
         for path in output_paths:
             self.assertEqual(path.read_bytes(), objects[f"L1a/nadir/20181225/{path.name}"])
+
+
+@unittest.skipUnless(
+    os.getenv("AWS_ACCESS_KEY_ID", "") and
+    os.getenv("AWS_SECRET_ACCESS_KEY", "") and
+    os.getenv("AWS_SESSION_TOKEN", ""),
+    "Requires tester to set AWS access key environment variables.")
+class ClarreoDataIOTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.__tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.__tmp_dir.cleanup)
+        self.tmp_dir = Path(self.__tmp_dir.name)
+
+    def test_l0(self):
+        config = S3Configuration("clarreo", "L0/telemetry/hps_navigation/")
+        keys = find_netcdf_objects(
+            config,
+            start_date=dt.date(2017, 1, 15),
+            end_date=dt.date(2017, 1, 15),
+        )
+        self.assertListEqual(keys, [
+            "L0/telemetry/hps_navigation/20170115/CPF_TLM_L0.V00-000.hps_navigation-20170115-0.0.0.nc"
+        ])
+
+    def test_l1a(self):
+        config = S3Configuration("clarreo", "L1a/nadir/")
+        keys = find_netcdf_objects(
+            config,
+            start_date=dt.date(2022, 6, 3),
+            end_date=dt.date(2022, 6, 3),
+        )
+        self.assertEqual(34, len(keys))
+        self.assertIn("L1a/nadir/20220603/nadir-20220603T235952-step22-geolocation_creation-0.0.0.nc", keys)
 
 
 if __name__ == '__main__':
