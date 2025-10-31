@@ -107,5 +107,11 @@ ignore = [
     "F541", # Allow f strings as docstrings
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "extra: marks tests as extra (deselected by default, run with --run-extra)",
+]
+addopts = "-v"
+
 [tool.codespell]
 ignore-words-list = "timout,sorce,SORCE,AHD"

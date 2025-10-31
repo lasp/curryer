@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import numpy.testing as npt
 import pandas as pd
+import pytest
 import xarray as xr
 
 from curryer import meta, spicetime, utils
@@ -21,6 +22,7 @@ xr.set_options(display_width=120, display_max_rows=30)
 np.set_printoptions(linewidth=120)
 
 
+@pytest.mark.extra
 class ClarreoEngScenariosTestCase(unittest.TestCase):
     def setUp(self) -> None:
         root_dir = Path(__file__).parent.parent

@@ -1,7 +1,0 @@
-*.tif filter=lfs diff=lfs merge=lfs -text
-*.bpc filter=lfs diff=lfs merge=lfs -text
-tests/data/clarreo/image_match/1/GCP12055Dili_resampled.mat filter=lfs diff=lfs merge=lfs -text
-tests/data/clarreo/image_match/2/GCP10121Maracaibo_resampled.mat filter=lfs diff=lfs merge=lfs -text
-tests/data/clarreo/image_match/3/GCP10665SantaRosa_resampled.mat filter=lfs diff=lfs merge=lfs -text
-tests/data/clarreo/image_match/4/GCP20484Morocco_resampled.mat filter=lfs diff=lfs merge=lfs -text
-tests/data/clarreo/image_match/5/GCP10087Titicaca_resampled.mat filter=lfs diff=lfs merge=lfs -text
