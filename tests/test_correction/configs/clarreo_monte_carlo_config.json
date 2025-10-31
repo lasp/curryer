@@ -1,0 +1,156 @@
+{
+  "mission_config": {
+    "mission_name": "CLARREO_Pathfinder",
+    "instrument_name": "CPRS_HYSICS",
+    "kernel_mappings": {
+      "constant_kernel": {
+        "hysics": "cprs_hysics_v01.attitude.ck.json",
+        "yoke": "cprs_yoke_v01.attitude.ck.json",
+        "base": "cprs_base_v01.attitude.ck.json"
+      },
+      "offset_kernel": {
+        "azimuth": "cprs_az_v01.attitude.ck.json",
+        "elevation": "cprs_el_v01.attitude.ck.json"
+      }
+    }
+  },
+  "monte_carlo": {
+    "seed": 42,
+    "n_iterations": 5,
+    "performance_threshold_m": 250.0,
+    "performance_spec_percent": 39.0,
+    "earth_radius_m": 6378140.0,
+    "parameters": [
+      {
+        "name": "cprs_base_v01.attitude.ck.json",
+        "parameter_type": "CONSTANT_KERNEL",
+        "config_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_base_v01.attitude.ck.json",
+        "current_value": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "bounds": [
+          -300.0,
+          300.0
+        ],
+        "sigma": 30.0,
+        "units": "arcseconds",
+        "distribution": "normal",
+        "field": null,
+        "transformation_type": "dcm_rotation",
+        "coordinate_frames": [
+          "BASE_AZIMUTH",
+          "BASE_CUBE"
+        ]
+      },
+      {
+        "name": "cprs_yoke_v01.attitude.ck.json",
+        "parameter_type": "CONSTANT_KERNEL",
+        "config_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_yoke_v01.attitude.ck.json",
+        "current_value": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "bounds": [
+          -200.0,
+          200.0
+        ],
+        "sigma": 20.0,
+        "units": "arcseconds",
+        "distribution": "normal",
+        "field": null,
+        "transformation_type": "dcm_rotation",
+        "coordinate_frames": [
+          "YOKE_ELEVATION",
+          "YOKE_AZIMUTH"
+        ]
+      },
+      {
+        "name": "cprs_hysics_v01.attitude.ck.json",
+        "parameter_type": "CONSTANT_KERNEL",
+        "config_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_hysics_v01.attitude.ck.json",
+        "current_value": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "bounds": [
+          -300.0,
+          300.0
+        ],
+        "sigma": 30.0,
+        "units": "arcseconds",
+        "distribution": "normal",
+        "field": null,
+        "transformation_type": "dcm_rotation",
+        "coordinate_frames": [
+          "HYSICS_SLIT",
+          "CRADLE_ELEVATION"
+        ]
+      },
+      {
+        "name": "cprs_az_v01.attitude.ck.json",
+        "parameter_type": "OFFSET_KERNEL",
+        "config_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_az_v01.attitude.ck.json",
+        "current_value": 0.0,
+        "bounds": [
+          -300.0,
+          300.0
+        ],
+        "sigma": 30.0,
+        "units": "arcseconds",
+        "distribution": "normal",
+        "field": "hps.az_ang_nonlin",
+        "transformation_type": "angle_bias",
+        "coordinate_frames": [
+          "YOKE_AZIMUTH"
+        ]
+      },
+      {
+        "name": "cprs_el_v01.attitude.ck.json",
+        "parameter_type": "OFFSET_KERNEL",
+        "config_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_el_v01.attitude.ck.json",
+        "current_value": 0.0,
+        "bounds": [
+          -300.0,
+          300.0
+        ],
+        "sigma": 30.0,
+        "units": "arcseconds",
+        "distribution": "normal",
+        "field": "hps.el_ang_nonlin",
+        "transformation_type": "angle_bias",
+        "coordinate_frames": [
+          "YOKE_ELEVATION"
+        ]
+      },
+      {
+        "name": "time_correction_5",
+        "parameter_type": "OFFSET_TIME",
+        "config_file": null,
+        "current_value": 0.0,
+        "bounds": [
+          -50.0,
+          50.0
+        ],
+        "sigma": 7.0,
+        "units": "milliseconds",
+        "distribution": "normal",
+        "field": "corrected_timestamp"
+      }
+    ]
+  },
+  "geolocation": {
+    "meta_kernel_file": "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_v01.kernels.tm.json",
+    "generic_kernel_dir": "data/generic",
+    "dynamic_kernels": [
+      "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/iss_sc_v01.ephemeris.spk.json",
+      "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/iss_sc_v01.attitude.ck.json",
+      "/Users/mama2613/repos/curryer/tests/data/clarreo/gcs/cprs_st_v01.attitude.ck.json"
+    ],
+    "instrument_name": "CPRS_HYSICS",
+    "time_field": "corrected_timestamp"
+  }
+}
