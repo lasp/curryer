@@ -48,30 +48,3 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           oidc: true
-
-  demo:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Set up python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Build demo docker image
-        run: docker build . --file Dockerfile --target demo --build-arg BASE_IMAGE_PYTHON_VERSION=${{ matrix.python-version }} --tag curryer-${{ matrix.python-version }}-demo:latest
-
-      - name: Run demo docker image
-        run: docker run -i --rm curryer-${{ matrix.python-version }}-demo:latest

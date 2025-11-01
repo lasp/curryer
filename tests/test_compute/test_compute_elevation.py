@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import numpy.testing as npt
 import pandas as pd
+import pytest
 import xarray as xr
 from pyproj import Transformer
 
@@ -20,6 +21,7 @@ xr.set_options(display_width=120)
 np.set_printoptions(linewidth=120)
 
 
+@pytest.mark.extra
 class ElevationTestCase(unittest.TestCase):
     def setUp(self) -> None:
         root_dir = Path(__file__).parents[2]

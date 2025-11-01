@@ -1,0 +1,23 @@
+{
+  "kernel": {
+    "class_path": "curryer.kernels.ephemeris.EphemerisStateProperties",
+    "properties": {
+      "input_body": "CPRS_HYSICS",
+      "input_frame": "CPRS_EL_COORD",
+      "input_center": "CPRS_EL",
+      "input_data_units": {
+        "angles": "radians",
+        "distances": "meters"
+      },
+      "spk_type": "INTERP_LAGRANGE_EVEN",
+      "polynom_degree": 1,
+      "frame_kernel": "cprs_v01.frames.fk.tf"
+    }
+  },
+  "input_data": {
+    "ugps": [0, 3155760018000000],
+    "position_x": [0.0, 0.0],
+    "position_y": [0.0, 0.0],
+    "position_z": [0.0, 0.0]
+  }
+}
