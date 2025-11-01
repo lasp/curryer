@@ -169,12 +169,12 @@ class ErrorStatsProcessor:
         # Convert angular errors to distance errors
         lat_error_rad = np.deg2rad(filtered_data.lat_error_deg.values)
         lon_error_rad = np.deg2rad(filtered_data.lon_error_deg.values)
-        cp_lat_rad = np.deg2rad(filtered_data.cp_lat_deg.values)
-        cp_lon_rad = np.deg2rad(filtered_data.cp_lon_deg.values)
+        gcp_lat_rad = np.deg2rad(filtered_data.gcp_lat_deg.values)
+        gcp_lon_rad = np.deg2rad(filtered_data.gcp_lon_deg.values)
 
         # Calculate N-S and E-W error distances in meters
         ns_error_dist_m = self.config.earth_radius_m * lat_error_rad
-        ew_error_dist_m = self.config.earth_radius_m * np.cos(cp_lat_rad) * lon_error_rad
+        ew_error_dist_m = self.config.earth_radius_m * np.cos(gcp_lat_rad) * lon_error_rad
 
         # Transform boresight vectors using configurable variable names
         bhat_ctrs = self._transform_boresight_vectors(
@@ -187,8 +187,8 @@ class ErrorStatsProcessor:
             ew_error_dist_m,
             filtered_data[sc_pos_var].values,
             bhat_ctrs,
-            cp_lat_rad,
-            cp_lon_rad,
+            gcp_lat_rad,
+            gcp_lon_rad,
             n_measurements,
         )
 
@@ -214,9 +214,9 @@ class ErrorStatsProcessor:
             sc_pos_var,
             boresight_var,
             transform_var,
-            "cp_lat_deg",
-            "cp_lon_deg",
-            "cp_alt",
+            "gcp_lat_deg",
+            "gcp_lon_deg",
+            "gcp_alt",
         ]
 
         missing_vars = [var for var in required_vars if var not in data.data_vars]
@@ -243,8 +243,8 @@ class ErrorStatsProcessor:
         ew_error_m: np.ndarray,
         riss_ctrs: np.ndarray,
         bhat_ctrs: np.ndarray,
-        cp_lat_rad: np.ndarray,
-        cp_lon_rad: np.ndarray,
+        gcp_lat_rad: np.ndarray,
+        gcp_lon_rad: np.ndarray,
         n_measurements: int,
     ) -> dict[str, np.ndarray]:
         """Process error measurements to nadir-equivalent values."""
@@ -263,7 +263,7 @@ class ErrorStatsProcessor:
 
         for i in range(n_measurements):
             # Create transformation matrix from CTRS to Up-East-North (UEN)
-            t_ctrs2uen = self._create_ctrs_to_uen_transform(cp_lat_rad[i], cp_lon_rad[i])
+            t_ctrs2uen = self._create_ctrs_to_uen_transform(gcp_lat_rad[i], gcp_lon_rad[i])
 
             # Transform boresight vector to UEN coordinates
             bhat_uen = bhat_ctrs[i] @ t_ctrs2uen.T

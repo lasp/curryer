@@ -124,9 +124,9 @@ STANDARD_VAR_NAMES = {
     "boresight": "boresight",  # Generic default
     "transformation_matrix": "t_inst2ref",  # Generic default
     # Control point location (optional)
-    "cp_lat_deg": "cp_lat_deg",
-    "cp_lon_deg": "cp_lon_deg",
-    "cp_alt": "cp_alt",
+    "gcp_lat_deg": "gcp_lat_deg",
+    "gcp_lon_deg": "gcp_lon_deg",
+    "gcp_alt": "gcp_alt",
 }
 
 
@@ -586,14 +586,14 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     # Extract corresponding geolocation data
     if n_valid > 0:
         valid_indices = np.where(valid_mask)[0][:n_measurements]
-        cp_lat = geolocated_data["latitude"].values[valid_indices, 0]  # Use first pixel
-        cp_lon = geolocated_data["longitude"].values[valid_indices, 0]
+        gcp_lat = geolocated_data["latitude"].values[valid_indices, 0]  # Use first pixel
+        gcp_lon = geolocated_data["longitude"].values[valid_indices, 0]
     else:
         # Use configured geographic bounds for synthetic control points
-        cp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
-        cp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
+        gcp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
+        gcp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
 
-    cp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
+    gcp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
 
     # Use config names for coordinates instead of hardcoded ISS/HySICS names
     return xr.Dataset(
@@ -603,9 +603,9 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
             sc_pos_name: (["measurement", "xyz"], riss_ctrs),
             boresight_name: (["measurement", "xyz"], boresights),
             transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrices),
-            "cp_lat_deg": (["measurement"], cp_lat),
-            "cp_lon_deg": (["measurement"], cp_lon),
-            "cp_alt": (["measurement"], cp_alt),
+            "gcp_lat_deg": (["measurement"], gcp_lat),
+            "gcp_lon_deg": (["measurement"], gcp_lon),
+            "gcp_alt": (["measurement"], gcp_alt),
         },
         coords={
             "measurement": range(n_measurements),
@@ -835,9 +835,9 @@ def image_matching(
             sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
             boresight_name: (["measurement", "xyz"], [boresight]),
             transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
-            "cp_lat_deg": (["measurement"], [gcp_center_lat]),
-            "cp_lon_deg": (["measurement"], [gcp_center_lon]),
-            "cp_alt": (["measurement"], [0.0]),  # GCP at ground level
+            "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
+            "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
+            "gcp_alt": (["measurement"], [0.0]),  # GCP at ground level
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )
@@ -961,9 +961,9 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
     all_sc_positions = []
     all_boresights = []
     all_transforms = []
-    all_cp_lats = []
-    all_cp_lons = []
-    all_cp_alts = []
+    all_gcp_lats = []
+    all_gcp_lons = []
+    all_gcp_alts = []
 
     for i, result in enumerate(image_matching_results):
         # Add GCP pair identifier to track source
@@ -986,12 +986,12 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
             # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
             for j in range(n_measurements):
                 all_transforms.append(result[transform_name].values[:, :, j])
-        if "cp_lat_deg" in result:
-            all_cp_lats.extend(result["cp_lat_deg"].values)
-        if "cp_lon_deg" in result:
-            all_cp_lons.extend(result["cp_lon_deg"].values)
-        if "cp_alt" in result:
-            all_cp_alts.extend(result["cp_alt"].values)
+        if "gcp_lat_deg" in result:
+            all_gcp_lats.extend(result["gcp_lat_deg"].values)
+        if "gcp_lon_deg" in result:
+            all_gcp_lons.extend(result["gcp_lon_deg"].values)
+        if "gcp_alt" in result:
+            all_gcp_alts.extend(result["gcp_alt"].values)
 
     n_total = len(all_lat_errors)
 
@@ -1021,12 +1021,12 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
         aggregated[transform_name] = (["xyz_from", "xyz_to", "measurement"], t_stacked)
         aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
 
-    if all_cp_lats:
-        aggregated["cp_lat_deg"] = (["measurement"], np.array(all_cp_lats))
-    if all_cp_lons:
-        aggregated["cp_lon_deg"] = (["measurement"], np.array(all_cp_lons))
-    if all_cp_alts:
-        aggregated["cp_alt"] = (["measurement"], np.array(all_cp_alts))
+    if all_gcp_lats:
+        aggregated["gcp_lat_deg"] = (["measurement"], np.array(all_gcp_lats))
+    if all_gcp_lons:
+        aggregated["gcp_lon_deg"] = (["measurement"], np.array(all_gcp_lons))
+    if all_gcp_alts:
+        aggregated["gcp_alt"] = (["measurement"], np.array(all_gcp_alts))
 
     aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
     aggregated.attrs["total_measurements"] = n_total

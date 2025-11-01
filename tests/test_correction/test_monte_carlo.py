@@ -435,7 +435,7 @@ def run_image_matching_with_applied_errors(
             "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
-            "cp_alt": (["measurement"], [0.0]),
+            "gcp_alt": (["measurement"], [0.0]),
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )

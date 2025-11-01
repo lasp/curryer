@@ -125,7 +125,7 @@ def create_test_dataset_13_cases() -> xr.Dataset:
             0.0011,
             0.0,
         ],
-        "cp_lat_deg": [
+        "gcp_lat_deg": [
             -8.57802802047,
             10.9913499301,
             33.9986324792,
@@ -140,7 +140,7 @@ def create_test_dataset_13_cases() -> xr.Dataset:
             -20.33,
             -47.6,
         ],
-        "cp_lon_deg": [
+        "gcp_lon_deg": [
             125.482222317,
             -71.8457829833,
             -120.248435967,
@@ -155,7 +155,7 @@ def create_test_dataset_13_cases() -> xr.Dataset:
             95.4,
             -30.87,
         ],
-        "cp_alt": [44, 4, 0, 894, 3925, 0, 1000, 500, 500, 50, 100, 100, 100],
+        "gcp_alt": [44, 4, 0, 894, 3925, 0, 1000, 500, 500, 50, 100, 100, 100],
     }
 
     # RISS_CTRS positions (satellite positions)
@@ -301,9 +301,9 @@ def create_test_dataset_13_cases() -> xr.Dataset:
             "riss_ctrs": (["measurement", "xyz"], riss_ctrs_data),
             "bhat_hs": (["measurement", "xyz"], bhat_hs_data),
             "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_hs2ctrs_data),
-            "cp_lat_deg": (["measurement"], test_data["cp_lat_deg"]),
-            "cp_lon_deg": (["measurement"], test_data["cp_lon_deg"]),
-            "cp_alt": (["measurement"], test_data["cp_alt"]),
+            "gcp_lat_deg": (["measurement"], test_data["gcp_lat_deg"]),
+            "gcp_lon_deg": (["measurement"], test_data["gcp_lon_deg"]),
+            "gcp_alt": (["measurement"], test_data["gcp_alt"]),
         },
         coords={
             "measurement": measurements,
@@ -720,9 +720,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                 ),
                 "bhat_hs": (["measurement", "xyz"], [[0, 0.05, 0.9987], [0, -0.03, 0.9995], [0, 0.02, 0.9998]]),
                 "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
-                "cp_lat_deg": (["measurement"], [30.0, -20.0, 45.0]),
-                "cp_lon_deg": (["measurement"], [120.0, -80.0, 0.0]),
-                "cp_alt": (["measurement"], [100, 500, 0]),
+                "gcp_lat_deg": (["measurement"], [30.0, -20.0, 45.0]),
+                "gcp_lon_deg": (["measurement"], [120.0, -80.0, 0.0]),
+                "gcp_alt": (["measurement"], [100, 500, 0]),
             },
             coords={
                 "measurement": [0, 1, 2],
@@ -795,9 +795,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                 "riss_ctrs": (["time", "xyz"], [[4000000.0, 3000000.0, 2000000.0]]),
                 "bhat_hs": (["time", "xyz"], [[0, 0.05, 0.9987]]),
                 "t_hs2ctrs": (["xyz_from", "xyz_to", "time"], t_matrix_single),
-                "cp_lat_deg": (["time"], [30.0]),
-                "cp_lon_deg": (["time"], [120.0]),
-                "cp_alt": (["time"], [100]),
+                "gcp_lat_deg": (["time"], [30.0]),
+                "gcp_lon_deg": (["time"], [120.0]),
+                "gcp_alt": (["time"], [100]),
             },
             coords={"time": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
         )
@@ -1028,9 +1028,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                     ),
                 ),
                 "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], transform_matrices),
-                "cp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-                "cp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-                "cp_alt": (["measurement"], np.random.uniform(0, 3000, n_measurements)),
+                "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
+                "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
+                "gcp_alt": (["measurement"], np.random.uniform(0, 3000, n_measurements)),
             },
             coords={
                 "measurement": np.arange(n_measurements),
@@ -1096,9 +1096,9 @@ class TestCorrelationFiltering(unittest.TestCase):
                 "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
                 "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
                 "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
-                "cp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-                "cp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-                "cp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
+                "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
+                "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
+                "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
                 "correlation": (["measurement"], np.linspace(0.2, 1.0, n_measurements)),
             },
             coords={
@@ -1245,9 +1245,9 @@ class TestNetCDFReprocessing(unittest.TestCase):
             "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
             "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
             "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
-            "cp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-            "cp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-            "cp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
+            "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
+            "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
+            "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
         }
 
         if include_correlation:
