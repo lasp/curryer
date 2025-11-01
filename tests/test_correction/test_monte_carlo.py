@@ -4,13 +4,13 @@ Unified Monte Carlo Test Suite
 
 This module consolidates two complementary Monte Carlo test approaches:
 
-1. UPSTREAM Testing (test_upstream_pipeline):
+1. UPSTREAM Testing (run_upstream_pipeline):
    - Tests kernel creation and geolocation with parameter variations
    - Uses real telemetry data
    - Validates parameter modification and kernel generation
    - Stops before pairing (no valid GCP pairs available)
 
-2. DOWNSTREAM Testing (test_downstream_pipeline):
+2. DOWNSTREAM Testing (run_downstream_pipeline):
    - Tests GCP pairing, image matching, and error statistics
    - Uses pre-geolocated test images with known GCP pairs
    - Validates spatial pairing, image matching algorithms, and error metrics
@@ -25,10 +25,9 @@ Running Tests:
 pytest tests/test_correction/test_monte_carlo.py -v
 
 # Run specific test
-pytest tests/test_correction/test_monte_carlo.py::test_upstream_pipeline -v
-pytest tests/test_correction/test_monte_carlo.py::test_downstream_pipeline -v
+pytest tests/test_correction/test_monte_carlo.py::test_generate_clarreo_config_json -v
 
-# Standalone execution with arguments
+# Standalone execution with arguments (for pipeline runs)
 python tests/test_correction/test_monte_carlo.py --mode downstream --quick
 
 Requirements:
@@ -45,6 +44,7 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -82,8 +82,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # These functions were moved from the core monte_carlo module to keep test-specific
 # code separate from mission-agnostic core functionality.
-
-from dataclasses import dataclass
 
 
 @dataclass
@@ -582,7 +580,7 @@ def test_generate_clarreo_config_json():
 # =============================================================================
 
 
-def test_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None) -> tuple[list, dict, Path]:
+def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None) -> tuple[list, dict, Path]:
     """
     Test UPSTREAM segment of Monte Carlo pipeline.
 
@@ -683,7 +681,7 @@ def test_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = Non
 # =============================================================================
 
 
-def test_downstream_pipeline(
+def run_downstream_pipeline(
     n_iterations: int = 5, test_cases: Optional[list[str]] = None, work_dir: Optional[Path] = None
 ) -> tuple[list, dict, Path]:
     """
@@ -1023,11 +1021,25 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         logger.info(f"✓ Image matching successful")
 
+    def test_upstream_quick(self):
+        """Run quick upstream test."""
+        logger.info("Running quick upstream test...")
+
+        results_list, results_dict, output_file = run_upstream_pipeline(n_iterations=2, work_dir=self.work_dir)
+
+        self.assertEqual(results_dict["status"], "complete")
+        self.assertEqual(results_dict["iterations"], 2)
+        self.assertEqual(results_dict["mode"], "upstream")
+        self.assertGreater(results_dict["parameter_sets"], 0)
+        self.assertTrue(output_file.exists())
+
+        logger.info(f"✓ Quick upstream test complete: {output_file}")
+
     def test_downstream_quick(self):
         """Run quick downstream test."""
         logger.info("Running quick downstream test...")
 
-        results_list, results_dict, output_file = test_downstream_pipeline(
+        results_list, results_dict, output_file = run_downstream_pipeline(
             n_iterations=2, test_cases=["1"], work_dir=self.work_dir
         )
 
@@ -1035,7 +1047,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         self.assertEqual(results_dict["iterations"], 2)
         self.assertTrue(output_file.exists())
 
-        logger.info(f"✓ Quick test complete: {output_file}")
+        logger.info(f"✓ Quick downstream test complete: {output_file}")
 
 
 # =============================================================================
@@ -1100,7 +1112,7 @@ python test_monte_carlo.py --mode upstream --iterations 5
 
         work_dir = Path(args.output_dir) if args.output_dir else None
 
-        results_list, results_dict, output_file = test_upstream_pipeline(n_iterations=n_iterations, work_dir=work_dir)
+        results_list, results_dict, output_file = run_upstream_pipeline(n_iterations=n_iterations, work_dir=work_dir)
 
         logger.info(f"\n✅ Upstream test complete!")
         logger.info(f"Status: {results_dict['status']}")
@@ -1119,7 +1131,7 @@ python test_monte_carlo.py --mode upstream --iterations 5
 
         work_dir = Path(args.output_dir) if args.output_dir else None
 
-        results_list, results_dict, output_file = test_downstream_pipeline(
+        results_list, results_dict, output_file = run_downstream_pipeline(
             n_iterations=n_iterations, test_cases=test_cases, work_dir=work_dir
         )
 

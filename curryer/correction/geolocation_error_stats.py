@@ -14,6 +14,7 @@ The main processing pipeline:
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
@@ -473,7 +474,6 @@ class ErrorStatsProcessor:
             ...     minimum_correlation=0.7
             ... )
         """
-        from pathlib import Path
 
         filepath = Path(filepath)
         if not filepath.exists():
