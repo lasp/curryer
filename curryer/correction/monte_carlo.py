@@ -730,146 +730,135 @@ def image_matching(
     logger.info(f"Image Matching: correlation with {gcp_reference_file.name}")
     start_time = time.time()
 
-    try:
-        # Convert geolocation output to ImageGrid
-        logger.info("  Converting geolocation data to ImageGrid format...")
-        subimage = _geolocated_to_image_grid(geolocated_data)
-        logger.info(f"    Subimage shape: {subimage.data.shape}")
+    # Convert geolocation output to ImageGrid
+    logger.info("  Converting geolocation data to ImageGrid format...")
+    subimage = _geolocated_to_image_grid(geolocated_data)
+    logger.info(f"    Subimage shape: {subimage.data.shape}")
 
-        # Load GCP reference image
-        logger.info(f"  Loading GCP reference from {gcp_reference_file}...")
-        gcp = load_image_grid_from_mat(gcp_reference_file, key="GCP")
-        # Get GCP center location (center pixel)
-        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
-        logger.info(f"    GCP shape: {gcp.data.shape}, center: ({gcp_center_lat:.4f}, {gcp_center_lon:.4f})")
+    # Load GCP reference image
+    logger.info(f"  Loading GCP reference from {gcp_reference_file}...")
+    gcp = load_image_grid_from_mat(gcp_reference_file, key="GCP")
+    # Get GCP center location (center pixel)
+    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    logger.info(f"    GCP shape: {gcp.data.shape}, center: ({gcp_center_lat:.4f}, {gcp_center_lon:.4f})")
 
-        # Use cached calibration data if available, otherwise load
-        logger.info("  Loading calibration data...")
+    # Use cached calibration data if available, otherwise load
+    logger.info("  Loading calibration data...")
 
-        if los_vectors_cached is not None and optical_psfs_cached is not None:
-            # Use cached data (fast path)
-            los_vectors = los_vectors_cached
-            optical_psfs = optical_psfs_cached
-            logger.info("    Using cached calibration data")
-        else:
-            # Load from files
-            # Use configurable calibration file names
-            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-            los_file = calibration_dir / los_filename
-            los_vectors = load_los_vectors_from_mat(los_file)
-            logger.info(f"    LOS vectors: {los_vectors.shape}")
+    if los_vectors_cached is not None and optical_psfs_cached is not None:
+        # Use cached data (fast path)
+        los_vectors = los_vectors_cached
+        optical_psfs = optical_psfs_cached
+        logger.info("    Using cached calibration data")
+    else:
+        # Load from files
+        # Use configurable calibration file names
+        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+        los_file = calibration_dir / los_filename
+        los_vectors = load_los_vectors_from_mat(los_file)
+        logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-            psf_file = calibration_dir / psf_filename
-            optical_psfs = load_optical_psf_from_mat(psf_file)
-            logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
+        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+        psf_file = calibration_dir / psf_filename
+        optical_psfs = load_optical_psf_from_mat(psf_file)
+        logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
-        # Extract spacecraft position from telemetry
-        r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
-        logger.info(f"    Spacecraft position: {r_iss_midframe}")
+    # Extract spacecraft position from telemetry
+    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
+    logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
-        # Run real image matching
-        logger.info("  Running integrated_image_match()...")
-        geolocation_config = ImageMatchGeolocationConfig()
-        search_config = SearchConfig()
+    # Run real image matching
+    logger.info("  Running integrated_image_match()...")
+    geolocation_config = ImageMatchGeolocationConfig()
+    search_config = SearchConfig()
 
-        result = integrated_image_match(
-            subimage=subimage,
-            gcp=gcp,
-            r_iss_midframe_m=r_iss_midframe,
-            los_vectors_hs=los_vectors,
-            optical_psfs=optical_psfs,
-            geolocation_config=geolocation_config,
-            search_config=search_config,
-        )
+    result = integrated_image_match(
+        subimage=subimage,
+        gcp=gcp,
+        r_iss_midframe_m=r_iss_midframe,
+        los_vectors_hs=los_vectors,
+        optical_psfs=optical_psfs,
+        geolocation_config=geolocation_config,
+        search_config=search_config,
+    )
 
-        # Convert IntegratedImageMatchResult to xarray.Dataset format
-        logger.info("  Converting results to error_stats format...")
+    # Convert IntegratedImageMatchResult to xarray.Dataset format
+    logger.info("  Converting results to error_stats format...")
 
-        # Create single measurement result (image matching produces one correlation per GCP)
+    # Create single measurement result (image matching produces one correlation per GCP)
 
-        # NOTE: Boresight and transformation matrix for error_stats module
-        # ----------------------------------------------------------------
-        # These values are NOT used by image_matching() itself - the image correlation
-        # is complete and accurate without them. They are needed by call_error_stats_module()
-        # for converting off-nadir errors to nadir-equivalent errors.
-        #
-        # Currently using simplified nadir assumptions which are acceptable for:
-        # - Near-nadir observations (< ~5 degrees off-nadir)
-        # - Testing image matching correlation accuracy (doesn't affect matching)
-        #
-        # For accurate nadir-equivalent error conversion with off-nadir pointing, these
-        # should be extracted from SPICE/geolocation data:
-        # - boresight: Extract from spicierpy.getfov(instrument) and transform via geo_dataset['attitude']
-        # - t_matrix: Extract from geo_dataset['attitude'] (transformation from instrument to CTRS)
-        #
-        # See: geolocation_error_stats.py _transform_boresight_vectors() for usage
-        # See: BORESIGHT_TRANSFORM_ANALYSIS.md for detailed analysis and future enhancement plan
+    # NOTE: Boresight and transformation matrix for error_stats module
+    # ----------------------------------------------------------------
+    # These values are NOT used by image_matching() itself - the image correlation
+    # is complete and accurate without them. They are needed by call_error_stats_module()
+    # for converting off-nadir errors to nadir-equivalent errors.
+    #
+    # Currently using simplified nadir assumptions which are acceptable for:
+    # - Near-nadir observations (< ~5 degrees off-nadir)
+    # - Testing image matching correlation accuracy (doesn't affect matching)
+    #
+    # For accurate nadir-equivalent error conversion with off-nadir pointing, these
+    # should be extracted from SPICE/geolocation data:
+    # - boresight: Extract from spicierpy.getfov(instrument) and transform via geo_dataset['attitude']
+    # - t_matrix: Extract from geo_dataset['attitude'] (transformation from instrument to CTRS)
+    #
+    # See: geolocation_error_stats.py _transform_boresight_vectors() for usage
+    # See: BORESIGHT_TRANSFORM_ANALYSIS.md for detailed analysis and future enhancement plan
 
-        t_matrix = np.eye(3)  # Simplified: Identity matrix (no rotation)
-        boresight = np.array([0.0, 0.0, 1.0])  # Simplified: Nadir pointing assumption
+    t_matrix = np.eye(3)  # Simplified: Identity matrix (no rotation)
+    boresight = np.array([0.0, 0.0, 1.0])  # Simplified: Nadir pointing assumption
 
-        # Convert errors from km to degrees
-        lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
-        lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
-        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+    # Convert errors from km to degrees
+    lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
+    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
-        processing_time = time.time() - start_time
+    processing_time = time.time() - start_time
 
-        logger.info(f"  Image matching complete in {processing_time:.2f}s:")
-        logger.info(f"    Lat error: {result.lat_error_km:.3f} km ({lat_error_deg:.6f}°)")
-        logger.info(f"    Lon error: {result.lon_error_km:.3f} km ({lon_error_deg:.6f}°)")
-        logger.info(f"    Correlation: {result.ccv_final:.4f}")
-        logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
+    logger.info(f"  Image matching complete in {processing_time:.2f}s:")
+    logger.info(f"    Lat error: {result.lat_error_km:.3f} km ({lat_error_deg:.6f}°)")
+    logger.info(f"    Lon error: {result.lon_error_km:.3f} km ({lon_error_deg:.6f}°)")
+    logger.info(f"    Correlation: {result.ccv_final:.4f}")
+    logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
 
-        # Get coordinate names from config
-        sc_pos_name = config.spacecraft_position_name
-        boresight_name = config.boresight_name
-        transform_name = config.transformation_matrix_name
+    # Get coordinate names from config
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
 
-        # Create output dataset in error_stats format (use config names)
-        output = xr.Dataset(
-            {
-                "lat_error_deg": (["measurement"], [lat_error_deg]),
-                "lon_error_deg": (["measurement"], [lon_error_deg]),
-                sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
-                boresight_name: (["measurement", "xyz"], [boresight]),
-                transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
-                "cp_lat_deg": (["measurement"], [gcp_center_lat]),
-                "cp_lon_deg": (["measurement"], [gcp_center_lon]),
-                "cp_alt": (["measurement"], [0.0]),  # GCP at ground level
-            },
-            coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
-        )
+    # Create output dataset in error_stats format (use config names)
+    output = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], [lat_error_deg]),
+            "lon_error_deg": (["measurement"], [lon_error_deg]),
+            sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
+            boresight_name: (["measurement", "xyz"], [boresight]),
+            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            "cp_lat_deg": (["measurement"], [gcp_center_lat]),
+            "cp_lon_deg": (["measurement"], [gcp_center_lon]),
+            "cp_alt": (["measurement"], [0.0]),  # GCP at ground level
+        },
+        coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
+    )
 
-        # Add detailed metadata (Fix #3 Part B: Add km errors to attrs)
-        output.attrs.update(
-            {
-                "lat_error_km": result.lat_error_km,
-                "lon_error_km": result.lon_error_km,
-                "correlation_ccv": result.ccv_final,
-                "final_grid_step_m": result.final_grid_step_m,
-                "final_index_row": result.final_index_row,
-                "final_index_col": result.final_index_col,
-                "processing_time_s": processing_time,
-                "gcp_file": str(gcp_reference_file.name),
-                "gcp_center_lat": gcp_center_lat,
-                "gcp_center_lon": gcp_center_lon,
-            }
-        )
+    # Add detailed metadata (Fix #3 Part B: Add km errors to attrs)
+    output.attrs.update(
+        {
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation_ccv": result.ccv_final,
+            "final_grid_step_m": result.final_grid_step_m,
+            "final_index_row": result.final_index_row,
+            "final_index_col": result.final_index_col,
+            "processing_time_s": processing_time,
+            "gcp_file": str(gcp_reference_file.name),
+            "gcp_center_lat": gcp_center_lat,
+            "gcp_center_lon": gcp_center_lon,
+        }
+    )
 
-        return output
-
-    except FileNotFoundError as e:
-        logger.error(f"  Calibration file not found: {e}")
-        logger.warning("  Falling back to placeholder image matching")
-        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info, config)
-
-    except Exception as e:
-        logger.error(f"  Image matching failed: {e}")
-        logger.warning("  Falling back to placeholder image matching")
-        return placeholder_image_matching(geolocated_data, str(gcp_reference_file), params_info, config)
+    return output
 
 
 def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCarloConfig"):

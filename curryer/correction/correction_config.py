@@ -13,11 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 def load_config_schema() -> dict[str, Any]:
-    """Return the expected configuration schema.
-
-    Returns:
-        Dict describing required and optional config sections
     """
+    Return the expected configuration schema.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary describing required and optional config sections.
+    """
+
     return {
         "mission_config": {
             "required": ["mission_name", "kernel_mappings"],

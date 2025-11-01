@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from curryer import spicierpy as sp
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,9 +97,6 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
         ]
     ).T
     tlm_st_rot = np.reshape(tlm_st_rot, (-1, 3, 3)).copy()
-
-    # Import spicierpy for quaternion conversion
-    from curryer import spicierpy as sp
 
     tlm_st_rot_q = np.vstack([sp.m2q(tlm_st_rot[i, :, :]) for i in range(tlm_st_rot.shape[0])])
     st_ck_df["hps.dcm_base_iss_s"] = tlm_st_rot_q[:, 0]
@@ -191,4 +190,4 @@ def load_clarreo_gcp(gcp_key: str, config):
 
     # For testing purposes, return None - the GCP pairing module will handle this
     # In real implementation, this would load and process GCP reference data
-    return None
+    return

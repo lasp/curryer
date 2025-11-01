@@ -39,6 +39,7 @@ computation for mission requirements validation.
 """
 
 import argparse
+import json
 import logging
 import sys
 import tempfile
@@ -49,10 +50,12 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pytest
 import xarray as xr
 from scipy.io import loadmat
 
 from curryer import utils
+from curryer.compute import constants
 from curryer.correction import monte_carlo as mc
 from curryer.correction.data_structures import (
     GeolocationConfig as ImageMatchGeolocationConfig,
@@ -286,8 +289,8 @@ def apply_error_variation_for_testing(
     # Get GCP center latitude from multiple possible sources
     if "gcp_center_lat" in base_result.attrs:
         gcp_center_lat = base_result.attrs["gcp_center_lat"]
-    elif "cp_lat_deg" in base_result:
-        gcp_center_lat = float(base_result["cp_lat_deg"].values[0])
+    elif "gcp_lat_deg" in base_result:
+        gcp_center_lat = float(base_result["gcp_lat_deg"].values[0])
     else:
         # Fallback to a reasonable default (mid-latitude)
         logger.warning("GCP center latitude not found in dataset, using default 45.0°")
@@ -333,8 +336,8 @@ def apply_geolocation_error_to_subimage(
     """
     mid_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
 
-    # WGS84 Earth radius - matches CLARREO config (6378140.0 m = 6378.140 km)
-    earth_radius_km = 6378.140
+    # WGS84 Earth radius - use semi-major axis for latitude/longitude conversions
+    earth_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM
     lat_offset_deg = lat_error_km / earth_radius_km * (180.0 / np.pi)
     lon_radius_km = earth_radius_km * np.cos(np.deg2rad(mid_lat))
     lon_offset_deg = lon_error_km / lon_radius_km * (180.0 / np.pi)
@@ -370,93 +373,88 @@ def run_image_matching_with_applied_errors(
     logger.info(f"  Running image matching with applied errors: {test_case['case_name']}")
     start_time = time.time()
 
-    try:
-        # Load subimage
-        subimage_struct = loadmat(test_case["subimage_file"], squeeze_me=True, struct_as_record=False)["subimage"]
-        subimage = ImageGrid(
-            data=np.asarray(subimage_struct.data),
-            lat=np.asarray(subimage_struct.lat),
-            lon=np.asarray(subimage_struct.lon),
-            h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
-        )
+    # Load subimage
+    subimage_struct = loadmat(test_case["subimage_file"], squeeze_me=True, struct_as_record=False)["subimage"]
+    subimage = ImageGrid(
+        data=np.asarray(subimage_struct.data),
+        lat=np.asarray(subimage_struct.lat),
+        lon=np.asarray(subimage_struct.lon),
+        h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
+    )
 
-        # Load GCP
-        gcp = load_image_grid_from_mat(test_case["gcp_file"], key="GCP")
-        gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-        gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    # Load GCP
+    gcp = load_image_grid_from_mat(test_case["gcp_file"], key="GCP")
+    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
 
-        # Apply expected error
-        expected_lat_error = test_case["expected_lat_error_km"]
-        expected_lon_error = test_case["expected_lon_error_km"]
+    # Apply expected error
+    expected_lat_error = test_case["expected_lat_error_km"]
+    expected_lon_error = test_case["expected_lon_error_km"]
 
-        subimage_with_error = apply_geolocation_error_to_subimage(subimage, gcp, expected_lat_error, expected_lon_error)
+    subimage_with_error = apply_geolocation_error_to_subimage(subimage, gcp, expected_lat_error, expected_lon_error)
 
-        # Load calibration data
-        los_vectors = load_los_vectors_from_mat(test_case["los_file"])
-        optical_psfs = load_optical_psf_from_mat(test_case["psf_file"])
-        ancil_data = loadmat(test_case["ancil_file"], squeeze_me=True)
-        r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
+    # Load calibration data
+    los_vectors = load_los_vectors_from_mat(test_case["los_file"])
+    optical_psfs = load_optical_psf_from_mat(test_case["psf_file"])
+    ancil_data = loadmat(test_case["ancil_file"], squeeze_me=True)
+    r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
 
-        # Run image matching
-        result = integrated_image_match(
-            subimage=subimage_with_error,
-            gcp=gcp,
-            r_iss_midframe_m=r_iss_midframe,
-            los_vectors_hs=los_vectors,
-            optical_psfs=optical_psfs,
-            geolocation_config=ImageMatchGeolocationConfig(),
-            search_config=SearchConfig(),
-        )
+    # Run image matching
+    result = integrated_image_match(
+        subimage=subimage_with_error,
+        gcp=gcp,
+        r_iss_midframe_m=r_iss_midframe,
+        los_vectors_hs=los_vectors,
+        optical_psfs=optical_psfs,
+        geolocation_config=ImageMatchGeolocationConfig(),
+        search_config=SearchConfig(),
+    )
 
-        processing_time = time.time() - start_time
+    processing_time = time.time() - start_time
 
-        # Convert to dataset format
-        lat_error_deg = result.lat_error_km / 111.0
-        lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
-        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+    # Convert to dataset format
+    lat_error_deg = result.lat_error_km / 111.0
+    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
-        t_matrix = np.array(
-            [
-                [-0.418977524967338, 0.748005379751721, 0.514728846515064],
-                [-0.421890284446342, 0.341604851993858, -0.839830169131854],
-                [-0.804031356019172, -0.569029065124742, 0.172451447025628],
-            ]
-        )
-        boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])
+    t_matrix = np.array(
+        [
+            [-0.418977524967338, 0.748005379751721, 0.514728846515064],
+            [-0.421890284446342, 0.341604851993858, -0.839830169131854],
+            [-0.804031356019172, -0.569029065124742, 0.172451447025628],
+        ]
+    )
+    boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])
 
-        output = xr.Dataset(
-            {
-                "lat_error_deg": (["measurement"], [lat_error_deg]),
-                "lon_error_deg": (["measurement"], [lon_error_deg]),
-                "riss_ctrs": (["measurement", "xyz"], [r_iss_midframe]),
-                "bhat_hs": (["measurement", "xyz"], [boresight]),
-                "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
-                "cp_lat_deg": (["measurement"], [gcp_center_lat]),
-                "cp_lon_deg": (["measurement"], [gcp_center_lon]),
-                "cp_alt": (["measurement"], [0.0]),
-            },
-            coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
-        )
+    output = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], [lat_error_deg]),
+            "lon_error_deg": (["measurement"], [lon_error_deg]),
+            "riss_ctrs": (["measurement", "xyz"], [r_iss_midframe]),
+            "bhat_hs": (["measurement", "xyz"], [boresight]),
+            "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
+            "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
+            "cp_alt": (["measurement"], [0.0]),
+        },
+        coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
+    )
 
-        output.attrs.update(
-            {
-                "lat_error_km": result.lat_error_km,
-                "lon_error_km": result.lon_error_km,
-                "correlation_ccv": result.ccv_final,
-                "final_grid_step_m": result.final_grid_step_m,
-                "processing_time_s": processing_time,
-                "test_mode": True,
-                "param_idx": param_idx,
-                "gcp_center_lat": gcp_center_lat,
-                "gcp_center_lon": gcp_center_lon,
-            }
-        )
+    output.attrs.update(
+        {
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation_ccv": result.ccv_final,
+            "final_grid_step_m": result.final_grid_step_m,
+            "processing_time_s": processing_time,
+            "test_mode": True,
+            "param_idx": param_idx,
+            "gcp_center_lat": gcp_center_lat,
+            "gcp_center_lon": gcp_center_lon,
+        }
+    )
 
-        return output
-
-    except Exception as e:
-        logger.error(f"  Image matching failed: {e}")
-        raise
+    return output
 
 
 # =============================================================================
@@ -476,7 +474,6 @@ def test_generate_clarreo_config_json():
     - Programmatic config matches JSON config
     - JSON structure is valid and complete
     """
-    import json
 
     logger.info("=" * 80)
     logger.info("TEST: Generate CLARREO Configuration JSON")
@@ -955,7 +952,12 @@ def run_downstream_pipeline(
 
 
 class MonteCarloUnifiedTests(unittest.TestCase):
-    """Unified test cases for both upstream and downstream pipelines."""
+    """Unified test cases for both upstream and downstream pipelines.
+
+    Note: Only test_upstream_quick requires GMTED elevation data and is marked
+    with @pytest.mark.extra. All other tests use either config-only validation
+    or pre-geolocated test data and will run in CI without GMTED files.
+    """
 
     def setUp(self):
         """Set up test environment."""
@@ -1021,8 +1023,13 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         logger.info(f"✓ Image matching successful")
 
+    @pytest.mark.extra
     def test_upstream_quick(self):
-        """Run quick upstream test."""
+        """Run quick upstream test.
+
+        This test requires GMTED elevation data which is not available in CI.
+        Run with: pytest --run-extra
+        """
         logger.info("Running quick upstream test...")
 
         results_list, results_dict, output_file = run_upstream_pipeline(n_iterations=2, work_dir=self.work_dir)
