@@ -918,11 +918,8 @@ def run_downstream_pipeline(
     logger.info("STEP 4: ERROR STATISTICS")
     logger.info("=" * 80)
 
-    try:
-        error_stats = mc.call_error_stats_module(image_matching_results, monte_carlo_config=config)
-        logger.info(f"Error statistics computed: {len(error_stats)} metrics")
-    except Exception as e:
-        logger.warning(f"Error statistics failed: {e}")
+    error_stats = mc.call_error_stats_module(image_matching_results, monte_carlo_config=config)
+    logger.info(f"Error statistics computed: {len(error_stats)} metrics")
 
     # ==========================================================================
     # STEP 5: SAVE RESULTS
