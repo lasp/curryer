@@ -28,10 +28,6 @@ Download from the Curryer repo:
 - `data/generic` - Generic spice kernels (e.g., leapsecond kernel)
   - Download
 - `data/<mission>` - Mission specific kernels and/or kernel definitions.
-- `data/gmted` - Digital Elevation Model (DEMs) with global coverage at
-  15-arc-second.
-  - Alternatively, use the script [download_dem.py](bin/download_dem.py) to
-    download different types and/or resolutions from the USGS.
 
 Define the top-level directory using the environment variable `CURRYER_DATA_DIR`
 or pass the path to routines which require data files.
@@ -46,6 +42,10 @@ Download Third-party Files:
 - PyProj Data:
   - Data directory: `import pyproj; print(pyproj.datadir.get_user_data_dir())`
   - [EGM96 TIFF](https://cdn.proj.org/us_nga_egm96_15.tif)
+- (OPTIONAL, USED FOR TESTING) `data/gmted` - Digital Elevation Model (DEMs) with global coverage at
+  15-arc-second.
+  - Alternatively, use the script [download_dem.py](bin/download_dem.py) to
+    download different types and/or resolutions from the USGS.
 
 ## Examples
 
