@@ -50,7 +50,8 @@ dependencies = [
     "jinja2>=3",
     "spiceypy>=6",
     "openpyxl>=3",
-    "numpy (>=1.23,<2.0)",
+    "numpy >=1.23,<2.0",
+    "boto3"
 ]
 
 [project.optional-dependencies]
