@@ -43,8 +43,10 @@ from curryer.correction.geolocation_error_stats import (
     ErrorStatsProcessor,
     GeolocationConfig,
 )
+from curryer import utils
 
 logger = logging.getLogger(__name__)
+utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 # Configure display options for better test output
 xr.set_options(display_width=120)
@@ -197,94 +199,94 @@ def create_test_dataset_13_cases() -> xr.Dataset:
     )
 
     # Transformation matrices from HS to CTRS (3x3x13)
-    t_hs2ctrs_data = np.zeros((3, 3, 13))
+    t_hs2ctrs_data = np.zeros((13, 3, 3))
 
     # Test case 1
-    t_hs2ctrs_data[:, :, 0] = [
+    t_hs2ctrs_data[0, :, :] = [
         [-0.418977524967338, 0.748005379751721, 0.514728846515064],
         [-0.421890284446342, 0.341604851993858, -0.839830169131854],
         [-0.804031356019172, -0.569029065124742, 0.172451447025628],
     ]
 
     # Test case 2
-    t_hs2ctrs_data[:, :, 1] = [
+    t_hs2ctrs_data[1, :, :] = [
         [0.509557370616697, 0.714990103896663, -0.478686157497828],
         [0.336198439435013, 0.346660121582392, 0.875669669125261],
         [0.792036549265032, -0.607137473258174, -0.0637353370903461],
     ]
 
     # Test case 3
-    t_hs2ctrs_data[:, :, 2] = [
+    t_hs2ctrs_data[2, :, :] = [
         [0.436608377090994, -0.795688667243495, 0.419824570355571],
         [-0.682818757213707, 0.0107593091164333, 0.730508577680278],
         [-0.585774418911493, -0.605610255930006, -0.53861354240429],
     ]
 
     # Test case 4
-    t_hs2ctrs_data[:, :, 3] = [
+    t_hs2ctrs_data[3, :, :] = [
         [-0.275228112982228, 0.368161232084539, -0.888091658002842],
         [0.740939532874243, 0.669849578957866, 0.0480640218257623],
         [0.612583132683508, -0.644793648200697, -0.457146646921637],
     ]
 
     # Test case 5
-    t_hs2ctrs_data[:, :, 4] = [
+    t_hs2ctrs_data[4, :, :] = [
         [0.497596843733441, -0.8343127195548, -0.237317650198193],
         [0.404893735025568, -0.0185495841473054, 0.914175571903453],
         [-0.767110451267327, -0.550979308973609, 0.328577778675617],
     ]
 
     # Test case 6
-    t_hs2ctrs_data[:, :, 5] = [
+    t_hs2ctrs_data[5, :, :] = [
         [-0.765506977045252, 0.0328563789337692, -0.642588135250651],
         [0.295444324153605, 0.905137001368494, -0.305678298647175],
         [0.571587018239969, -0.423847628778339, -0.702596052277786],
     ]
 
     # Test case 7
-    t_hs2ctrs_data[:, :, 6] = [
+    t_hs2ctrs_data[6, :, :] = [
         [0.629603159973548, 0.368109063956699, -0.684174861189846],
         [0.215915166022854, 0.763032030046674, 0.609230735287836],
         [0.746311263503805, -0.531296841841519, 0.400927218783918],
     ]
 
     # Test case 8
-    t_hs2ctrs_data[:, :, 7] = [
+    t_hs2ctrs_data[7, :, :] = [
         [0.194530273749036, 0.949748975936332, 0.245223854916003],
         [-0.978512013106359, 0.205316430746179, -0.0189577388931897],
         [-0.0683535866042618, -0.236266544212139, 0.969281089206121],
     ]
 
     # Test case 9
-    t_hs2ctrs_data[:, :, 8] = [
+    t_hs2ctrs_data[8, :, :] = [
         [-0.446421529583839, 0.413968410219497, -0.793307812225063],
         [0.384674732015686, -0.711668847399292, -0.587837230750712],
         [-0.807919035840032, -0.56758835193185, 0.158460875505101],
     ]
 
     # Test case 10
-    t_hs2ctrs_data[:, :, 9] = [
+    t_hs2ctrs_data[9, :, :] = [
         [0.632159685228781, -0.204512480192889, -0.747361135669863],
         [0.598189792213041, -0.48424547358001, 0.638493680968301],
         [-0.492486654503011, -0.850693598485042, -0.183784021560657],
     ]
 
     # Test case 11
-    t_hs2ctrs_data[:, :, 10] = [
+    t_hs2ctrs_data[10, :, :] = [
         [0.753428906287479, -0.49153961754033, 0.436730605865421],
         [-0.565149851875981, -0.823589060852856, 0.0480236900131712],
         [0.336081133202996, -0.283000352923251, -0.898309519920648],
     ]
 
     # Test case 12
-    t_hs2ctrs_data[:, :, 11] = [
+    t_hs2ctrs_data[11, :, :] = [
         [-0.585265557251293, -0.595045400433036, 0.550803349451662],
         [-0.109341614649782, -0.615175192945938, -0.780771245706364],
         [0.803435522491452, -0.517183787785386, 0.294977548217097],
     ]
 
     # Test case 13
-    t_hs2ctrs_data[:, :, 12] = [
+    t_hs2ctrs_data[12, :, :] = [
         [0.292122841971449, -0.95622050459562, 0.017506859615382],
         [0.95633436246494, 0.291879296125504, -0.0152004494429911],
         [0.00942509242927969, 0.0211828985704245, 0.999731155222533],
@@ -300,7 +302,7 @@ def create_test_dataset_13_cases() -> xr.Dataset:
             "lon_error_deg": (["measurement"], test_data["lon_error_deg"]),
             "riss_ctrs": (["measurement", "xyz"], riss_ctrs_data),
             "bhat_hs": (["measurement", "xyz"], bhat_hs_data),
-            "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_hs2ctrs_data),
+            "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_hs2ctrs_data),
             "gcp_lat_deg": (["measurement"], test_data["gcp_lat_deg"]),
             "gcp_lon_deg": (["measurement"], test_data["gcp_lon_deg"]),
             "gcp_alt": (["measurement"], test_data["gcp_alt"]),
@@ -702,9 +704,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         """Create minimal test dataset for testing."""
         # Create proper transformation matrices
         t_matrices = np.zeros((3, 3, 3))
-        t_matrices[:, :, 0] = np.eye(3)  # Identity matrix
-        t_matrices[:, :, 1] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
-        t_matrices[:, :, 2] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
+        t_matrices[0, :, :] = np.eye(3)  # Identity matrix
+        t_matrices[1, :, :] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
+        t_matrices[2, :, :] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
 
         return xr.Dataset(
             {
@@ -719,7 +721,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                     ],
                 ),
                 "bhat_hs": (["measurement", "xyz"], [[0, 0.05, 0.9987], [0, -0.03, 0.9995], [0, 0.02, 0.9998]]),
-                "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
+                "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrices),
                 "gcp_lat_deg": (["measurement"], [30.0, -20.0, 45.0]),
                 "gcp_lon_deg": (["measurement"], [120.0, -80.0, 0.0]),
                 "gcp_alt": (["measurement"], [100, 500, 0]),
@@ -812,9 +814,9 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         t_matrices = np.array(
             [
                 [[1, 0, 0], [0, 1, 0], [0, 0, 1]],  # Identity
-                [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]],  # Simple rotation
+                [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
             ]
-        ).transpose(1, 2, 0)
+        )
 
         result = self.processor._transform_boresight_vectors(bhat_hs, t_matrices)
 
@@ -1002,12 +1004,11 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         n_measurements = 50
 
         # Generate realistic transformation matrices
-        transform_matrices = np.zeros((3, 3, n_measurements))
+        transform_matrices = np.zeros((n_measurements, 3, 3))
         for i in range(n_measurements):
-            # Create orthogonal transformation matrices
             angle = np.random.uniform(-np.pi / 4, np.pi / 4)
             c, s = np.cos(angle), np.sin(angle)
-            transform_matrices[:, :, i] = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+            transform_matrices[i, :, :] = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
         large_dataset = xr.Dataset(
             {
@@ -1027,7 +1028,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                         ]
                     ),
                 ),
-                "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], transform_matrices),
+                "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], transform_matrices),
                 "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
                 "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
                 "gcp_alt": (["measurement"], np.random.uniform(0, 3000, n_measurements)),
@@ -1085,9 +1086,9 @@ class TestCorrelationFiltering(unittest.TestCase):
     def _create_test_data_with_correlation(self, n_measurements=10):
         """Create test dataset with correlation values."""
         # Create proper transformation matrices
-        t_matrices = np.zeros((3, 3, n_measurements))
+        t_matrices = np.zeros((n_measurements, 3, 3))
         for i in range(n_measurements):
-            t_matrices[:, :, i] = np.eye(3)  # Use identity for simplicity
+            t_matrices[i, :, :] = np.eye(3)  # Use identity for simplicity
 
         return xr.Dataset(
             {
@@ -1095,7 +1096,7 @@ class TestCorrelationFiltering(unittest.TestCase):
                 "lon_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
                 "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
                 "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
-                "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
+                "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrices),
                 "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
                 "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
                 "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
@@ -1235,16 +1236,16 @@ class TestNetCDFReprocessing(unittest.TestCase):
 
     def _create_test_netcdf(self, filepath, include_correlation=True, n_measurements=10):
         """Create a test NetCDF file."""
-        t_matrices = np.zeros((3, 3, n_measurements))
+        t_matrices = np.zeros((n_measurements, 3, 3))
         for i in range(n_measurements):
-            t_matrices[:, :, i] = np.eye(3)
+            t_matrices[i, :, :] = np.eye(3)
 
         data_dict = {
             "lat_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
             "lon_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
             "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
             "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
-            "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrices),
+            "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrices),
             "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
             "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
             "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),

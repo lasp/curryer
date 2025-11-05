@@ -233,8 +233,7 @@ class ErrorStatsProcessor:
         bhat_ctrs = np.zeros((n_measurements, 3))
 
         for i in range(n_measurements):
-            bhat_ctrs[i] = bhat_hs[i] @ t_hs2ctrs[:, :, i].T
-
+            bhat_ctrs[i] = bhat_hs[i] @ t_hs2ctrs[i, :, :].T
         return bhat_ctrs
 
     def _process_to_nadir_equivalent(
