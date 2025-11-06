@@ -552,14 +552,14 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
         n_measurements = min(n_valid, placeholder_cfg.max_measurements)
 
     # Generate realistic transformation matrices (from error_stats tests)
-    t_matrices = np.zeros((3, 3, n_measurements))
+    t_matrices = np.zeros((n_measurements, 3, 3))
     for i in range(n_measurements):
         if i % 3 == 0:
-            t_matrices[:, :, i] = np.eye(3)  # Identity
+            t_matrices[i, :, :] = np.eye(3)  # Identity
         elif i % 3 == 1:
-            t_matrices[:, :, i] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
+            t_matrices[i, :, :] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
         else:
-            t_matrices[:, :, i] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
+            t_matrices[i, :, :] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
 
     # Generate synthetic errors based on parameter variations
     # Errors should vary based on how far parameters are from optimal values
@@ -602,7 +602,7 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
             "lon_error_deg": (["measurement"], lon_errors),
             sc_pos_name: (["measurement", "xyz"], riss_ctrs),
             boresight_name: (["measurement", "xyz"], boresights),
-            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrices),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrices),
             "gcp_lat_deg": (["measurement"], gcp_lat),
             "gcp_lon_deg": (["measurement"], gcp_lon),
             "gcp_alt": (["measurement"], gcp_alt),
@@ -834,7 +834,7 @@ def image_matching(
             "lon_error_deg": (["measurement"], [lon_error_deg]),
             sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
             boresight_name: (["measurement", "xyz"], [boresight]),
-            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),  # GCP at ground level
@@ -983,9 +983,9 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
             for j in range(n_measurements):
                 all_boresights.append(result[boresight_name].values[j])
         if transform_name in result:
-            # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
+            # Shape: (1, 3, 3) -> extract as (3, 3) for each measurement
             for j in range(n_measurements):
-                all_transforms.append(result[transform_name].values[:, :, j])
+                all_transforms.append(result[transform_name].values[j, :, :])
         if "gcp_lat_deg" in result:
             all_gcp_lats.extend(result["gcp_lat_deg"].values)
         if "gcp_lon_deg" in result:
@@ -1016,9 +1016,9 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
         aggregated[boresight_name] = (["measurement", "xyz"], np.array(all_boresights))
 
     if all_transforms:
-        # Stack into (3, 3, n_measurements) to match error_stats format
-        t_stacked = np.stack(all_transforms, axis=2)
-        aggregated[transform_name] = (["xyz_from", "xyz_to", "measurement"], t_stacked)
+        # Stack into (n_measurements, 3, 3) to match error_stats format
+        t_stacked = np.stack(all_transforms, axis=0)
+        aggregated[transform_name] = (["measurement", "xyz_from", "xyz_to"], t_stacked)
         aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
 
     if all_gcp_lats:

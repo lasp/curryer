@@ -432,7 +432,7 @@ def run_image_matching_with_applied_errors(
             "lon_error_deg": (["measurement"], [lon_error_deg]),
             "riss_ctrs": (["measurement", "xyz"], [r_iss_midframe]),
             "bhat_hs": (["measurement", "xyz"], [boresight]),
-            "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),
