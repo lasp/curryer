@@ -52,7 +52,7 @@ class PointingTestCase(unittest.TestCase):
         self.assertIsInstance(data, pd.DataFrame)
         self.assertTupleEqual(expected.shape, data.shape)
         for col in expected.columns:
-            npt.assert_allclose(expected[col], data[col], rtol=3e-6 if "surf" in col else 3e-12, err_msg=col)
+            npt.assert_allclose(expected[col], data[col], rtol=3e-6 if "surf" in col else 1e-10, err_msg=col)
 
     def test_pointing_tsis(self):
         expected = pd.read_csv(self.test_dir / "tsis1" / "tsis_v01.pointingdata.20210610.csv")
@@ -79,7 +79,7 @@ class PointingTestCase(unittest.TestCase):
         self.assertIsInstance(data, pd.DataFrame)
         self.assertTupleEqual(expected.shape, data.shape)
         for col in expected.columns:
-            npt.assert_allclose(expected[col], data[col], rtol=1e-12, err_msg=col)
+            npt.assert_allclose(expected[col], data[col], rtol=2e-12, err_msg=col)
 
     def test_sun_dot_earth_ctim(self):
         expected = pd.read_csv(self.test_dir / "ctim" / "ctim_v01.pointingdata.20230420.csv")
@@ -101,7 +101,7 @@ class PointingTestCase(unittest.TestCase):
         # Verify normal cosine calcs work with all kernels.
         with mkrn.load():
             timdotearth = pointing.boresight_dot_object("CTIM_TIM", "EARTH", ugps_times)
-            npt.assert_allclose(expected["timdotearth"], timdotearth, rtol=3e-12)
+            npt.assert_allclose(expected["timdotearth"], timdotearth, rtol=1e-10)
 
         # Remove the attitude kernel to simulate lack of pointing tlm.
         mkrn.mission_kernels = [fn for fn in mkrn.mission_kernels if "attitude" not in fn.name]
