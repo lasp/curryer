@@ -788,7 +788,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
     def test_validate_input_data_missing_dimension(self):
         """Test validation with missing measurement dimension."""
         # Create data with all required variables but wrong dimension
-        t_matrix_single = np.eye(3).reshape(3, 3, 1)
+        t_matrix_single = np.eye(3).reshape(1, 3, 3)
 
         complete_data = xr.Dataset(
             {
@@ -796,7 +796,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
                 "lon_error_deg": (["time"], [0.001]),
                 "riss_ctrs": (["time", "xyz"], [[4000000.0, 3000000.0, 2000000.0]]),
                 "bhat_hs": (["time", "xyz"], [[0, 0.05, 0.9987]]),
-                "t_hs2ctrs": (["xyz_from", "xyz_to", "time"], t_matrix_single),
+                "t_hs2ctrs": (["time", "xyz_from", "xyz_to"], t_matrix_single),
                 "gcp_lat_deg": (["time"], [30.0]),
                 "gcp_lon_deg": (["time"], [120.0]),
                 "gcp_alt": (["time"], [100]),
