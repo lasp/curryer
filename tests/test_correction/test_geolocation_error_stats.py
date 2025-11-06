@@ -33,6 +33,7 @@ showing individual case results and overall performance metrics.
 import logging
 import unittest
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import numpy.testing as npt
@@ -56,6 +57,39 @@ np.set_printoptions(linewidth=120)
 # ============================================================================
 # TEST HELPER FUNCTIONS
 # ============================================================================
+
+
+def _sample_from_validated_test_cases(n_measurements: int, seed: Optional[int] = None) -> xr.Dataset:
+    """
+    Sample test data from the validated 13 test cases with replacement.
+
+    This creates a synthetic dataset by randomly sampling (with replacement) from the
+    actual validated CLARREO test cases. This ensures realistic geometry and avoids
+    "unusual geometry" warnings while still allowing flexibility in dataset size.
+
+    Args:
+        n_measurements: Number of measurements to sample
+        seed: Random seed for reproducibility (optional)
+
+    Returns:
+        xr.Dataset with n_measurements sampled from the 13 validated cases
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Get the full validated test dataset
+    test_data = create_test_dataset_13_cases()
+
+    # Randomly sample indices with replacement
+    indices = np.random.randint(0, 13, n_measurements)
+
+    # Sample all variables from the validated dataset
+    sampled_data = test_data.isel(measurement=indices)
+
+    # Reset measurement coordinate to be sequential
+    sampled_data = sampled_data.assign_coords(measurement=np.arange(n_measurements))
+
+    return sampled_data
 
 
 def _create_test_config(**overrides):
@@ -999,47 +1033,11 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
             self.processor.process_geolocation_errors(empty_data)
 
     def test_large_dataset_processing(self):
-        """Test processing with larger datasets."""
-        # Create a larger synthetic dataset with more realistic data
+        """Test processing with larger datasets using sampled validated test case data."""
         n_measurements = 50
 
-        # Generate realistic transformation matrices
-        transform_matrices = np.zeros((n_measurements, 3, 3))
-        for i in range(n_measurements):
-            angle = np.random.uniform(-np.pi / 4, np.pi / 4)
-            c, s = np.cos(angle), np.sin(angle)
-            transform_matrices[i, :, :] = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-        large_dataset = xr.Dataset(
-            {
-                "lat_error_deg": (["measurement"], np.random.normal(0, 0.005, n_measurements)),
-                "lon_error_deg": (["measurement"], np.random.normal(0, 0.005, n_measurements)),
-                "riss_ctrs": (
-                    ["measurement", "xyz"],
-                    np.random.normal([0, 0, 7000000], [500000, 500000, 200000], (n_measurements, 3)),
-                ),
-                "bhat_hs": (
-                    ["measurement", "xyz"],
-                    np.column_stack(
-                        [
-                            np.zeros(n_measurements),
-                            np.random.normal(0, 0.03, n_measurements),
-                            np.sqrt(1 - np.random.normal(0, 0.03, n_measurements) ** 2),
-                        ]
-                    ),
-                ),
-                "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], transform_matrices),
-                "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-                "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-                "gcp_alt": (["measurement"], np.random.uniform(0, 3000, n_measurements)),
-            },
-            coords={
-                "measurement": np.arange(n_measurements),
-                "xyz": ["x", "y", "z"],
-                "xyz_from": ["x", "y", "z"],
-                "xyz_to": ["x", "y", "z"],
-            },
-        )
+        # Sample from validated test cases - uses all real data (positions, boresights, transforms, GCP locations, etc.)
+        large_dataset = _sample_from_validated_test_cases(n_measurements, seed=42)
 
         results = self.processor.process_geolocation_errors(large_dataset)
 
@@ -1084,31 +1082,16 @@ class TestCorrelationFiltering(unittest.TestCase):
         self.processor = ErrorStatsProcessor(config=self.config)
 
     def _create_test_data_with_correlation(self, n_measurements=10):
-        """Create test dataset with correlation values."""
-        # Create proper transformation matrices
-        t_matrices = np.zeros((n_measurements, 3, 3))
-        for i in range(n_measurements):
-            t_matrices[i, :, :] = np.eye(3)  # Use identity for simplicity
+        """Create test dataset with correlation values, using sampled validated test case data."""
+        # Sample from validated test cases - uses all real data
+        test_data = _sample_from_validated_test_cases(n_measurements, seed=42)
 
-        return xr.Dataset(
-            {
-                "lat_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
-                "lon_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
-                "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
-                "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
-                "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrices),
-                "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-                "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-                "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
-                "correlation": (["measurement"], np.linspace(0.2, 1.0, n_measurements)),
-            },
-            coords={
-                "measurement": np.arange(n_measurements),
-                "xyz": ["x", "y", "z"],
-                "xyz_from": ["x", "y", "z"],
-                "xyz_to": ["x", "y", "z"],
-            },
+        # Add correlation variable for filtering tests
+        test_data = test_data.assign(
+            correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements))
         )
+
+        return test_data
 
     def test_correlation_config_default(self):
         """Test that minimum_correlation defaults to None."""
@@ -1235,34 +1218,15 @@ class TestNetCDFReprocessing(unittest.TestCase):
         pass
 
     def _create_test_netcdf(self, filepath, include_correlation=True, n_measurements=10):
-        """Create a test NetCDF file."""
-        t_matrices = np.zeros((n_measurements, 3, 3))
-        for i in range(n_measurements):
-            t_matrices[i, :, :] = np.eye(3)
-
-        data_dict = {
-            "lat_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
-            "lon_error_deg": (["measurement"], np.random.uniform(-0.01, 0.01, n_measurements)),
-            "riss_ctrs": (["measurement", "xyz"], np.random.uniform(6e6, 7e6, (n_measurements, 3))),
-            "bhat_hs": (["measurement", "xyz"], np.tile([0, 0.05, 0.998], (n_measurements, 1))),
-            "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrices),
-            "gcp_lat_deg": (["measurement"], np.random.uniform(-60, 60, n_measurements)),
-            "gcp_lon_deg": (["measurement"], np.random.uniform(-180, 180, n_measurements)),
-            "gcp_alt": (["measurement"], np.random.uniform(0, 1000, n_measurements)),
-        }
+        """Create a test NetCDF file using sampled validated test case data."""
+        # Sample from validated test cases - uses all real data
+        test_data = _sample_from_validated_test_cases(n_measurements, seed=123)
 
         if include_correlation:
-            data_dict["correlation"] = (["measurement"], np.linspace(0.2, 1.0, n_measurements))
-
-        test_data = xr.Dataset(
-            data_dict,
-            coords={
-                "measurement": np.arange(n_measurements),
-                "xyz": ["x", "y", "z"],
-                "xyz_from": ["x", "y", "z"],
-                "xyz_to": ["x", "y", "z"],
-            },
-        )
+            # Add correlation variable for filtering tests
+            test_data = test_data.assign(
+                correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements))
+            )
 
         test_data.to_netcdf(filepath)
         return filepath

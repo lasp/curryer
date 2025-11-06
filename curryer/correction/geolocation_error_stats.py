@@ -335,7 +335,22 @@ class ErrorStatsProcessor:
         f = r_magnitude / self.config.earth_radius_m
         h = r_magnitude - self.config.earth_radius_m
 
-        temp1 = np.sqrt(1 - f**2 * np.sin(theta) ** 2)
+        # Calculate discriminant for sqrt - should be positive for physically valid geometries
+
+        discriminant = 1 - f**2 * np.sin(theta) ** 2
+
+        # Check for suspicious geometries
+        if discriminant < -1e-10:  # Significantly negative suggests bad input data
+            logger.warning(
+                f"Suspicious geometry: discriminant={discriminant:.6f} for f={f:.3f}, theta={np.rad2deg(theta):.1f}°. "
+                f"This suggests Invalid geometry (no-intersection)."
+            )
+
+        temp1 = np.sqrt(discriminant)
+
+        # Add small epsilon to prevent division by zero for extreme cases
+        # (when discriminant rounds to exactly 0)
+        temp1 = np.maximum(temp1, 1e-10)
 
         # View-plane scaling factor
         vp_factor = h / self.config.earth_radius_m / (-1 + f * np.cos(theta) / temp1)
