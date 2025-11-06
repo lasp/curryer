@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class TestModeConfig:
+class MonteCarloTestConfig:
     """
     Configuration for Monte Carlo test mode (used by test scripts).
 
@@ -248,7 +248,7 @@ def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[li
 
 
 def apply_error_variation_for_testing(
-    base_result: xr.Dataset, param_idx: int, test_mode_config: TestModeConfig
+    base_result: xr.Dataset, param_idx: int, test_mode_config: MonteCarloTestConfig
 ) -> xr.Dataset:
     """
     Apply random variation to image matching results to simulate parameter effects.
@@ -353,7 +353,7 @@ def apply_geolocation_error_to_subimage(
 def run_image_matching_with_applied_errors(
     test_case: dict,
     param_idx: int,
-    test_mode_config: TestModeConfig,
+    test_mode_config: MonteCarloTestConfig,
     cached_result: Optional[xr.Dataset] = None,
 ) -> xr.Dataset:
     """
@@ -722,7 +722,7 @@ def run_downstream_pipeline(
     logger.info(f"Test cases: {test_cases or 'all'}")
 
     # Create test mode configuration
-    test_mode_config = TestModeConfig(
+    test_mode_config = MonteCarloTestConfig(
         test_data_dir=test_data_dir,
         test_cases=test_cases,
         randomize_errors=True,
