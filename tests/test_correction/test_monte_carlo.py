@@ -1005,7 +1005,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         self.assertGreater(len(test_cases), 0)
 
         test_case = test_cases[0]
-        test_config = TestModeConfig(
+        test_config = MonteCarloTestConfig(
             test_data_dir=self.test_data_dir,
             test_cases=["1"],
             randomize_errors=False,
