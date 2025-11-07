@@ -1203,8 +1203,8 @@ class PlaceholderConfig:
     min_measurements: int = 10  # Minimum measurements if no valid geolocation
 
     # Spacecraft orbital parameters
-    orbit_altitude_min_m: float = 6378e3  # Min altitude (Earth surface ~6378 km)
-    orbit_altitude_max_m: float = 6778e3  # Max altitude (typical LEO ~400 km above surface)
+    orbit_altitude_min_m: float = 6778e3  # Min altitude (Earth surface ~6378 km)
+    orbit_altitude_max_m: float = 6782e3  # Max altitude (typical LEO ~400 km above surface)
 
     # Geographic bounds for synthetic control points
     latitude_range: tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
