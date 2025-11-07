@@ -31,6 +31,7 @@ showing individual case results and overall performance metrics.
 """
 
 import logging
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Optional
@@ -1207,13 +1208,9 @@ class TestNetCDFReprocessing(unittest.TestCase):
         """Set up test fixtures."""
         self.config = _create_test_config()
         self.processor = ErrorStatsProcessor(config=self.config)
-        self.test_dir = Path(__file__).parent.parent / "test_outputs"
-        self.test_dir.mkdir(exist_ok=True, parents=True)
-
-    def tearDown(self):
-        """Clean up test files."""
-        # Optional: remove test files after tests
-        pass
+        self.__tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.__tmp_dir.cleanup)
+        self.test_dir = Path(self.__tmp_dir.name)
 
     def _create_test_netcdf(self, filepath, include_correlation=True, n_measurements=10):
         """Create a test NetCDF file using sampled validated test case data."""

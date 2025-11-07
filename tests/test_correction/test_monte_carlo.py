@@ -596,7 +596,8 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
 
     Args:
         n_iterations: Number of Monte Carlo iterations
-        work_dir: Working directory for outputs
+        work_dir: Working directory for outputs. If None, uses a temporary
+                  directory that will be cleaned up when the process exits.
 
     Returns:
         Tuple of (results, netcdf_data, output_path)
@@ -610,9 +611,14 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
     generic_dir = root_dir / "data" / "generic"
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
 
+    # Use temporary directory if work_dir not specified
     if work_dir is None:
-        work_dir = root_dir / "tests" / "test_correction" / "monte_carlo_results" / "upstream"
-    work_dir.mkdir(parents=True, exist_ok=True)
+        _tmp_dir = tempfile.mkdtemp(prefix="curryer_upstream_")
+        work_dir = Path(_tmp_dir)
+        logger.info(f"Using temporary directory: {work_dir}")
+        logger.info("(will be cleaned up when process exits)")
+    else:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Work directory: {work_dir}")
     logger.info(f"Iterations: {n_iterations}")
@@ -697,7 +703,8 @@ def run_downstream_pipeline(
     Args:
         n_iterations: Number of Monte Carlo iterations
         test_cases: Specific test cases to use (e.g., ['1', '2'])
-        work_dir: Working directory for outputs
+        work_dir: Working directory for outputs. If None, uses a temporary
+                  directory that will be cleaned up when the process exits.
 
     Returns:
         Tuple of (results, netcdf_data, output_path)
@@ -712,9 +719,14 @@ def run_downstream_pipeline(
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
     test_data_dir = root_dir / "tests" / "data" / "clarreo" / "image_match"
 
+    # Use temporary directory if work_dir not specified
     if work_dir is None:
-        work_dir = root_dir / "tests" / "test_correction" / "monte_carlo_results" / "downstream"
-    work_dir.mkdir(parents=True, exist_ok=True)
+        _tmp_dir = tempfile.mkdtemp(prefix="curryer_downstream_")
+        work_dir = Path(_tmp_dir)
+        logger.info(f"Using temporary directory: {work_dir}")
+        logger.info("(will be cleaned up when process exits)")
+    else:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Work directory: {work_dir}")
     logger.info(f"Test data directory: {test_data_dir}")
