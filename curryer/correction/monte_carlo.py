@@ -453,6 +453,7 @@ def image_matching(
         telemetry: Telemetry DataFrame with spacecraft state
         calibration_dir: Directory containing calibration files (LOS vectors, PSF)
         params_info: Current parameter values for error tracking
+        config: MonteCarloConfig with coordinate name mappings
         los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
         optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
 
