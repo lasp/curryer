@@ -474,12 +474,7 @@ class TestErrorStats13Cases:
         logger.info("✓ All 13 cases match expected Engineering results within tolerance")
 
     def test_case_01_dili_region(self, test_dataset, processor):
-        """Test Case 1: Dili region, Indonesia (-8.6°S, 125.5°E).
-
-        Note: Single-measurement processing may produce NaN for certain viewing
-        geometries due to scaling factor calculations. This is expected behavior.
-        The test validates that processing completes without error.
-        """
+        """Test Case 1: Dili region, Indonesia (-8.6°S, 125.5°E)."""
         # Extract single measurement
         case_data = test_dataset.isel(measurement=0)
         single_case = case_data.expand_dims("measurement")
