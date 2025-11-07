@@ -286,6 +286,7 @@ class ErrorStatsProcessor:
 
             # Calculate off-nadir angle and scaling factors
             rhat = riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
+            # Clip dot product to avoid tiny rounding errors outside [-1, 1]
             dot_product = np.clip(np.dot(bhat_ctrs[i], -rhat), -1.0, 1.0)
             results["off_nadir_angle_rad"][i] = np.arccos(dot_product)
 
