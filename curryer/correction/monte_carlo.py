@@ -711,7 +711,7 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
         all_lon_errors.extend(result["lon_error_deg"].values)
 
         # Handle coordinate transformation data (use config names)
-        # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
+        # NOTE: Individual results have shape (1, 3) for vectors and (1, 3, 3) for matrices
         if sc_pos_name in result:
             # Shape: (1, 3) -> extract as (3,) for each measurement
             for j in range(n_measurements):
