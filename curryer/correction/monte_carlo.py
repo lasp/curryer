@@ -1796,12 +1796,14 @@ def loop(
                 # === IMAGE MATCHING MODULE ===
                 logger.info("    === IMAGE MATCHING MODULE ===")
 
-                # Use synthetic image matching function
+                # Use injected image matching function
                 gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
 
-                # Try calling with different signatures (real vs test)
+                # Try calling with appropriate signature based on function type
+                # Real function: 6 required + 2 optional params (with keywords)
+                # Test function: 4 required params (positional)
                 try:
-                    # Try real image matching signature first
+                    # Try real image matching signature first (with all required + optional params)
                     image_matching_output = image_matching_func(
                         geolocated_data=geo_dataset,
                         gcp_reference_file=gcp_file,
@@ -1813,8 +1815,10 @@ def loop(
                         optical_psfs_cached=optical_psfs_cached,
                     )
                     logger.info(f"    Image matching complete")
-                except TypeError:
-                    # Fallback to test signature (4 positional args)
+                except TypeError as e:
+                    # Keyword arguments rejected - likely test function with simpler signature
+                    # Test functions expect: (geolocated_data, gcp_reference_file, params_info, config)
+                    logger.debug(f"    Real signature failed ({e}), trying test signature")
                     try:
                         image_matching_output = image_matching_func(
                             geo_dataset,
@@ -1823,8 +1827,10 @@ def loop(
                             config,
                         )
                         logger.info(f"    Test image matching complete")
-                    except Exception as e:
-                        logger.error(f"    Image matching failed: {e}")
+                    except Exception as e2:
+                        logger.error(f"    Image matching failed with both signatures")
+                        logger.error(f"      Real signature error: {e}")
+                        logger.error(f"      Test signature error: {e2}")
                         raise
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
