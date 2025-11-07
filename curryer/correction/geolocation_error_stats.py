@@ -283,8 +283,9 @@ class ErrorStatsProcessor:
 
             # Calculate off-nadir angle and scaling factors
             rhat = riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
-            # Clip dot product to avoid tiny numerical errors in
-            dot_product = np.clip(np.dot(bhat_ctrs[i], -rhat), -1.0, 1.0)
+            dot_product = np.dot(bhat_ctrs[i], -rhat)
+            if dot_product < -1.0 or dot_product > 1.0:
+                logger.warning(f"Dot product out of bounds: {dot_product} at index {i}, suspicious Bhat or Rhat")
             results["off_nadir_angle_rad"][i] = np.arccos(dot_product)
 
             # Calculate nadir-equivalent scaling factors
