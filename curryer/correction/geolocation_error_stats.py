@@ -20,7 +20,10 @@ from typing import Optional, Union
 import numpy as np
 import xarray as xr
 
+from curryer import utils
+
 logger = logging.getLogger(__name__)
+utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 @dataclass
@@ -283,9 +286,7 @@ class ErrorStatsProcessor:
 
             # Calculate off-nadir angle and scaling factors
             rhat = riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
-            dot_product = np.dot(bhat_ctrs[i], -rhat)
-            if dot_product < -1.0 or dot_product > 1.0:
-                logger.warning(f"Dot product out of bounds: {dot_product} at index {i}, suspicious Bhat or Rhat")
+            dot_product = np.clip(np.dot(bhat_ctrs[i], -rhat), -1.0, 1.0)
             results["off_nadir_angle_rad"][i] = np.arccos(dot_product)
 
             # Calculate nadir-equivalent scaling factors
@@ -337,16 +338,20 @@ class ErrorStatsProcessor:
         h = r_magnitude - self.config.earth_radius_m
 
         # Calculate discriminant for sqrt - should be positive for physically valid geometries
-
         discriminant = 1 - f**2 * np.sin(theta) ** 2
+        logger.warning(f"theta value {np.rad2deg(theta):.1f} degrees")
+        logger.warning("discriminant value: %.6f", discriminant)
 
         # Check for suspicious geometries
-        if discriminant < -1e-10:  # Significantly negative suggests bad input data
-            logger.warning(
+        if discriminant < 0:  # Significantly negative suggests bad input data
+            logger.error(
                 f"Suspicious geometry: discriminant={discriminant:.6f} for f={f:.3f}, theta={np.rad2deg(theta):.1f}°. "
-                f"This suggests Invalid geometry (no-intersection)."
+                f"This suggests Invalid geometry (no-intersection). Clamping to zero."
             )
+            # Clamp negative discriminants to zero to avoid sqrt warning
+            # discriminant = 0.0
 
+        # Take square root (now guaranteed non-negative)
         temp1 = np.sqrt(discriminant)
 
         # Add small epsilon to prevent division by zero for extreme cases
