@@ -39,8 +39,10 @@ computation for mission requirements validation.
 """
 
 import argparse
+import atexit
 import json
 import logging
+import shutil
 import sys
 import tempfile
 import time
@@ -771,8 +773,20 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
     if work_dir is None:
         _tmp_dir = tempfile.mkdtemp(prefix="curryer_upstream_")
         work_dir = Path(_tmp_dir)
+
+        # Register cleanup to run on process exit
+        def cleanup_temp_dir():
+            if work_dir.exists():
+                try:
+                    shutil.rmtree(work_dir)
+                    logger.debug(f"Cleaned up temporary directory: {work_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {work_dir}: {e}")
+
+        atexit.register(cleanup_temp_dir)
+
         logger.info(f"Using temporary directory: {work_dir}")
-        logger.info("(will be cleaned up when process exits)")
+        logger.info("(will be cleaned up on process exit)")
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -881,8 +895,20 @@ def run_downstream_pipeline(
     if work_dir is None:
         _tmp_dir = tempfile.mkdtemp(prefix="curryer_downstream_")
         work_dir = Path(_tmp_dir)
+
+        # Register cleanup to run on process exit
+        def cleanup_temp_dir():
+            if work_dir.exists():
+                try:
+                    shutil.rmtree(work_dir)
+                    logger.debug(f"Cleaned up temporary directory: {work_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {work_dir}: {e}")
+
+        atexit.register(cleanup_temp_dir)
+
         logger.info(f"Using temporary directory: {work_dir}")
-        logger.info("(will be cleaned up when process exits)")
+        logger.info("(will be cleaned up on process exit)")
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
 
