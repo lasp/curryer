@@ -27,16 +27,21 @@ or network access during testing.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
+from curryer import utils
 from curryer.correction.dataio import (
     S3Configuration,
     download_netcdf_objects,
     find_netcdf_objects,
 )
+
+logger = logging.getLogger(__name__)
+utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 class FakeS3Client:
