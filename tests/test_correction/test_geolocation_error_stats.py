@@ -40,11 +40,11 @@ import numpy.testing as npt
 import pytest
 import xarray as xr
 
+from curryer import utils
 from curryer.correction.geolocation_error_stats import (
     ErrorStatsProcessor,
     GeolocationConfig,
 )
-from curryer import utils
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
@@ -848,7 +848,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         t_matrices = np.array(
             [
                 [[1, 0, 0], [0, 1, 0], [0, 0, 1]],  # Identity
-                [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
+                [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]],  # Simple rotation
             ]
         )
 
@@ -1087,9 +1087,7 @@ class TestCorrelationFiltering(unittest.TestCase):
         test_data = _sample_from_validated_test_cases(n_measurements, seed=42)
 
         # Add correlation variable for filtering tests
-        test_data = test_data.assign(
-            correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements))
-        )
+        test_data = test_data.assign(correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements)))
 
         return test_data
 
@@ -1224,9 +1222,7 @@ class TestNetCDFReprocessing(unittest.TestCase):
 
         if include_correlation:
             # Add correlation variable for filtering tests
-            test_data = test_data.assign(
-                correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements))
-            )
+            test_data = test_data.assign(correlation=(["measurement"], np.linspace(0.2, 1.0, n_measurements)))
 
         test_data.to_netcdf(filepath)
         return filepath
