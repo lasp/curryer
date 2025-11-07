@@ -78,6 +78,7 @@ from clarreo_config import create_clarreo_monte_carlo_config
 from clarreo_data_loaders import load_clarreo_gcp, load_clarreo_science, load_clarreo_telemetry
 
 logger = logging.getLogger(__name__)
+utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 # =============================================================================
