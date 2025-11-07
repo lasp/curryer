@@ -345,10 +345,9 @@ class ErrorStatsProcessor:
         if discriminant < 0:  # Significantly negative suggests bad input data
             logger.error(
                 f"Suspicious geometry: discriminant={discriminant:.6f} for f={f:.3f}, theta={np.rad2deg(theta):.1f}°. "
-                f"This suggests Invalid geometry (no-intersection). Clamping to zero."
+                f"This suggests Invalid geometry (no-intersection)."
             )
 
-        # Take square root (now guaranteed non-negative)
         temp1 = np.sqrt(discriminant)
 
         # Add small epsilon to prevent division by zero for extreme cases
