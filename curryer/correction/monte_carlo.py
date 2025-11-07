@@ -551,15 +551,19 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     else:
         n_measurements = min(n_valid, placeholder_cfg.max_measurements)
 
-    # Generate realistic transformation matrices (from error_stats tests)
-    t_matrices = np.zeros((n_measurements, 3, 3))
-    for i in range(n_measurements):
-        if i % 3 == 0:
-            t_matrices[i, :, :] = np.eye(3)  # Identity
-        elif i % 3 == 1:
-            t_matrices[i, :, :] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
-        else:
-            t_matrices[i, :, :] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
+    # Generate spacecraft position vectors on a sphere FIRST
+    # (needed to generate realistic transformation matrices)
+    riss_ctrs = _placeholder_generate_spherical_positions(
+        n_measurements, placeholder_cfg.orbit_radius_mean_m, placeholder_cfg.orbit_radius_std_m
+    )
+
+    # Generate SYNTHETIC boresight vectors in instrument frame
+    boresights = _placeholder_generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
+
+    # Generate transformation matrices that align boresight with nadir
+    # This ensures that when bhat_ctrs = bhat_hs @ t_hs2ctrs.T,
+    # the result points approximately toward Earth center
+    t_matrices = _placeholder_generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights)
 
     # Generate synthetic errors based on parameter variations
     # Errors should vary based on how far parameters are from optimal values
@@ -574,14 +578,6 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     # Generate errors with spatial correlation
     lat_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)  # Convert m to degrees
     lon_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
-
-    # Generate SYNTHETIC boresight vectors (placeholder-only helper)
-    boresights = _placeholder_generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
-
-    # Generate spacecraft position vectors (configurable orbit altitude)
-    riss_ctrs = np.random.uniform(
-        placeholder_cfg.orbit_altitude_min_m, placeholder_cfg.orbit_altitude_max_m, (n_measurements, 3)
-    )
 
     # Extract corresponding geolocation data
     if n_valid > 0:
@@ -616,7 +612,7 @@ def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info,
     )
 
 
-def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.1):
+def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.07):
     """
     PLACEHOLDER HELPER - Generate SYNTHETIC boresight vectors for testing.
 
@@ -626,7 +622,7 @@ def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad
 
     Args:
         n_measurements: Number of boresight vectors to generate
-        max_off_nadir_rad: Maximum off-nadir angle in radians (default 0.1 ≈ 6 degrees)
+        max_off_nadir_rad: Maximum off-nadir angle in radians (default 0.07 ≈ 4 degrees)
 
     Returns:
         Array of SYNTHETIC boresight unit vectors, shape (n_measurements, 3)
@@ -636,11 +632,146 @@ def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad
     """
     boresights = np.zeros((n_measurements, 3))
     for i in range(n_measurements):
-        # Generate random off-nadir angles (SYNTHETIC - not real pointing data)
-        theta = np.random.uniform(0, max_off_nadir_rad)
-        phi = np.random.uniform(0, 2 * np.pi)
-        boresights[i] = [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
+        # Generate random off-nadir angle in Y-Z plane only (matching real data pattern)
+        # Real data shows Y component varies roughly between -0.07 and +0.07
+        theta = np.random.uniform(-max_off_nadir_rad, max_off_nadir_rad)
+
+        # X component is always 0 (constrained to Y-Z plane)
+        boresights[i, 0] = 0.0
+        # Y component is the off-nadir tilt
+        boresights[i, 1] = np.sin(theta)
+        # Z component dominates (near-nadir pointing)
+        boresights[i, 2] = np.cos(theta)
+
     return boresights
+
+
+def _placeholder_generate_spherical_positions(n_measurements, radius_mean_m, radius_std_m):
+    """
+    PLACEHOLDER HELPER - Generate SYNTHETIC spacecraft positions on a sphere.
+
+    WARNING: This function generates FAKE data and should ONLY be called by
+    placeholder_image_matching(). It creates random position vectors distributed
+    on a sphere.
+
+    Args:
+        n_measurements: Number of position vectors to generate
+        radius_mean_m: Mean orbital radius in meters
+        radius_std_m: Standard deviation of orbital radius in meters
+
+    Returns:
+        Array of SYNTHETIC position vectors in ECEF, shape (n_measurements, 3)
+
+    Note:
+        For real position data, use actual spacecraft ephemeris from telemetry/SPICE.
+    """
+    positions = np.zeros((n_measurements, 3))
+
+    for i in range(n_measurements):
+        # Generate random radius with normal distribution
+        radius = np.random.normal(radius_mean_m, radius_std_m)
+
+        # Generate uniformly distributed point on unit sphere
+        phi = np.random.uniform(0, 2 * np.pi)  # azimuthal angle
+        cos_theta = np.random.uniform(-1, 1)  # cosine of polar angle
+        sin_theta = np.sqrt(1 - cos_theta**2)
+
+        # Convert to Cartesian coordinates
+        positions[i, 0] = radius * sin_theta * np.cos(phi)  # x
+        positions[i, 1] = radius * sin_theta * np.sin(phi)  # y
+        positions[i, 2] = radius * cos_theta  # z
+
+    return positions
+
+
+def _placeholder_generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs):
+    """
+    PLACEHOLDER HELPER - Generate SYNTHETIC transformation matrices that align boresights with nadir.
+
+    WARNING: This function generates FAKE data and should ONLY be called by
+    placeholder_image_matching(). It creates transformation matrices that convert
+    the instrument-frame boresight vectors to CTRS such that they point approximately
+    toward nadir (Earth center).
+
+    The transformation ensures: bhat_ctrs = bhat_hs @ t_hs2ctrs.T points toward -rhat (nadir)
+
+    Args:
+        n_measurements: Number of transformation matrices to generate
+        riss_ctrs: Spacecraft position vectors in CTRS, shape (n_measurements, 3)
+        boresights_hs: Boresight vectors in instrument frame, shape (n_measurements, 3)
+
+    Returns:
+        Array of SYNTHETIC transformation matrices, shape (n_measurements, 3, 3)
+
+    Note:
+        For real transformation data, use actual spacecraft attitude from telemetry/SPICE.
+    """
+    t_matrices = np.zeros((n_measurements, 3, 3))
+
+    for i in range(n_measurements):
+        # Nadir direction in CTRS (pointing toward Earth center)
+        nadir_ctrs = -riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
+
+        # Boresight in instrument frame (should be close to [0, small_y, ~1])
+        bhat_hs = boresights_hs[i]
+
+        # We want: bhat_hs @ t_hs2ctrs.T = nadir_ctrs
+        # So: t_hs2ctrs = (bhat_hs^T)^-1 @ nadir_ctrs^T
+        # But this is under-constrained (3 equations, 9 unknowns)
+
+        # Simpler approach: Create a rotation matrix that maps bhat_hs to nadir_ctrs
+        # Use Rodrigues' rotation formula to find rotation that aligns vectors
+
+        # Normalize boresight
+        bhat_hs_norm = bhat_hs / np.linalg.norm(bhat_hs)
+
+        # Find rotation axis (perpendicular to both vectors)
+        rotation_axis = np.cross(bhat_hs_norm, nadir_ctrs)
+        axis_norm = np.linalg.norm(rotation_axis)
+
+        if axis_norm < 1e-6:
+            # Vectors are already aligned (or opposite)
+            if np.dot(bhat_hs_norm, nadir_ctrs) > 0:
+                # Already aligned
+                t_matrices[i] = np.eye(3)
+            else:
+                # Opposite direction - rotate 180 degrees around perpendicular axis
+                # Use an arbitrary perpendicular vector
+                if abs(bhat_hs_norm[0]) < 0.9:
+                    perp = np.array([1, 0, 0])
+                else:
+                    perp = np.array([0, 1, 0])
+                rotation_axis = np.cross(bhat_hs_norm, perp)
+                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                # 180 degree rotation
+                K = np.array(
+                    [
+                        [0, -rotation_axis[2], rotation_axis[1]],
+                        [rotation_axis[2], 0, -rotation_axis[0]],
+                        [-rotation_axis[1], rotation_axis[0], 0],
+                    ]
+                )
+                t_matrices[i] = np.eye(3) + 2 * K @ K
+        else:
+            # Normalize rotation axis
+            rotation_axis = rotation_axis / axis_norm
+
+            # Angle between vectors
+            cos_angle = np.dot(bhat_hs_norm, nadir_ctrs)
+            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+
+            # Rodrigues' rotation formula to create rotation matrix
+            K = np.array(
+                [
+                    [0, -rotation_axis[2], rotation_axis[1]],
+                    [rotation_axis[2], 0, -rotation_axis[0]],
+                    [-rotation_axis[1], rotation_axis[0], 0],
+                ]
+            )
+
+            t_matrices[i] = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+    return t_matrices
 
 
 def _extract_boresight_and_transform_from_geolocation(
@@ -1202,9 +1333,9 @@ class PlaceholderConfig:
     max_measurements: int = 100  # Maximum number of synthetic measurements to generate
     min_measurements: int = 10  # Minimum measurements if no valid geolocation
 
-    # Spacecraft orbital parameters
-    orbit_altitude_min_m: float = 6778e3  # Min altitude (Earth surface ~6378 km)
-    orbit_altitude_max_m: float = 6782e3  # Max altitude (typical LEO ~400 km above surface)
+    # Spacecraft orbital parameters (for spherical orbit generation)
+    orbit_radius_mean_m: float = 6.78e6  # Mean orbital radius (6.78 million meters, ~400 km altitude)
+    orbit_radius_std_m: float = 4e3  # Orbital radius variation (±4 km)
 
     # Geographic bounds for synthetic control points
     latitude_range: tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
