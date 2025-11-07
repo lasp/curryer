@@ -339,8 +339,6 @@ class ErrorStatsProcessor:
 
         # Calculate discriminant for sqrt - should be positive for physically valid geometries
         discriminant = 1 - f**2 * np.sin(theta) ** 2
-        logger.warning(f"theta value {np.rad2deg(theta):.1f} degrees")
-        logger.warning("discriminant value: %.6f", discriminant)
 
         # Check for suspicious geometries
         if discriminant < 0:  # Significantly negative suggests bad input data
@@ -348,8 +346,6 @@ class ErrorStatsProcessor:
                 f"Suspicious geometry: discriminant={discriminant:.6f} for f={f:.3f}, theta={np.rad2deg(theta):.1f}°. "
                 f"This suggests Invalid geometry (no-intersection). Clamping to zero."
             )
-            # Clamp negative discriminants to zero to avoid sqrt warning
-            # discriminant = 0.0
 
         # Take square root (now guaranteed non-negative)
         temp1 = np.sqrt(discriminant)

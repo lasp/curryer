@@ -427,401 +427,8 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
 
 
 # ============================================================================
-# PLACEHOLDER FUNCTIONS - GENERATE SYNTHETIC TEST DATA ONLY
+# ADAPTER FUNCTIONS
 # ============================================================================
-#
-# WARNING: Functions in this section generate FAKE/SYNTHETIC data for testing!
-#
-# These functions are used when real GCP pairing or image matching are disabled.
-# They allow testing of the geolocation pipeline without requiring:
-#   - Real GCP reference imagery
-#   - Calibration files (LOS vectors, optical PSF)
-#   - Actual image matching processing
-#
-# The synthetic data generated here:
-#   - Uses random/statistical distributions
-#   - Is NOT based on actual measurements
-#   - Should NEVER be used for production analysis
-#   - Is intended ONLY for development/testing purposes
-#
-# To use REAL data instead:
-#   - Set config.use_real_pairing = True (for GCP pairing)
-#   - Set config.use_real_image_matching = True (for image matching)
-#   - Provide required calibration files and GCP reference data
-#
-# Placeholder functions are automatically called by loop() when real functions
-# are disabled. Loud warnings are logged each time placeholders are used.
-# ============================================================================
-
-
-def placeholder_gcp_pairing(science_data_files):
-    """
-    PLACEHOLDER for GCP pairing module - generates SYNTHETIC GCP pairs.
-
-    WARNING: This function returns FAKE pairs for testing purposes only!
-
-    Real implementation will:
-    - Take science image files
-    - Find spatially/temporally overlapping Landsat GCP scenes
-    - Return list of (science_file, gcp_reference_file) pairs
-
-    For now: Generate synthetic pairs for testing
-
-    Args:
-        science_data_files: List of science image file identifiers
-
-    Returns:
-        List of tuples: [(science_file, gcp_file), ...]
-    """
-    # ========================================================================
-    # LOUD WARNING - PLACEHOLDER IS ACTIVE
-    # ========================================================================
-    logger.warning("=" * 80)
-    logger.warning("!!!!️  USING PLACEHOLDER GCP PAIRING - NOT REAL DATA!  !!!!️")
-    logger.warning("=" * 80)
-    logger.warning("Placeholder is generating SYNTHETIC GCP pairs")
-    logger.warning("Real GCP spatial/temporal pairing is NOT being performed")
-    logger.warning("")
-    logger.warning("To use REAL GCP pairing, ensure:")
-    logger.warning("  1. config.use_real_pairing = True")
-    logger.warning("  2. config.gcp_directory is set to GCP file directory")
-    logger.warning("  3. GCP reference files exist (.mat files)")
-    logger.warning("=" * 80)
-
-    logger.info("GCP Pairing: Finding overlapping image pairs (PLACEHOLDER)")
-
-    # Generate synthetic pairs - one GCP per science file
-    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif") for i, sci_file in enumerate(science_data_files)]
-
-    return synthetic_pairs
-
-
-def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info, config: "MonteCarloConfig"):
-    """
-    PLACEHOLDER for image matching module - generates SYNTHETIC error data.
-
-    WARNING: This function returns FAKE data for testing purposes only!
-
-    Real implementation will:
-    - Compare geolocated pixels with GCP references
-    - Perform image correlation/matching
-    - Return spatial errors in format expected by error_stats module
-
-    For now: Generate synthetic error data matching error_stats test format
-
-    Args:
-        geolocated_data: Geolocated science data
-        gcp_reference_file: Reference GCP data file
-        params_info: Parameter information for this iteration
-        config: MonteCarloConfig with coordinate name mappings
-    """
-    # ========================================================================
-    # LOUD WARNING - PLACEHOLDER IS ACTIVE
-    # ========================================================================
-    logger.warning("=" * 80)
-    logger.warning("!!!!️  USING PLACEHOLDER IMAGE MATCHING - NOT REAL DATA!  !!!!️")
-    logger.warning("=" * 80)
-    logger.warning("Placeholder is generating SYNTHETIC error measurements")
-    logger.warning("Results are NOT based on actual image correlation")
-    logger.warning("")
-    logger.warning("To use REAL image matching, ensure:")
-    logger.warning("  1. config.use_real_image_matching = True")
-    logger.warning("  2. config.calibration_dir is set to calibration file directory")
-    logger.warning("  3. Calibration files exist: b_HS.mat, optical_PSF_*.mat")
-    logger.warning("  4. GCP reference files (.mat) are available")
-    logger.warning("=" * 80)
-
-    logger.info(f"Image Matching: Comparing geolocated pixels with {gcp_reference_file} (PLACEHOLDER)")
-
-    # Get placeholder configuration (create with defaults if not provided)
-    placeholder_cfg = config.placeholder if config.placeholder else PlaceholderConfig()
-
-    # Get coordinate names from config
-    sc_pos_name = config.spacecraft_position_name
-    boresight_name = config.boresight_name
-    transform_name = config.transformation_matrix_name
-
-    # Extract valid geolocation points (non-NaN)
-    valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
-    n_valid = valid_mask.sum()
-
-    if n_valid == 0:
-        logger.warning("No valid geolocation points found for image matching")
-        n_measurements = placeholder_cfg.min_measurements
-    else:
-        n_measurements = min(n_valid, placeholder_cfg.max_measurements)
-
-    # Generate spacecraft position vectors on a sphere FIRST
-    # (needed to generate realistic transformation matrices)
-    riss_ctrs = _placeholder_generate_spherical_positions(
-        n_measurements, placeholder_cfg.orbit_radius_mean_m, placeholder_cfg.orbit_radius_std_m
-    )
-
-    # Generate SYNTHETIC boresight vectors in instrument frame
-    boresights = _placeholder_generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
-
-    # Generate transformation matrices that align boresight with nadir
-    # This ensures that when bhat_ctrs = bhat_hs @ t_hs2ctrs.T,
-    # the result points approximately toward Earth center
-    t_matrices = _placeholder_generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights)
-
-    # Generate synthetic errors based on parameter variations
-    # Errors should vary based on how far parameters are from optimal values
-    base_error = placeholder_cfg.base_error_m
-    param_contribution = (
-        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
-        * placeholder_cfg.param_error_scale
-    )
-
-    error_magnitude = base_error + param_contribution
-
-    # Generate errors with spatial correlation
-    lat_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)  # Convert m to degrees
-    lon_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
-
-    # Extract corresponding geolocation data
-    if n_valid > 0:
-        valid_indices = np.where(valid_mask)[0][:n_measurements]
-        gcp_lat = geolocated_data["latitude"].values[valid_indices, 0]  # Use first pixel
-        gcp_lon = geolocated_data["longitude"].values[valid_indices, 0]
-    else:
-        # Use configured geographic bounds for synthetic control points
-        gcp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
-        gcp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
-
-    gcp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
-
-    # Use config names for coordinates instead of hardcoded ISS/HySICS names
-    return xr.Dataset(
-        {
-            "lat_error_deg": (["measurement"], lat_errors),
-            "lon_error_deg": (["measurement"], lon_errors),
-            sc_pos_name: (["measurement", "xyz"], riss_ctrs),
-            boresight_name: (["measurement", "xyz"], boresights),
-            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrices),
-            "gcp_lat_deg": (["measurement"], gcp_lat),
-            "gcp_lon_deg": (["measurement"], gcp_lon),
-            "gcp_alt": (["measurement"], gcp_alt),
-        },
-        coords={
-            "measurement": range(n_measurements),
-            "xyz": ["x", "y", "z"],
-            "xyz_from": ["x", "y", "z"],
-            "xyz_to": ["x", "y", "z"],
-        },
-    )
-
-
-def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.07):
-    """
-    PLACEHOLDER HELPER - Generate SYNTHETIC boresight vectors for testing.
-
-    WARNING: This function generates FAKE data and should ONLY be called by
-    placeholder_image_matching(). It creates random boresight vectors that are
-    NOT based on actual spacecraft pointing data.
-
-    Args:
-        n_measurements: Number of boresight vectors to generate
-        max_off_nadir_rad: Maximum off-nadir angle in radians (default 0.07 ≈ 4 degrees)
-
-    Returns:
-        Array of SYNTHETIC boresight unit vectors, shape (n_measurements, 3)
-
-    Note:
-        For real boresight data, use actual spacecraft attitude/pointing from telemetry.
-    """
-    boresights = np.zeros((n_measurements, 3))
-    for i in range(n_measurements):
-        # Generate random off-nadir angle in Y-Z plane only (matching real data pattern)
-        # Real data shows Y component varies roughly between -0.07 and +0.07
-        theta = np.random.uniform(-max_off_nadir_rad, max_off_nadir_rad)
-
-        # X component is always 0 (constrained to Y-Z plane)
-        boresights[i, 0] = 0.0
-        # Y component is the off-nadir tilt
-        boresights[i, 1] = np.sin(theta)
-        # Z component dominates (near-nadir pointing)
-        boresights[i, 2] = np.cos(theta)
-
-    return boresights
-
-
-def _placeholder_generate_spherical_positions(n_measurements, radius_mean_m, radius_std_m):
-    """
-    PLACEHOLDER HELPER - Generate SYNTHETIC spacecraft positions on a sphere.
-
-    WARNING: This function generates FAKE data and should ONLY be called by
-    placeholder_image_matching(). It creates random position vectors distributed
-    on a sphere.
-
-    Args:
-        n_measurements: Number of position vectors to generate
-        radius_mean_m: Mean orbital radius in meters
-        radius_std_m: Standard deviation of orbital radius in meters
-
-    Returns:
-        Array of SYNTHETIC position vectors in ECEF, shape (n_measurements, 3)
-
-    Note:
-        For real position data, use actual spacecraft ephemeris from telemetry/SPICE.
-    """
-    positions = np.zeros((n_measurements, 3))
-
-    for i in range(n_measurements):
-        # Generate random radius with normal distribution
-        radius = np.random.normal(radius_mean_m, radius_std_m)
-
-        # Generate uniformly distributed point on unit sphere
-        phi = np.random.uniform(0, 2 * np.pi)  # azimuthal angle
-        cos_theta = np.random.uniform(-1, 1)  # cosine of polar angle
-        sin_theta = np.sqrt(1 - cos_theta**2)
-
-        # Convert to Cartesian coordinates
-        positions[i, 0] = radius * sin_theta * np.cos(phi)  # x
-        positions[i, 1] = radius * sin_theta * np.sin(phi)  # y
-        positions[i, 2] = radius * cos_theta  # z
-
-    return positions
-
-
-def _placeholder_generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs):
-    """
-    PLACEHOLDER HELPER - Generate SYNTHETIC transformation matrices that align boresights with nadir.
-
-    WARNING: This function generates FAKE data and should ONLY be called by
-    placeholder_image_matching(). It creates transformation matrices that convert
-    the instrument-frame boresight vectors to CTRS such that they point approximately
-    toward nadir (Earth center).
-
-    The transformation ensures: bhat_ctrs = bhat_hs @ t_hs2ctrs.T points toward -rhat (nadir)
-
-    Args:
-        n_measurements: Number of transformation matrices to generate
-        riss_ctrs: Spacecraft position vectors in CTRS, shape (n_measurements, 3)
-        boresights_hs: Boresight vectors in instrument frame, shape (n_measurements, 3)
-
-    Returns:
-        Array of SYNTHETIC transformation matrices, shape (n_measurements, 3, 3)
-
-    Note:
-        For real transformation data, use actual spacecraft attitude from telemetry/SPICE.
-    """
-    t_matrices = np.zeros((n_measurements, 3, 3))
-
-    for i in range(n_measurements):
-        # Nadir direction in CTRS (pointing toward Earth center)
-        nadir_ctrs = -riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
-
-        # Boresight in instrument frame (should be close to [0, small_y, ~1])
-        bhat_hs = boresights_hs[i]
-
-        # We want: bhat_hs @ t_hs2ctrs.T = nadir_ctrs
-        # So: t_hs2ctrs = (bhat_hs^T)^-1 @ nadir_ctrs^T
-        # But this is under-constrained (3 equations, 9 unknowns)
-
-        # Simpler approach: Create a rotation matrix that maps bhat_hs to nadir_ctrs
-        # Use Rodrigues' rotation formula to find rotation that aligns vectors
-
-        # Normalize boresight
-        bhat_hs_norm = bhat_hs / np.linalg.norm(bhat_hs)
-
-        # Find rotation axis (perpendicular to both vectors)
-        rotation_axis = np.cross(bhat_hs_norm, nadir_ctrs)
-        axis_norm = np.linalg.norm(rotation_axis)
-
-        if axis_norm < 1e-6:
-            # Vectors are already aligned (or opposite)
-            if np.dot(bhat_hs_norm, nadir_ctrs) > 0:
-                # Already aligned
-                t_matrices[i] = np.eye(3)
-            else:
-                # Opposite direction - rotate 180 degrees around perpendicular axis
-                # Use an arbitrary perpendicular vector
-                if abs(bhat_hs_norm[0]) < 0.9:
-                    perp = np.array([1, 0, 0])
-                else:
-                    perp = np.array([0, 1, 0])
-                rotation_axis = np.cross(bhat_hs_norm, perp)
-                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-                # 180 degree rotation
-                K = np.array(
-                    [
-                        [0, -rotation_axis[2], rotation_axis[1]],
-                        [rotation_axis[2], 0, -rotation_axis[0]],
-                        [-rotation_axis[1], rotation_axis[0], 0],
-                    ]
-                )
-                t_matrices[i] = np.eye(3) + 2 * K @ K
-        else:
-            # Normalize rotation axis
-            rotation_axis = rotation_axis / axis_norm
-
-            # Angle between vectors
-            cos_angle = np.dot(bhat_hs_norm, nadir_ctrs)
-            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
-
-            # Rodrigues' rotation formula to create rotation matrix
-            K = np.array(
-                [
-                    [0, -rotation_axis[2], rotation_axis[1]],
-                    [rotation_axis[2], 0, -rotation_axis[0]],
-                    [-rotation_axis[1], rotation_axis[0], 0],
-                ]
-            )
-
-            t_matrices[i] = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-
-    return t_matrices
-
-
-def _extract_boresight_and_transform_from_geolocation(
-    geo_dataset: xr.Dataset, config: "MonteCarloConfig"
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Extract boresight vector and transformation matrix from geolocation data.
-
-    Attempts to extract real attitude data from SPICE/geolocation results.
-    Falls back to nadir assumptions if data is not available.
-
-    Args:
-        geo_dataset: Geolocation output with potential attitude data
-        config: MonteCarloConfig with instrument information
-
-    Returns:
-        Tuple of (boresight, t_matrix):
-            - boresight: (3,) array - boresight vector
-            - t_matrix: (3, 3) array - transformation matrix
-    """
-    # Try to extract attitude/transformation matrix from geolocation
-    if "attitude" in geo_dataset:
-        # Geolocation provides attitude matrix (ex, ey, ez)
-        # This is the transformation from instrument to reference frame
-        mid_idx = len(geo_dataset["frame"]) // 2 if "frame" in geo_dataset.dims else 0
-        t_matrix = geo_dataset["attitude"].values[mid_idx]
-
-        logger.debug(f"Extracted transformation matrix from geolocation data (frame {mid_idx})")
-
-        # For boresight, if we have SPICE loaded, we can query instrument boresight
-        try:
-            import spicierpy
-
-            instrument_id = spicierpy.bodn2c(config.geo.instrument_name)
-            # getfov returns: (shape, frame_name, boresight, bounds)
-            _, _, boresight_inst, _ = spicierpy.getfov(instrument_id)
-            # Transform to reference frame
-            boresight = t_matrix @ boresight_inst
-            logger.debug(f"Extracted boresight from SPICE: {boresight}")
-        except Exception as e:
-            # Fall back to nadir if SPICE query fails
-            logger.debug(f"Could not extract boresight from SPICE ({e}), using nadir assumption")
-            boresight = np.array([0.0, 0.0, 1.0])
-    else:
-        # No attitude data in geolocation - use nadir assumptions
-        logger.debug("No attitude data in geolocation, using nadir assumptions")
-        t_matrix = np.eye(3)
-        boresight = np.array([0.0, 0.0, 1.0])
-
-    return boresight, t_matrix
 
 
 def image_matching(
@@ -1320,33 +927,6 @@ class NetCDFConfig:
 
 
 @dataclass
-class PlaceholderConfig:
-    """Configuration for placeholder functions to generate SYNTHETIC TEST data.
-
-    This allows customization of SYNTHETIC data generation for different mission
-    characteristics without hardcoding values.
-    """
-
-    # Synthetic error generation
-    base_error_m: float = 50.0  # Base RMS error in meters
-    param_error_scale: float = 10.0  # How much parameters affect error (meters per parameter unit)
-    max_measurements: int = 100  # Maximum number of synthetic measurements to generate
-    min_measurements: int = 10  # Minimum measurements if no valid geolocation
-
-    # Spacecraft orbital parameters (for spherical orbit generation)
-    orbit_radius_mean_m: float = 6.78e6  # Mean orbital radius (6.78 million meters, ~400 km altitude)
-    orbit_radius_std_m: float = 4e3  # Orbital radius variation (±4 km)
-
-    # Geographic bounds for synthetic control points
-    latitude_range: tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
-    longitude_range: tuple[float, float] = (-180.0, 180.0)  # Full longitude range
-    altitude_range: tuple[float, float] = (0.0, 1000.0)  # GCP altitude range (meters)
-
-    # Boresight pointing (for nadir-looking instruments)
-    max_off_nadir_rad: float = 0.1  # Maximum off-nadir angle (radians, ~6 degrees)
-
-
-@dataclass
 class MonteCarloConfig:
     """Monte Carlo configuration for geolocation analysis.
 
@@ -1402,9 +982,6 @@ class MonteCarloConfig:
 
     # Output filename configuration
     output_filename: typing.Optional[str] = None  # If None, auto-generates with timestamp
-
-    # Placeholder configuration (for synthetic test data)
-    placeholder: typing.Optional[PlaceholderConfig] = None  # Auto-generated if None
 
     # match: ImageMatchConfig
     # stats: ErrorStatsConfig
@@ -1992,6 +1569,8 @@ def loop(
     telemetry_loader=None,
     science_loader=None,
     gcp_loader=None,
+    gcp_pairing_func=None,
+    image_matching_func=None,
     resume_from_checkpoint: bool = False,
 ):
     """
@@ -2004,6 +1583,8 @@ def loop(
         telemetry_loader: Optional mission-specific telemetry loader function
         science_loader: Optional mission-specific science loader function
         gcp_loader: Optional mission-specific GCP loader function
+        gcp_pairing_func: Optional GCP pairing function (for testing, defaults to placeholder)
+        image_matching_func: Optional image matching function (for testing, defaults to real)
         resume_from_checkpoint: If True, resume from checkpoint if it exists
 
     Returns:
@@ -2018,9 +1599,47 @@ def loop(
             science_loader=load_clarreo_science,
             resume_from_checkpoint=True  # Resume if interrupted
         )
+
+    Testing Example:
+        from test_placeholder_functions import test_gcp_pairing, test_placeholder_image_matching
+
+        results, netcdf_data = loop(
+            config, work_dir, tlm_sci_gcp_sets,
+            telemetry_loader=load_clarreo_telemetry,
+            science_loader=load_clarreo_science,
+            gcp_pairing_func=test_gcp_pairing,              # Inject test function
+            image_matching_func=test_placeholder_image_matching,  # Inject test function
+        )
     """
     # Initialize the entire set of parameters.
     params_set = load_param_sets(config)
+
+    # Set defaults for injectable functions (if not provided)
+    if gcp_pairing_func is None:
+        # No default - must be provided by caller or tests
+        logger.warning("No GCP pairing function provided - pairing will fail")
+
+        def gcp_pairing_func(x):
+            return []  # Empty stub
+
+    if image_matching_func is None:
+        # Default to real image matching if available
+        if config.use_real_image_matching and config.calibration_dir is not None:
+            image_matching_func = image_matching
+        else:
+            logger.warning("No image matching function provided and real matching not configured")
+
+            # Return empty dataset stub
+            def _empty_image_matching(geo_data, gcp_ref, params, cfg):
+                return xr.Dataset(
+                    {
+                        "lat_error_deg": (["measurement"], []),
+                        "lon_error_deg": (["measurement"], []),
+                    },
+                    coords={"measurement": []},
+                )
+
+            image_matching_func = _empty_image_matching
 
     # Initialize return data structure...
     results = []
@@ -2107,10 +1726,8 @@ def loop(
             # === GCP PAIRING MODULE ===
             logger.info("    === GCP PAIRING MODULE ===")
 
-            # Use placeholder GCP pairing (generates synthetic pairs)
-            # Real implementation would use pair_files() for spatial/temporal matching
-            placeholder_usage_count += 1  # Track placeholder usage
-            gcp_pairs = placeholder_gcp_pairing([sci_key])
+            # Use synthetic GCP pairing function (placeholder or real)
+            gcp_pairs = gcp_pairing_func([sci_key])
 
             logger.info(f"    Found {len(gcp_pairs)} GCP pairs for processing")
 
@@ -2178,50 +1795,36 @@ def loop(
                 # === IMAGE MATCHING MODULE ===
                 logger.info("    === IMAGE MATCHING MODULE ===")
 
-                # Choose between real and placeholder image matching based on configuration
-                if config.use_real_image_matching and config.calibration_dir is not None:
-                    # Use REAL image matching with calibration files
-                    gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
+                # Use synthetic image matching function
+                gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
 
+                # Try calling with different signatures (real vs test)
+                try:
+                    # Try real image matching signature first
+                    image_matching_output = image_matching_func(
+                        geolocated_data=geo_dataset,
+                        gcp_reference_file=gcp_file,
+                        telemetry=tlm_dataset,
+                        calibration_dir=config.calibration_dir,
+                        params_info=params,
+                        config=config,
+                        los_vectors_cached=los_vectors_cached,
+                        optical_psfs_cached=optical_psfs_cached,
+                    )
+                    logger.info(f"    Image matching complete")
+                except TypeError:
+                    # Fallback to test signature (4 positional args)
                     try:
-                        image_matching_output = image_matching(
-                            geolocated_data=geo_dataset,
-                            gcp_reference_file=gcp_file,
-                            telemetry=tlm_dataset,
-                            calibration_dir=config.calibration_dir,
-                            params_info=params,
-                            config=config,  # pass config for coordinate names
-                        )
-                        logger.info(f"    REAL image matching complete")
-                    except Exception as e:
-                        logger.error(f"    Real image matching failed: {e}")
-                        logger.warning("    Falling back to placeholder")
-                        placeholder_usage_count += 1  # Track placeholder usage
-                        image_matching_output = placeholder_image_matching(
+                        image_matching_output = image_matching_func(
                             geo_dataset,
                             gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
                             params,
-                            config,  # pass config for coordinate names
+                            config,
                         )
-                else:
-                    # Use placeholder image matching
-                    placeholder_usage_count += 1  # Track placeholder usage
-                    image_matching_output = placeholder_image_matching(
-                        geo_dataset,
-                        gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                        params,
-                        config,  # pass config for coordinate names
-                    )
-                    if config.use_real_image_matching:
-                        logger.warning(
-                            "    Real image matching requested but calibration_dir not set - using placeholder"
-                        )
-                    image_matching_output = placeholder_image_matching(
-                        geo_dataset,
-                        gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                        params,
-                        config,  # pass config for coordinate names
-                    )
+                        logger.info(f"    Test image matching complete")
+                    except Exception as e:
+                        logger.error(f"    Image matching failed: {e}")
+                        raise
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
 

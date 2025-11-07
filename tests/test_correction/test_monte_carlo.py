@@ -82,6 +82,161 @@ utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 # =============================================================================
+# TEST PLACEHOLDER FUNCTIONS (For Synthetic Data Generation)
+# =============================================================================
+# These functions generate SYNTHETIC test data for testing the Monte Carlo pipeline
+
+
+class _PlaceholderConfig:
+    """Configuration for placeholder test data generation."""
+
+    base_error_m: float = 50.0
+    param_error_scale: float = 10.0
+    max_measurements: int = 100
+    min_measurements: int = 10
+    orbit_radius_mean_m: float = 6.78e6
+    orbit_radius_std_m: float = 4e3
+    latitude_range: tuple[float, float] = (-60.0, 60.0)
+    longitude_range: tuple[float, float] = (-180.0, 180.0)
+    altitude_range: tuple[float, float] = (0.0, 1000.0)
+    max_off_nadir_rad: float = 0.1
+
+
+def synthetic_gcp_pairing(science_data_files):
+    """Generate SYNTHETIC GCP pairs for testing (TEST ONLY - not a test itself)."""
+    logger.warning("=" * 80)
+    logger.warning("!!!!️  USING SYNTHETIC GCP PAIRING - FAKE DATA!  !!!!️")
+    logger.warning("=" * 80)
+    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif") for i, sci_file in enumerate(science_data_files)]
+    return synthetic_pairs
+
+
+def synthetic_image_matching(geolocated_data, gcp_reference_file, params_info, config):
+    """Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself)."""
+    logger.warning("=" * 80)
+    logger.warning("!!!!️  USING SYNTHETIC IMAGE MATCHING - FAKE DATA!  !!!!️")
+    logger.warning("=" * 80)
+
+    placeholder_cfg = (
+        config.placeholder if hasattr(config, "placeholder") and config.placeholder else _PlaceholderConfig()
+    )
+    sc_pos_name = getattr(config, "spacecraft_position_name", "sc_position")
+    boresight_name = getattr(config, "boresight_name", "boresight")
+    transform_name = getattr(config, "transformation_matrix_name", "t_inst2ref")
+
+    valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
+    n_valid = valid_mask.sum()
+    n_measurements = (
+        placeholder_cfg.min_measurements if n_valid == 0 else min(n_valid, placeholder_cfg.max_measurements)
+    )
+
+    # Generate realistic synthetic data
+    riss_ctrs = _generate_spherical_positions(
+        n_measurements, placeholder_cfg.orbit_radius_mean_m, placeholder_cfg.orbit_radius_std_m
+    )
+    boresights = _generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
+    t_matrices = _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights)
+
+    # Generate synthetic errors
+    base_error = placeholder_cfg.base_error_m
+    param_contribution = (
+        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
+        * placeholder_cfg.param_error_scale
+    )
+    error_magnitude = base_error + param_contribution
+    lat_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
+    lon_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
+
+    if n_valid > 0:
+        valid_indices = np.where(valid_mask)[0][:n_measurements]
+        gcp_lat = geolocated_data["latitude"].values[valid_indices, 0]
+        gcp_lon = geolocated_data["longitude"].values[valid_indices, 0]
+    else:
+        gcp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
+        gcp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
+
+    gcp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
+
+    return xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], lat_errors),
+            "lon_error_deg": (["measurement"], lon_errors),
+            sc_pos_name: (["measurement", "xyz"], riss_ctrs),
+            boresight_name: (["measurement", "xyz"], boresights),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrices),
+            "gcp_lat_deg": (["measurement"], gcp_lat),
+            "gcp_lon_deg": (["measurement"], gcp_lon),
+            "gcp_alt": (["measurement"], gcp_alt),
+        },
+        coords={
+            "measurement": range(n_measurements),
+            "xyz": ["x", "y", "z"],
+            "xyz_from": ["x", "y", "z"],
+            "xyz_to": ["x", "y", "z"],
+        },
+    )
+
+
+def _generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.07):
+    """Generate synthetic boresight vectors (test helper)."""
+    boresights = np.zeros((n_measurements, 3))
+    for i in range(n_measurements):
+        theta = np.random.uniform(-max_off_nadir_rad, max_off_nadir_rad)
+        boresights[i] = [0.0, np.sin(theta), np.cos(theta)]
+    return boresights
+
+
+def _generate_spherical_positions(n_measurements, radius_mean_m, radius_std_m):
+    """Generate synthetic spacecraft positions on sphere (test helper)."""
+    positions = np.zeros((n_measurements, 3))
+    for i in range(n_measurements):
+        radius = np.random.normal(radius_mean_m, radius_std_m)
+        phi = np.random.uniform(0, 2 * np.pi)
+        cos_theta = np.random.uniform(-1, 1)
+        sin_theta = np.sqrt(1 - cos_theta**2)
+        positions[i] = [radius * sin_theta * np.cos(phi), radius * sin_theta * np.sin(phi), radius * cos_theta]
+    return positions
+
+
+def _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs):
+    """Generate transformation matrices aligning boresights with nadir (test helper)."""
+    t_matrices = np.zeros((n_measurements, 3, 3))
+    for i in range(n_measurements):
+        nadir_ctrs = -riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
+        bhat_hs_norm = boresights_hs[i] / np.linalg.norm(boresights_hs[i])
+        rotation_axis = np.cross(bhat_hs_norm, nadir_ctrs)
+        axis_norm = np.linalg.norm(rotation_axis)
+
+        if axis_norm < 1e-6:
+            if np.dot(bhat_hs_norm, nadir_ctrs) > 0:
+                t_matrices[i] = np.eye(3)
+            else:
+                perp = np.array([1, 0, 0]) if abs(bhat_hs_norm[0]) < 0.9 else np.array([0, 1, 0])
+                rotation_axis = np.cross(bhat_hs_norm, perp) / np.linalg.norm(np.cross(bhat_hs_norm, perp))
+                K = np.array(
+                    [
+                        [0, -rotation_axis[2], rotation_axis[1]],
+                        [rotation_axis[2], 0, -rotation_axis[0]],
+                        [-rotation_axis[1], rotation_axis[0], 0],
+                    ]
+                )
+                t_matrices[i] = np.eye(3) + 2 * K @ K
+        else:
+            rotation_axis = rotation_axis / axis_norm
+            angle = np.arccos(np.clip(np.dot(bhat_hs_norm, nadir_ctrs), -1.0, 1.0))
+            K = np.array(
+                [
+                    [0, -rotation_axis[2], rotation_axis[1]],
+                    [rotation_axis[2], 0, -rotation_axis[0]],
+                    [-rotation_axis[1], rotation_axis[0], 0],
+                ]
+            )
+            t_matrices[i] = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+    return t_matrices
+
+
+# =============================================================================
 # TEST MODE FUNCTIONS (Extracted from monte_carlo.py)
 # =============================================================================
 # These functions were moved from the core monte_carlo module to keep test-specific
@@ -657,6 +812,8 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
         telemetry_loader=load_clarreo_telemetry,
         science_loader=load_clarreo_science,
         gcp_loader=load_clarreo_gcp,
+        gcp_pairing_func=synthetic_gcp_pairing,  # Test helper from this file
+        image_matching_func=synthetic_image_matching,  # Test helper from this file
     )
 
     logger.info("=" * 80)
