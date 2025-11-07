@@ -20,10 +20,7 @@ from typing import Optional, Union
 import numpy as np
 import xarray as xr
 
-from curryer import utils
-
 logger = logging.getLogger(__name__)
-utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 @dataclass
