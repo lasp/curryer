@@ -1799,39 +1799,18 @@ def loop(
                 # Use injected image matching function
                 gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
 
-                # Try calling with appropriate signature based on function type
-                # Real function: 6 required + 2 optional params (with keywords)
-                # Test function: 4 required params (positional)
-                try:
-                    # Try real image matching signature first (with all required + optional params)
-                    image_matching_output = image_matching_func(
-                        geolocated_data=geo_dataset,
-                        gcp_reference_file=gcp_file,
-                        telemetry=tlm_dataset,
-                        calibration_dir=config.calibration_dir,
-                        params_info=params,
-                        config=config,
-                        los_vectors_cached=los_vectors_cached,
-                        optical_psfs_cached=optical_psfs_cached,
-                    )
-                    logger.info(f"    Image matching complete")
-                except TypeError as e:
-                    # Keyword arguments rejected - likely test function with simpler signature
-                    # Test functions expect: (geolocated_data, gcp_reference_file, params_info, config)
-                    logger.debug(f"    Real signature failed ({e}), trying test signature")
-                    try:
-                        image_matching_output = image_matching_func(
-                            geo_dataset,
-                            gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                            params,
-                            config,
-                        )
-                        logger.info(f"    Test image matching complete")
-                    except Exception as e2:
-                        logger.error(f"    Image matching failed with both signatures")
-                        logger.error(f"      Real signature error: {e}")
-                        logger.error(f"      Test signature error: {e2}")
-                        raise
+                # All image matching functions use the same signature
+                image_matching_output = image_matching_func(
+                    geolocated_data=geo_dataset,
+                    gcp_reference_file=gcp_file,
+                    telemetry=tlm_dataset,
+                    calibration_dir=config.calibration_dir,
+                    params_info=params,
+                    config=config,
+                    los_vectors_cached=los_vectors_cached,
+                    optical_psfs_cached=optical_psfs_cached,
+                )
+                logger.info(f"    Image matching complete")
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
 

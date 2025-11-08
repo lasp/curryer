@@ -113,8 +113,34 @@ def synthetic_gcp_pairing(science_data_files):
     return synthetic_pairs
 
 
-def synthetic_image_matching(geolocated_data, gcp_reference_file, params_info, config):
-    """Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself)."""
+def synthetic_image_matching(
+    geolocated_data,
+    gcp_reference_file,
+    telemetry,
+    calibration_dir,
+    params_info,
+    config,
+    los_vectors_cached=None,
+    optical_psfs_cached=None,
+):
+    """
+    Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself).
+
+    This function matches the signature of the real image_matching() function
+    but only uses a subset of parameters for upstream testing of the monte carlo.
+
+    Used parameters:
+        geolocated_data: For generating realistic synthetic errors
+        params_info: To scale errors based on parameter variations
+        config: For coordinate names and placeholder configuration
+
+    Ignored parameters (accepted for compatibility):
+        gcp_reference_file: Not needed for synthetic data
+        telemetry: Not needed for synthetic data
+        calibration_dir: Not needed for synthetic data
+        los_vectors_cached: Not needed for synthetic data
+        optical_psfs_cached: Not needed for synthetic data
+    """
     logger.warning("=" * 80)
     logger.warning("!!!!️  USING SYNTHETIC IMAGE MATCHING - FAKE DATA!  !!!!️")
     logger.warning("=" * 80)
