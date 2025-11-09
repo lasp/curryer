@@ -1299,6 +1299,69 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         logger.info(f"✓ Quick downstream test complete: {output_file}")
 
+    def test_synthetic_helpers_basic(self):
+        """Test that synthetic helper functions work correctly (for coverage)."""
+        logger.info("Testing synthetic helper functions...")
+
+        # Test synthetic GCP pairing
+        science_files = ["science_1.nc", "science_2.nc"]
+        pairs = synthetic_gcp_pairing(science_files)
+        self.assertEqual(len(pairs), 2)
+        self.assertIsInstance(pairs, list)
+        logger.info("✓ synthetic_gcp_pairing works")
+
+        # Test synthetic boresights generation
+        boresights = _generate_synthetic_boresights(5, max_off_nadir_rad=0.07)
+        self.assertEqual(boresights.shape, (5, 3))
+        self.assertTrue(np.all(np.abs(boresights[:, 0]) < 0.01))  # Small x component
+        logger.info("✓ _generate_synthetic_boresights works")
+
+        # Test synthetic positions generation
+        positions = _generate_spherical_positions(5, 6.78e6, 4e3)
+        self.assertEqual(positions.shape, (5, 3))
+        radii = np.linalg.norm(positions, axis=1)
+        self.assertTrue(np.all(radii > 6.7e6))  # Reasonable orbit altitude
+        logger.info("✓ _generate_spherical_positions works")
+
+        # Test transform generation
+        transforms = _generate_nadir_aligned_transforms(5, positions, boresights)
+        self.assertEqual(transforms.shape, (5, 3, 3))
+        # Check it's a valid rotation matrix (det should be close to 1)
+        det = np.linalg.det(transforms[0])
+        self.assertAlmostEqual(abs(det), 1.0, places=1)
+        logger.info("✓ _generate_nadir_aligned_transforms works")
+
+        logger.info("✓ All synthetic helpers validated")
+
+    def test_downstream_helpers_basic(self):
+        """Test downstream helper functions (for coverage)."""
+        logger.info("Testing downstream helper functions...")
+
+        # Test test case discovery
+        test_cases = discover_test_image_match_cases(self.test_data_dir, test_cases=["1"])
+        self.assertGreater(len(test_cases), 0)
+        self.assertIn("case_id", test_cases[0])
+        self.assertIn("subimage_file", test_cases[0])
+        logger.info(f"✓ discover_test_image_match_cases found {len(test_cases)} cases")
+
+        # Test error variation (create a simple test dataset)
+        base_result = xr.Dataset(
+            {
+                "lat_error_deg": (["measurement"], [0.001]),
+                "lon_error_deg": (["measurement"], [0.002]),
+            },
+            attrs={"lat_error_km": 0.1, "lon_error_km": 0.2, "correlation_ccv": 0.95},
+        )
+
+        varied_result = apply_error_variation_for_testing(base_result, param_idx=1, error_variation_percent=3.0)
+        self.assertIsInstance(varied_result, xr.Dataset)
+        self.assertIn("lat_error_deg", varied_result)
+        # Check that variation was applied (should be different from base)
+        self.assertNotEqual(varied_result.attrs["lat_error_km"], base_result.attrs["lat_error_km"])
+        logger.info("✓ apply_error_variation_for_testing works")
+
+        logger.info("✓ All downstream helpers validated")
+
 
 # =============================================================================
 # MAIN ENTRY POINT
