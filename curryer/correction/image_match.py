@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
@@ -26,7 +27,107 @@ from .psf import (
 )
 from .search import im_search
 
+if TYPE_CHECKING:
+    import pandas as pd
+    import xarray as xr
+
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Image Matching Interface Protocol
+# ============================================================================
+
+
+class ImageMatchingFunc(Protocol):
+    """
+    Protocol for image matching functions in Monte Carlo pipeline.
+
+    Image matching functions perform spatial correlation between geolocated
+    observations and GCP reference imagery to measure geolocation errors.
+
+    Standard Signature:
+        def image_matching(
+            geolocated_data: xr.Dataset,
+            gcp_reference_file: Path,
+            telemetry: pd.DataFrame,
+            calibration_dir: Path,
+            params_info: list,
+            config,
+            los_vectors_cached: Optional[np.ndarray] = None,
+            optical_psfs_cached: Optional[list] = None,
+        ) -> xr.Dataset
+
+    Required Output Fields:
+        - lat_error_deg: (measurement,) Latitude errors in degrees
+        - lon_error_deg: (measurement,) Longitude errors in degrees
+        - gcp_lat_deg, gcp_lon_deg, gcp_alt: GCP location
+        - Spacecraft state: position, boresight, transformation matrix
+
+    See monte_carlo.image_matching() for reference implementation.
+    """
+
+    def __call__(
+        self,
+        geolocated_data: xr.Dataset,
+        gcp_reference_file: Path,
+        telemetry: pd.DataFrame,
+        calibration_dir: Path,
+        params_info: list,
+        config,
+        los_vectors_cached: np.ndarray | None = None,
+        optical_psfs_cached: list | None = None,
+    ) -> xr.Dataset:
+        """Perform image matching and return error measurements."""
+        ...
+
+
+def validate_image_matching_output(output: xr.Dataset) -> None:
+    """
+    Validate that image matching output conforms to expected format.
+
+    Args:
+        output: Dataset returned by image matching function
+
+    Raises:
+        ValueError: If required fields are missing or malformed
+
+    Example:
+        >>> result = image_matching_func(...)
+        >>> validate_image_matching_output(result)
+    """
+    import xarray as xr
+
+    if not isinstance(output, xr.Dataset):
+        raise TypeError(f"Image matching must return xr.Dataset, got {type(output)}")
+
+    required_vars = [
+        "lat_error_deg",
+        "lon_error_deg",
+        "gcp_lat_deg",
+        "gcp_lon_deg",
+        "gcp_alt",
+    ]
+
+    missing = [v for v in required_vars if v not in output.data_vars]
+    if missing:
+        available = list(output.data_vars)
+        raise ValueError(f"Image matching output missing required variables: {missing}. Available: {available}")
+
+    if "measurement" not in output.coords:
+        raise ValueError(
+            f"Image matching output missing 'measurement' coordinate. Available coords: {list(output.coords)}"
+        )
+
+    # Check that error arrays have the measurement dimension
+    for var in ["lat_error_deg", "lon_error_deg"]:
+        if "measurement" not in output[var].dims:
+            raise ValueError(f"Variable '{var}' must have 'measurement' dimension, got dimensions: {output[var].dims}")
+
+
+# ============================================================================
+# Integrated Image Matching Implementation
+# ============================================================================
 
 
 @dataclass

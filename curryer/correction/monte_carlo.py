@@ -71,12 +71,31 @@ from curryer.correction import correction_config
 from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig
 from curryer.correction.data_structures import SearchConfig
 
+# Import data loader protocols and validation
+from curryer.correction.dataio import (
+    GCPLoader,
+    ScienceLoader,
+    TelemetryLoader,
+    validate_science_output,
+    validate_telemetry_output,
+)
+
 # Import image matching modules
 from curryer.correction.image_match import (
+    ImageMatchingFunc,
     integrated_image_match,
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
     load_optical_psf_from_mat,
+    validate_image_matching_output,
+)
+
+# Import pairing protocols and validation
+from curryer.correction.pairing import (
+    GCPPairingFunc,
+)
+from curryer.correction.pairing import (
+    validate_pairing_output as validate_gcp_pairing_output,
 )
 from curryer.kernels import create
 
@@ -796,7 +815,7 @@ class ParameterConfig:
 class GeolocationConfig:
     meta_kernel_file: Path
     generic_kernel_dir: Path
-    dynamic_kernels: [Path]  # Kernels that are dynamic but *NOT* altered by param!
+    dynamic_kernels: [Path]  # Kernels that are dynamic but *not* altered by param!
     instrument_name: str
     time_field: str
     minimum_correlation: typing.Optional[float] = None  # Filter threshold for image matching quality (0.0-1.0)
@@ -929,63 +948,88 @@ class NetCDFConfig:
 
 @dataclass
 class MonteCarloConfig:
-    """Monte Carlo configuration for geolocation analysis.
+    """The configuration object for Monte Carlo geolocation analysis.
 
-    This dataclass contains all settings for Monte Carlo parameter sensitivity analysis.
-    Required mission-specific parameters MUST be provided - there are no defaults for
-    these values as they vary by mission.
+    This config contains everything needed for a Monte Carlo run:
+    - What parameters to vary (parameters list)
+    - How to vary them (seed, n_iterations)
+    - How to load data (telemetry_loader, science_loader)
+    - How to process data (gcp_pairing_func, image_matching_func)
+    - Geolocation settings (geo: GeolocationConfig)
+    - Success criteria (performance_threshold_m, performance_spec_percent)
+    - Output configuration (netcdf: NetCDFConfig, output_filename)
 
-    Required Fields (no defaults):
-        seed: Random seed for reproducibility (can be None for non-reproducible runs)
-        n_iterations: Number of Monte Carlo iterations to run
-        parameters: List of ParameterConfig objects defining what to vary
-        geo: GeolocationConfig with SPICE kernels and instrument settings
-        performance_threshold_m: Accuracy threshold for success metrics (meters)
-        performance_spec_percent: Performance requirement (% under threshold)
-        earth_radius_m: Earth radius for geodetic calculations (meters)
+    Create one MonteCarloConfig object and pass it to mc.loop() to run.
 
-    Optional Fields (with defaults):
-        [See individual field documentation below]
+    Structure:
+        - Simple values: seed, n_iterations, thresholds
+        - Nested settings: geo (GeolocationConfig), netcdf (NetCDFConfig)
+        - Lists: parameters (List[ParameterConfig])
+        - Functions: telemetry_loader, science_loader, gcp_pairing_func, image_matching_func
+
+    Required for Full Monte Carlo:
+        seed, n_iterations, parameters, geo, thresholds (performance_threshold_m,
+        performance_spec_percent, earth_radius_m), telemetry_loader, science_loader
+
+    Optional (for partial pipelines or have defaults):
+        gcp_pairing_func (uses stub if None), image_matching_func (uses stub if None),
+        calibration_dir, output_filename, netcdf, etc. [See field docs below]
     """
 
-    # REQUIRED FIELDS (no defaults - must be provided by mission config)
-    seed: typing.Optional[int]  # Random seed for reproducibility, or None
-    n_iterations: int  # Number of Monte Carlo iterations
-    parameters: list[ParameterConfig]  # Parameters to vary
+    # =========================================================================
+    # CORE MONTE CARLO SETTINGS
+    # Must be provided - define what the analysis does
+    # =========================================================================
+    seed: typing.Optional[int]  # Random seed for reproducibility, or None for non-reproducible
+    n_iterations: int  # Number of parameter set iterations (e.g., 5, 100, 1000)
+    parameters: list[ParameterConfig]  # List of parameters to vary (defines sensitivity analysis)
+
+    # =========================================================================
+    # GEOLOCATION & PERFORMANCE REQUIREMENTS
+    # Must be provided - mission-specific settings
+    # =========================================================================
     geo: GeolocationConfig  # SPICE kernels and instrument configuration
-    performance_threshold_m: float  # Accuracy threshold (e.g., 250.0 meters for CLARREO)
-    performance_spec_percent: float  # Performance requirement (e.g., 39.0% for CLARREO)
-    earth_radius_m: float  # Earth radius (e.g., 6378140.0 for WGS84)
+    performance_threshold_m: float  # Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO)
+    performance_spec_percent: float  # Requirement as percentage of obs that meet threshold (e.g., 39.0 for CLARREO)
+    earth_radius_m: float  # Earth radius for geodetic calculations (can use curryer.constants.WGS84_EARTH_RADIUS_M)
 
-    # OPTIONAL FIELDS (with defaults)
+    # =========================================================================
+    # DATA LOADERS (Required for pipeline execution)
+    # Must be set before calling mc.loop() - mission-specific implementations
+    # =========================================================================
+    telemetry_loader: typing.Optional[TelemetryLoader] = None  # Load spacecraft telemetry
+    science_loader: typing.Optional[ScienceLoader] = None  # Load science frame timing
+    gcp_loader: typing.Optional[GCPLoader] = None  # Load GCP reference data (optional)
+
+    # =========================================================================
+    # PROCESSING FUNCTIONS (Optional - will use defaults/stubs if not provided)
+    # Control how pipeline stages are executed
+    # =========================================================================
+    gcp_pairing_func: typing.Optional[GCPPairingFunc] = None  # Spatial pairing of science data to GCP
+    image_matching_func: typing.Optional[ImageMatchingFunc] = None  # Image correlation for errors
+
+    # =========================================================================
+    # OUTPUT CONFIGURATION
+    # Optional - sensible defaults provided
+    # =========================================================================
+    netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata (auto-generated if None)
+    output_filename: typing.Optional[str] = None  # Output filename (auto-generates with timestamp if None)
+
+    # =========================================================================
+    # CALIBRATION CONFIGURATION (Optional - only needed when image_matching_func uses calibration)
+    # Set calibration_dir when using image_matching_func that requires calibration files
+    # =========================================================================
     calibration_dir: typing.Optional[Path] = None  # Directory with LOS vectors, optical PSF, GCP files
-    use_real_image_matching: bool = False  # Enable real image matching (requires calibration files)
-
-    # Pairing configuration
-    use_real_pairing: bool = False  # Enable real GCP pairing (spatial matching)
-    gcp_directory: typing.Optional[Path] = None  # Directory containing GCP reference files
-    pairing_max_distance_m: float = 0.0  # Maximum distance for valid pairing (0.0 = strict overlap)
-    pairing_l1a_key: str = "subimage"  # MATLAB struct key for L1A data
-    pairing_gcp_key: str = "GCP"  # MATLAB struct key for GCP data
-    pairing_gcp_pattern: str = "*_resampled.mat"  # File pattern for GCP discovery
-
-    # NetCDF output configuration (NEW)
-    netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata; auto-generated if None
-
-    # Calibration files (mission-specific names) (NEW)
-    calibration_file_names: typing.Optional[dict[str, str]] = None
+    calibration_file_names: typing.Optional[dict[str, str]] = None  # Mission-specific calibration filenames
     # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
 
-    # Coordinate frame naming (for outputs) (NEW)
-    spacecraft_position_name: str = "sc_position"  # Generic default
-    boresight_name: str = "boresight"  # Generic default
-    transformation_matrix_name: str = "t_inst2ref"  # Generic default
-
-    # Output filename configuration
-    output_filename: typing.Optional[str] = None  # If None, auto-generates with timestamp
-
-    # match: ImageMatchConfig
-    # stats: ErrorStatsConfig
+    # =========================================================================
+    # MISSION-SPECIFIC NAMING (Optional - override generic defaults)
+    # Used for output NetCDF variable names
+    # =========================================================================
+    spacecraft_position_name: str = "sc_position"  # Generic default - override for mission
+    boresight_name: str = "boresight"  # Generic default - override for mission
+    transformation_matrix_name: str = "t_inst2ref"  # Generic default - override for mission
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
         """Get calibration filename for given type with fallback to default."""
@@ -995,8 +1039,13 @@ class MonteCarloConfig:
             return default
         raise ValueError(f"No calibration file configured for type: {file_type}")
 
-    def validate(self):
+    def validate(self, check_loaders: bool = False):
         """Validate that all required configuration values are present.
+
+        Args:
+            check_loaders: If True, validate that loaders are present.
+                          Set to False when validating configs during creation,
+                          before loaders have been added.
 
         Raises:
             ValueError: If any required fields are missing or invalid
@@ -1022,11 +1071,46 @@ class MonteCarloConfig:
         if self.performance_spec_percent is None or not (0 <= self.performance_spec_percent <= 100):
             errors.append("performance_spec_percent must be between 0 and 100 (e.g., 39.0)")
 
+        # Check required data loaders (Config-Centric Design) - only if requested
+        if check_loaders:
+            if self.telemetry_loader is None:
+                errors.append(
+                    "telemetry_loader is required.\n"
+                    "    Add to config: config.telemetry_loader = load_your_telemetry\n"
+                    "    Example: from your_loaders import load_mission_telemetry\n"
+                    "             config.telemetry_loader = load_mission_telemetry"
+                )
+
+            if self.science_loader is None:
+                errors.append(
+                    "science_loader is required.\n"
+                    "    Add to config: config.science_loader = load_your_science\n"
+                    "    Example: from your_loaders import load_mission_science\n"
+                    "             config.science_loader = load_mission_science"
+                )
+
         if errors:
             error_msg = "MonteCarloConfig validation failed:\n  - " + "\n  - ".join(errors)
             error_msg += "\n\nThese values must be provided in your mission configuration."
             error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
             raise ValueError(error_msg)
+
+        # Check optional processing functions (warnings only) - only if checking loaders
+        if check_loaders:
+            if self.gcp_pairing_func is None:
+                logger.warning(
+                    "gcp_pairing_func not provided - GCP pairing will return empty results.\n"
+                    "    For testing: config.gcp_pairing_func = synthetic_gcp_pairing\n"
+                    "    For production: config.gcp_pairing_func = real_spatial_pairing"
+                )
+
+            if self.image_matching_func is None:
+                logger.warning(
+                    "image_matching_func not provided - will use empty stub.\n"
+                    "    For testing: config.image_matching_func = synthetic_image_matching\n"
+                    "    For production: config.image_matching_func = real_image_matching\n"
+                    "                   and set config.calibration_dir if needed"
+                )
 
         logger.debug("MonteCarloConfig validation passed")
 
@@ -1567,80 +1651,111 @@ def loop(
     config: MonteCarloConfig,
     work_dir: Path,
     tlm_sci_gcp_sets: [(str, str, str)],
-    telemetry_loader=None,
-    science_loader=None,
-    gcp_loader=None,
-    gcp_pairing_func=None,
-    image_matching_func=None,
     resume_from_checkpoint: bool = False,
 ):
     """
     Main Monte Carlo loop for parameter sensitivity analysis.
 
+    Config-Centric Design: All configuration including data loaders and processing
+    functions comes from the config object, making it the single source of truth.
+
     Args:
-        config: Monte Carlo configuration
+        config: MonteCarloConfig - The single config containing all settings:
+            - Required: parameters, iterations, thresholds, geo config
+            - Required loaders: telemetry_loader, science_loader
+            - Optional processing: gcp_pairing_func, image_matching_func
+            - Calibration: calibration_dir (if image_matching_func uses calibration)
+            - Output: netcdf, output_filename
         work_dir: Working directory for temporary files
         tlm_sci_gcp_sets: List of (telemetry_key, science_key, gcp_key) tuples
-        telemetry_loader: Optional mission-specific telemetry loader function
-        science_loader: Optional mission-specific science loader function
-        gcp_loader: Optional mission-specific GCP loader function
-        gcp_pairing_func: Optional GCP pairing function (for testing, defaults to placeholder)
-        image_matching_func: Optional image matching function (for testing, defaults to real)
         resume_from_checkpoint: If True, resume from checkpoint if it exists
 
     Returns:
         Tuple of (results, netcdf_data)
 
-    Example:
+    Example (Test Mode):
         from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        from test_monte_carlo import synthetic_gcp_pairing, synthetic_image_matching
 
-        results, netcdf_data = loop(
-            config, work_dir, tlm_sci_gcp_sets,
+        config = MonteCarloConfig(
+            seed=42,
+            n_iterations=5,
+            parameters=[...],
+            geo=geo_config,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378140.0,
+            # Required loaders
             telemetry_loader=load_clarreo_telemetry,
             science_loader=load_clarreo_science,
-            resume_from_checkpoint=True  # Resume if interrupted
+            # Test functions for pairing and matching
+            gcp_pairing_func=synthetic_gcp_pairing,
+            image_matching_func=synthetic_image_matching,
         )
 
-    Testing Example:
-        from test_placeholder_functions import test_gcp_pairing, test_placeholder_image_matching
+        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
 
-        results, netcdf_data = loop(
-            config, work_dir, tlm_sci_gcp_sets,
+    Example (Production Mode):
+        config = MonteCarloConfig(
+            seed=42,
+            n_iterations=100,
+            parameters=[...],
+            geo=geo_config,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378140.0,
+            # Required loaders
             telemetry_loader=load_clarreo_telemetry,
             science_loader=load_clarreo_science,
-            gcp_pairing_func=test_gcp_pairing,              # Inject test function
-            image_matching_func=test_placeholder_image_matching,  # Inject test function
+            # Production processing - pass functions directly!
+            gcp_pairing_func=real_spatial_pairing,
+            image_matching_func=image_matching,  # Pass the function
+            calibration_dir=Path("calibration/"),
         )
+
+        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
     """
     # Initialize the entire set of parameters.
     params_set = load_param_sets(config)
 
-    # Set defaults for injectable functions (if not provided)
+    # Get loaders and processing functions from config (Single Source of Truth)
+    telemetry_loader = config.telemetry_loader
+    science_loader = config.science_loader
+    # gcp_loader = config.gcp_loader
+    gcp_pairing_func = config.gcp_pairing_func
+    image_matching_func = config.image_matching_func
+
+    # Validate required loaders are provided
+    if telemetry_loader is None:
+        raise ValueError(
+            "config.telemetry_loader is required. Please specify a telemetry loading function in your MonteCarloConfig."
+        )
+    if science_loader is None:
+        raise ValueError(
+            "config.science_loader is required. Please specify a science loading function in your MonteCarloConfig."
+        )
+
+    # Set defaults for optional processing functions
     if gcp_pairing_func is None:
-        # No default - must be provided by caller or tests
-        logger.warning("No GCP pairing function provided - pairing will fail")
+        logger.warning("No GCP pairing function provided in config - pairing will return empty results")
 
         def gcp_pairing_func(x):
             return []  # Empty stub
 
     if image_matching_func is None:
-        # Default to real image matching if available
-        if config.use_real_image_matching and config.calibration_dir is not None:
-            image_matching_func = image_matching
-        else:
-            logger.warning("No image matching function provided and real matching not configured")
+        # No image matching function provided - use empty stub
+        logger.warning("No image matching function provided - using empty stub (no validation will occur)")
 
-            # Return empty dataset stub
-            def _empty_image_matching(geo_data, gcp_ref, params, cfg):
-                return xr.Dataset(
-                    {
-                        "lat_error_deg": (["measurement"], []),
-                        "lon_error_deg": (["measurement"], []),
-                    },
-                    coords={"measurement": []},
-                )
+        def _empty_image_matching(geo_data, gcp_ref, tlm, calib, params, cfg, los=None, psf=None):
+            return xr.Dataset(
+                {
+                    "lat_error_deg": (["measurement"], []),
+                    "lon_error_deg": (["measurement"], []),
+                },
+                coords={"measurement": []},
+            )
 
-            image_matching_func = _empty_image_matching
+        image_matching_func = _empty_image_matching
 
     # Initialize return data structure...
     results = []
@@ -1691,10 +1806,11 @@ def loop(
         _store_parameter_values(netcdf_data, param_idx, param_values)
 
         # Load calibration data ONCE per parameter set (before GCP pair loop)
+        # Only if calibration_dir is provided (for image matching that uses calibration)
         los_vectors_cached = None
         optical_psfs_cached = None
 
-        if config.use_real_image_matching and config.calibration_dir:
+        if config.calibration_dir:
             logger.info("Loading calibration data once for all GCP pairs...")
 
             # Use configurable calibration file names
@@ -1719,9 +1835,11 @@ def loop(
 
             # Load telemetry (L1) data using mission-specific loader
             tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
+            validate_telemetry_output(tlm_dataset, config)
 
             # Load science (L1A) data using mission-specific loader
             sci_dataset = load_science(sci_key, config, loader_func=science_loader)
+            validate_science_output(sci_dataset, config)
             ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps.
 
             # === GCP PAIRING MODULE ===
@@ -1729,6 +1847,7 @@ def loop(
 
             # Use synthetic GCP pairing function (placeholder or real)
             gcp_pairs = gcp_pairing_func([sci_key])
+            validate_gcp_pairing_output(gcp_pairs)
 
             logger.info(f"    Found {len(gcp_pairs)} GCP pairs for processing")
 
@@ -1810,6 +1929,7 @@ def loop(
                     los_vectors_cached=los_vectors_cached,
                     optical_psfs_cached=optical_psfs_cached,
                 )
+                validate_image_matching_output(image_matching_output)
                 logger.info(f"    Image matching complete")
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
@@ -1925,11 +2045,10 @@ def loop(
         logger.warning("")
         logger.warning("This may be intentional (e.g., upstream testing) or indicate a problem:")
         logger.warning("  GCP Pairing:")
-        logger.warning("    - Check if config.use_real_pairing is set")
-        logger.warning("    - Check if config.gcp_directory points to valid directory")
+        logger.warning("    - Check if config.gcp_pairing_func is set to real pairing function")
         logger.warning("  Image Matching:")
-        logger.warning("    - Check if config.use_real_image_matching is set")
-        logger.warning("    - Check if config.calibration_dir points to valid directory")
+        logger.warning("    - Check if config.image_matching_func is set to real matching function")
+        logger.warning("    - Check if config.calibration_dir is valid (if matching requires calibration)")
         logger.warning("    - Check if calibration files exist (b_HS.mat, optical_PSF_*.mat)")
         logger.warning("  - Review error messages above for any failures")
         logger.warning("=" * 80 + "\n")

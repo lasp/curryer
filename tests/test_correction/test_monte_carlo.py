@@ -47,7 +47,6 @@ import sys
 import tempfile
 import time
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -271,22 +270,6 @@ def _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs)
 # code separate from mission-agnostic core functionality.
 
 
-@dataclass
-class MonteCarloTestConfig:
-    """
-    Configuration for Monte Carlo test mode (used by test scripts).
-
-    Test mode allows running the Monte Carlo pipeline with validated test data
-    to verify integration without requiring production data.
-    """
-
-    test_data_dir: Path  # tests/data/clarreo/image_match/
-    test_cases: Optional[list[str]] = None  # Specific cases: ['1', '2'] or None for all
-    randomize_errors: bool = True  # Add variations to simulate parameter effects
-    error_variation_percent: float = 3.0  # Percentage variation to apply (e.g., 3.0 = ±3%)
-    cache_image_match_results: bool = True  # Cache results, apply variations instead of re-running
-
-
 def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[list[str]] = None) -> list[dict]:
     """
     Discover available image matching test cases.
@@ -432,7 +415,7 @@ def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[li
 
 
 def apply_error_variation_for_testing(
-    base_result: xr.Dataset, param_idx: int, test_mode_config: MonteCarloTestConfig
+    base_result: xr.Dataset, param_idx: int, error_variation_percent: float = 3.0
 ) -> xr.Dataset:
     """
     Apply random variation to image matching results to simulate parameter effects.
@@ -443,7 +426,7 @@ def apply_error_variation_for_testing(
     Args:
         base_result: Original image matching result
         param_idx: Parameter set index (used as random seed)
-        test_mode_config: Test mode configuration with variation settings
+        error_variation_percent: Percentage variation to apply (e.g., 3.0 = ±3%)
 
     Returns:
         New Dataset with varied error values
@@ -455,7 +438,7 @@ def apply_error_variation_for_testing(
     np.random.seed(param_idx)
 
     # Generate variation factors (centered at 1.0, with specified percentage variation)
-    variation_fraction = test_mode_config.error_variation_percent / 100.0
+    variation_fraction = error_variation_percent / 100.0
     lat_factor = 1.0 + np.random.normal(0, variation_fraction)
     lon_factor = 1.0 + np.random.normal(0, variation_fraction)
     ccv_factor = 1.0 + np.random.normal(0, variation_fraction / 10.0)  # Smaller variation for correlation
@@ -537,7 +520,9 @@ def apply_geolocation_error_to_subimage(
 def run_image_matching_with_applied_errors(
     test_case: dict,
     param_idx: int,
-    test_mode_config: MonteCarloTestConfig,
+    randomize_errors: bool = True,
+    error_variation_percent: float = 3.0,
+    cache_results: bool = True,
     cached_result: Optional[xr.Dataset] = None,
 ) -> xr.Dataset:
     """
@@ -545,12 +530,20 @@ def run_image_matching_with_applied_errors(
 
     This loads test data, applies known geolocation errors, then runs
     image matching to verify it can detect those errors.
+
+    Args:
+        test_case: Test case dictionary with file paths and expected errors
+        param_idx: Parameter set index (for variation seed)
+        randomize_errors: Whether to apply random variations
+        error_variation_percent: Percentage variation (default 3.0%)
+        cache_results: Whether to use cached results with variation
+        cached_result: Previously cached result to vary
     """
     # Use cached result with variation if available
-    if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
-        if test_mode_config.randomize_errors:
-            logger.info(f"  Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
-            return apply_error_variation_for_testing(cached_result, param_idx, test_mode_config)
+    if cached_result is not None and cache_results and param_idx > 0:
+        if randomize_errors:
+            logger.info(f"  Applying ±{error_variation_percent}% variation to cached result")
+            return apply_error_variation_for_testing(cached_result, param_idx, error_variation_percent)
         else:
             return cached_result.copy()
 
@@ -825,11 +818,20 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
     # Set output filename for test (consistent name for version control)
     config.output_filename = "upstream_results.nc"
 
+    # Add loaders and processing functions to config (Config-Centric Design)
+    config.telemetry_loader = load_clarreo_telemetry
+    config.science_loader = load_clarreo_science
+    config.gcp_loader = load_clarreo_gcp
+    config.gcp_pairing_func = synthetic_gcp_pairing  # Test helper from this file
+    config.image_matching_func = synthetic_image_matching  # Test helper from this file
+
     logger.info(f"Configuration loaded:")
     logger.info(f"  Mission: CLARREO Pathfinder")
     logger.info(f"  Instrument: {config.geo.instrument_name}")
     logger.info(f"  Parameters: {len(config.parameters)}")
     logger.info(f"  Iterations: {n_iterations}")
+    logger.info(f"  Data loaders: telemetry, science, gcp")
+    logger.info(f"  Processing: synthetic pairing and image matching")
 
     # Prepare data sets (synthetic GCP pairs since we don't have real data)
     # For upstream testing, we just need telemetry and science keys
@@ -839,22 +841,13 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
 
     logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
 
-    # Execute the Monte Carlo loop with CLARREO data loaders
+    # Execute the Monte Carlo loop - all config comes from config object!
     # This will test parameter generation, kernel creation, and geolocation
     logger.info("=" * 80)
     logger.info("EXECUTING MONTE CARLO UPSTREAM WORKFLOW")
     logger.info("=" * 80)
 
-    results, netcdf_data = mc.loop(
-        config,
-        work_dir,
-        tlm_sci_gcp_sets,
-        telemetry_loader=load_clarreo_telemetry,
-        science_loader=load_clarreo_science,
-        gcp_loader=load_clarreo_gcp,
-        gcp_pairing_func=synthetic_gcp_pairing,  # Test helper from this file
-        image_matching_func=synthetic_image_matching,  # Test helper from this file
-    )
+    results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets)
 
     logger.info("=" * 80)
     logger.info("UPSTREAM PIPELINE COMPLETE")
@@ -888,15 +881,27 @@ def run_downstream_pipeline(
     """
     Test DOWNSTREAM segment of Monte Carlo pipeline.
 
-    This tests:
-    - GCP spatial pairing
-    - Image matching with pre-geolocated data
-    - Error statistics computation
+    IMPORTANT: This test uses a CUSTOM LOOP (not mc.loop()) because it works with
+    pre-geolocated test data that doesn't have the telemetry/parameters needed for
+    the normal upstream pipeline.
 
-    This does NOT test:
-    - Kernel creation (uses pre-geolocated test data)
-    - Geolocation (test data already geolocated)
-    - Parameter modification (uses fake variations)
+    Pipeline Comparison:
+        Normal mc.loop():  Parameters → Kernels → Geolocation → Matching → Stats
+        This test:         Pre-geolocated Test Data → Pairing → Matching → Stats
+
+    Parameter effects are simulated by varying the geolocation errors directly
+    (bumping lat/lon values), rather than varying parameters and re-running SPICE.
+    This is the correct approach for testing with pre-geolocated imagery!
+
+    Tests (Real):
+        - GCP spatial pairing algorithms
+        - Image matching with real correlation
+        - Error statistics computation
+
+    Does NOT Test (No Data Available):
+        - Kernel creation (no telemetry)
+        - SPICE geolocation (test data is pre-geolocated)
+        - True parameter sensitivity (simulated via error variation)
 
     Args:
         n_iterations: Number of Monte Carlo iterations
@@ -943,14 +948,10 @@ def run_downstream_pipeline(
     logger.info(f"Iterations: {n_iterations}")
     logger.info(f"Test cases: {test_cases or 'all'}")
 
-    # Create test mode configuration
-    test_mode_config = MonteCarloTestConfig(
-        test_data_dir=test_data_dir,
-        test_cases=test_cases,
-        randomize_errors=True,
-        error_variation_percent=3.0,
-        cache_image_match_results=True,
-    )
+    # Test configuration (simple parameters - no config object needed)
+    randomize_errors = True
+    error_variation_percent = 3.0
+    cache_results = True
 
     # Discover test cases
     discovered_cases = discover_test_image_match_cases(test_data_dir, test_cases)
@@ -1018,37 +1019,50 @@ def run_downstream_pipeline(
     logger.info("STEP 2: CONFIGURATION")
     logger.info("=" * 80)
 
-    # Create base CLARREO config
+    # Create base CLARREO config to get standard settings
     base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
-    # Override for test mode (minimal parameters, zero sigma)
+    # Create minimal test config (MonteCarloConfig = THE one config)
+    # For downstream testing, we use minimal parameters (sigma=0) because
+    # variations come from test_mode_config randomization, not parameter tweaking
     config = mc.MonteCarloConfig(
+        # Core settings
         seed=42,
         n_iterations=n_iterations,
+        # Minimal parameter (no real variation - sigma=0)
         parameters=[
             mc.ParameterConfig(
                 ptype=mc.ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 data={
                     "current_value": [0.0, 0.0, 0.0],
-                    "sigma": 0.0,  # No real parameter variation
+                    "sigma": 0.0,  # No parameter variation (test variations applied differently)
                     "units": "arcseconds",
                     "transformation_type": "dcm_rotation",
                     "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
                 },
             )
         ],
+        # Copy required fields from base_config
         geo=base_config.geo,
-        # features from base_config
         performance_threshold_m=base_config.performance_threshold_m,
         performance_spec_percent=base_config.performance_spec_percent,
         earth_radius_m=base_config.earth_radius_m,
+        # Copy optional fields from base_config
         netcdf=base_config.netcdf,
         calibration_file_names=base_config.calibration_file_names,
         spacecraft_position_name=base_config.spacecraft_position_name,
         boresight_name=base_config.boresight_name,
         transformation_matrix_name=base_config.transformation_matrix_name,
     )
+
+    # Add loaders to config (Config-Centric Design)
+    config.telemetry_loader = load_clarreo_telemetry
+    config.science_loader = load_clarreo_science
+    config.gcp_loader = load_clarreo_gcp
+
+    # Validate complete config
+    config.validate(check_loaders=True)
 
     logger.info(f"Configuration created:")
     logger.info(f"  Mission: CLARREO (from clarreo_config)")
@@ -1092,7 +1106,12 @@ def run_downstream_pipeline(
 
             # Run image matching
             image_matching_output = run_image_matching_with_applied_errors(
-                test_case, param_idx, test_mode_config, cached_result
+                test_case,
+                param_idx,
+                randomize_errors=randomize_errors,
+                error_variation_percent=error_variation_percent,
+                cache_results=cache_results,
+                cached_result=cached_result,
             )
 
             # Cache first result
@@ -1196,9 +1215,18 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
+        # Add required loaders (Config-Centric Design)
+        config.telemetry_loader = load_clarreo_telemetry
+        config.science_loader = load_clarreo_science
+
+        # Validate config is complete
+        config.validate(check_loaders=True)
+
         self.assertEqual(config.geo.instrument_name, "CPRS_HYSICS")
         self.assertGreater(len(config.parameters), 0)
         self.assertEqual(config.seed, 42)
+        self.assertIsNotNone(config.telemetry_loader)
+        self.assertIsNotNone(config.science_loader)
 
         logger.info(f"✓ Configuration valid: {len(config.parameters)} parameters")
 
@@ -1227,14 +1255,10 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         self.assertGreater(len(test_cases), 0)
 
         test_case = test_cases[0]
-        test_config = MonteCarloTestConfig(
-            test_data_dir=self.test_data_dir,
-            test_cases=["1"],
-            randomize_errors=False,
-            cache_image_match_results=True,
-        )
 
-        result = run_image_matching_with_applied_errors(test_case, 0, test_config)
+        result = run_image_matching_with_applied_errors(
+            test_case, param_idx=0, randomize_errors=False, cache_results=True
+        )
 
         self.assertIsInstance(result, xr.Dataset)
         self.assertIn("lat_error_km", result.attrs)

@@ -12,12 +12,167 @@ import datetime as _dt
 import os
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 # TODO: Remove if boto3 is made a required dependency!
 try:  # pragma: no cover - exercised indirectly when boto3 is available
     import boto3
 except Exception:  # pragma: no cover - protects environments without boto3
     boto3 = None  # type: ignore
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+
+# ============================================================================
+# Data Loader Interface Protocols
+# ============================================================================
+
+
+class TelemetryLoader(Protocol):
+    """
+    Protocol for mission-specific telemetry loading functions.
+
+    Telemetry loaders are responsible for reading spacecraft state data
+    (position, attitude, timing) from mission-specific formats and returning
+    it in a standard DataFrame format.
+
+    Standard Signature:
+        def load_telemetry(tlm_key: str, config) -> pd.DataFrame
+
+    Requirements:
+        - Accept tlm_key (path or identifier) and config object
+        - Return DataFrame with mission-specific telemetry fields
+        - Include time fields needed for SPICE kernel creation
+        - Include attitude data (quaternions or DCMs)
+        - Include position data if creating SPK kernels
+
+    Example:
+        def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
+            # Load from multiple CSV files
+            # Convert formats (DCM to quaternion, etc.)
+            # Merge and return
+            return telemetry_df
+    """
+
+    def __call__(self, tlm_key: str, config) -> pd.DataFrame:
+        """Load telemetry data for a given key."""
+        ...
+
+
+class ScienceLoader(Protocol):
+    """
+    Protocol for mission-specific science frame loading functions.
+
+    Science loaders provide frame timing and metadata for the instrument
+    observations that will be geolocated.
+
+    Standard Signature:
+        def load_science(sci_key: str, config) -> pd.DataFrame
+
+    Requirements:
+        - Accept sci_key (path or identifier) and config object
+        - Return DataFrame with frame timing data
+        - Must include time field specified in config.geo.time_field
+        - Time values should match expected format (e.g., GPS microseconds)
+
+    Example:
+        def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
+            # Load frame timestamps
+            # Convert to required units (e.g., GPS µs)
+            return science_df
+    """
+
+    def __call__(self, sci_key: str, config) -> pd.DataFrame:
+        """Load science frame timing/metadata."""
+        ...
+
+
+class GCPLoader(Protocol):
+    """
+    Protocol for mission-specific GCP (Ground Control Point) loading functions.
+
+    GCP loaders retrieve reference imagery or coordinates for ground truth
+    comparison.
+
+    Standard Signature:
+        def load_gcp(gcp_key: str, config) -> Any
+
+    Note:
+        This interface is currently a placeholder. The return type and structure
+        will be standardized when GCP loading is fully integrated into the pipeline.
+
+    Example:
+        def load_clarreo_gcp(gcp_key: str, config):
+            # Load Landsat reference image
+            # Or load GCP coordinate database
+            return gcp_data
+    """
+
+    def __call__(self, gcp_key: str, config):
+        """Load GCP reference data."""
+        ...
+
+
+def validate_telemetry_output(df: pd.DataFrame, config) -> None:
+    """
+    Validate that telemetry loader output has expected structure.
+
+    Args:
+        df: DataFrame returned by telemetry loader
+        config: MonteCarloConfig object
+
+    Raises:
+        TypeError: If not a DataFrame
+        ValueError: If DataFrame is empty
+
+    Note:
+        Specific column requirements depend on mission and kernel configs.
+        This performs basic structure checks only.
+    """
+    import pandas as pd
+
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"Telemetry loader must return pd.DataFrame, got {type(df)}")
+
+    if df.empty:
+        raise ValueError("Telemetry loader returned empty DataFrame")
+
+
+def validate_science_output(df: pd.DataFrame, config) -> None:
+    """
+    Validate that science loader output has expected structure.
+
+    Args:
+        df: DataFrame returned by science loader
+        config: MonteCarloConfig object
+
+    Raises:
+        TypeError: If not a DataFrame
+        ValueError: If DataFrame is empty or missing required time field
+
+    Example:
+        >>> sci_df = load_science("sci_001", config)
+        >>> validate_science_output(sci_df, config)
+    """
+    import pandas as pd
+
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"Science loader must return pd.DataFrame, got {type(df)}")
+
+    if df.empty:
+        raise ValueError("Science loader returned empty DataFrame")
+
+    time_field = config.geo.time_field
+    if time_field not in df.columns:
+        raise ValueError(
+            f"Science loader must include time field '{time_field}'. Available columns: {list(df.columns)}"
+        )
+
+
+# ============================================================================
+# S3 Data Access Utilities
+# ============================================================================
 
 
 class S3Configuration:

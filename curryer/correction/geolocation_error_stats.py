@@ -99,9 +99,19 @@ class GeolocationConfig:
 class ErrorStatsProcessor:
     """Production-ready processor for geolocation error statistics."""
 
-    def __init__(self, config: Optional[GeolocationConfig] = None):
-        """Initialize processor with configuration."""
-        self.config = config or GeolocationConfig()
+    def __init__(self, config: GeolocationConfig):
+        """
+        Initialize processor with configuration.
+
+        Args:
+            config: GeolocationConfig (required) - use GeolocationConfig.from_monte_carlo_config()
+                   to create from MonteCarloConfig
+        """
+        if config is None:
+            raise ValueError(
+                "GeolocationConfig is required. Use GeolocationConfig.from_monte_carlo_config(mc_config) to create."
+            )
+        self.config = config
 
     def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:
         """
