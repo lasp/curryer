@@ -167,5 +167,91 @@ class PairingTestCase(unittest.TestCase):
         assert result.matches == []
 
 
+class TestPairingValidation(unittest.TestCase):
+    """Test validation function for pairing output."""
+
+    def test_validate_pairing_output_valid(self):
+        """Test that valid pairing output passes validation."""
+        from curryer.correction.pairing import validate_pairing_output
+
+        valid_pairs = [
+            ("science_001", "landsat_gcp_001.tif"),
+            ("science_002", "landsat_gcp_002.tif"),
+        ]
+
+        # Should not raise
+        validate_pairing_output(valid_pairs)
+
+    def test_validate_pairing_output_valid_with_path(self):
+        """Test that pairing output with Path objects passes validation."""
+        from curryer.correction.pairing import validate_pairing_output
+
+        valid_pairs = [
+            ("science_001", Path("/data/gcp_001.tif")),
+            ("science_002", "/data/gcp_002.tif"),
+        ]
+
+        # Should not raise
+        validate_pairing_output(valid_pairs)
+
+    def test_validate_pairing_output_empty_list(self):
+        """Test that empty list is valid (no pairs found)."""
+        from curryer.correction.pairing import validate_pairing_output
+
+        empty_pairs = []
+
+        # Should not raise
+        validate_pairing_output(empty_pairs)
+
+    def test_validate_pairing_output_not_list(self):
+        """Test that non-list input raises TypeError."""
+        import pytest
+
+        from curryer.correction.pairing import validate_pairing_output
+
+        with pytest.raises(TypeError, match="must return list"):
+            validate_pairing_output(("science", "gcp"))  # Tuple instead of list
+
+    def test_validate_pairing_output_not_tuple(self):
+        """Test that list elements that aren't tuples raise ValueError."""
+        import pytest
+
+        from curryer.correction.pairing import validate_pairing_output
+
+        invalid_pairs = [
+            ("science_001", "gcp_001.tif"),
+            ["science_002", "gcp_002.tif"],  # List instead of tuple
+        ]
+
+        with pytest.raises(ValueError, match=r"output\[1\] must be \(str, str\) tuple"):
+            validate_pairing_output(invalid_pairs)
+
+    def test_validate_pairing_output_wrong_tuple_length(self):
+        """Test that tuples with wrong length raise ValueError."""
+        import pytest
+
+        from curryer.correction.pairing import validate_pairing_output
+
+        invalid_pairs = [
+            ("science_001", "gcp_001.tif", "extra"),  # 3 elements
+        ]
+
+        with pytest.raises(ValueError, match=r"output\[0\] must be \(str, str\) tuple"):
+            validate_pairing_output(invalid_pairs)
+
+    def test_validate_pairing_output_wrong_types(self):
+        """Test that tuple elements with wrong types raise ValueError."""
+        import pytest
+
+        from curryer.correction.pairing import validate_pairing_output
+
+        invalid_pairs = [
+            (123, "gcp_001.tif"),  # First element not string
+        ]
+
+        with pytest.raises(ValueError, match=r"output\[0\].*expected \(str, str\)"):
+            validate_pairing_output(invalid_pairs)
+
+
 if __name__ == "__main__":
     unittest.main()

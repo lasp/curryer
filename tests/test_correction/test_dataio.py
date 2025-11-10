@@ -33,11 +33,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
 from curryer import utils
 from curryer.correction.dataio import (
     S3Configuration,
     download_netcdf_objects,
     find_netcdf_objects,
+    validate_science_output,
+    validate_telemetry_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,6 +159,110 @@ class ClarreoDataIOTestCase(unittest.TestCase):
         )
         self.assertEqual(34, len(keys))
         self.assertIn("L1a/nadir/20220603/nadir-20220603T235952-step22-geolocation_creation-0.0.0.nc", keys)
+
+
+class MockConfig:
+    """Mock config for validation tests."""
+
+    class MockGeo:
+        time_field = "corrected_timestamp"
+
+    def __init__(self):
+        self.geo = self.MockGeo()
+
+
+class TestDataIOValidation(unittest.TestCase):
+    """Test validation functions for data loaders."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.config = MockConfig()
+
+    def test_validate_telemetry_output_valid(self):
+        """Test that valid telemetry passes validation."""
+        valid_df = pd.DataFrame(
+            {
+                "time": [1.0, 2.0, 3.0],
+                "position_x": [100.0, 200.0, 300.0],
+            }
+        )
+
+        # Should not raise
+        validate_telemetry_output(valid_df, self.config)
+
+    def test_validate_telemetry_output_not_dataframe(self):
+        """Test that non-DataFrame input raises TypeError."""
+        with pytest.raises(TypeError, match="must return pd.DataFrame"):
+            validate_telemetry_output({"not": "a dataframe"}, self.config)
+
+    def test_validate_telemetry_output_empty(self):
+        """Test that empty DataFrame raises ValueError."""
+        empty_df = pd.DataFrame()
+
+        with pytest.raises(ValueError, match="empty DataFrame"):
+            validate_telemetry_output(empty_df, self.config)
+
+    def test_validate_science_output_valid(self):
+        """Test that valid science output passes validation."""
+        valid_df = pd.DataFrame(
+            {
+                "corrected_timestamp": [1e6, 2e6, 3e6],
+                "frame_id": [1, 2, 3],
+            }
+        )
+
+        # Should not raise
+        validate_science_output(valid_df, self.config)
+
+    def test_validate_science_output_not_dataframe(self):
+        """Test that non-DataFrame input raises TypeError."""
+        with pytest.raises(TypeError, match="must return pd.DataFrame"):
+            validate_science_output([1, 2, 3], self.config)
+
+    def test_validate_science_output_empty(self):
+        """Test that empty DataFrame raises ValueError."""
+        empty_df = pd.DataFrame()
+
+        with pytest.raises(ValueError, match="empty DataFrame"):
+            validate_science_output(empty_df, self.config)
+
+    def test_validate_science_output_missing_time_field(self):
+        """Test that DataFrame missing time field raises ValueError."""
+        df_no_time = pd.DataFrame(
+            {
+                "frame_id": [1, 2, 3],
+                "other_field": [100, 200, 300],
+            }
+        )
+
+        with pytest.raises(ValueError, match="must include time field 'corrected_timestamp'"):
+            validate_science_output(df_no_time, self.config)
+
+    def test_validate_science_output_custom_time_field(self):
+        """Test that validation respects custom time field name."""
+        # Change config to use different time field
+        self.config.geo.time_field = "custom_time"
+
+        df_custom_time = pd.DataFrame(
+            {
+                "custom_time": [1.0, 2.0, 3.0],
+                "data": [100, 200, 300],
+            }
+        )
+
+        # Should pass with custom time field
+        validate_science_output(df_custom_time, self.config)
+
+        # Should fail without custom time field
+        df_wrong_time = pd.DataFrame(
+            {
+                "corrected_timestamp": [1.0, 2.0, 3.0],
+                "data": [100, 200, 300],
+            }
+        )
+
+        with pytest.raises(ValueError, match="must include time field 'custom_time'"):
+            validate_science_output(df_wrong_time, self.config)
 
 
 if __name__ == "__main__":
