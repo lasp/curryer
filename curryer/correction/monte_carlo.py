@@ -961,75 +961,95 @@ class MonteCarloConfig:
 
     Create one MonteCarloConfig object and pass it to mc.loop() to run.
 
-    Structure:
-        - Simple values: seed, n_iterations, thresholds
-        - Nested settings: geo (GeolocationConfig), netcdf (NetCDFConfig)
-        - Lists: parameters (List[ParameterConfig])
-        - Functions: telemetry_loader, science_loader, gcp_pairing_func, image_matching_func
+    Parameters
+    ----------
+    CORE MONTE CARLO SETTINGS (Required - define what the analysis does):
+        seed : Optional[int]
+            Random seed for reproducibility, or None for non-reproducible runs.
+        n_iterations : int
+            Number of parameter set iterations (e.g., 5, 100, 1000).
+        parameters : list[ParameterConfig]
+            List of parameters to vary (defines sensitivity analysis).
 
-    Required for Full Monte Carlo:
-        seed, n_iterations, parameters, geo, thresholds (performance_threshold_m,
-        performance_spec_percent, earth_radius_m), telemetry_loader, science_loader
+    GEOLOCATION & PERFORMANCE REQUIREMENTS (Required - mission-specific settings):
+        geo : GeolocationConfig
+            SPICE kernels and instrument configuration.
+        performance_threshold_m : float
+            Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO).
+        performance_spec_percent : float
+            Requirement as percentage of observations that meet threshold (e.g., 39.0 for CLARREO).
+        earth_radius_m : float
+            Earth radius for geodetic calculations (can use curryer.constants.WGS84_EARTH_RADIUS_M).
 
-    Optional (for partial pipelines or have defaults):
-        gcp_pairing_func (uses stub if None), image_matching_func (uses stub if None),
-        calibration_dir, output_filename, netcdf, etc. [See field docs below]
+    DATA LOADERS (Required for pipeline execution - mission-specific implementations):
+        telemetry_loader : Optional[TelemetryLoader], default=None
+            Load spacecraft telemetry. Must be set before calling mc.loop().
+        science_loader : Optional[ScienceLoader], default=None
+            Load science frame timing. Must be set before calling mc.loop().
+        gcp_loader : Optional[GCPLoader], default=None
+            Load GCP reference data (optional).
+
+    PROCESSING FUNCTIONS (Optional - will use defaults/stubs if not provided):
+        gcp_pairing_func : Optional[GCPPairingFunc], default=None
+            Spatial pairing of science data to GCP.
+        image_matching_func : Optional[ImageMatchingFunc], default=None
+            Image correlation for errors.
+
+    OUTPUT CONFIGURATION (Optional - sensible defaults provided):
+        netcdf : Optional[NetCDFConfig], default=None
+            NetCDF metadata (auto-generated if None).
+        output_filename : Optional[str], default=None
+            Output filename (auto-generates with timestamp if None).
+
+    CALIBRATION CONFIGURATION (Optional - only needed when image_matching_func uses calibration):
+        calibration_dir : Optional[Path], default=None
+            Directory with LOS vectors, optical PSF, GCP files.
+            Set when using image_matching_func that requires calibration files.
+        calibration_file_names : Optional[dict[str, str]], default=None
+            Mission-specific calibration filenames.
+            Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
+
+    MISSION-SPECIFIC NAMING (Optional - override generic defaults):
+        spacecraft_position_name : str, default="sc_position"
+            Variable name for spacecraft position in output NetCDF.
+        boresight_name : str, default="boresight"
+            Variable name for boresight in output NetCDF.
+        transformation_matrix_name : str, default="t_inst2ref"
+            Variable name for transformation matrix in output NetCDF.
     """
 
-    # =========================================================================
     # CORE MONTE CARLO SETTINGS
-    # Must be provided - define what the analysis does
-    # =========================================================================
-    seed: typing.Optional[int]  # Random seed for reproducibility, or None for non-reproducible
-    n_iterations: int  # Number of parameter set iterations (e.g., 5, 100, 1000)
-    parameters: list[ParameterConfig]  # List of parameters to vary (defines sensitivity analysis)
+    seed: typing.Optional[int]
+    n_iterations: int
+    parameters: list[ParameterConfig]
 
-    # =========================================================================
     # GEOLOCATION & PERFORMANCE REQUIREMENTS
-    # Must be provided - mission-specific settings
-    # =========================================================================
-    geo: GeolocationConfig  # SPICE kernels and instrument configuration
-    performance_threshold_m: float  # Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO)
-    performance_spec_percent: float  # Requirement as percentage of obs that meet threshold (e.g., 39.0 for CLARREO)
-    earth_radius_m: float  # Earth radius for geodetic calculations (can use curryer.constants.WGS84_EARTH_RADIUS_M)
+    geo: GeolocationConfig
+    performance_threshold_m: float
+    performance_spec_percent: float
+    earth_radius_m: float
 
-    # =========================================================================
-    # DATA LOADERS (Required for pipeline execution)
-    # Must be set before calling mc.loop() - mission-specific implementations
-    # =========================================================================
-    telemetry_loader: typing.Optional[TelemetryLoader] = None  # Load spacecraft telemetry
-    science_loader: typing.Optional[ScienceLoader] = None  # Load science frame timing
-    gcp_loader: typing.Optional[GCPLoader] = None  # Load GCP reference data (optional)
+    # DATA LOADERS
+    telemetry_loader: typing.Optional[TelemetryLoader] = None
+    science_loader: typing.Optional[ScienceLoader] = None
+    gcp_loader: typing.Optional[GCPLoader] = None
 
-    # =========================================================================
-    # PROCESSING FUNCTIONS (Optional - will use defaults/stubs if not provided)
-    # Control how pipeline stages are executed
-    # =========================================================================
-    gcp_pairing_func: typing.Optional[GCPPairingFunc] = None  # Spatial pairing of science data to GCP
-    image_matching_func: typing.Optional[ImageMatchingFunc] = None  # Image correlation for errors
+    # PROCESSING FUNCTIONS
+    gcp_pairing_func: typing.Optional[GCPPairingFunc] = None
+    image_matching_func: typing.Optional[ImageMatchingFunc] = None
 
-    # =========================================================================
     # OUTPUT CONFIGURATION
-    # Optional - sensible defaults provided
-    # =========================================================================
-    netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata (auto-generated if None)
-    output_filename: typing.Optional[str] = None  # Output filename (auto-generates with timestamp if None)
+    netcdf: typing.Optional[NetCDFConfig] = None
+    output_filename: typing.Optional[str] = None
 
-    # =========================================================================
-    # CALIBRATION CONFIGURATION (Optional - only needed when image_matching_func uses calibration)
-    # Set calibration_dir when using image_matching_func that requires calibration files
-    # =========================================================================
-    calibration_dir: typing.Optional[Path] = None  # Directory with LOS vectors, optical PSF, GCP files
-    calibration_file_names: typing.Optional[dict[str, str]] = None  # Mission-specific calibration filenames
-    # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
+    # CALIBRATION CONFIGURATION
+    calibration_dir: typing.Optional[Path] = None
+    calibration_file_names: typing.Optional[dict[str, str]] = None
 
-    # =========================================================================
-    # MISSION-SPECIFIC NAMING (Optional - override generic defaults)
-    # Used for output NetCDF variable names
-    # =========================================================================
-    spacecraft_position_name: str = "sc_position"  # Generic default - override for mission
-    boresight_name: str = "boresight"  # Generic default - override for mission
-    transformation_matrix_name: str = "t_inst2ref"  # Generic default - override for mission
+    # MISSION-SPECIFIC NAMING
+    spacecraft_position_name: str = "sc_position"
+    boresight_name: str = "boresight"
+    transformation_matrix_name: str = "t_inst2ref"
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
         """Get calibration filename for given type with fallback to default."""
