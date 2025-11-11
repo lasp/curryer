@@ -135,10 +135,13 @@ class DataIOTestCase(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.getenv("AWS_ACCESS_KEY_ID", "")
-    and os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    and os.getenv("AWS_SESSION_TOKEN", ""),
-    "Requires tester to set AWS access key environment variables.",
+    (
+        os.getenv("AWS_ACCESS_KEY_ID", "")
+        and os.getenv("AWS_SECRET_ACCESS_KEY", "")
+        and os.getenv("AWS_SESSION_TOKEN", "")
+    )
+    or os.getenv("C9_USER"),
+    "Requires tester to set AWS access key environment variables or run in Cloud9.",
 )
 class ClarreoDataIOTestCase(unittest.TestCase):
     def setUp(self) -> None:
