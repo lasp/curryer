@@ -37,8 +37,10 @@ dependencies = [
     "scipy>=1.9",
     "pandas>=1.5",
     "xarray>=2022.11",
-    "netcdf4>=1.6,<1.8.0",
-    "h5py>=3.0,<4.0",
+    # NOTE: netcdf 1.7.3 and h5py 3.14.0/1 resulted in issues on release. Pins
+    # may be removed after future releases address those bugs.
+    "netcdf4>=1.6,<1.7.3",
+    "h5py>=3.0,<3.14.0",
     "tifffile>=2024.1.1",
     "affine>=2.3",
     "pyproj>=3.6",
