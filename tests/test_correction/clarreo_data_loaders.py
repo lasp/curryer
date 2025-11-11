@@ -123,6 +123,12 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
                 raise ValueError(f"Missing conversion for expected column: {col}")
 
     logger.info(f"Final CLARREO telemetry shape: {left_df.shape}")
+
+    # Validate output format
+    from curryer.correction.dataio import validate_telemetry_output
+
+    validate_telemetry_output(left_df, config)
+
     return left_df
 
 
@@ -166,6 +172,11 @@ def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
         f"corrected_timestamp range: {sci_time_df['corrected_timestamp'].min():.2e} to "
         f"{sci_time_df['corrected_timestamp'].max():.2e} uGPS"
     )
+
+    # Validate output format
+    from curryer.correction.dataio import validate_science_output
+
+    validate_science_output(sci_time_df, config)
 
     return sci_time_df
 

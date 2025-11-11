@@ -71,12 +71,31 @@ from curryer.correction import correction_config
 from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig
 from curryer.correction.data_structures import SearchConfig
 
+# Import data loader protocols and validation
+from curryer.correction.dataio import (
+    GCPLoader,
+    ScienceLoader,
+    TelemetryLoader,
+    validate_science_output,
+    validate_telemetry_output,
+)
+
 # Import image matching modules
 from curryer.correction.image_match import (
+    ImageMatchingFunc,
     integrated_image_match,
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
     load_optical_psf_from_mat,
+    validate_image_matching_output,
+)
+
+# Import pairing protocols and validation
+from curryer.correction.pairing import (
+    GCPPairingFunc,
+)
+from curryer.correction.pairing import (
+    validate_pairing_output as validate_gcp_pairing_output,
 )
 from curryer.kernels import create
 
@@ -427,270 +446,8 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
 
 
 # ============================================================================
-# PLACEHOLDER FUNCTIONS - GENERATE SYNTHETIC TEST DATA ONLY
+# ADAPTER FUNCTIONS
 # ============================================================================
-#
-# WARNING: Functions in this section generate FAKE/SYNTHETIC data for testing!
-#
-# These functions are used when real GCP pairing or image matching are disabled.
-# They allow testing of the geolocation pipeline without requiring:
-#   - Real GCP reference imagery
-#   - Calibration files (LOS vectors, optical PSF)
-#   - Actual image matching processing
-#
-# The synthetic data generated here:
-#   - Uses random/statistical distributions
-#   - Is NOT based on actual measurements
-#   - Should NEVER be used for production analysis
-#   - Is intended ONLY for development/testing purposes
-#
-# To use REAL data instead:
-#   - Set config.use_real_pairing = True (for GCP pairing)
-#   - Set config.use_real_image_matching = True (for image matching)
-#   - Provide required calibration files and GCP reference data
-#
-# Placeholder functions are automatically called by loop() when real functions
-# are disabled. Loud warnings are logged each time placeholders are used.
-# ============================================================================
-
-
-def placeholder_gcp_pairing(science_data_files):
-    """
-    PLACEHOLDER for GCP pairing module - generates SYNTHETIC GCP pairs.
-
-    WARNING: This function returns FAKE pairs for testing purposes only!
-
-    Real implementation will:
-    - Take science image files
-    - Find spatially/temporally overlapping Landsat GCP scenes
-    - Return list of (science_file, gcp_reference_file) pairs
-
-    For now: Generate synthetic pairs for testing
-
-    Args:
-        science_data_files: List of science image file identifiers
-
-    Returns:
-        List of tuples: [(science_file, gcp_file), ...]
-    """
-    # ========================================================================
-    # LOUD WARNING - PLACEHOLDER IS ACTIVE
-    # ========================================================================
-    logger.warning("=" * 80)
-    logger.warning("!!!!️  USING PLACEHOLDER GCP PAIRING - NOT REAL DATA!  !!!!️")
-    logger.warning("=" * 80)
-    logger.warning("Placeholder is generating SYNTHETIC GCP pairs")
-    logger.warning("Real GCP spatial/temporal pairing is NOT being performed")
-    logger.warning("")
-    logger.warning("To use REAL GCP pairing, ensure:")
-    logger.warning("  1. config.use_real_pairing = True")
-    logger.warning("  2. config.gcp_directory is set to GCP file directory")
-    logger.warning("  3. GCP reference files exist (.mat files)")
-    logger.warning("=" * 80)
-
-    logger.info("GCP Pairing: Finding overlapping image pairs (PLACEHOLDER)")
-
-    # Generate synthetic pairs - one GCP per science file
-    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif") for i, sci_file in enumerate(science_data_files)]
-
-    return synthetic_pairs
-
-
-def placeholder_image_matching(geolocated_data, gcp_reference_file, params_info, config: "MonteCarloConfig"):
-    """
-    PLACEHOLDER for image matching module - generates SYNTHETIC error data.
-
-    WARNING: This function returns FAKE data for testing purposes only!
-
-    Real implementation will:
-    - Compare geolocated pixels with GCP references
-    - Perform image correlation/matching
-    - Return spatial errors in format expected by error_stats module
-
-    For now: Generate synthetic error data matching error_stats test format
-
-    Args:
-        geolocated_data: Geolocated science data
-        gcp_reference_file: Reference GCP data file
-        params_info: Parameter information for this iteration
-        config: MonteCarloConfig with coordinate name mappings
-    """
-    # ========================================================================
-    # LOUD WARNING - PLACEHOLDER IS ACTIVE
-    # ========================================================================
-    logger.warning("=" * 80)
-    logger.warning("!!!!️  USING PLACEHOLDER IMAGE MATCHING - NOT REAL DATA!  !!!!️")
-    logger.warning("=" * 80)
-    logger.warning("Placeholder is generating SYNTHETIC error measurements")
-    logger.warning("Results are NOT based on actual image correlation")
-    logger.warning("")
-    logger.warning("To use REAL image matching, ensure:")
-    logger.warning("  1. config.use_real_image_matching = True")
-    logger.warning("  2. config.calibration_dir is set to calibration file directory")
-    logger.warning("  3. Calibration files exist: b_HS.mat, optical_PSF_*.mat")
-    logger.warning("  4. GCP reference files (.mat) are available")
-    logger.warning("=" * 80)
-
-    logger.info(f"Image Matching: Comparing geolocated pixels with {gcp_reference_file} (PLACEHOLDER)")
-
-    # Get placeholder configuration (create with defaults if not provided)
-    placeholder_cfg = config.placeholder if config.placeholder else PlaceholderConfig()
-
-    # Get coordinate names from config
-    sc_pos_name = config.spacecraft_position_name
-    boresight_name = config.boresight_name
-    transform_name = config.transformation_matrix_name
-
-    # Extract valid geolocation points (non-NaN)
-    valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
-    n_valid = valid_mask.sum()
-
-    if n_valid == 0:
-        logger.warning("No valid geolocation points found for image matching")
-        n_measurements = placeholder_cfg.min_measurements
-    else:
-        n_measurements = min(n_valid, placeholder_cfg.max_measurements)
-
-    # Generate realistic transformation matrices (from error_stats tests)
-    t_matrices = np.zeros((3, 3, n_measurements))
-    for i in range(n_measurements):
-        if i % 3 == 0:
-            t_matrices[:, :, i] = np.eye(3)  # Identity
-        elif i % 3 == 1:
-            t_matrices[:, :, i] = [[0.9, 0.1, 0], [-0.1, 0.9, 0], [0, 0, 1]]  # Simple rotation
-        else:
-            t_matrices[:, :, i] = [[0.8, 0, 0.2], [0, 1, 0], [-0.2, 0, 0.8]]  # Another rotation
-
-    # Generate synthetic errors based on parameter variations
-    # Errors should vary based on how far parameters are from optimal values
-    base_error = placeholder_cfg.base_error_m
-    param_contribution = (
-        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
-        * placeholder_cfg.param_error_scale
-    )
-
-    error_magnitude = base_error + param_contribution
-
-    # Generate errors with spatial correlation
-    lat_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)  # Convert m to degrees
-    lon_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
-
-    # Generate SYNTHETIC boresight vectors (placeholder-only helper)
-    boresights = _placeholder_generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
-
-    # Generate spacecraft position vectors (configurable orbit altitude)
-    riss_ctrs = np.random.uniform(
-        placeholder_cfg.orbit_altitude_min_m, placeholder_cfg.orbit_altitude_max_m, (n_measurements, 3)
-    )
-
-    # Extract corresponding geolocation data
-    if n_valid > 0:
-        valid_indices = np.where(valid_mask)[0][:n_measurements]
-        gcp_lat = geolocated_data["latitude"].values[valid_indices, 0]  # Use first pixel
-        gcp_lon = geolocated_data["longitude"].values[valid_indices, 0]
-    else:
-        # Use configured geographic bounds for synthetic control points
-        gcp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
-        gcp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
-
-    gcp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
-
-    # Use config names for coordinates instead of hardcoded ISS/HySICS names
-    return xr.Dataset(
-        {
-            "lat_error_deg": (["measurement"], lat_errors),
-            "lon_error_deg": (["measurement"], lon_errors),
-            sc_pos_name: (["measurement", "xyz"], riss_ctrs),
-            boresight_name: (["measurement", "xyz"], boresights),
-            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrices),
-            "gcp_lat_deg": (["measurement"], gcp_lat),
-            "gcp_lon_deg": (["measurement"], gcp_lon),
-            "gcp_alt": (["measurement"], gcp_alt),
-        },
-        coords={
-            "measurement": range(n_measurements),
-            "xyz": ["x", "y", "z"],
-            "xyz_from": ["x", "y", "z"],
-            "xyz_to": ["x", "y", "z"],
-        },
-    )
-
-
-def _placeholder_generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.1):
-    """
-    PLACEHOLDER HELPER - Generate SYNTHETIC boresight vectors for testing.
-
-    WARNING: This function generates FAKE data and should ONLY be called by
-    placeholder_image_matching(). It creates random boresight vectors that are
-    NOT based on actual spacecraft pointing data.
-
-    Args:
-        n_measurements: Number of boresight vectors to generate
-        max_off_nadir_rad: Maximum off-nadir angle in radians (default 0.1 ≈ 6 degrees)
-
-    Returns:
-        Array of SYNTHETIC boresight unit vectors, shape (n_measurements, 3)
-
-    Note:
-        For real boresight data, use actual spacecraft attitude/pointing from telemetry.
-    """
-    boresights = np.zeros((n_measurements, 3))
-    for i in range(n_measurements):
-        # Generate random off-nadir angles (SYNTHETIC - not real pointing data)
-        theta = np.random.uniform(0, max_off_nadir_rad)
-        phi = np.random.uniform(0, 2 * np.pi)
-        boresights[i] = [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
-    return boresights
-
-
-def _extract_boresight_and_transform_from_geolocation(
-    geo_dataset: xr.Dataset, config: "MonteCarloConfig"
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Extract boresight vector and transformation matrix from geolocation data.
-
-    Attempts to extract real attitude data from SPICE/geolocation results.
-    Falls back to nadir assumptions if data is not available.
-
-    Args:
-        geo_dataset: Geolocation output with potential attitude data
-        config: MonteCarloConfig with instrument information
-
-    Returns:
-        Tuple of (boresight, t_matrix):
-            - boresight: (3,) array - boresight vector
-            - t_matrix: (3, 3) array - transformation matrix
-    """
-    # Try to extract attitude/transformation matrix from geolocation
-    if "attitude" in geo_dataset:
-        # Geolocation provides attitude matrix (ex, ey, ez)
-        # This is the transformation from instrument to reference frame
-        mid_idx = len(geo_dataset["frame"]) // 2 if "frame" in geo_dataset.dims else 0
-        t_matrix = geo_dataset["attitude"].values[mid_idx]
-
-        logger.debug(f"Extracted transformation matrix from geolocation data (frame {mid_idx})")
-
-        # For boresight, if we have SPICE loaded, we can query instrument boresight
-        try:
-            import spicierpy
-
-            instrument_id = spicierpy.bodn2c(config.geo.instrument_name)
-            # getfov returns: (shape, frame_name, boresight, bounds)
-            _, _, boresight_inst, _ = spicierpy.getfov(instrument_id)
-            # Transform to reference frame
-            boresight = t_matrix @ boresight_inst
-            logger.debug(f"Extracted boresight from SPICE: {boresight}")
-        except Exception as e:
-            # Fall back to nadir if SPICE query fails
-            logger.debug(f"Could not extract boresight from SPICE ({e}), using nadir assumption")
-            boresight = np.array([0.0, 0.0, 1.0])
-    else:
-        # No attitude data in geolocation - use nadir assumptions
-        logger.debug("No attitude data in geolocation, using nadir assumptions")
-        t_matrix = np.eye(3)
-        boresight = np.array([0.0, 0.0, 1.0])
-
-    return boresight, t_matrix
 
 
 def image_matching(
@@ -715,6 +472,7 @@ def image_matching(
         telemetry: Telemetry DataFrame with spacecraft state
         calibration_dir: Directory containing calibration files (LOS vectors, PSF)
         params_info: Current parameter values for error tracking
+        config: MonteCarloConfig with coordinate name mappings
         los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
         optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
 
@@ -834,7 +592,7 @@ def image_matching(
             "lon_error_deg": (["measurement"], [lon_error_deg]),
             sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
             boresight_name: (["measurement", "xyz"], [boresight]),
-            transform_name: (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),  # GCP at ground level
@@ -973,7 +731,7 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
         all_lon_errors.extend(result["lon_error_deg"].values)
 
         # Handle coordinate transformation data (use config names)
-        # NOTE: Individual results have shape (1, 3) for vectors and (3, 3, 1) for matrices
+        # NOTE: Individual results have shape (1, 3) for vectors and (1, 3, 3) for matrices
         if sc_pos_name in result:
             # Shape: (1, 3) -> extract as (3,) for each measurement
             for j in range(n_measurements):
@@ -983,9 +741,9 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
             for j in range(n_measurements):
                 all_boresights.append(result[boresight_name].values[j])
         if transform_name in result:
-            # Shape: (3, 3, 1) -> extract as (3, 3) for each measurement
+            # Shape: (1, 3, 3) -> extract as (3, 3) for each measurement
             for j in range(n_measurements):
-                all_transforms.append(result[transform_name].values[:, :, j])
+                all_transforms.append(result[transform_name].values[j, :, :])
         if "gcp_lat_deg" in result:
             all_gcp_lats.extend(result["gcp_lat_deg"].values)
         if "gcp_lon_deg" in result:
@@ -1016,9 +774,9 @@ def _aggregate_image_matching_results(image_matching_results, config: "MonteCarl
         aggregated[boresight_name] = (["measurement", "xyz"], np.array(all_boresights))
 
     if all_transforms:
-        # Stack into (3, 3, n_measurements) to match error_stats format
-        t_stacked = np.stack(all_transforms, axis=2)
-        aggregated[transform_name] = (["xyz_from", "xyz_to", "measurement"], t_stacked)
+        # Stack into (n_measurements, 3, 3) to match error_stats format
+        t_stacked = np.stack(all_transforms, axis=0)
+        aggregated[transform_name] = (["measurement", "xyz_from", "xyz_to"], t_stacked)
         aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
 
     if all_gcp_lats:
@@ -1057,7 +815,7 @@ class ParameterConfig:
 class GeolocationConfig:
     meta_kernel_file: Path
     generic_kernel_dir: Path
-    dynamic_kernels: [Path]  # Kernels that are dynamic but *NOT* altered by param!
+    dynamic_kernels: [Path]  # Kernels that are dynamic but *not* altered by param!
     instrument_name: str
     time_field: str
     minimum_correlation: typing.Optional[float] = None  # Filter threshold for image matching quality (0.0-1.0)
@@ -1189,94 +947,109 @@ class NetCDFConfig:
 
 
 @dataclass
-class PlaceholderConfig:
-    """Configuration for placeholder functions to generate SYNTHETIC TEST data.
-
-    This allows customization of SYNTHETIC data generation for different mission
-    characteristics without hardcoding values.
-    """
-
-    # Synthetic error generation
-    base_error_m: float = 50.0  # Base RMS error in meters
-    param_error_scale: float = 10.0  # How much parameters affect error (meters per parameter unit)
-    max_measurements: int = 100  # Maximum number of synthetic measurements to generate
-    min_measurements: int = 10  # Minimum measurements if no valid geolocation
-
-    # Spacecraft orbital parameters
-    orbit_altitude_min_m: float = 6378e3  # Min altitude (Earth surface ~6378 km)
-    orbit_altitude_max_m: float = 6778e3  # Max altitude (typical LEO ~400 km above surface)
-
-    # Geographic bounds for synthetic control points
-    latitude_range: tuple[float, float] = (-60.0, 60.0)  # Valid GCP latitude range
-    longitude_range: tuple[float, float] = (-180.0, 180.0)  # Full longitude range
-    altitude_range: tuple[float, float] = (0.0, 1000.0)  # GCP altitude range (meters)
-
-    # Boresight pointing (for nadir-looking instruments)
-    max_off_nadir_rad: float = 0.1  # Maximum off-nadir angle (radians, ~6 degrees)
-
-
-@dataclass
 class MonteCarloConfig:
-    """Monte Carlo configuration for geolocation analysis.
+    """The configuration object for Monte Carlo geolocation analysis.
 
-    This dataclass contains all settings for Monte Carlo parameter sensitivity analysis.
-    Required mission-specific parameters MUST be provided - there are no defaults for
-    these values as they vary by mission.
+    This config contains everything needed for a Monte Carlo run:
+    - What parameters to vary (parameters list)
+    - How to vary them (seed, n_iterations)
+    - How to load data (telemetry_loader, science_loader)
+    - How to process data (gcp_pairing_func, image_matching_func)
+    - Geolocation settings (geo: GeolocationConfig)
+    - Success criteria (performance_threshold_m, performance_spec_percent)
+    - Output configuration (netcdf: NetCDFConfig, output_filename)
 
-    Required Fields (no defaults):
-        seed: Random seed for reproducibility (can be None for non-reproducible runs)
-        n_iterations: Number of Monte Carlo iterations to run
-        parameters: List of ParameterConfig objects defining what to vary
-        geo: GeolocationConfig with SPICE kernels and instrument settings
-        performance_threshold_m: Accuracy threshold for success metrics (meters)
-        performance_spec_percent: Performance requirement (% under threshold)
-        earth_radius_m: Earth radius for geodetic calculations (meters)
+    Create one MonteCarloConfig object and pass it to mc.loop() to run.
 
-    Optional Fields (with defaults):
-        [See individual field documentation below]
+    Parameters
+    ----------
+    CORE MONTE CARLO SETTINGS (Required - define what the analysis does):
+        seed : Optional[int]
+            Random seed for reproducibility, or None for non-reproducible runs.
+        n_iterations : int
+            Number of parameter set iterations (e.g., 5, 100, 1000).
+        parameters : list[ParameterConfig]
+            List of parameters to vary (defines sensitivity analysis).
+
+    GEOLOCATION & PERFORMANCE REQUIREMENTS (Required - mission-specific settings):
+        geo : GeolocationConfig
+            SPICE kernels and instrument configuration.
+        performance_threshold_m : float
+            Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO).
+        performance_spec_percent : float
+            Requirement as percentage of observations that meet threshold (e.g., 39.0 for CLARREO).
+        earth_radius_m : float
+            Earth radius for geodetic calculations (can use curryer.constants.WGS84_EARTH_RADIUS_M).
+
+    DATA LOADERS (Required for pipeline execution - mission-specific implementations):
+        telemetry_loader : Optional[TelemetryLoader], default=None
+            Load spacecraft telemetry. Must be set before calling mc.loop().
+        science_loader : Optional[ScienceLoader], default=None
+            Load science frame timing. Must be set before calling mc.loop().
+        gcp_loader : Optional[GCPLoader], default=None
+            Load GCP reference data (optional).
+
+    PROCESSING FUNCTIONS (Optional - will use defaults/stubs if not provided):
+        gcp_pairing_func : Optional[GCPPairingFunc], default=None
+            Spatial pairing of science data to GCP.
+        image_matching_func : Optional[ImageMatchingFunc], default=None
+            Image correlation for errors.
+
+    OUTPUT CONFIGURATION (Optional - sensible defaults provided):
+        netcdf : Optional[NetCDFConfig], default=None
+            NetCDF metadata (auto-generated if None).
+        output_filename : Optional[str], default=None
+            Output filename (auto-generates with timestamp if None).
+
+    CALIBRATION CONFIGURATION (Optional - only needed when image_matching_func uses calibration):
+        calibration_dir : Optional[Path], default=None
+            Directory with LOS vectors, optical PSF, GCP files.
+            Set when using image_matching_func that requires calibration files.
+        calibration_file_names : Optional[dict[str, str]], default=None
+            Mission-specific calibration filenames.
+            Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
+
+    MISSION-SPECIFIC NAMING (Optional - override generic defaults):
+        spacecraft_position_name : str, default="sc_position"
+            Variable name for spacecraft position in output NetCDF.
+        boresight_name : str, default="boresight"
+            Variable name for boresight in output NetCDF.
+        transformation_matrix_name : str, default="t_inst2ref"
+            Variable name for transformation matrix in output NetCDF.
     """
 
-    # REQUIRED FIELDS (no defaults - must be provided by mission config)
-    seed: typing.Optional[int]  # Random seed for reproducibility, or None
-    n_iterations: int  # Number of Monte Carlo iterations
-    parameters: list[ParameterConfig]  # Parameters to vary
-    geo: GeolocationConfig  # SPICE kernels and instrument configuration
-    performance_threshold_m: float  # Accuracy threshold (e.g., 250.0 meters for CLARREO)
-    performance_spec_percent: float  # Performance requirement (e.g., 39.0% for CLARREO)
-    earth_radius_m: float  # Earth radius (e.g., 6378140.0 for WGS84)
+    # CORE MONTE CARLO SETTINGS
+    seed: typing.Optional[int]
+    n_iterations: int
+    parameters: list[ParameterConfig]
 
-    # OPTIONAL FIELDS (with defaults)
-    calibration_dir: typing.Optional[Path] = None  # Directory with LOS vectors, optical PSF, GCP files
-    use_real_image_matching: bool = False  # Enable real image matching (requires calibration files)
+    # GEOLOCATION & PERFORMANCE REQUIREMENTS
+    geo: GeolocationConfig
+    performance_threshold_m: float
+    performance_spec_percent: float
+    earth_radius_m: float
 
-    # Pairing configuration
-    use_real_pairing: bool = False  # Enable real GCP pairing (spatial matching)
-    gcp_directory: typing.Optional[Path] = None  # Directory containing GCP reference files
-    pairing_max_distance_m: float = 0.0  # Maximum distance for valid pairing (0.0 = strict overlap)
-    pairing_l1a_key: str = "subimage"  # MATLAB struct key for L1A data
-    pairing_gcp_key: str = "GCP"  # MATLAB struct key for GCP data
-    pairing_gcp_pattern: str = "*_resampled.mat"  # File pattern for GCP discovery
+    # DATA LOADERS
+    telemetry_loader: typing.Optional[TelemetryLoader] = None
+    science_loader: typing.Optional[ScienceLoader] = None
+    gcp_loader: typing.Optional[GCPLoader] = None
 
-    # NetCDF output configuration (NEW)
-    netcdf: typing.Optional[NetCDFConfig] = None  # NetCDF metadata; auto-generated if None
+    # PROCESSING FUNCTIONS
+    gcp_pairing_func: typing.Optional[GCPPairingFunc] = None
+    image_matching_func: typing.Optional[ImageMatchingFunc] = None
 
-    # Calibration files (mission-specific names) (NEW)
+    # OUTPUT CONFIGURATION
+    netcdf: typing.Optional[NetCDFConfig] = None
+    output_filename: typing.Optional[str] = None
+
+    # CALIBRATION CONFIGURATION
+    calibration_dir: typing.Optional[Path] = None
     calibration_file_names: typing.Optional[dict[str, str]] = None
-    # Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
 
-    # Coordinate frame naming (for outputs) (NEW)
-    spacecraft_position_name: str = "sc_position"  # Generic default
-    boresight_name: str = "boresight"  # Generic default
-    transformation_matrix_name: str = "t_inst2ref"  # Generic default
-
-    # Output filename configuration
-    output_filename: typing.Optional[str] = None  # If None, auto-generates with timestamp
-
-    # Placeholder configuration (for synthetic test data)
-    placeholder: typing.Optional[PlaceholderConfig] = None  # Auto-generated if None
-
-    # match: ImageMatchConfig
-    # stats: ErrorStatsConfig
+    # MISSION-SPECIFIC NAMING
+    spacecraft_position_name: str = "sc_position"
+    boresight_name: str = "boresight"
+    transformation_matrix_name: str = "t_inst2ref"
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
         """Get calibration filename for given type with fallback to default."""
@@ -1286,8 +1059,13 @@ class MonteCarloConfig:
             return default
         raise ValueError(f"No calibration file configured for type: {file_type}")
 
-    def validate(self):
+    def validate(self, check_loaders: bool = False):
         """Validate that all required configuration values are present.
+
+        Args:
+            check_loaders: If True, validate that loaders are present.
+                          Set to False when validating configs during creation,
+                          before loaders have been added.
 
         Raises:
             ValueError: If any required fields are missing or invalid
@@ -1313,11 +1091,46 @@ class MonteCarloConfig:
         if self.performance_spec_percent is None or not (0 <= self.performance_spec_percent <= 100):
             errors.append("performance_spec_percent must be between 0 and 100 (e.g., 39.0)")
 
+        # Check required data loaders (Config-Centric Design) - only if requested
+        if check_loaders:
+            if self.telemetry_loader is None:
+                errors.append(
+                    "telemetry_loader is required.\n"
+                    "    Add to config: config.telemetry_loader = load_your_telemetry\n"
+                    "    Example: from your_loaders import load_mission_telemetry\n"
+                    "             config.telemetry_loader = load_mission_telemetry"
+                )
+
+            if self.science_loader is None:
+                errors.append(
+                    "science_loader is required.\n"
+                    "    Add to config: config.science_loader = load_your_science\n"
+                    "    Example: from your_loaders import load_mission_science\n"
+                    "             config.science_loader = load_mission_science"
+                )
+
         if errors:
             error_msg = "MonteCarloConfig validation failed:\n  - " + "\n  - ".join(errors)
             error_msg += "\n\nThese values must be provided in your mission configuration."
             error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
             raise ValueError(error_msg)
+
+        # Check optional processing functions (warnings only) - only if checking loaders
+        if check_loaders:
+            if self.gcp_pairing_func is None:
+                logger.warning(
+                    "gcp_pairing_func not provided - GCP pairing will return empty results.\n"
+                    "    For testing: config.gcp_pairing_func = synthetic_gcp_pairing\n"
+                    "    For production: config.gcp_pairing_func = real_spatial_pairing"
+                )
+
+            if self.image_matching_func is None:
+                logger.warning(
+                    "image_matching_func not provided - will use empty stub.\n"
+                    "    For testing: config.image_matching_func = synthetic_image_matching\n"
+                    "    For production: config.image_matching_func = real_image_matching\n"
+                    "                   and set config.calibration_dir if needed"
+                )
 
         logger.debug("MonteCarloConfig validation passed")
 
@@ -1858,38 +1671,111 @@ def loop(
     config: MonteCarloConfig,
     work_dir: Path,
     tlm_sci_gcp_sets: [(str, str, str)],
-    telemetry_loader=None,
-    science_loader=None,
-    gcp_loader=None,
     resume_from_checkpoint: bool = False,
 ):
     """
     Main Monte Carlo loop for parameter sensitivity analysis.
 
+    Config-Centric Design: All configuration including data loaders and processing
+    functions comes from the config object, making it the single source of truth.
+
     Args:
-        config: Monte Carlo configuration
+        config: MonteCarloConfig - The single config containing all settings:
+            - Required: parameters, iterations, thresholds, geo config
+            - Required loaders: telemetry_loader, science_loader
+            - Optional processing: gcp_pairing_func, image_matching_func
+            - Calibration: calibration_dir (if image_matching_func uses calibration)
+            - Output: netcdf, output_filename
         work_dir: Working directory for temporary files
         tlm_sci_gcp_sets: List of (telemetry_key, science_key, gcp_key) tuples
-        telemetry_loader: Optional mission-specific telemetry loader function
-        science_loader: Optional mission-specific science loader function
-        gcp_loader: Optional mission-specific GCP loader function
         resume_from_checkpoint: If True, resume from checkpoint if it exists
 
     Returns:
         Tuple of (results, netcdf_data)
 
-    Example:
+    Example (Test Mode):
         from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        from test_monte_carlo import synthetic_gcp_pairing, synthetic_image_matching
 
-        results, netcdf_data = loop(
-            config, work_dir, tlm_sci_gcp_sets,
+        config = MonteCarloConfig(
+            seed=42,
+            n_iterations=5,
+            parameters=[...],
+            geo=geo_config,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378140.0,
+            # Required loaders
             telemetry_loader=load_clarreo_telemetry,
             science_loader=load_clarreo_science,
-            resume_from_checkpoint=True  # Resume if interrupted
+            # Test functions for pairing and matching
+            gcp_pairing_func=synthetic_gcp_pairing,
+            image_matching_func=synthetic_image_matching,
         )
+
+        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+
+    Example (Production Mode):
+        config = MonteCarloConfig(
+            seed=42,
+            n_iterations=100,
+            parameters=[...],
+            geo=geo_config,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378140.0,
+            # Required loaders
+            telemetry_loader=load_clarreo_telemetry,
+            science_loader=load_clarreo_science,
+            # Production processing - pass functions directly!
+            gcp_pairing_func=real_spatial_pairing,
+            image_matching_func=image_matching,  # Pass the function
+            calibration_dir=Path("calibration/"),
+        )
+
+        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
     """
     # Initialize the entire set of parameters.
     params_set = load_param_sets(config)
+
+    # Get loaders and processing functions from config (Single Source of Truth)
+    telemetry_loader = config.telemetry_loader
+    science_loader = config.science_loader
+    # gcp_loader = config.gcp_loader
+    gcp_pairing_func = config.gcp_pairing_func
+    image_matching_func = config.image_matching_func
+
+    # Validate required loaders are provided
+    if telemetry_loader is None:
+        raise ValueError(
+            "config.telemetry_loader is required. Please specify a telemetry loading function in your MonteCarloConfig."
+        )
+    if science_loader is None:
+        raise ValueError(
+            "config.science_loader is required. Please specify a science loading function in your MonteCarloConfig."
+        )
+
+    # Set defaults for optional processing functions
+    if gcp_pairing_func is None:
+        logger.warning("No GCP pairing function provided in config - pairing will return empty results")
+
+        def gcp_pairing_func(x):
+            return []  # Empty stub
+
+    if image_matching_func is None:
+        # No image matching function provided - use empty stub
+        logger.warning("No image matching function provided - using empty stub (no validation will occur)")
+
+        def _empty_image_matching(geo_data, gcp_ref, tlm, calib, params, cfg, los=None, psf=None):
+            return xr.Dataset(
+                {
+                    "lat_error_deg": (["measurement"], []),
+                    "lon_error_deg": (["measurement"], []),
+                },
+                coords={"measurement": []},
+            )
+
+        image_matching_func = _empty_image_matching
 
     # Initialize return data structure...
     results = []
@@ -1940,10 +1826,11 @@ def loop(
         _store_parameter_values(netcdf_data, param_idx, param_values)
 
         # Load calibration data ONCE per parameter set (before GCP pair loop)
+        # Only if calibration_dir is provided (for image matching that uses calibration)
         los_vectors_cached = None
         optical_psfs_cached = None
 
-        if config.use_real_image_matching and config.calibration_dir:
+        if config.calibration_dir:
             logger.info("Loading calibration data once for all GCP pairs...")
 
             # Use configurable calibration file names
@@ -1968,18 +1855,19 @@ def loop(
 
             # Load telemetry (L1) data using mission-specific loader
             tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
+            validate_telemetry_output(tlm_dataset, config)
 
             # Load science (L1A) data using mission-specific loader
             sci_dataset = load_science(sci_key, config, loader_func=science_loader)
+            validate_science_output(sci_dataset, config)
             ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps.
 
             # === GCP PAIRING MODULE ===
             logger.info("    === GCP PAIRING MODULE ===")
 
-            # Use placeholder GCP pairing (generates synthetic pairs)
-            # Real implementation would use pair_files() for spatial/temporal matching
-            placeholder_usage_count += 1  # Track placeholder usage
-            gcp_pairs = placeholder_gcp_pairing([sci_key])
+            # Use synthetic GCP pairing function (placeholder or real)
+            gcp_pairs = gcp_pairing_func([sci_key])
+            validate_gcp_pairing_output(gcp_pairs)
 
             logger.info(f"    Found {len(gcp_pairs)} GCP pairs for processing")
 
@@ -2047,50 +1935,22 @@ def loop(
                 # === IMAGE MATCHING MODULE ===
                 logger.info("    === IMAGE MATCHING MODULE ===")
 
-                # Choose between real and placeholder image matching based on configuration
-                if config.use_real_image_matching and config.calibration_dir is not None:
-                    # Use REAL image matching with calibration files
-                    gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
+                # Use injected image matching function
+                gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
 
-                    try:
-                        image_matching_output = image_matching(
-                            geolocated_data=geo_dataset,
-                            gcp_reference_file=gcp_file,
-                            telemetry=tlm_dataset,
-                            calibration_dir=config.calibration_dir,
-                            params_info=params,
-                            config=config,  # pass config for coordinate names
-                        )
-                        logger.info(f"    REAL image matching complete")
-                    except Exception as e:
-                        logger.error(f"    Real image matching failed: {e}")
-                        logger.warning("    Falling back to placeholder")
-                        placeholder_usage_count += 1  # Track placeholder usage
-                        image_matching_output = placeholder_image_matching(
-                            geo_dataset,
-                            gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                            params,
-                            config,  # pass config for coordinate names
-                        )
-                else:
-                    # Use placeholder image matching
-                    placeholder_usage_count += 1  # Track placeholder usage
-                    image_matching_output = placeholder_image_matching(
-                        geo_dataset,
-                        gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                        params,
-                        config,  # pass config for coordinate names
-                    )
-                    if config.use_real_image_matching:
-                        logger.warning(
-                            "    Real image matching requested but calibration_dir not set - using placeholder"
-                        )
-                    image_matching_output = placeholder_image_matching(
-                        geo_dataset,
-                        gcp_pairs[0][1] if gcp_pairs else "synthetic_gcp.tif",
-                        params,
-                        config,  # pass config for coordinate names
-                    )
+                # All image matching functions use the same signature
+                image_matching_output = image_matching_func(
+                    geolocated_data=geo_dataset,
+                    gcp_reference_file=gcp_file,
+                    telemetry=tlm_dataset,
+                    calibration_dir=config.calibration_dir,
+                    params_info=params,
+                    config=config,
+                    los_vectors_cached=los_vectors_cached,
+                    optical_psfs_cached=optical_psfs_cached,
+                )
+                validate_image_matching_output(image_matching_output)
+                logger.info(f"    Image matching complete")
 
                 logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
 
@@ -2205,11 +2065,10 @@ def loop(
         logger.warning("")
         logger.warning("This may be intentional (e.g., upstream testing) or indicate a problem:")
         logger.warning("  GCP Pairing:")
-        logger.warning("    - Check if config.use_real_pairing is set")
-        logger.warning("    - Check if config.gcp_directory points to valid directory")
+        logger.warning("    - Check if config.gcp_pairing_func is set to real pairing function")
         logger.warning("  Image Matching:")
-        logger.warning("    - Check if config.use_real_image_matching is set")
-        logger.warning("    - Check if config.calibration_dir points to valid directory")
+        logger.warning("    - Check if config.image_matching_func is set to real matching function")
+        logger.warning("    - Check if config.calibration_dir is valid (if matching requires calibration)")
         logger.warning("    - Check if calibration files exist (b_HS.mat, optical_PSF_*.mat)")
         logger.warning("  - Review error messages above for any failures")
         logger.warning("=" * 80 + "\n")

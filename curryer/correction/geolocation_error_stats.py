@@ -99,9 +99,19 @@ class GeolocationConfig:
 class ErrorStatsProcessor:
     """Production-ready processor for geolocation error statistics."""
 
-    def __init__(self, config: Optional[GeolocationConfig] = None):
-        """Initialize processor with configuration."""
-        self.config = config or GeolocationConfig()
+    def __init__(self, config: GeolocationConfig):
+        """
+        Initialize processor with configuration.
+
+        Args:
+            config: GeolocationConfig (required) - use GeolocationConfig.from_monte_carlo_config()
+                   to create from MonteCarloConfig
+        """
+        if config is None:
+            raise ValueError(
+                "GeolocationConfig is required. Use GeolocationConfig.from_monte_carlo_config(mc_config) to create."
+            )
+        self.config = config
 
     def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:
         """
@@ -233,8 +243,7 @@ class ErrorStatsProcessor:
         bhat_ctrs = np.zeros((n_measurements, 3))
 
         for i in range(n_measurements):
-            bhat_ctrs[i] = bhat_hs[i] @ t_hs2ctrs[:, :, i].T
-
+            bhat_ctrs[i] = bhat_hs[i] @ t_hs2ctrs[i, :, :].T
         return bhat_ctrs
 
     def _process_to_nadir_equivalent(
@@ -284,7 +293,9 @@ class ErrorStatsProcessor:
 
             # Calculate off-nadir angle and scaling factors
             rhat = riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
-            results["off_nadir_angle_rad"][i] = np.arccos(np.dot(bhat_ctrs[i], -rhat))
+            # Clip dot product to avoid tiny rounding errors outside [-1, 1]
+            dot_product = np.clip(np.dot(bhat_ctrs[i], -rhat), -1.0, 1.0)
+            results["off_nadir_angle_rad"][i] = np.arccos(dot_product)
 
             # Calculate nadir-equivalent scaling factors
             scaling_factors = self._calculate_scaling_factors(riss_ctrs[i], results["off_nadir_angle_rad"][i])
@@ -334,7 +345,21 @@ class ErrorStatsProcessor:
         f = r_magnitude / self.config.earth_radius_m
         h = r_magnitude - self.config.earth_radius_m
 
-        temp1 = np.sqrt(1 - f**2 * np.sin(theta) ** 2)
+        # Calculate discriminant for sqrt - should be positive for physically valid geometries
+        discriminant = 1 - f**2 * np.sin(theta) ** 2
+
+        # Check for suspicious geometries
+        if discriminant < 0:  # Significantly negative suggests bad input data
+            logger.error(
+                f"Suspicious geometry: discriminant={discriminant:.6f} for f={f:.3f}, theta={np.rad2deg(theta):.1f}°. "
+                f"This suggests Invalid geometry (no-intersection)."
+            )
+
+        temp1 = np.sqrt(discriminant)
+
+        # Add small epsilon to prevent division by zero for extreme cases
+        # (when discriminant rounds to exactly 0)
+        temp1 = np.maximum(temp1, 1e-10)
 
         # View-plane scaling factor
         vp_factor = h / self.config.earth_radius_m / (-1 + f * np.cos(theta) / temp1)

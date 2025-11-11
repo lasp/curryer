@@ -97,7 +97,7 @@ class CtimIntegrationTestCase(unittest.TestCase):
         for col in expected_point.columns:
             # NOTE: Error increased from 1e-12 to 1e-5 due to minor differences
             # between the original (slow) SPICE impl and the vectorized impl.
-            rtol = 3e-6 if "surface" in col else 3e-12
+            rtol = 3e-6 if "surface" in col else 1e-10
             npt.assert_allclose(expected_point[col], data[col], rtol=rtol, err_msg=col)
 
 

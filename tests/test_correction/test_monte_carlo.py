@@ -39,13 +39,14 @@ computation for mission requirements validation.
 """
 
 import argparse
+import atexit
 import json
 import logging
+import shutil
 import sys
 import tempfile
 import time
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -78,6 +79,188 @@ from clarreo_config import create_clarreo_monte_carlo_config
 from clarreo_data_loaders import load_clarreo_gcp, load_clarreo_science, load_clarreo_telemetry
 
 logger = logging.getLogger(__name__)
+utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
+
+
+# =============================================================================
+# TEST PLACEHOLDER FUNCTIONS (For Synthetic Data Generation)
+# =============================================================================
+# These functions generate SYNTHETIC test data for testing the Monte Carlo pipeline
+
+
+class _PlaceholderConfig:
+    """Configuration for placeholder test data generation."""
+
+    base_error_m: float = 50.0
+    param_error_scale: float = 10.0
+    max_measurements: int = 100
+    min_measurements: int = 10
+    orbit_radius_mean_m: float = 6.78e6
+    orbit_radius_std_m: float = 4e3
+    latitude_range: tuple[float, float] = (-60.0, 60.0)
+    longitude_range: tuple[float, float] = (-180.0, 180.0)
+    altitude_range: tuple[float, float] = (0.0, 1000.0)
+    max_off_nadir_rad: float = 0.1
+
+
+def synthetic_gcp_pairing(science_data_files):
+    """Generate SYNTHETIC GCP pairs for testing (TEST ONLY - not a test itself)."""
+    logger.warning("=" * 80)
+    logger.warning("!!!!️  USING SYNTHETIC GCP PAIRING - FAKE DATA!  !!!!️")
+    logger.warning("=" * 80)
+    synthetic_pairs = [(f"{sci_file}", f"landsat_gcp_{i:03d}.tif") for i, sci_file in enumerate(science_data_files)]
+    return synthetic_pairs
+
+
+def synthetic_image_matching(
+    geolocated_data,
+    gcp_reference_file,
+    telemetry,
+    calibration_dir,
+    params_info,
+    config,
+    los_vectors_cached=None,
+    optical_psfs_cached=None,
+):
+    """
+    Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself).
+
+    This function matches the signature of the real image_matching() function
+    but only uses a subset of parameters for upstream testing of the monte carlo.
+
+    Used parameters:
+        geolocated_data: For generating realistic synthetic errors
+        params_info: To scale errors based on parameter variations
+        config: For coordinate names and placeholder configuration
+
+    Ignored parameters (accepted for compatibility):
+        gcp_reference_file: Not needed for synthetic data
+        telemetry: Not needed for synthetic data
+        calibration_dir: Not needed for synthetic data
+        los_vectors_cached: Not needed for synthetic data
+        optical_psfs_cached: Not needed for synthetic data
+    """
+    logger.warning("=" * 80)
+    logger.warning("!!!!️  USING SYNTHETIC IMAGE MATCHING - FAKE DATA!  !!!!️")
+    logger.warning("=" * 80)
+
+    placeholder_cfg = (
+        config.placeholder if hasattr(config, "placeholder") and config.placeholder else _PlaceholderConfig()
+    )
+    sc_pos_name = getattr(config, "spacecraft_position_name", "sc_position")
+    boresight_name = getattr(config, "boresight_name", "boresight")
+    transform_name = getattr(config, "transformation_matrix_name", "t_inst2ref")
+
+    valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
+    n_valid = valid_mask.sum()
+    n_measurements = (
+        placeholder_cfg.min_measurements if n_valid == 0 else min(n_valid, placeholder_cfg.max_measurements)
+    )
+
+    # Generate realistic synthetic data
+    riss_ctrs = _generate_spherical_positions(
+        n_measurements, placeholder_cfg.orbit_radius_mean_m, placeholder_cfg.orbit_radius_std_m
+    )
+    boresights = _generate_synthetic_boresights(n_measurements, placeholder_cfg.max_off_nadir_rad)
+    t_matrices = _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights)
+
+    # Generate synthetic errors
+    base_error = placeholder_cfg.base_error_m
+    param_contribution = (
+        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
+        * placeholder_cfg.param_error_scale
+    )
+    error_magnitude = base_error + param_contribution
+    lat_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
+    lon_errors = np.random.normal(0, error_magnitude / 111000, n_measurements)
+
+    if n_valid > 0:
+        valid_indices = np.where(valid_mask)[0][:n_measurements]
+        gcp_lat = geolocated_data["latitude"].values[valid_indices, 0]
+        gcp_lon = geolocated_data["longitude"].values[valid_indices, 0]
+    else:
+        gcp_lat = np.random.uniform(*placeholder_cfg.latitude_range, n_measurements)
+        gcp_lon = np.random.uniform(*placeholder_cfg.longitude_range, n_measurements)
+
+    gcp_alt = np.random.uniform(*placeholder_cfg.altitude_range, n_measurements)
+
+    return xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], lat_errors),
+            "lon_error_deg": (["measurement"], lon_errors),
+            sc_pos_name: (["measurement", "xyz"], riss_ctrs),
+            boresight_name: (["measurement", "xyz"], boresights),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrices),
+            "gcp_lat_deg": (["measurement"], gcp_lat),
+            "gcp_lon_deg": (["measurement"], gcp_lon),
+            "gcp_alt": (["measurement"], gcp_alt),
+        },
+        coords={
+            "measurement": range(n_measurements),
+            "xyz": ["x", "y", "z"],
+            "xyz_from": ["x", "y", "z"],
+            "xyz_to": ["x", "y", "z"],
+        },
+    )
+
+
+def _generate_synthetic_boresights(n_measurements, max_off_nadir_rad=0.07):
+    """Generate synthetic boresight vectors (test helper)."""
+    boresights = np.zeros((n_measurements, 3))
+    for i in range(n_measurements):
+        theta = np.random.uniform(-max_off_nadir_rad, max_off_nadir_rad)
+        boresights[i] = [0.0, np.sin(theta), np.cos(theta)]
+    return boresights
+
+
+def _generate_spherical_positions(n_measurements, radius_mean_m, radius_std_m):
+    """Generate synthetic spacecraft positions on sphere (test helper)."""
+    positions = np.zeros((n_measurements, 3))
+    for i in range(n_measurements):
+        radius = np.random.normal(radius_mean_m, radius_std_m)
+        phi = np.random.uniform(0, 2 * np.pi)
+        cos_theta = np.random.uniform(-1, 1)
+        sin_theta = np.sqrt(1 - cos_theta**2)
+        positions[i] = [radius * sin_theta * np.cos(phi), radius * sin_theta * np.sin(phi), radius * cos_theta]
+    return positions
+
+
+def _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs):
+    """Generate transformation matrices aligning boresights with nadir (test helper)."""
+    t_matrices = np.zeros((n_measurements, 3, 3))
+    for i in range(n_measurements):
+        nadir_ctrs = -riss_ctrs[i] / np.linalg.norm(riss_ctrs[i])
+        bhat_hs_norm = boresights_hs[i] / np.linalg.norm(boresights_hs[i])
+        rotation_axis = np.cross(bhat_hs_norm, nadir_ctrs)
+        axis_norm = np.linalg.norm(rotation_axis)
+
+        if axis_norm < 1e-6:
+            if np.dot(bhat_hs_norm, nadir_ctrs) > 0:
+                t_matrices[i] = np.eye(3)
+            else:
+                perp = np.array([1, 0, 0]) if abs(bhat_hs_norm[0]) < 0.9 else np.array([0, 1, 0])
+                rotation_axis = np.cross(bhat_hs_norm, perp) / np.linalg.norm(np.cross(bhat_hs_norm, perp))
+                K = np.array(
+                    [
+                        [0, -rotation_axis[2], rotation_axis[1]],
+                        [rotation_axis[2], 0, -rotation_axis[0]],
+                        [-rotation_axis[1], rotation_axis[0], 0],
+                    ]
+                )
+                t_matrices[i] = np.eye(3) + 2 * K @ K
+        else:
+            rotation_axis = rotation_axis / axis_norm
+            angle = np.arccos(np.clip(np.dot(bhat_hs_norm, nadir_ctrs), -1.0, 1.0))
+            K = np.array(
+                [
+                    [0, -rotation_axis[2], rotation_axis[1]],
+                    [rotation_axis[2], 0, -rotation_axis[0]],
+                    [-rotation_axis[1], rotation_axis[0], 0],
+                ]
+            )
+            t_matrices[i] = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+    return t_matrices
 
 
 # =============================================================================
@@ -85,22 +268,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # These functions were moved from the core monte_carlo module to keep test-specific
 # code separate from mission-agnostic core functionality.
-
-
-@dataclass
-class TestModeConfig:
-    """
-    Configuration for Monte Carlo test mode (used by test scripts).
-
-    Test mode allows running the Monte Carlo pipeline with validated test data
-    to verify integration without requiring production data.
-    """
-
-    test_data_dir: Path  # tests/data/clarreo/image_match/
-    test_cases: Optional[list[str]] = None  # Specific cases: ['1', '2'] or None for all
-    randomize_errors: bool = True  # Add variations to simulate parameter effects
-    error_variation_percent: float = 3.0  # Percentage variation to apply (e.g., 3.0 = ±3%)
-    cache_image_match_results: bool = True  # Cache results, apply variations instead of re-running
 
 
 def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[list[str]] = None) -> list[dict]:
@@ -248,7 +415,7 @@ def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[li
 
 
 def apply_error_variation_for_testing(
-    base_result: xr.Dataset, param_idx: int, test_mode_config: TestModeConfig
+    base_result: xr.Dataset, param_idx: int, error_variation_percent: float = 3.0
 ) -> xr.Dataset:
     """
     Apply random variation to image matching results to simulate parameter effects.
@@ -259,7 +426,7 @@ def apply_error_variation_for_testing(
     Args:
         base_result: Original image matching result
         param_idx: Parameter set index (used as random seed)
-        test_mode_config: Test mode configuration with variation settings
+        error_variation_percent: Percentage variation to apply (e.g., 3.0 = ±3%)
 
     Returns:
         New Dataset with varied error values
@@ -271,7 +438,7 @@ def apply_error_variation_for_testing(
     np.random.seed(param_idx)
 
     # Generate variation factors (centered at 1.0, with specified percentage variation)
-    variation_fraction = test_mode_config.error_variation_percent / 100.0
+    variation_fraction = error_variation_percent / 100.0
     lat_factor = 1.0 + np.random.normal(0, variation_fraction)
     lon_factor = 1.0 + np.random.normal(0, variation_fraction)
     ccv_factor = 1.0 + np.random.normal(0, variation_fraction / 10.0)  # Smaller variation for correlation
@@ -353,7 +520,9 @@ def apply_geolocation_error_to_subimage(
 def run_image_matching_with_applied_errors(
     test_case: dict,
     param_idx: int,
-    test_mode_config: TestModeConfig,
+    randomize_errors: bool = True,
+    error_variation_percent: float = 3.0,
+    cache_results: bool = True,
     cached_result: Optional[xr.Dataset] = None,
 ) -> xr.Dataset:
     """
@@ -361,12 +530,20 @@ def run_image_matching_with_applied_errors(
 
     This loads test data, applies known geolocation errors, then runs
     image matching to verify it can detect those errors.
+
+    Args:
+        test_case: Test case dictionary with file paths and expected errors
+        param_idx: Parameter set index (for variation seed)
+        randomize_errors: Whether to apply random variations
+        error_variation_percent: Percentage variation (default 3.0%)
+        cache_results: Whether to use cached results with variation
+        cached_result: Previously cached result to vary
     """
     # Use cached result with variation if available
-    if cached_result is not None and test_mode_config.cache_image_match_results and param_idx > 0:
-        if test_mode_config.randomize_errors:
-            logger.info(f"  Applying ±{test_mode_config.error_variation_percent}% variation to cached result")
-            return apply_error_variation_for_testing(cached_result, param_idx, test_mode_config)
+    if cached_result is not None and cache_results and param_idx > 0:
+        if randomize_errors:
+            logger.info(f"  Applying ±{error_variation_percent}% variation to cached result")
+            return apply_error_variation_for_testing(cached_result, param_idx, error_variation_percent)
         else:
             return cached_result.copy()
 
@@ -432,7 +609,7 @@ def run_image_matching_with_applied_errors(
             "lon_error_deg": (["measurement"], [lon_error_deg]),
             "riss_ctrs": (["measurement", "xyz"], [r_iss_midframe]),
             "bhat_hs": (["measurement", "xyz"], [boresight]),
-            "t_hs2ctrs": (["xyz_from", "xyz_to", "measurement"], t_matrix[:, :, np.newaxis]),
+            "t_hs2ctrs": (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),
@@ -596,7 +773,8 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
 
     Args:
         n_iterations: Number of Monte Carlo iterations
-        work_dir: Working directory for outputs
+        work_dir: Working directory for outputs. If None, uses a temporary
+                  directory that will be cleaned up when the process exits.
 
     Returns:
         Tuple of (results, netcdf_data, output_path)
@@ -610,9 +788,26 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
     generic_dir = root_dir / "data" / "generic"
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
 
+    # Use temporary directory if work_dir not specified
     if work_dir is None:
-        work_dir = root_dir / "tests" / "test_correction" / "monte_carlo_results" / "upstream"
-    work_dir.mkdir(parents=True, exist_ok=True)
+        _tmp_dir = tempfile.mkdtemp(prefix="curryer_upstream_")
+        work_dir = Path(_tmp_dir)
+
+        # Register cleanup to run on process exit
+        def cleanup_temp_dir():
+            if work_dir.exists():
+                try:
+                    shutil.rmtree(work_dir)
+                    logger.debug(f"Cleaned up temporary directory: {work_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {work_dir}: {e}")
+
+        atexit.register(cleanup_temp_dir)
+
+        logger.info(f"Using temporary directory: {work_dir}")
+        logger.info("(will be cleaned up on process exit)")
+    else:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Work directory: {work_dir}")
     logger.info(f"Iterations: {n_iterations}")
@@ -623,11 +818,20 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
     # Set output filename for test (consistent name for version control)
     config.output_filename = "upstream_results.nc"
 
+    # Add loaders and processing functions to config (Config-Centric Design)
+    config.telemetry_loader = load_clarreo_telemetry
+    config.science_loader = load_clarreo_science
+    config.gcp_loader = load_clarreo_gcp
+    config.gcp_pairing_func = synthetic_gcp_pairing  # Test helper from this file
+    config.image_matching_func = synthetic_image_matching  # Test helper from this file
+
     logger.info(f"Configuration loaded:")
     logger.info(f"  Mission: CLARREO Pathfinder")
     logger.info(f"  Instrument: {config.geo.instrument_name}")
     logger.info(f"  Parameters: {len(config.parameters)}")
     logger.info(f"  Iterations: {n_iterations}")
+    logger.info(f"  Data loaders: telemetry, science, gcp")
+    logger.info(f"  Processing: synthetic pairing and image matching")
 
     # Prepare data sets (synthetic GCP pairs since we don't have real data)
     # For upstream testing, we just need telemetry and science keys
@@ -637,20 +841,13 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
 
     logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
 
-    # Execute the Monte Carlo loop with CLARREO data loaders
+    # Execute the Monte Carlo loop - all config comes from config object!
     # This will test parameter generation, kernel creation, and geolocation
     logger.info("=" * 80)
     logger.info("EXECUTING MONTE CARLO UPSTREAM WORKFLOW")
     logger.info("=" * 80)
 
-    results, netcdf_data = mc.loop(
-        config,
-        work_dir,
-        tlm_sci_gcp_sets,
-        telemetry_loader=load_clarreo_telemetry,
-        science_loader=load_clarreo_science,
-        gcp_loader=load_clarreo_gcp,
-    )
+    results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets)
 
     logger.info("=" * 80)
     logger.info("UPSTREAM PIPELINE COMPLETE")
@@ -684,20 +881,33 @@ def run_downstream_pipeline(
     """
     Test DOWNSTREAM segment of Monte Carlo pipeline.
 
-    This tests:
-    - GCP spatial pairing
-    - Image matching with pre-geolocated data
-    - Error statistics computation
+    IMPORTANT: This test uses a CUSTOM LOOP (not mc.loop()) because it works with
+    pre-geolocated test data that doesn't have the telemetry/parameters needed for
+    the normal upstream pipeline.
 
-    This does NOT test:
-    - Kernel creation (uses pre-geolocated test data)
-    - Geolocation (test data already geolocated)
-    - Parameter modification (uses fake variations)
+    Pipeline Comparison:
+        Normal mc.loop():  Parameters → Kernels → Geolocation → Matching → Stats
+        This test:         Pre-geolocated Test Data → Pairing → Matching → Stats
+
+    Parameter effects are simulated by varying the geolocation errors directly
+    (bumping lat/lon values), rather than varying parameters and re-running SPICE.
+    This is the correct approach for testing with pre-geolocated imagery!
+
+    Tests (Real):
+        - GCP spatial pairing algorithms
+        - Image matching with real correlation
+        - Error statistics computation
+
+    Does NOT Test (No Data Available):
+        - Kernel creation (no telemetry)
+        - SPICE geolocation (test data is pre-geolocated)
+        - True parameter sensitivity (simulated via error variation)
 
     Args:
         n_iterations: Number of Monte Carlo iterations
         test_cases: Specific test cases to use (e.g., ['1', '2'])
-        work_dir: Working directory for outputs
+        work_dir: Working directory for outputs. If None, uses a temporary
+                  directory that will be cleaned up when the process exits.
 
     Returns:
         Tuple of (results, netcdf_data, output_path)
@@ -712,23 +922,36 @@ def run_downstream_pipeline(
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
     test_data_dir = root_dir / "tests" / "data" / "clarreo" / "image_match"
 
+    # Use temporary directory if work_dir not specified
     if work_dir is None:
-        work_dir = root_dir / "tests" / "test_correction" / "monte_carlo_results" / "downstream"
-    work_dir.mkdir(parents=True, exist_ok=True)
+        _tmp_dir = tempfile.mkdtemp(prefix="curryer_downstream_")
+        work_dir = Path(_tmp_dir)
+
+        # Register cleanup to run on process exit
+        def cleanup_temp_dir():
+            if work_dir.exists():
+                try:
+                    shutil.rmtree(work_dir)
+                    logger.debug(f"Cleaned up temporary directory: {work_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {work_dir}: {e}")
+
+        atexit.register(cleanup_temp_dir)
+
+        logger.info(f"Using temporary directory: {work_dir}")
+        logger.info("(will be cleaned up on process exit)")
+    else:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Work directory: {work_dir}")
     logger.info(f"Test data directory: {test_data_dir}")
     logger.info(f"Iterations: {n_iterations}")
     logger.info(f"Test cases: {test_cases or 'all'}")
 
-    # Create test mode configuration
-    test_mode_config = TestModeConfig(
-        test_data_dir=test_data_dir,
-        test_cases=test_cases,
-        randomize_errors=True,
-        error_variation_percent=3.0,
-        cache_image_match_results=True,
-    )
+    # Test configuration (simple parameters - no config object needed)
+    randomize_errors = True
+    error_variation_percent = 3.0
+    cache_results = True
 
     # Discover test cases
     discovered_cases = discover_test_image_match_cases(test_data_dir, test_cases)
@@ -796,37 +1019,50 @@ def run_downstream_pipeline(
     logger.info("STEP 2: CONFIGURATION")
     logger.info("=" * 80)
 
-    # Create base CLARREO config
+    # Create base CLARREO config to get standard settings
     base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
-    # Override for test mode (minimal parameters, zero sigma)
+    # Create minimal test config (MonteCarloConfig = THE one config)
+    # For downstream testing, we use minimal parameters (sigma=0) because
+    # variations come from test_mode_config randomization, not parameter tweaking
     config = mc.MonteCarloConfig(
+        # Core settings
         seed=42,
         n_iterations=n_iterations,
+        # Minimal parameter (no real variation - sigma=0)
         parameters=[
             mc.ParameterConfig(
                 ptype=mc.ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 data={
                     "current_value": [0.0, 0.0, 0.0],
-                    "sigma": 0.0,  # No real parameter variation
+                    "sigma": 0.0,  # No parameter variation (test variations applied differently)
                     "units": "arcseconds",
                     "transformation_type": "dcm_rotation",
                     "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
                 },
             )
         ],
+        # Copy required fields from base_config
         geo=base_config.geo,
-        # features from base_config
         performance_threshold_m=base_config.performance_threshold_m,
         performance_spec_percent=base_config.performance_spec_percent,
         earth_radius_m=base_config.earth_radius_m,
+        # Copy optional fields from base_config
         netcdf=base_config.netcdf,
         calibration_file_names=base_config.calibration_file_names,
         spacecraft_position_name=base_config.spacecraft_position_name,
         boresight_name=base_config.boresight_name,
         transformation_matrix_name=base_config.transformation_matrix_name,
     )
+
+    # Add loaders to config (Config-Centric Design)
+    config.telemetry_loader = load_clarreo_telemetry
+    config.science_loader = load_clarreo_science
+    config.gcp_loader = load_clarreo_gcp
+
+    # Validate complete config
+    config.validate(check_loaders=True)
 
     logger.info(f"Configuration created:")
     logger.info(f"  Mission: CLARREO (from clarreo_config)")
@@ -870,7 +1106,12 @@ def run_downstream_pipeline(
 
             # Run image matching
             image_matching_output = run_image_matching_with_applied_errors(
-                test_case, param_idx, test_mode_config, cached_result
+                test_case,
+                param_idx,
+                randomize_errors=randomize_errors,
+                error_variation_percent=error_variation_percent,
+                cache_results=cache_results,
+                cached_result=cached_result,
             )
 
             # Cache first result
@@ -974,9 +1215,18 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
 
+        # Add required loaders (Config-Centric Design)
+        config.telemetry_loader = load_clarreo_telemetry
+        config.science_loader = load_clarreo_science
+
+        # Validate config is complete
+        config.validate(check_loaders=True)
+
         self.assertEqual(config.geo.instrument_name, "CPRS_HYSICS")
         self.assertGreater(len(config.parameters), 0)
         self.assertEqual(config.seed, 42)
+        self.assertIsNotNone(config.telemetry_loader)
+        self.assertIsNotNone(config.science_loader)
 
         logger.info(f"✓ Configuration valid: {len(config.parameters)} parameters")
 
@@ -1005,14 +1255,10 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         self.assertGreater(len(test_cases), 0)
 
         test_case = test_cases[0]
-        test_config = TestModeConfig(
-            test_data_dir=self.test_data_dir,
-            test_cases=["1"],
-            randomize_errors=False,
-            cache_image_match_results=True,
-        )
 
-        result = run_image_matching_with_applied_errors(test_case, 0, test_config)
+        result = run_image_matching_with_applied_errors(
+            test_case, param_idx=0, randomize_errors=False, cache_results=True
+        )
 
         self.assertIsInstance(result, xr.Dataset)
         self.assertIn("lat_error_km", result.attrs)
@@ -1052,6 +1298,69 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         self.assertTrue(output_file.exists())
 
         logger.info(f"✓ Quick downstream test complete: {output_file}")
+
+    def test_synthetic_helpers_basic(self):
+        """Test that synthetic helper functions work correctly (for coverage)."""
+        logger.info("Testing synthetic helper functions...")
+
+        # Test synthetic GCP pairing
+        science_files = ["science_1.nc", "science_2.nc"]
+        pairs = synthetic_gcp_pairing(science_files)
+        self.assertEqual(len(pairs), 2)
+        self.assertIsInstance(pairs, list)
+        logger.info("✓ synthetic_gcp_pairing works")
+
+        # Test synthetic boresights generation
+        boresights = _generate_synthetic_boresights(5, max_off_nadir_rad=0.07)
+        self.assertEqual(boresights.shape, (5, 3))
+        self.assertTrue(np.all(np.abs(boresights[:, 0]) < 0.01))  # Small x component
+        logger.info("✓ _generate_synthetic_boresights works")
+
+        # Test synthetic positions generation
+        positions = _generate_spherical_positions(5, 6.78e6, 4e3)
+        self.assertEqual(positions.shape, (5, 3))
+        radii = np.linalg.norm(positions, axis=1)
+        self.assertTrue(np.all(radii > 6.7e6))  # Reasonable orbit altitude
+        logger.info("✓ _generate_spherical_positions works")
+
+        # Test transform generation
+        transforms = _generate_nadir_aligned_transforms(5, positions, boresights)
+        self.assertEqual(transforms.shape, (5, 3, 3))
+        # Check it's a valid rotation matrix (det should be close to 1)
+        det = np.linalg.det(transforms[0])
+        self.assertAlmostEqual(abs(det), 1.0, places=1)
+        logger.info("✓ _generate_nadir_aligned_transforms works")
+
+        logger.info("✓ All synthetic helpers validated")
+
+    def test_downstream_helpers_basic(self):
+        """Test downstream helper functions (for coverage)."""
+        logger.info("Testing downstream helper functions...")
+
+        # Test test case discovery
+        test_cases = discover_test_image_match_cases(self.test_data_dir, test_cases=["1"])
+        self.assertGreater(len(test_cases), 0)
+        self.assertIn("case_id", test_cases[0])
+        self.assertIn("subimage_file", test_cases[0])
+        logger.info(f"✓ discover_test_image_match_cases found {len(test_cases)} cases")
+
+        # Test error variation (create a simple test dataset)
+        base_result = xr.Dataset(
+            {
+                "lat_error_deg": (["measurement"], [0.001]),
+                "lon_error_deg": (["measurement"], [0.002]),
+            },
+            attrs={"lat_error_km": 0.1, "lon_error_km": 0.2, "correlation_ccv": 0.95},
+        )
+
+        varied_result = apply_error_variation_for_testing(base_result, param_idx=1, error_variation_percent=3.0)
+        self.assertIsInstance(varied_result, xr.Dataset)
+        self.assertIn("lat_error_deg", varied_result)
+        # Check that variation was applied (should be different from base)
+        self.assertNotEqual(varied_result.attrs["lat_error_km"], base_result.attrs["lat_error_km"])
+        logger.info("✓ apply_error_variation_for_testing works")
+
+        logger.info("✓ All downstream helpers validated")
 
 
 # =============================================================================

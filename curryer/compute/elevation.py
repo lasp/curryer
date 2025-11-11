@@ -714,7 +714,7 @@ class Elevation:
                 )
             tiles = new_tiles
 
-        hts = xr.combine_by_coords(tiles, combine_attrs="drop_conflicts")
+        hts = xr.combine_by_coords(tiles, combine_attrs="drop_conflicts", join="outer")
 
         if not self.degrees:
             hts["x"] = np.deg2rad(hts["x"])

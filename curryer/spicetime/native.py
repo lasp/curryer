@@ -41,9 +41,9 @@ def ugps2datetime(times, ceil_leapseconds=True):
     usec = times + leapsecs["offset"].iloc[idx].values
 
     # Catch edges cases (mid-leapsecond).
-    idx2 = times < leapsecs["ugps"][-1]
+    idx2 = times < leapsecs["ugps"].iloc[-1]
     if idx2.any():
-        diff = (leapsecs["ugps"][idx[idx2] + 1] - times[idx2]).values
+        diff = (leapsecs["ugps"].iloc[idx[idx2] + 1] - times[idx2]).values
         idx3 = diff < 1000000
         if idx3.any():
             # Option to error since dt64 doesn't support leapseconds.
@@ -98,9 +98,9 @@ def ugps_to_gps_fraction(times):
     usec = times - leap_micros_since_gps
 
     # Catch edges cases (mid-leapsecond).
-    idx2 = times < leapsecs["ugps"][-1]
+    idx2 = times < leapsecs["ugps"].iloc[-1]
     if idx2.any():
-        diff = (leapsecs["ugps"][idx[idx2] + 1] - times[idx2]).values
+        diff = (leapsecs["ugps"].iloc[idx[idx2] + 1] - times[idx2]).values
         idx3 = diff < constants.TimeConstant.SEC_TO_USEC
         if idx3.any():
             usec[idx2 & idx3] -= constants.TimeConstant.SEC_TO_USEC - diff[idx3] % constants.TimeConstant.SEC_TO_USEC

@@ -51,13 +51,49 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     - 2 OFFSET_KERNEL parameters (azimuth and elevation biases)
     - 1 OFFSET_TIME parameter (timing correction)
 
+    Returns:
+        MonteCarloConfig: THE single config object containing all CLARREO settings.
+
+    IMPORTANT - Config-Centric Design:
+        This function creates the base MonteCarloConfig (THE one config) with all
+        CLARREO-specific parameters and settings. After creation, you MUST add
+        data loaders and processing functions before using:
+
+            config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+
+            # Add required loaders
+            config.telemetry_loader = load_clarreo_telemetry
+            config.science_loader = load_clarreo_science
+
+            # Add optional processing functions (test or production)
+            config.gcp_pairing_func = your_pairing_function
+            config.image_matching_func = your_matching_function
+
+            # Validate and use
+            config.validate(check_loaders=True)
+            results = mc.loop(config, work_dir, data_sets)
+
     Args:
         data_dir: Path to the CLARREO GCS data directory
         generic_dir: Path to the generic SPICE kernels directory
         config_output_path: Optional path to save the configuration as JSON file
 
     Returns:
-        MonteCarloConfig object
+        MonteCarloConfig object (you must add loaders before calling mc.loop())
+
+    Example:
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+
+        # Add required loaders
+        config.telemetry_loader = load_clarreo_telemetry
+        config.science_loader = load_clarreo_science
+
+        # Add optional processing functions
+        config.gcp_pairing_func = synthetic_gcp_pairing
+        config.image_matching_func = synthetic_image_matching
+
+        # Now ready to use
+        results = mc.loop(config, work_dir, data_sets)
     """
     logger.info("=== CREATING CLARREO MONTE CARLO CONFIGURATION ===")
 
@@ -206,9 +242,9 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         param_name = param.config_file.name if param.config_file else "time_correction"
         logger.info(f"  {i + 1}. {param_name} ({param.ptype.name})")
 
-    # Validate configuration
-    config.validate()
-    logger.info("✓ Configuration validation passed")
+    # Validate configuration (without checking loaders - those are added later)
+    config.validate(check_loaders=False)
+    logger.info("✓ Configuration validation passed (loaders must be added before use)")
 
     # Save configuration to file if path is provided
     if config_output_path is not None:

@@ -16,6 +16,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 
@@ -23,6 +24,85 @@ from ..compute.spatial import geodetic_to_ecef
 from .data_structures import ImageGrid, NamedImageGrid
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# GCP Pairing Interface Protocol
+# ============================================================================
+
+
+class GCPPairingFunc(Protocol):
+    """
+    Protocol for GCP pairing functions in Monte Carlo pipeline.
+
+    Pairing functions determine which science observations (L1A images)
+    overlap with which ground control points (GCP reference images).
+
+    Standard Signature:
+        def pair_gcps(science_keys: List[str]) -> List[Tuple[str, str]]
+
+    Returns:
+        List of (science_key, gcp_reference_path) tuples, one per valid pair
+
+    Note:
+        This is a simplified interface for Monte Carlo compatibility.
+        Real implementations (like find_l1a_gcp_pairs below) may use more
+        sophisticated spatial algorithms internally, but must return results
+        in this simple tuple format.
+
+    Examples:
+        # Real spatial pairing
+        def spatial_gcp_pairing(science_keys):
+            l1a_images = load_images(science_keys)
+            gcp_images = discover_gcps()
+            pairs = find_spatial_overlaps(l1a_images, gcp_images)
+            return [(l1a.name, gcp.path) for l1a, gcp in pairs]
+
+        # Test/synthetic pairing
+        def synthetic_gcp_pairing(science_keys):
+            return [(key, f"synthetic_gcp_{i}.tif")
+                    for i, key in enumerate(science_keys)]
+    """
+
+    def __call__(self, science_keys: list[str]) -> list[tuple[str, str]]:
+        """Find GCP pairs for given science observations."""
+        ...
+
+
+def validate_pairing_output(pairs: list[tuple[str, str]]) -> None:
+    """
+    Validate that GCP pairing output conforms to expected format.
+
+    Args:
+        pairs: List of (science_key, gcp_path) tuples
+
+    Raises:
+        TypeError: If structure is invalid
+        ValueError: If tuple elements have wrong types
+
+    Example:
+        >>> pairs = gcp_pairing_func(["sci_001", "sci_002"])
+        >>> validate_pairing_output(pairs)
+    """
+    if not isinstance(pairs, list):
+        raise TypeError(f"GCP pairing must return list, got {type(pairs)}")
+
+    for i, pair in enumerate(pairs):
+        if not isinstance(pair, tuple) or len(pair) != 2:
+            raise ValueError(
+                f"GCP pairing output[{i}] must be (str, str) tuple, "
+                f"got {type(pair)} with length {len(pair) if isinstance(pair, tuple) else 'N/A'}"
+            )
+        sci_key, gcp_path = pair
+        if not isinstance(sci_key, str) or not isinstance(gcp_path, (str, Path)):
+            raise ValueError(
+                f"GCP pairing output[{i}] = ({type(sci_key).__name__}, {type(gcp_path).__name__}), expected (str, str)"
+            )
+
+
+# ============================================================================
+# Spatial Pairing Implementation
+# ============================================================================
 
 
 def enu_rotation_matrix(lat_deg: float, lon_deg: float) -> np.ndarray:

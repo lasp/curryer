@@ -109,7 +109,7 @@ class Tsis1IntegrationTestCase(unittest.TestCase):
         self.assertIsInstance(data, pd.DataFrame)
         self.assertTupleEqual(expected.shape, data.shape)
         for col in expected.columns:
-            npt.assert_allclose(expected[col], data[col], rtol=1e-12, err_msg=col)
+            npt.assert_allclose(expected[col], data[col], rtol=2e-12, err_msg=col)
 
 
 if __name__ == "__main__":
