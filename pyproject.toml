@@ -44,7 +44,7 @@ dependencies = [
     "geotiff>=0.2.10",
     "tifffile>=2021.7.4,!=2022.4.28,<2023.7.0",
     "affine>=2.3",
-    "numcodecs>=0.10.0,<0.12.0",
+    "numcodecs>=0.12.0,<0.13.0",
     "pyproj>=3.6",
     "requests>=2.28",
     "jinja2>=3",
@@ -55,26 +55,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Since these are only for testing, we do not care what version they are
-test = ["pre-commit", "pytest", "pytest-cov", "pytest-randomly", "ruff", "responses"]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-randomly",
+    "responses>=0.25.8",
+]
+dev = [
+    "pre-commit",
+    "ipython",
+    "ruff"
+]
+docs = [
+    "sphinx>=5.0",
+    "myst-parser>=0.18",
+    "sphinx-autoapi>=2.0",
+]
 
 [tool.poetry]
 packages = [{ include = "curryer" }]
 
 [project.urls]
 repository = "https://github.com/lasp/curryer"
-#documentation = ""  # Add once readthedocs is up
-
-[tool.poetry.group.dev.dependencies]
-pre-commit = "*"
-pytest = "*"
-pytest-cov = "*"
-pytest-randomly = "*"
-ruff = "*"
-ipython = "*"
-responses = "^0.25.8"
-sphinx = "*"
-myst-parser = "*" 
+documentation = "https://lasp-curryer.readthedocs.io/"
 
 #[tool.poetry.scripts]
 #curryer = 'curryer.__main__:main'

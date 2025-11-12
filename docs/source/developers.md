@@ -2,10 +2,18 @@
 
 ## Environment Setup
 
-Development environment requires Poetry 2 or greater.
+Development environment requires Poetry 2 or greater. To install all dev dependencies using Poetry:
 
 ```bash
-poetry install
+poetry install --all-extras
+```
+
+We strongly recommend that Poetry is used for all development. However, you can install using Pip:
+
+```bash
+pip install .[dev,test]
+# If you're using zsh, instead:
+pip install .'[dev,test]'
 ```
 
 ## Testing
