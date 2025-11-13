@@ -70,6 +70,7 @@ docs = [
     "sphinx>=5.0",
     "myst-parser>=0.18",
     "sphinx-autoapi>=2.0",
+    "furo" # sphinx theme
 ]
 
 [tool.poetry]
