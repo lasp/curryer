@@ -30,7 +30,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install ".[test]"
+        run: pip install ".[dev,test]"
 
       - name: Ruff check linting
         run: ruff check
