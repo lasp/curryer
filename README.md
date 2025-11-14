@@ -4,6 +4,7 @@ A library for SPICE extensions and geospatial data product generation.
 
 - Github: https://github.com/lasp/curryer
 - PyPi: https://pypi.org/project/lasp-curryer/
+- Documentation: https://lasp-curryer.readthedocs.io/
 
 ## Core Features
 
