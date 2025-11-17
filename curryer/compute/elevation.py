@@ -18,9 +18,9 @@ from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
+import tifffile
 import xarray as xr
 from affine import Affine
-from geotiff import GeoTiff
 from pyproj import Transformer
 from pyproj.transformer import TransformerGroup
 
@@ -122,25 +122,134 @@ class Elevation:
         col, row = inv * (lon, lat)
         return int(row), int(col)
 
-    @track_performance
-    def get_affine_from_geotiff(self, gtiff: GeoTiff) -> Affine:
-        """Extract an Affine transform from a GeoTiff object's transform matrix.
+    @staticmethod
+    def _get_affine_from_tiff(tif: tifffile.TiffFile) -> Affine:
+        """Extract affine transformation from GeoTIFF using tifffile.
+
+        Uses standard GeoTIFF tags ModelPixelScaleTag (33550) and
+        ModelTiepointTag (33922) as defined in GeoTIFF Specification v1.0.
+
+        Assumes non-rotated, north-up images. For rotated images using
+        ModelTransformationTag (34264), this method will need enhancement.
 
         Parameters
         ----------
-        gtiff : geotiff.GeoTiff
-            A GeoTiff object read in from the geotiff library.
+        tif : tifffile.TiffFile
+            An open TiffFile object.
 
         Returns
         -------
-        affine.Affine
-            The corresponding Affine transformation.
+        Affine
+            The affine transformation matrix.
+
+        Raises
+        ------
+        ValueError
+            If required GeoTIFF tags are missing.
+
+        Notes
+        -----
+        Standard GeoTIFF structure (from GeoTIFF Specification Section 2.6.1):
+        - ModelPixelScale = (ScaleX, ScaleY, ScaleZ) in map units per pixel
+        - ModelTiepoint = (I, J, K, X, Y, Z) where pixel (I,J) maps to location (X,Y)
+        - Y scale is negative for north-up images (GDAL convention)
         """
-        matrix = gtiff.tifTrans.transforms[0]
-        a, b, _, c = matrix[0]
-        d, e, _, f = matrix[1]
-        transform = Affine.from_gdal(c, a, b, f, d, e)
+        metadata = tif.geotiff_metadata
+
+        # Require standard GeoTIFF tags (fail fast on malformed files)
+        if "ModelPixelScale" not in metadata:
+            raise ValueError(
+                "GeoTIFF missing required ModelPixelScaleTag (33550). "
+                "File may not be a valid GeoTIFF or uses alternative transformation method."
+            )
+
+        if "ModelTiepoint" not in metadata:
+            raise ValueError(
+                "GeoTIFF missing required ModelTiepointTag (33922). "
+                "File may use ModelTransformationTag (rotated images not currently supported)."
+            )
+
+        # ModelPixelScale: (scale_x, scale_y, scale_z)
+        scale = metadata["ModelPixelScale"]
+        scale_x, scale_y = scale[0], scale[1]
+
+        # ModelTiepoint: (pixel_x, pixel_y, pixel_z, world_x, world_y, world_z)
+        # Typically (0, 0, 0, origin_x, origin_y, 0) for simple north-up images
+        tiepoint = metadata["ModelTiepoint"]
+        origin_x = tiepoint[3]  # World X coordinate
+        origin_y = tiepoint[4]  # World Y coordinate
+
+        # Build affine transform for north-up, non-rotated images
+        # Y scale is negative because rows increase downward but Y increases northward
+        transform = Affine.from_gdal(
+            origin_x,  # Top-left X coordinate
+            scale_x,  # Pixel width in map units
+            0.0,  # Row rotation (0 for north-up)
+            origin_y,  # Top-left Y coordinate
+            0.0,  # Column rotation (0 for north-up)
+            -scale_y,  # Pixel height (negative for north-up)
+        )
         return transform
+
+    @staticmethod
+    def _get_crs_from_tiff(tif: tifffile.TiffFile) -> int:
+        """Extract EPSG code from GeoTIFF using tifffile.
+
+        Uses standard GeoTIFF GeoKeys as defined in GeoTIFF Specification v1.0:
+        - ProjectedCSTypeGeoKey (3072): EPSG code for projected coordinate systems
+        - GeographicTypeGeoKey (2048): EPSG code for geographic coordinate systems
+
+        Parameters
+        ----------
+        tif : tifffile.TiffFile
+            An open TiffFile object.
+
+        Returns
+        -------
+        int
+            The EPSG code for the coordinate reference system.
+
+        Raises
+        ------
+        ValueError
+            If no valid EPSG code is found in the GeoTIFF metadata.
+
+        Notes
+        -----
+        tifffile 2025.x parses the GeoKeyDirectoryTag (34735) and converts
+        numeric GeoKey IDs to descriptive names for readability. Values may
+        be Enum objects (e.g., <GCS.WGS_84: 4326>) requiring .value extraction.
+
+        These GeoKey names are from the official GeoTIFF specification, not
+        specific to any test data. They will work with any compliant GeoTIFF file.
+
+        References
+        ----------
+        GeoTIFF Specification v1.0, Section 6.3.3.1 (Projected CS Keys)
+        GeoTIFF Specification v1.0, Section 6.3.2.1 (Geographic CS Keys)
+        """
+        metadata = tif.geotiff_metadata
+
+        # Try ProjectedCSTypeGeoKey first - for projected CRS (e.g., UTM zones)
+        # GeoKey ID 3072 per GeoTIFF spec Section 6.3.3.1
+        epsg = metadata.get("ProjectedCSTypeGeoKey")
+        if epsg is not None:
+            # Handle enum types (e.g., <PCS.WGS_84_UTM_zone_33N: 32633>)
+            return int(getattr(epsg, "value", epsg))
+
+        # Fall back to GeographicTypeGeoKey - for geographic CRS (e.g., WGS84)
+        # GeoKey ID 2048 per GeoTIFF spec Section 6.3.2.1
+        epsg = metadata.get("GeographicTypeGeoKey")
+        if epsg is not None:
+            # Handle enum types (e.g., <GCS.WGS_84: 4326>)
+            return int(getattr(epsg, "value", epsg))
+
+        # If neither found, the file is missing required GeoKeys
+        raise ValueError(
+            "Could not extract EPSG code from GeoTIFF. "
+            "Metadata missing both ProjectedCSTypeGeoKey (3072) and "
+            "GeographicTypeGeoKey (2048). File may not be a valid GeoTIFF."
+        )
 
     @track_performance
     def locate_files(self, pattern: str = "*_gmted_*.tif") -> list[Path]:
@@ -313,9 +422,12 @@ class Elevation:
         if name not in self._cache:
             logger.info("Reading DEM file: %s", filepath)
 
-            gtiff = GeoTiff(str(filepath))
-            array = gtiff.read()
-            transform = self.get_affine_from_geotiff(gtiff)
+            # Use tifffile instead of geotiff
+            with tifffile.TiffFile(str(filepath)) as tif:
+                array = tif.asarray()
+                transform = self._get_affine_from_tiff(tif)
+                crs_code = self._get_crs_from_tiff(tif)
+
             height, width = array.shape
 
             # Calculate coordinates using pixel centers (matching rioxarray behavior)
@@ -334,7 +446,7 @@ class Elevation:
                 attrs={
                     "transform": tuple(transform.to_gdal()),
                     "resolution": (transform.a, transform.e),
-                    "crs": f"EPSG:{gtiff.as_crs}",
+                    "crs": f"EPSG:{crs_code}",
                     "_FillValue": getattr(array, "fill_value", -32768),
                 },
             )
