@@ -71,7 +71,7 @@ COPY pyproject.toml $BASE_DIR
 RUN pip install --upgrade pip
 
 # Install all dependencies (including dev deps) specified in pyproject.toml
-RUN poetry install
+RUN poetry install --all-extras
 
 # Download third-party data.
 ENV CURRYER_DATA_DIR=$DATA_DIR

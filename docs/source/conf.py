@@ -6,7 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "curryer"
+project = "Curryer"
 copyright = "2025 University of Colorado"
 author = "Brandon Stone"
 
@@ -37,6 +37,23 @@ source_suffix = {
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "classic"
-# html_static_path = ["_static"]
-# html_logo = "_static/logo-no-background.png"
+html_theme = "furo"
+html_static_path = ["_static"]
+html_logo = "_static/curryer_logo.png"
+
+html_theme_options = {
+    "light_css_variables": {
+        "color-brand-primary": "#C86417",  # Orange
+        "color-brand-content": "#C86417",
+        "color-background-primary": "#e6e8e9",  # Light gray background
+        "color-foreground-primary": "#0a0908",  # Almost black text
+        "color-foreground-secondary": "#909ead",  # Gray for secondary text
+    },
+    "dark_css_variables": {
+        "color-brand-primary": "#C86417",  # Orange (same for dark mode)
+        "color-brand-content": "#C86417",
+        "color-background-primary": "#0a0908",  # Dark background
+        "color-foreground-primary": "#e6e8e9",  # Light text
+        "color-foreground-secondary": "#909ead",  # Gray for secondary text
+    },
+}
