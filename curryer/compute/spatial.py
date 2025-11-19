@@ -36,8 +36,70 @@ EARTH_FRAME = "ITRF93"  # High-accuracy, requires extra kernels.
 # 'IAU_EARTH' is low-accuracy, but built-in.
 
 
-def pixel_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.ndarray]:
-    """Load the pixel or boresight vector(s) for a given instrument.
+class SpatialQueries:
+    @staticmethod
+    def _query_rotation_and_position_raw(
+            sample_et,
+            instrument,
+            perspective_correction,
+            observer_id,
+            fixed_frame_name
+    ):
+        """
+        Raw SPICE query without error interception.
+        """
+        target_id = instrument.id
+        boresight_frame_name = instrument.frame.name
+
+        rot_to_fix = spicierpy.pxform(boresight_frame_name, fixed_frame_name, sample_et)
+        position, _ = spicierpy.spkezp(
+            target_id, sample_et,
+            ref=fixed_frame_name,
+            abcorr=perspective_correction,
+            obs=observer_id
+        )
+        return rot_to_fix, position
+
+    # Create the "Safe" version once at class definition time.
+    # This avoids the overhead of decorating inside a loop.
+    _query_rotation_and_position_safe = spicierpy.ext.spice_error_to_val(
+        err_value=(np.full((3, 3), np.nan), np.full((3,), np.nan)),
+        err_flag=SQF.from_spice_error,
+        pass_flag=SQF.GOOD,
+        disable=False
+    )(_query_rotation_and_position_raw)
+
+    @classmethod
+    def query_rotation_and_position(
+            cls,
+            sample_et,
+            instrument,
+            perspective_correction,
+            observer_id: int = spicierpy.obj.Body("EARTH").id,
+            allow_nans=False,
+            fixed_frame_name=EARTH_FRAME
+    ):
+        """
+        Query SPICE for rotation and position, optionally suppressing errors.
+        """
+        # Dispatch to the appropriate method based on the flag
+        if allow_nans:
+            return cls._query_rotation_and_position_safe(
+                sample_et, instrument, perspective_correction, observer_id, fixed_frame_name
+            )
+
+        # If nans are not allowed, call raw.
+        # We manually return the GOOD flag to maintain signature consistency.
+        res = cls._query_rotation_and_position_raw(
+            sample_et, instrument, perspective_correction, observer_id, fixed_frame_name
+        )
+        return res, SQF.GOOD
+
+
+def get_instrument_kernel_pointing_vectors(
+        instrument: Union[int, str, spicierpy.obj.Body]
+) -> tuple[int, np.ndarray]:
+    """Load the pixel or boresight vector(s) for a given instrument from the instrument kernel.
 
     Boresight vector is queried from the instrument kernel, but superseded by
     pixel vectors if they are available.
@@ -64,6 +126,7 @@ def pixel_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.n
     if not isinstance(instrument, spicierpy.obj.Body):
         instrument = spicierpy.obj.Body(instrument, frame=True)
 
+    # Load the boresight vector from the instrument kernel.
     boresight_vector = spicierpy.ext.instrument_boresight(instrument)
 
     inst_var_base = f"INS{instrument.id}"
@@ -75,11 +138,47 @@ def pixel_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.n
         vectors = vectors.reshape((count, 3))
 
     except NotFoundError:
+        logger.debug("Pixel vector data not found. Using the instrument boresight.")
         count = 1
         vectors = np.array([boresight_vector])
 
     logger.debug("Read [%d] pixel vectors for instrument [%s]", count, instrument)
     return count, vectors
+
+
+def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
+    """Load the pixel or boresight vector(s) for a given instrument.
+
+    Boresight vector is queried from the instrument kernel, but superseded by
+    pixel vectors if they are available.
+
+    Pixel vectors are queried from the SPICE kernel variable pool using the
+    non-standard (but established) variables:
+        INS{instrument_id}_PIXEL_COUNT
+        INS{instrument_id}_PIXEL_VECTORS
+    where the former is the pixel index and the latter is three doubles.
+
+    Parameters
+    ----------
+    instrument : spicierpy.obj.Body or int or str
+        Instrument to query details about.
+
+    Returns
+    -------
+    int
+        Number of boresight (1) or pixel vectors (1+).
+    np.ndarray
+        2D array of boresight (1x3) or pixel vectors (1+,3).
+
+    """
+    # Print deprecation warning and call the new function.
+
+    logger.warning(
+        "`pixel_vectors` is deprecated and will be removed in a future release. "
+        "Please use `get_instrument_kernel_pointing_vectors` instead.",
+        stacklevel=2
+    )
+    return get_instrument_kernel_pointing_vectors(instrument)
 
 
 def instrument_pointing_state(
@@ -208,6 +307,120 @@ def instrument_pointing_state(
     return pnt_data, sc_data, qf_data
 
 
+def compute_ellipsoid_intersection(
+        ugps_times: np.ndarray,
+        instrument: Union[int, str, spicierpy.obj.Body],
+        perspective_correction: str = None,
+        allow_nans: bool = True,
+        custom_pointing_vectors: Union[np.ndarray, None] = None,
+        give_geodetic_output: bool = False,
+        give_lat_lon_in_degrees: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """Geolocate an instrument's pointing (boresight or pixels) on the Earth's surface (WGS84 ellipsoid)."""
+
+    # Prepare the SPICE objects if int or string representation is given.
+    if not isinstance(instrument, spicierpy.obj.Body):
+        instrument = spicierpy.obj.Body(instrument, frame=True)
+
+    et_times = spicetime.adapt(ugps_times, to="et")
+
+    if custom_pointing_vectors is None:
+        pix_count, pix_vectors = get_instrument_kernel_pointing_vectors(instrument)
+    else:
+        logger.debug("A custom pointing vector was provided, skipping instrument kernel load.")
+
+        # Convert to numpy array to ensure we can check ndim/shape
+        pix_vectors = np.array(custom_pointing_vectors)
+
+        if pix_vectors.ndim == 1:
+            # Only a boresight vector was provided (3,). Expand to (1, 3).
+            if pix_vectors.size != 3:
+                raise ValueError(f"`custom_pointing_vectors` must have 3 values, got {pix_vectors.size}.")
+            pix_vectors = pix_vectors[None, :]
+            pix_count = 1
+        elif pix_vectors.ndim == 2:
+            # Multiple vectors provided (N, 3).
+            if pix_vectors.shape[1] != 3:
+                raise ValueError(f"`custom_pointing_vectors` must be shape (N, 3), got {pix_vectors.shape}.")
+            pix_count = pix_vectors.shape[0]
+        else:
+            raise ValueError("`custom_pointing_vectors` must be 1D (3,) or 2D (N, 3).")
+
+    # Optimization: Ensure contiguous memory for faster matrix multiplication inside the loop
+    pix_vectors = np.ascontiguousarray(pix_vectors)
+
+    logger.debug("Calculating [%s x %s] Earth ellipsoid intercepts for [%s]", pix_count, len(et_times), instrument)
+
+    surface_points = np.full((et_times.size * pix_count, 3), np.nan)
+    spacecraft_positions = np.full((et_times.size * pix_count, 3), np.nan)
+    quality_flags = np.zeros((et_times.size * pix_count,), dtype=np.int64)
+
+    earth_id = spicierpy.obj.Body("EARTH").id
+    if perspective_correction is None:
+        perspective_correction = "NONE"
+
+    # Loop over time steps
+    for ith, et_time in enumerate(et_times):
+        # Query the boresight pointing and position in ECEF.
+        (fixed_rotation, fixed_position), qf_val = SpatialQueries.query_rotation_and_position(
+            et_time,
+            instrument,
+            perspective_correction,
+            observer_id=earth_id,
+            allow_nans=allow_nans
+        )
+
+        if qf_val == SQF.GOOD:
+            # Vectorized rotation of all pixels at this timestamp
+            fixed_vectors = (fixed_rotation @ pix_vectors.T).T
+
+            fixed_points = ray_intersect_ellipsoid(
+                fixed_vectors,
+                fixed_position,
+                geodetic=give_geodetic_output,
+                degrees=give_lat_lon_in_degrees
+            )
+
+            # Slice assignment
+            start_idx = ith * pix_count
+            end_idx = (ith + 1) * pix_count
+
+            surface_points[start_idx:end_idx, :] = fixed_points
+            spacecraft_positions[start_idx:end_idx, :] = fixed_position
+
+            # Calculate Quality Flags
+            qf_values = np.full((pix_count,), qf_val)
+
+            # Check for non-intersections (ray missed the earth)
+            missed_earth = ~np.isfinite(fixed_points).all(axis=1)
+            if missed_earth.any():
+                qf_values[missed_earth] |= SQF.CALC_ELLIPS_NO_INTERSECT
+
+            quality_flags[start_idx:end_idx] = qf_values
+
+        else:
+            # SPICE failed (data gap, etc).
+            # Leave the surface and S/C data points as NaNs.
+            qf_val |= SQF.CALC_ELLIPS_INSUFF_DATA
+            quality_flags[ith * pix_count: (ith + 1) * pix_count] = qf_val
+
+    if pix_count == 1:
+        index = pd.Index(ugps_times, name="ugps")
+    else:
+        index = pd.MultiIndex.from_product([ugps_times, np.arange(pix_count) + 1], names=["ugps", "pixel"])
+
+    columns = ["lon", "lat", "alt"] if give_geodetic_output else ["x", "y", "z"]
+    surface_dataframe = pd.DataFrame(surface_points, columns=columns, index=index)
+    spacecraft_dataframe = pd.DataFrame(spacecraft_positions, columns=["x", "y", "z"], index=index)
+    qflags_dataframe = pd.Series(quality_flags, name="qf", index=index)
+
+    surface_dataframe.columns.name = f"Ellipsoid[{instrument.name}]@{EARTH_FRAME}"
+    spacecraft_dataframe.columns.name = f"Position[{instrument.name}]@{EARTH_FRAME}"
+
+    logger.info("Completed [%s x %s] Earth ellipsoid intercepts for [%s]", pix_count, len(et_times), instrument)
+    return surface_dataframe, spacecraft_dataframe, qflags_dataframe
+
+
 def instrument_intersect_ellipsoid(
     ugps_times: np.ndarray,
     instrument: int | str | spicierpy.obj.Body,
@@ -261,80 +474,21 @@ def instrument_intersect_ellipsoid(
         The index is the product of `ugps_times` and `boresight_vector`.
 
     """
-    # Prepare the SPICE objects.
-    if not isinstance(instrument, spicierpy.obj.Body):
-        instrument = spicierpy.obj.Body(instrument, frame=True)
-
-    # Prepare arguments for spice.
-    observer_id = spicierpy.obj.Body("EARTH").id
-    fixed_frame_name = EARTH_FRAME  # ECEF (high-precision)
-    target_id = instrument.id
-    boresight_frame_name = instrument.frame.name
-
-    et_times = spicetime.adapt(ugps_times, to="et")
-    if correction is None:
-        correction = "NONE"
-    nan_result = (np.full((3, 3), np.nan), np.full((3,), np.nan))
-
-    # Optional multi-pixel support...
-    if boresight_vector is None:
-        pix_count, pix_vectors = pixel_vectors(instrument)
-    else:
-        pix_count = 1
-        pix_vectors = np.array(boresight_vector)[None, ...]
-
-    logger.debug("Calculating [%s x %s] Earth ellipsoid intercepts for [%s]", pix_count, len(et_times), instrument)
-
-    # Query the rotation and position in fixed reference frame, but optionally
-    # map SPICE errors to NaNs and quality flags.
-    @spicierpy.ext.spice_error_to_val(
-        err_value=nan_result, err_flag=SQF.from_spice_error, pass_flag=SQF.GOOD, disable=not allow_nans
+    # Print deprecation warning and call the new function.
+    logger.warning(
+        "`instrument_intersect_ellipsoid` is deprecated and will be removed in a future release. "
+        "Please use `calculate_instrument_intersect_earth_ellipsoid` instead.",
+        stacklevel=2
     )
-    def _query(sample_et):
-        rot_to_fix = spicierpy.pxform(boresight_frame_name, fixed_frame_name, sample_et)
-        position, _ = spicierpy.spkezp(target_id, sample_et, ref=fixed_frame_name, abcorr=correction, obs=observer_id)
-        return rot_to_fix, position
-
-    surf_points = np.full((et_times.size * pix_count, 3), np.nan)
-    sc_positions = np.full((et_times.size * pix_count, 3), np.nan)
-    quality_flags = np.zeros((et_times.size * pix_count,), dtype=np.int64)
-
-    for ith, et_time in enumerate(et_times):
-        # Query the boresight pointing and position in ECEF.
-        (fixed_rotation, fixed_position), qf_val = _query(et_time)
-
-        # Enough data was found to check individual pixels.
-        if qf_val == SQF.GOOD:
-            fixed_vectors = (fixed_rotation @ pix_vectors.T).T
-            fixed_points = ray_intersect_ellipsoid(fixed_vectors, fixed_position, geodetic=geodetic, degrees=degrees)
-            surf_points[ith * pix_count : (ith + 1) * pix_count, :] = fixed_points
-
-            sc_positions[ith * pix_count : (ith + 1) * pix_count, :] = fixed_position
-
-            qf_values = np.full((pix_count,), qf_val)
-            qf_values[~np.isfinite(fixed_points).all(axis=1)] |= SQF.CALC_ELLIPS_NO_INTERSECT
-            quality_flags[ith * pix_count : (ith + 1) * pix_count] = qf_values
-
-        else:
-            # Leave the surface and S/C data points as NaNs.
-            qf_val |= SQF.CALC_ELLIPS_INSUFF_DATA
-            quality_flags[ith * pix_count : (ith + 1) * pix_count] = qf_val
-
-    if pix_count == 1:
-        index = pd.Index(ugps_times, name="ugps")
-    else:
-        index = pd.MultiIndex.from_product([ugps_times, np.arange(pix_count) + 1], names=["ugps", "pixel"])
-
-    columns = ["lon", "lat", "alt"] if geodetic else ["x", "y", "z"]
-    surf_data = pd.DataFrame(surf_points, columns=columns, index=index)
-    sc_data = pd.DataFrame(sc_positions, columns=["x", "y", "z"], index=index)
-    qf_data = pd.Series(quality_flags, name="qf", index=index)
-
-    surf_data.columns.name = f"Ellipsoid[{instrument.name}]@{fixed_frame_name}"
-    sc_data.columns.name = f"Position[{instrument.name}]@{fixed_frame_name}"
-
-    logger.info("Completed [%s x %s] Earth ellipsoid intercepts for [%s]", pix_count, len(et_times), instrument)
-    return surf_data, sc_data, qf_data
+    return compute_ellipsoid_intersection(
+        ugps_times,
+        instrument,
+        perspective_correction=correction,
+        allow_nans=allow_nans,
+        custom_pointing_vectors=boresight_vector,
+        give_geodetic_output=geodetic,
+        give_lat_lon_in_degrees=degrees
+    )
 
 
 def ray_intersect_ellipsoid(
