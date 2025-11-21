@@ -55,7 +55,7 @@ class SpatialTestCase(unittest.TestCase):
             instrument=MagicMock(id=1),
             perspective_correction="NONE",
             observer_id=399,
-            allow_nans=True
+            allow_nans=True,
         )
         self.assertTrue(np.isnan(rot).all())
         self.assertNotEqual(flag, SQF.GOOD)
@@ -71,7 +71,7 @@ class SpatialTestCase(unittest.TestCase):
                 instrument=MagicMock(id=1),
                 perspective_correction="NONE",
                 observer_id=399,
-                allow_nans=False
+                allow_nans=False,
             )
 
     def test_unit_calculate_intersect_custom_vectors(self):
@@ -81,7 +81,7 @@ class SpatialTestCase(unittest.TestCase):
         mock_instrument.frame.name = "DUMMY_FRAME"
         et_times = np.array([0.0])
 
-        with patch.object(spatial.SpatialQueries, 'query_rotation_and_position') as mock_query:
+        with patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query:
             mock_query.return_value = ((np.eye(3), np.array([7000.0, 0, 0])), SQF.GOOD)
 
             # Case A: 1D Array (Boresight)
@@ -102,7 +102,7 @@ class SpatialTestCase(unittest.TestCase):
         """Explicit check that deprecated functions trigger warnings and call new code."""
         ugps = np.array([0])
         with patch("curryer.compute.spatial.compute_ellipsoid_intersection") as mock_new:
-            with self.assertLogs(spatial.logger, level='WARNING') as cm:
+            with self.assertLogs(spatial.logger, level="WARNING") as cm:
                 spatial.instrument_intersect_ellipsoid(ugps, "TEST_INST")
             self.assertTrue(any("deprecated" in o for o in cm.output))
             mock_new.assert_called_once()
@@ -233,8 +233,10 @@ class SpatialTestCase(unittest.TestCase):
         lla = spatial.ecef_to_geodetic(sc_pos_xyz, meters=False, degrees=True)
 
         exp_lla = spicierpy.recgeo(
-            rectan=sc_pos_xyz, as_deg=True,
-            re=constants.WGS84_SEMI_MAJOR_AXIS_KM, f=constants.WGS84_INVERSE_FLATTENING,
+            rectan=sc_pos_xyz,
+            as_deg=True,
+            re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
+            f=constants.WGS84_INVERSE_FLATTENING,
         )
         npt.assert_allclose(lla, exp_lla, rtol=1e-13)
 
@@ -249,8 +251,11 @@ class SpatialTestCase(unittest.TestCase):
 
         xyz = spatial.geodetic_to_ecef(lla, degrees=True)
         exp_xyz = spicierpy.georec(
-            lon=np.deg2rad(-107.25), lat=np.deg2rad(42), alt=450,
-            re=constants.WGS84_SEMI_MAJOR_AXIS_KM, f=constants.WGS84_INVERSE_FLATTENING,
+            lon=np.deg2rad(-107.25),
+            lat=np.deg2rad(42),
+            alt=450,
+            re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
+            f=constants.WGS84_INVERSE_FLATTENING,
         )
         npt.assert_allclose(xyz, exp_xyz, rtol=1e-13)
 
@@ -350,10 +355,7 @@ class SpatialTestCase(unittest.TestCase):
         )
         self.assertTrue(np.isnan(out_srf_loc[0, :]).all())
         self.assertTrue(np.isnan(out_srf_loc[3, :]).all())
-        npt.assert_allclose(
-            out_qf,
-            np.array([SQF.CALC_TERRAIN_EXTREME_ZENITH, 0, 0, SQF.CALC_TERRAIN_EXTREME_ZENITH])
-        )
+        npt.assert_allclose(out_qf, np.array([SQF.CALC_TERRAIN_EXTREME_ZENITH, 0, 0, SQF.CALC_TERRAIN_EXTREME_ZENITH]))
 
     def test_terrain_correct_array(self):
         self.mock_elev.local_minmax.return_value = -0.1, 9.0
@@ -396,12 +398,18 @@ class SpatialTestCase(unittest.TestCase):
         # (Using generic values to avoid SPICE dependency in this specific block if possible,
         #  but your original used spicierpy.georec, so we assume SPICE is avail)
         ec_sat_pos = spicierpy.georec(
-            lon=np.deg2rad(-107.25), lat=np.deg2rad(42), alt=450,
-            re=constants.WGS84_SEMI_MAJOR_AXIS_KM, f=constants.WGS84_INVERSE_FLATTENING,
+            lon=np.deg2rad(-107.25),
+            lat=np.deg2rad(42),
+            alt=450,
+            re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
+            f=constants.WGS84_INVERSE_FLATTENING,
         )
         ec_srf_pos = spicierpy.georec(
-            lon=np.deg2rad(-105.25), lat=np.deg2rad(40), alt=0,
-            re=constants.WGS84_SEMI_MAJOR_AXIS_KM, f=constants.WGS84_INVERSE_FLATTENING,
+            lon=np.deg2rad(-105.25),
+            lat=np.deg2rad(40),
+            alt=0,
+            re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
+            f=constants.WGS84_INVERSE_FLATTENING,
         )
 
         npts = 480 * 4500
@@ -437,10 +445,7 @@ class SpatialTestCase(unittest.TestCase):
         with self.mkrn.load():
             # 1. Run the new function
             surf_points, sc_points, sqf = spatial.compute_ellipsoid_intersection(
-                ugps_times,
-                self.mkrn.mappings["CPRS_HYSICS"],
-                give_geodetic_output=True,
-                give_lat_lon_in_degrees=True
+                ugps_times, self.mkrn.mappings["CPRS_HYSICS"], give_geodetic_output=True, give_lat_lon_in_degrees=True
             )
 
             # 2. Verify outputs
@@ -454,8 +459,13 @@ class SpatialTestCase(unittest.TestCase):
 
             exp_pt_surf, _, _ = spicierpy.sincpt(
                 et=spicetime.adapt(ugps_times[0], to="et"),
-                abcorr="NONE", method="ELLIPSOID", target="EARTH", fixref="ITRF93",
-                obsrvr="CPRS_HYSICS", dref="CPRS_HYSICS_COORD", dvec=u1_inst,
+                abcorr="NONE",
+                method="ELLIPSOID",
+                target="EARTH",
+                fixref="ITRF93",
+                obsrvr="CPRS_HYSICS",
+                dref="CPRS_HYSICS_COORD",
+                dvec=u1_inst,
             )
             exp_geo = spatial.ecef_to_geodetic(exp_pt_surf, degrees=True)
 
@@ -463,10 +473,7 @@ class SpatialTestCase(unittest.TestCase):
 
             # 1. Check Latitude and Longitude (Indices 0 and 1)
             npt.assert_allclose(
-                mid_pixel_result[:2],
-                exp_geo[:2],
-                rtol=1e-5,
-                err_msg="Latitude/Longitude do not match SPICE baseline"
+                mid_pixel_result[:2], exp_geo[:2], rtol=1e-5, err_msg="Latitude/Longitude do not match SPICE baseline"
             )
             # 2. Check Altitude (Index 2)
             # Spice has non-zero altitude (~40 cm)
@@ -474,7 +481,7 @@ class SpatialTestCase(unittest.TestCase):
                 mid_pixel_result[2],
                 exp_geo[2],
                 atol=1e-3,
-                err_msg="Altitude differs from SPICE baseline by more than 1 meter"
+                err_msg="Altitude differs from SPICE baseline by more than 1 meter",
             )
 
     def test_ellipsoid_intersect_real(self):
@@ -499,8 +506,13 @@ class SpatialTestCase(unittest.TestCase):
 
             exp_pt_surf, exp_ukn, exp_vec_surf = spicierpy.sincpt(
                 et=sample_et,
-                abcorr="NONE", method="ELLIPSOID", target="EARTH", fixref="ITRF93",
-                obsrvr="CPRS_HYSICS", dref="CPRS_HYSICS_COORD", dvec=u1_inst,
+                abcorr="NONE",
+                method="ELLIPSOID",
+                target="EARTH",
+                fixref="ITRF93",
+                obsrvr="CPRS_HYSICS",
+                dref="CPRS_HYSICS_COORD",
+                dvec=u1_inst,
             )
             exp_lla = spatial.ecef_to_geodetic(exp_pt_surf, degrees=True)
 
@@ -516,7 +528,7 @@ class SpatialTestCase(unittest.TestCase):
             npix, qry_vectors = spatial.get_instrument_kernel_pointing_vectors("CPRS_HYSICS")
 
             # Using the deprecated function here to ensure it still returns valid data
-            with self.assertLogs(spatial.logger, level='WARNING'):
+            with self.assertLogs(spatial.logger, level="WARNING"):
                 surf_points, sc_points, sqf = spatial.instrument_intersect_ellipsoid(
                     ugps_times, self.mkrn.mappings["CPRS_HYSICS"]
                 )
@@ -528,8 +540,13 @@ class SpatialTestCase(unittest.TestCase):
             u1_inst = qry_vectors[npix // 2, :]
             exp_pt_surf, _, _ = spicierpy.sincpt(
                 et=spicetime.adapt(ugps_times[0], to="et"),
-                abcorr="NONE", method="ELLIPSOID", target="EARTH", fixref="ITRF93",
-                obsrvr="CPRS_HYSICS", dref="CPRS_HYSICS_COORD", dvec=u1_inst,
+                abcorr="NONE",
+                method="ELLIPSOID",
+                target="EARTH",
+                fixref="ITRF93",
+                obsrvr="CPRS_HYSICS",
+                dref="CPRS_HYSICS_COORD",
+                dvec=u1_inst,
             )
             npt.assert_allclose(mid_pixel_point, exp_pt_surf, rtol=1e-5)
 
@@ -569,13 +586,23 @@ class SpatialTestCase(unittest.TestCase):
 
             for sample_et in et_times:
                 azel, lt = spicierpy.azlcpo(
-                    et=sample_et, abcorr="NONE", method="ELLIPSOID", target="SUN", azccw=False,
-                    elplsz=True, obspos=fixed_pos, obsref="ITRF93", obsctr="EARTH",
+                    et=sample_et,
+                    abcorr="NONE",
+                    method="ELLIPSOID",
+                    target="SUN",
+                    azccw=False,
+                    elplsz=True,
+                    obspos=fixed_pos,
+                    obsref="ITRF93",
+                    obsctr="EARTH",
                 )
                 exp_az, exp_el = np.rad2deg(azel[1:3])
 
                 sun_xyz, lt = spicierpy.spkezp(
-                    et=sample_et, abcorr="NONE", ref="ITRF93", targ=spicierpy.obj.Body("SUN").id,
+                    et=sample_et,
+                    abcorr="NONE",
+                    ref="ITRF93",
+                    targ=spicierpy.obj.Body("SUN").id,
                     obs=spicierpy.obj.Body("EARTH").id,
                 )
 
