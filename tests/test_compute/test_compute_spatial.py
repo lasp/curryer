@@ -78,6 +78,7 @@ class SpatialTestCase(unittest.TestCase):
         """Test logic for handling custom pointing vectors (shapes broadcasting)."""
         mock_instrument = MagicMock(spec=spicierpy.obj.Body)
         mock_instrument.id = -999
+        mock_instrument.name = "MOCK_INSTRUMENT"
         mock_instrument.frame.name = "DUMMY_FRAME"
         et_times = np.array([0.0])
 

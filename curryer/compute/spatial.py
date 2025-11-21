@@ -53,12 +53,14 @@ class SpatialQueries:
 
     # Create the "Safe" version once at class definition time.
     # This avoids the overhead of decorating inside a loop.
-    _query_rotation_and_position_safe = spicierpy.ext.spice_error_to_val(
-        err_value=(np.full((3, 3), np.nan), np.full((3,), np.nan)),
-        err_flag=SQF.from_spice_error,
-        pass_flag=SQF.GOOD,
-        disable=False,
-    )(_query_rotation_and_position_raw)
+    _query_rotation_and_position_safe = staticmethod(
+        spicierpy.ext.spice_error_to_val(
+            err_value=(np.full((3, 3), np.nan), np.full((3,), np.nan)),
+            err_flag=SQF.from_spice_error,
+            pass_flag=SQF.GOOD,
+            disable=False
+        )(_query_rotation_and_position_raw)
+    )
 
     @classmethod
     def query_rotation_and_position(
@@ -305,9 +307,53 @@ def compute_ellipsoid_intersection(
     give_geodetic_output: bool = False,
     give_lat_lon_in_degrees: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
-    """Geolocate an instrument's pointing (boresight or pixels) on the Earth's surface (WGS84 ellipsoid)."""
+    """
+    Compute the intersection points of an instrument's pointing vectors (boresight or pixels) with the Earth's surface,
+    modeled as the WGS84 reference ellipsoid. This function geolocates where the instrument (e.g., a satellite sensor)
+    is "looking" on the ellipsoid at given times, optionally applying perspective corrections and custom pointing vectors.
 
-    # Prepare the SPICE objects if int or string representation is given.
+    This is the recommended API replacing `instrument_intersect_ellipsoid`.
+
+    Parameters
+    ----------
+    ugps_times : np.ndarray
+        Array of times (in UNIX GPS seconds) at which to compute the intersection points.
+    instrument : int, str, or spicierpy.obj.Body
+        The instrument or spacecraft identifier. Can be a NAIF integer code, a string name, or a `spicierpy.obj.Body` object.
+    perspective_correction : str, optional
+        If specified, applies a perspective correction model to the pointing vectors. Default is None (no correction).
+    allow_nans : bool, optional
+        If True, allows NaN values in the output for cases where intersection cannot be computed. Default is True.
+    custom_pointing_vectors : np.ndarray or None, optional
+        If provided, overrides the instrument kernel pointing vectors with a custom array of shape (N, 3) or (3,).
+        If None, uses the instrument's default boresight or pixel vectors. Default is None.
+    give_geodetic_output : bool, optional
+        If True, output geodetic coordinates (longitude, latitude, altitude) instead of ECEF XYZ. Default is False.
+    give_lat_lon_in_degrees : bool, optional
+        If True, longitude and latitude are returned in degrees (if geodetic output is requested). Default is True.
+
+    Returns
+    -------
+    surface_points : pd.DataFrame
+        DataFrame of intersection points on the ellipsoid, either in ECEF XYZ (columns: x, y, z) or geodetic coordinates
+        (columns: lon, lat, alt), depending on `give_geodetic_output`.
+    spacecraft_positions : pd.DataFrame
+        DataFrame of spacecraft positions at each time and pixel, in ECEF XYZ coordinates (columns: x, y, z).
+    quality_flags : pd.Series
+        Series of integer quality flags for each intersection, indicating success or failure modes.
+
+    Examples
+    --------
+    >>> times = np.array([1_600_000_000.0, 1_600_000_100.0])
+    >>> surface, sc_pos, flags = compute_ellipsoid_intersection(
+    ...     times,
+    ...     instrument="MRO_HIRISE",
+    ...     custom_pointing_vectors=np.array([0, 0, 1]),
+    ...     give_geodetic_output=True
+    ... )
+    >>> print(surface.head())
+
+    """
     if not isinstance(instrument, spicierpy.obj.Body):
         instrument = spicierpy.obj.Body(instrument, frame=True)
 
@@ -459,7 +505,7 @@ def instrument_intersect_ellipsoid(
     # Print deprecation warning and call the new function.
     logger.warning(
         "`instrument_intersect_ellipsoid` is deprecated and will be removed in a future release. "
-        "Please use `calculate_instrument_intersect_earth_ellipsoid` instead.",
+        "Please use `compute_ellipsoid_intersection` instead.",
         stacklevel=2,
     )
     return compute_ellipsoid_intersection(
