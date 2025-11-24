@@ -3,7 +3,7 @@
 ci:
   autofix_prs: false
   autoupdate_schedule: "quarterly" # Checks for hook updates pulled from pre-commit hook repo
-  skip: [no-commit-to-branch] # Allows checks to run on main branch in CI
+  skip: [no-commit-to-branch, ccv] # Allows checks to run on main branch in CI
 
 # Configuration for pre-commit hooks (local or in CI)
 # Reference: https://pre-commit.com/
