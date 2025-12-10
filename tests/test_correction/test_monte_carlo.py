@@ -1658,11 +1658,12 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
         config.calibration_dir = None
 
-        los_vectors, optical_psfs = mc._load_calibration_data(config)
+        # Load LOS vectors and PSF data into calibration data.
+        calibration_data = mc._load_calibration_data(config)
 
-        # Should return None when no calibration dir
-        self.assertIsNone(los_vectors)
-        self.assertIsNone(optical_psfs)
+        # Should return CalibrationData with None values when no calibration dir
+        self.assertIsNone(calibration_data.los_vectors)
+        self.assertIsNone(calibration_data.optical_psfs)
         logger.info(f"✓ _load_calibration_data handles None calibration_dir")
 
     def test_checkpoint_save_load(self):
