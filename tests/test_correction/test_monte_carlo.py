@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 from scipy.io import loadmat
@@ -72,6 +73,7 @@ from curryer.correction.image_match import (
     load_optical_psf_from_mat,
 )
 from curryer.correction.pairing import find_l1a_gcp_pairs
+from curryer.kernels import create
 
 # Import CLARREO config and data loaders
 sys.path.insert(0, str(Path(__file__).parent))
@@ -1361,6 +1363,348 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         logger.info("✓ apply_error_variation_for_testing works")
 
         logger.info("✓ All downstream helpers validated")
+
+    def test_loop_optimized(self):
+        """
+        Test loop() function (optimized pair-outer implementation).
+
+        This test validates the main loop() function which is now the optimized
+        default implementation. It covers the core Monte Carlo workflow.
+        """
+        logger.info("=" * 80)
+        logger.info("TEST: loop() (OPTIMIZED IMPLEMENTATION)")
+        logger.info("=" * 80)
+
+        # Setup configuration
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config.n_iterations = 2  # Small for fast testing
+        config.output_filename = "test_loop_optimized.nc"
+
+        # Add loaders and processing functions
+        config.telemetry_loader = load_clarreo_telemetry
+        config.science_loader = load_clarreo_science
+        config.gcp_loader = load_clarreo_gcp
+        config.gcp_pairing_func = synthetic_gcp_pairing
+        config.image_matching_func = synthetic_image_matching
+
+        # Prepare data sets
+        tlm_sci_gcp_sets = [
+            ("telemetry_5a", "science_5a", "synthetic_gcp_1"),
+        ]
+
+        work_dir = self.work_dir / "test_loop_optimized"
+        work_dir.mkdir(exist_ok=True)
+
+        # Run loop()
+        logger.info("Running loop()...")
+        np.random.seed(42)
+        results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets, resume_from_checkpoint=False)
+
+        # Validate results structure
+        self.assertIsInstance(results, list)
+        self.assertGreater(len(results), 0)
+        expected_count = config.n_iterations * len(tlm_sci_gcp_sets)
+        self.assertEqual(len(results), expected_count)
+        logger.info(f"✓ loop() returned {len(results)} results")
+
+        # Validate NetCDF structure
+        self.assertIsInstance(netcdf_data, dict)
+        self.assertIn("rms_error_m", netcdf_data)
+        self.assertIn("parameter_set_id", netcdf_data)
+        self.assertEqual(netcdf_data["rms_error_m"].shape, (config.n_iterations, len(tlm_sci_gcp_sets)))
+        logger.info(f"✓ NetCDF structure valid")
+
+        # Validate result contents
+        for result in results:
+            self.assertIn("param_index", result)
+            self.assertIn("pair_index", result)
+            self.assertIn("rms_error_m", result)
+        logger.info(f"✓ All result entries have required fields")
+
+        logger.info("=" * 80)
+        logger.info("✓ loop() TEST PASSED")
+        logger.info("=" * 80)
+
+    def test_helper_extract_parameter_values(self):
+        """Test _extract_parameter_values helper function."""
+        logger.info("Testing _extract_parameter_values...")
+
+        # Create sample params with proper structure for CONSTANT_KERNEL type
+        param_config = mc.ParameterConfig(
+            ptype=mc.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), data=None
+        )
+        # Create DataFrame with angle data as expected by the function
+        param_data = pd.DataFrame(
+            {
+                "angle_x": [np.radians(1.0 / 3600)],  # 1 arcsec in radians
+                "angle_y": [np.radians(2.0 / 3600)],  # 2 arcsec in radians
+                "angle_z": [np.radians(3.0 / 3600)],  # 3 arcsec in radians
+            }
+        )
+        params = [(param_config, param_data)]
+
+        result = mc._extract_parameter_values(params)
+
+        self.assertIsInstance(result, dict)
+        # Should extract 3 values: roll, pitch, yaw
+        self.assertEqual(len(result), 3)
+        self.assertIn("test_kernel_roll", result)
+        self.assertIn("test_kernel_pitch", result)
+        self.assertIn("test_kernel_yaw", result)
+        logger.info(f"✓ _extract_parameter_values works correctly")
+
+    def test_helper_build_netcdf_structure(self):
+        """Test _build_netcdf_structure helper function."""
+        logger.info("Testing _build_netcdf_structure...")
+
+        # Create minimal config
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+
+        n_params = 3
+        n_pairs = 2
+
+        netcdf_data = mc._build_netcdf_structure(config, n_params, n_pairs)
+
+        # Validate structure
+        self.assertIsInstance(netcdf_data, dict)
+        self.assertIn("rms_error_m", netcdf_data)
+        self.assertIn("parameter_set_id", netcdf_data)
+        self.assertEqual(netcdf_data["rms_error_m"].shape, (n_params, n_pairs))
+        self.assertEqual(len(netcdf_data["parameter_set_id"]), n_params)
+        logger.info(f"✓ _build_netcdf_structure creates correct structure")
+
+    def test_helper_extract_error_metrics(self):
+        """Test _extract_error_metrics helper function."""
+        logger.info("Testing _extract_error_metrics...")
+
+        # Create sample error stats dataset with correct attribute name
+        stats_dataset = xr.Dataset(
+            {
+                "measurement": (["point"], [0, 1, 2]),
+                "lat_error_deg": (["point"], [0.001, 0.002, 0.001]),
+                "lon_error_deg": (["point"], [0.001, 0.002, 0.001]),
+            }
+        )
+        stats_dataset.attrs["rms_error_m"] = 150.0
+        stats_dataset.attrs["mean_error_m"] = 140.0
+        stats_dataset.attrs["max_error_m"] = 200.0
+        stats_dataset.attrs["std_error_m"] = 10.0
+        stats_dataset.attrs["total_measurements"] = 3  # Correct attribute name
+
+        metrics = mc._extract_error_metrics(stats_dataset)
+
+        # Validate metrics
+        self.assertIsInstance(metrics, dict)
+        self.assertIn("rms_error_m", metrics)
+        self.assertIn("mean_error_m", metrics)
+        self.assertIn("n_measurements", metrics)
+        self.assertEqual(metrics["n_measurements"], 3)
+        self.assertEqual(metrics["rms_error_m"], 150.0)
+        logger.info(f"✓ _extract_error_metrics extracts metrics correctly")
+
+    def test_helper_store_parameter_values(self):
+        """Test _store_parameter_values helper function."""
+        logger.info("Testing _store_parameter_values...")
+
+        # Create netcdf structure with parameter arrays pre-created
+        # (as _build_netcdf_structure would do)
+        netcdf_data = {
+            "parameter_set_id": np.zeros(3, dtype=int),
+            "param_test_param": np.zeros(3),  # Must match naming convention
+        }
+
+        param_values = {"test_param": 1.5}
+        param_idx = 1
+
+        mc._store_parameter_values(netcdf_data, param_idx, param_values)
+
+        # Validate storage
+        self.assertEqual(netcdf_data["param_test_param"][param_idx], 1.5)
+        logger.info(f"✓ _store_parameter_values stores correctly")
+
+    def test_helper_store_gcp_pair_results(self):
+        """Test _store_gcp_pair_results helper function."""
+        logger.info("Testing _store_gcp_pair_results...")
+
+        # Create netcdf structure with all required fields
+        netcdf_data = {
+            "rms_error_m": np.zeros((2, 2)),
+            "mean_error_m": np.zeros((2, 2)),
+            "max_error_m": np.zeros((2, 2)),
+            "std_error_m": np.zeros((2, 2)),  # Must include this
+            "n_measurements": np.zeros((2, 2), dtype=int),
+        }
+
+        error_metrics = {
+            "rms_error_m": 150.0,
+            "mean_error_m": 140.0,
+            "max_error_m": 200.0,
+            "std_error_m": 10.0,  # Must include this
+            "n_measurements": 10,
+        }
+
+        param_idx = 0
+        pair_idx = 1
+
+        mc._store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics)
+
+        # Validate storage
+        self.assertEqual(netcdf_data["rms_error_m"][param_idx, pair_idx], 150.0)
+        self.assertEqual(netcdf_data["std_error_m"][param_idx, pair_idx], 10.0)
+        self.assertEqual(netcdf_data["n_measurements"][param_idx, pair_idx], 10)
+        logger.info(f"✓ _store_gcp_pair_results stores correctly")
+
+    def test_helper_compute_parameter_set_metrics(self):
+        """Test _compute_parameter_set_metrics helper function."""
+        logger.info("Testing _compute_parameter_set_metrics...")
+
+        # Create netcdf structure
+        netcdf_data = {
+            "percent_under_250m": np.zeros(2),
+            "mean_rms_all_pairs": np.zeros(2),
+            "best_pair_rms": np.zeros(2),
+            "worst_pair_rms": np.zeros(2),
+        }
+
+        pair_errors = [100.0, 200.0, 300.0]
+        param_idx = 0
+        threshold_m = 250.0
+
+        mc._compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m)
+
+        # Validate computed metrics
+        self.assertGreater(netcdf_data["percent_under_250m"][param_idx], 0)
+        self.assertGreater(netcdf_data["mean_rms_all_pairs"][param_idx], 0)
+        self.assertEqual(netcdf_data["best_pair_rms"][param_idx], 100.0)
+        self.assertEqual(netcdf_data["worst_pair_rms"][param_idx], 300.0)
+        logger.info(f"✓ _compute_parameter_set_metrics computes correctly")
+
+    def test_helper_load_image_pair_data(self):
+        """Test _load_image_pair_data helper function."""
+        logger.info("Testing _load_image_pair_data...")
+
+        # Setup configuration
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+
+        tlm_dataset, sci_dataset, ugps_times = mc._load_image_pair_data(
+            "telemetry_5a", "science_5a", config, load_clarreo_telemetry, load_clarreo_science
+        )
+
+        # Validate return types
+        self.assertIsInstance(tlm_dataset, pd.DataFrame)
+        self.assertIsInstance(sci_dataset, pd.DataFrame)
+        self.assertIsNotNone(ugps_times)
+        logger.info(f"✓ _load_image_pair_data loads data correctly")
+
+    def test_helper_create_dynamic_kernels(self):
+        """Test _create_dynamic_kernels helper function."""
+        logger.info("Testing _create_dynamic_kernels...")
+
+        # Setup
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+
+        work_dir = self.work_dir / "test_dynamic_kernels"
+        work_dir.mkdir(exist_ok=True)
+
+        # Load data
+        tlm_dataset = load_clarreo_telemetry("telemetry_5a", config)
+        creator = create.KernelCreator(overwrite=True, append=False)
+
+        dynamic_kernels = mc._create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+
+        # Validate
+        self.assertIsInstance(dynamic_kernels, list)
+        logger.info(f"✓ _create_dynamic_kernels creates {len(dynamic_kernels)} kernels")
+
+    def test_helper_load_calibration_data(self):
+        """Test _load_calibration_data helper function."""
+        logger.info("Testing _load_calibration_data...")
+
+        # Setup minimal config without calibration dir
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config.calibration_dir = None
+
+        los_vectors, optical_psfs = mc._load_calibration_data(config)
+
+        # Should return None when no calibration dir
+        self.assertIsNone(los_vectors)
+        self.assertIsNone(optical_psfs)
+        logger.info(f"✓ _load_calibration_data handles None calibration_dir")
+
+    def test_checkpoint_save_load(self):
+        """Test checkpoint save and load functionality."""
+        logger.info("=" * 80)
+        logger.info("TEST: Checkpoint Save/Load")
+        logger.info("=" * 80)
+
+        # Setup configuration
+        root_dir = Path(__file__).parents[2]
+        generic_dir = root_dir / "data" / "generic"
+        data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+
+        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config.n_iterations = 2
+        config.output_filename = "test_checkpoint.nc"
+
+        # Add loaders
+        config.telemetry_loader = load_clarreo_telemetry
+        config.science_loader = load_clarreo_science
+        config.gcp_loader = load_clarreo_gcp
+        config.gcp_pairing_func = synthetic_gcp_pairing
+        config.image_matching_func = synthetic_image_matching
+
+        work_dir = self.work_dir / "test_checkpoint"
+        work_dir.mkdir(exist_ok=True)
+
+        output_file = work_dir / config.output_filename
+
+        # Build simple netcdf structure for testing
+        netcdf_data = mc._build_netcdf_structure(config, 2, 2)
+        netcdf_data["rms_error_m"][0, 0] = 100.0
+        netcdf_data["rms_error_m"][1, 0] = 150.0
+
+        # Save checkpoint
+        logger.info("Saving checkpoint...")
+        mc._save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed=0)
+
+        checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
+        self.assertTrue(checkpoint_file.exists())
+        logger.info(f"✓ Checkpoint file created: {checkpoint_file}")
+
+        # Load checkpoint
+        logger.info("Loading checkpoint...")
+        loaded_data, completed_pairs = mc._load_checkpoint(output_file, config)
+
+        self.assertIsNotNone(loaded_data)
+        self.assertEqual(completed_pairs, 1)  # 0-indexed, so pair 0 completed = 1
+        self.assertEqual(loaded_data["rms_error_m"][0, 0], 100.0)
+        self.assertEqual(loaded_data["rms_error_m"][1, 0], 150.0)
+        logger.info(f"✓ Checkpoint loaded correctly, completed pairs = {completed_pairs}")
+
+        # Cleanup
+        mc._cleanup_checkpoint(output_file)
+        self.assertFalse(checkpoint_file.exists())
+        logger.info(f"✓ Checkpoint cleanup successful")
+
+        logger.info("=" * 80)
+        logger.info("✓ CHECKPOINT SAVE/LOAD TEST PASSED")
+        logger.info("=" * 80)
 
 
 # =============================================================================

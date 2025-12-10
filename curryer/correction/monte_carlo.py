@@ -1731,8 +1731,8 @@ def _load_image_pair_data(tlm_key, sci_key, config, telemetry_loader, science_lo
 
     Returns:
         Tuple of (tlm_dataset, sci_dataset, ugps_times)
-        - tlm_dataset: xarray.Dataset with spacecraft state
-        - sci_dataset: xarray.Dataset with frame timing
+        - tlm_dataset: pd.DataFrame with spacecraft state
+        - sci_dataset: pd.DataFrame with frame timing
         - ugps_times: Time array from science dataset
 
     Example:
@@ -1763,7 +1763,7 @@ def _create_dynamic_kernels(config, work_dir, tlm_dataset, creator):
     Args:
         config: MonteCarloConfig with geo settings and dynamic_kernels list
         work_dir: Path to working directory for kernel files
-        tlm_dataset: xarray.Dataset with spacecraft state data
+        tlm_dataset: pd.DataFrame with spacecraft state data
         creator: KernelCreator instance for writing kernels
 
     Returns:
@@ -1798,8 +1798,8 @@ def _create_parameter_kernels(params, work_dir, tlm_dataset, sci_dataset, ugps_t
     Args:
         params: List of (ParameterConfig, parameter_value) tuples
         work_dir: Path to working directory for kernel files
-        tlm_dataset: xarray.Dataset with spacecraft state
-        sci_dataset: xarray.Dataset with frame timing
+        tlm_dataset: pd.DataFrame with spacecraft state
+        sci_dataset: pd.DataFrame with frame timing
         ugps_times: Original time array from science dataset
         config: MonteCarloConfig with geo settings
         creator: KernelCreator instance for writing kernels
@@ -1884,7 +1884,7 @@ def _geolocate_and_match(
         dynamic_kernels: List of dynamic kernel file paths
         param_kernels: List of parameter-specific kernel file paths
         ugps_times_modified: Time array (possibly modified by OFFSET_TIME)
-        tlm_dataset: xarray.Dataset with spacecraft state
+        tlm_dataset: pd.DataFrame with spacecraft state
         gcp_pairs: List of GCP pairing tuples
         params: List of (ParameterConfig, parameter_value) tuples
         los_vectors_cached: Pre-loaded LOS vectors (or None)
@@ -1939,10 +1939,7 @@ def _geolocate_and_match(
 
 
 def loop(
-    config: MonteCarloConfig,
-    work_dir: Path,
-    tlm_sci_gcp_sets: [(str, str, str)],
-    resume_from_checkpoint: bool = False,
+    config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
 ):
     """
     Monte Carlo loop for parameter sensitivity analysis
@@ -2011,7 +2008,21 @@ def loop(
     # Build NetCDF data structure
     n_param_sets = len(params_set)
     n_gcp_pairs = len(tlm_sci_gcp_sets)
-    netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+
+    # Try to load checkpoint if resuming
+    output_file = work_dir / config.get_output_filename()
+    start_pair_idx = 0
+    if resume_from_checkpoint:
+        checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
+        if checkpoint_data is not None:
+            netcdf_data = checkpoint_data
+            start_pair_idx = completed_pairs
+            logger.info(f"Resuming from checkpoint: starting at GCP pair {start_pair_idx + 1}/{n_gcp_pairs}")
+        else:
+            netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+            logger.info("No valid checkpoint found, starting from beginning")
+    else:
+        netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
 
     # Initialize results list for backward compatibility
     results = []
@@ -2031,6 +2042,11 @@ def loop(
 
     # OUTER LOOP: Iterate through GCP pairs
     for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
+        # Skip already-completed pairs if resuming
+        if pair_idx < start_pair_idx:
+            logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} === (SKIPPED - already completed)")
+            continue
+
         logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
 
         # Load image pair data ONCE
@@ -2116,6 +2132,10 @@ def loop(
 
         logger.info(f"  GCP pair {pair_idx + 1} complete (processed {n_param_sets} parameter sets)")
 
+        # Save checkpoint after each pair completes
+        if resume_from_checkpoint:
+            _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx)
+
     # Compute aggregate statistics for each parameter set (after all pairs complete)
     logger.info("=== Computing aggregate statistics for all parameter sets ===")
     for param_idx in range(n_param_sets):
@@ -2143,8 +2163,11 @@ def loop(
             if result["param_index"] == param_idx:
                 result["aggregate_error_stats"] = aggregate_stats
     # Save final NetCDF results
-    output_file = work_dir / config.get_output_filename()
     _save_netcdf_results(netcdf_data, output_file, config)
+
+    # Clean up checkpoint file after successful completion
+    if resume_from_checkpoint:
+        _cleanup_checkpoint(output_file)
 
     logger.info(f"=== Loop Complete: Processed {n_gcp_pairs} GCP pairs × {n_param_sets} parameter sets ===")
     logger.info(f"  Total iterations: {len(results)}")
@@ -2274,17 +2297,18 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 # =============================================================================
 
 
-def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_completed):
+def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed):
     """
-    Save NetCDF checkpoint with partial results after each parameter set.
+    Save NetCDF checkpoint with partial results after each GCP pair completes.
 
     This enables resuming Monte Carlo runs if they are interrupted.
+    Adapted for pair-outer loop order where each pair processes all parameters.
 
     Args:
         netcdf_data: Dictionary with current NetCDF data
         output_file: Path to final output file (checkpoint uses .checkpoint.nc suffix)
         config: MonteCarloConfig with metadata
-        param_idx_completed: Index of the last completed parameter set
+        pair_idx_completed: Index of the last completed GCP pair (for pair-outer loop)
     """
     import xarray as xr
 
@@ -2327,8 +2351,8 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
 
     # Add checkpoint-specific metadata (NetCDF-compatible types)
     ds.attrs["checkpoint"] = 1  # Use integer instead of boolean for NetCDF compatibility
-    ds.attrs["completed_parameter_sets"] = int(param_idx_completed + 1)
-    ds.attrs["total_parameter_sets"] = int(len(netcdf_data["parameter_set_id"]))
+    ds.attrs["completed_gcp_pairs"] = int(pair_idx_completed + 1)
+    ds.attrs["total_gcp_pairs"] = int(len(netcdf_data["gcp_pair_id"]))
     ds.attrs["checkpoint_timestamp"] = pd.Timestamp.now().isoformat()
 
     # Add parameter variable attributes from config
@@ -2359,9 +2383,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
     ds.to_netcdf(checkpoint_file, mode="w")  # Force overwrite mode
     ds.close()
 
-    logger.info(
-        f"  Checkpoint saved: {param_idx_completed + 1}/{len(netcdf_data['parameter_set_id'])} parameter sets complete"
-    )
+    logger.info(f"  Checkpoint saved: {pair_idx_completed + 1}/{len(netcdf_data['gcp_pair_id'])} GCP pairs complete")
 
 
 def _load_checkpoint(output_file, config):
@@ -2385,7 +2407,7 @@ def _load_checkpoint(output_file, config):
     logger.info(f"Found checkpoint file: {checkpoint_file}")
 
     try:
-        ds = xr.open_dataset(checkpoint_file)
+        ds = xr.open_dataset(checkpoint_file, decode_timedelta=False)
 
         # Verify this is actually a checkpoint (checkpoint attribute is 1 for true, 0 or missing for false)
         checkpoint_flag = ds.attrs.get("checkpoint", 0)
@@ -2394,11 +2416,11 @@ def _load_checkpoint(output_file, config):
             ds.close()
             return None, 0
 
-        completed = ds.attrs.get("completed_parameter_sets", 0)
-        total = ds.attrs.get("total_parameter_sets", 0)
+        completed = ds.attrs.get("completed_gcp_pairs", 0)
+        total = ds.attrs.get("total_gcp_pairs", 0)
         timestamp = ds.attrs.get("checkpoint_timestamp", "unknown")
 
-        logger.info(f"Checkpoint from {timestamp}: {completed}/{total} parameter sets complete")
+        logger.info(f"Checkpoint from {timestamp}: {completed}/{total} GCP pairs complete")
 
         # Convert xarray.Dataset back to netcdf_data dictionary
         netcdf_data = {}
@@ -2413,7 +2435,7 @@ def _load_checkpoint(output_file, config):
 
         ds.close()
 
-        logger.info(f"Checkpoint loaded successfully, resuming from parameter set {completed}")
+        logger.info(f"Checkpoint loaded successfully, resuming from GCP pair {completed}")
 
         return netcdf_data, completed
 
