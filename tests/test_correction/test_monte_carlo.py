@@ -1364,6 +1364,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         logger.info("✓ All downstream helpers validated")
 
+    @pytest.mark.extra
     def test_loop_optimized(self):
         """
         Test loop() function (optimized pair-outer implementation).
