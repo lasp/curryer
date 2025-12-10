@@ -1677,9 +1677,8 @@ def _load_calibration_data(config: MonteCarloConfig):
     """
     Load LOS vectors and optical PSF if calibration_dir is configured.
 
-    This function centralizes calibration data loading, which occurs once
-    per parameter set in the current implementation. In the reversed loop,
-    this will be called once per GCP pair instead.
+    This function centralizes calibration data loading, which is now called once
+    per GCP pair in the optimized implementation (previously called once per parameter set).
 
     Args:
         config: MonteCarloConfig with calibration_dir and calibration settings
