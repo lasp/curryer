@@ -1817,7 +1817,7 @@ def _create_parameter_kernels(params, work_dir, tlm_dataset, sci_dataset, ugps_t
     ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
 
     # Apply each individual parameter change
-    logger.info("Applying parameter changes:")
+    logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Create static changing SPICE kernels
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -2161,7 +2161,7 @@ def loop(
             key = (param_idx, pair_idx)
             if key in results_dict:
                 results_dict[key]["aggregate_error_stats"] = aggregate_stats
-
+                results_dict[key]["aggregate_rms_error_m"] = aggregate_error_metrics["rms_error_m"]
     # Convert results_dict back to list for backward compatibility
     # Sort by iteration index to maintain consistent ordering
     results = [results_dict[key] for key in sorted(results_dict.keys(), key=lambda k: results_dict[k]["iteration"])]

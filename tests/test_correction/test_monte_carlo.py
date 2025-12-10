@@ -56,7 +56,8 @@ import pytest
 import xarray as xr
 from scipy.io import loadmat
 
-from curryer import utils
+from curryer import meta, utils
+from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction import monte_carlo as mc
 from curryer.correction.data_structures import (
@@ -1424,6 +1425,14 @@ class MonteCarloUnifiedTests(unittest.TestCase):
             self.assertIn("param_index", result)
             self.assertIn("pair_index", result)
             self.assertIn("rms_error_m", result)
+            self.assertIn("aggregate_rms_error_m", result)
+            # Verify aggregate_rms_error_m is populated (not None)
+            self.assertIsNotNone(
+                result["aggregate_rms_error_m"],
+                f"aggregate_rms_error_m should be populated for result {result['iteration']}",
+            )
+            # Verify it's a valid numeric value
+            self.assertIsInstance(result["aggregate_rms_error_m"], (int, float, np.number))
         logger.info(f"✓ All result entries have required fields")
 
         logger.info("=" * 80)
@@ -1624,7 +1633,15 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         tlm_dataset = load_clarreo_telemetry("telemetry_5a", config)
         creator = create.KernelCreator(overwrite=True, append=False)
 
-        dynamic_kernels = mc._create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+        # Load SPICE kernels needed for kernel creation
+        # (frame kernel defines ISS_SC body which is needed by ephemeris writer)
+        mkrn = meta.MetaKernel.from_json(
+            config.geo.meta_kernel_file,
+            relative=True,
+            sds_dir=config.geo.generic_kernel_dir,
+        )
+        with sp.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
+            dynamic_kernels = mc._create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
 
         # Validate
         self.assertIsInstance(dynamic_kernels, list)
