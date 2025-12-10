@@ -83,6 +83,101 @@ utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 
 
 # =============================================================================
+# TEST FIXTURES AND UTILITIES
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_random_seed():
+    """
+    Ensure deterministic random data in all tests.
+
+    This fixture is critical for loop reversal validation - it ensures that
+    tests produce identical results regardless of loop order when comparing
+    current vs. reversed implementations.
+    """
+    np.random.seed(42)
+    return
+
+
+def assert_netcdf_equivalent(actual, expected, rtol=1e-5, atol=1e-8):
+    """
+    Compare two NetCDF-like dictionaries allowing for minor numerical differences.
+
+    This utility enables validation that loop reversal produces functionally
+    identical results even if floating-point operations occur in different orders.
+
+    Args:
+        actual: Dictionary with NetCDF-like structure (from reversed loop)
+        expected: Dictionary with NetCDF-like structure (from original loop)
+        rtol: Relative tolerance for floating-point comparison
+        atol: Absolute tolerance for floating-point comparison
+
+    Raises:
+        AssertionError: If structures differ or values exceed tolerance
+    """
+    assert actual.keys() == expected.keys(), f"Keys differ: {actual.keys()} vs {expected.keys()}"
+
+    for key in actual.keys():
+        actual_val = actual[key]
+        expected_val = expected[key]
+
+        if isinstance(actual_val, np.ndarray) and isinstance(expected_val, np.ndarray):
+            # Compare arrays with tolerance
+            np.testing.assert_allclose(
+                actual_val,
+                expected_val,
+                rtol=rtol,
+                atol=atol,
+                equal_nan=True,
+                err_msg=f"Array '{key}' differs between actual and expected",
+            )
+        elif isinstance(actual_val, (int, float, np.number)) and isinstance(expected_val, (int, float, np.number)):
+            # Compare scalars with tolerance
+            np.testing.assert_allclose(
+                actual_val,
+                expected_val,
+                rtol=rtol,
+                atol=atol,
+                err_msg=f"Scalar '{key}' differs between actual and expected",
+            )
+        else:
+            # Direct comparison for non-numeric types
+            assert actual_val == expected_val, f"Value '{key}' differs: {actual_val} vs {expected_val}"
+
+
+def assert_results_sets_equivalent(results1, results2):
+    """
+    Compare two results lists ignoring order.
+
+    This utility validates that both loop orders produce the same set of results,
+    even though the order may differ (param_outer vs pair_outer iteration).
+
+    Args:
+        results1: List of result dictionaries (from one loop order)
+        results2: List of result dictionaries (from other loop order)
+
+    Raises:
+        AssertionError: If results sets differ in content
+    """
+    assert len(results1) == len(results2), f"Results lists have different lengths: {len(results1)} vs {len(results2)}"
+
+    # Extract key identifiers from each result
+    def result_to_tuple(r):
+        """Extract comparable tuple from result dict."""
+        return (
+            r.get("pair_index", -1),
+            r.get("param_index", -1),
+            r.get("rms_error_m", np.nan),
+        )
+
+    set1 = {result_to_tuple(r) for r in results1}
+    set2 = {result_to_tuple(r) for r in results2}
+
+    assert set1 == set2, f"Results sets differ in content"
+
+
+# =============================================================================
 # TEST PLACEHOLDER FUNCTIONS (For Synthetic Data Generation)
 # =============================================================================
 # These functions generate SYNTHETIC test data for testing the Monte Carlo pipeline
