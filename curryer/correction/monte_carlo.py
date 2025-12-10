@@ -2024,8 +2024,9 @@ def loop(
     else:
         netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
 
-    # Initialize results list for backward compatibility
-    results = []
+    # Initialize results dict with (param_idx, pair_idx) keys
+    # This avoids nested search complexity when aggregating statistics
+    results_dict = {}
 
     # Prepare SPICE environment
     mkrn = meta.MetaKernel.from_json(
@@ -2108,7 +2109,7 @@ def loop(
                 "final_grid_step_m", np.nan
             )
 
-            # Store backward compatibility results
+            # Store results in dict with (param_idx, pair_idx) key
             # Note: iteration index reflects reversed order (pair_idx * n_params + param_idx)
             param_values = _extract_parameter_values(params)
             iteration_result = {
@@ -2123,7 +2124,7 @@ def loop(
                 "rms_error_m": individual_metrics["rms_error_m"],
                 "aggregate_rms_error_m": None,
             }
-            results.append(iteration_result)
+            results_dict[(param_idx, pair_idx)] = iteration_result
 
             logger.info(
                 f"    RMS error: {individual_metrics['rms_error_m']:.2f}m "
@@ -2142,11 +2143,9 @@ def loop(
         # Collect all image matching results for this parameter set
         param_image_matching_results = []
         for pair_idx in range(n_gcp_pairs):
-            # Find the result for this param_idx, pair_idx combination
-            for result in results:
-                if result["param_index"] == param_idx and result["pair_index"] == pair_idx:
-                    param_image_matching_results.append(result["image_matching"])
-                    break
+            result = results_dict.get((param_idx, pair_idx))
+            if result:
+                param_image_matching_results.append(result["image_matching"])
 
         # Compute aggregate statistics
         aggregate_stats = call_error_stats_module(param_image_matching_results, monte_carlo_config=config)
@@ -2158,10 +2157,16 @@ def loop(
 
         logger.info(f"  Parameter set {param_idx + 1}: Aggregate RMS = {aggregate_error_metrics['rms_error_m']:.2f}m")
 
-        # Add aggregate stats to results (for backward compatibility)
-        for result in results:
-            if result["param_index"] == param_idx:
-                result["aggregate_error_stats"] = aggregate_stats
+        # Add aggregate stats to all results for this parameter set
+        for pair_idx in range(n_gcp_pairs):
+            key = (param_idx, pair_idx)
+            if key in results_dict:
+                results_dict[key]["aggregate_error_stats"] = aggregate_stats
+
+    # Convert results_dict back to list for backward compatibility
+    # Sort by iteration index to maintain consistent ordering
+    results = [results_dict[key] for key in sorted(results_dict.keys(), key=lambda k: results_dict[k]["iteration"])]
+
     # Save final NetCDF results
     _save_netcdf_results(netcdf_data, output_file, config)
 
