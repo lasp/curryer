@@ -1719,8 +1719,8 @@ def _load_image_pair_data(tlm_key, sci_key, config, telemetry_loader, science_lo
 
     This function loads and validates both telemetry (L1) and science (L1A)
     datasets for a single GCP pair. In the current implementation, this is
-    called N times per image. In the reversed loop, it will be called once
-    per image.
+    called once per image. In the previous implementation, it was called N
+    times per image.
 
     Args:
         tlm_key: Identifier for telemetry data
@@ -1758,8 +1758,7 @@ def _create_dynamic_kernels(config, work_dir, tlm_dataset, creator):
 
     Dynamic kernels (SC-SPK, SC-CK) are generated from spacecraft telemetry
     and do not change with parameter variations. In the current implementation,
-    these are created N times per image. In the reversed loop, they will be
-    created once per image.
+    these are created once per image.
 
     Args:
         config: MonteCarloConfig with geo settings and dynamic_kernels list
@@ -1819,7 +1818,7 @@ def _create_parameter_kernels(params, work_dir, tlm_dataset, sci_dataset, ugps_t
     ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
 
     # Apply each individual parameter change
-    print("Applying parameter changes:")
+    logger.info("Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Create static changing SPICE kernels
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -2000,6 +1999,11 @@ def loop(
     image_matching_func = config.image_matching_func
     gcp_pairing_func = config.gcp_pairing_func
 
+    # Validate required loaders
+    if telemetry_loader is None:
+        raise ValueError("config.telemetry_loader is required but was None.")
+    if science_loader is None:
+        raise ValueError("config.science_loader is required but was None.")
     # Initialize parameter sets
     params_set = load_param_sets(config)
     logger.info(f"  Parameter sets: {len(params_set)} (inner loop)")
@@ -2101,6 +2105,7 @@ def loop(
                 "image_matching": image_matching_output,
                 "error_stats": individual_stats,
                 "rms_error_m": individual_metrics["rms_error_m"],
+                "aggregate_rms_error_m": None,
             }
             results.append(iteration_result)
 
@@ -2135,10 +2140,8 @@ def loop(
 
         # Add aggregate stats to results (for backward compatibility)
         for result in results:
-            if result["param_index"] == param_idx and result["pair_index"] == 0:
+            if result["param_index"] == param_idx:
                 result["aggregate_error_stats"] = aggregate_stats
-                break
-
     # Save final NetCDF results
     output_file = work_dir / config.get_output_filename()
     _save_netcdf_results(netcdf_data, output_file, config)
