@@ -151,7 +151,7 @@ def adapt(dt_val, from_=None, to=None, **kwargs):
     out_val = utils.apply_conversions(utils.find_mapping_path(conversions, from_, to), dt_val, **kwargs)
 
     # Make output match input if it was a list or tuple.
-    if isinstance(out_val, np.ndarray) and isinstance(dt_val, (list, tuple)):
+    if isinstance(out_val, np.ndarray) and isinstance(dt_val, list | tuple):
         out_val = type(dt_val)(out_val.tolist())
 
     return out_val

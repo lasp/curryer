@@ -347,7 +347,7 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
                 # Check if attribute exists first to avoid NumPy array boolean ambiguity
                 field_angle = getattr(entry, "FA", None)
                 if field_angle is None or (
-                    isinstance(field_angle, (list, tuple, np.ndarray)) and len(field_angle) == 0
+                    isinstance(field_angle, list | tuple | np.ndarray) and len(field_angle) == 0
                 ):
                     # Fallback if FA is missing, None, or empty
                     field_angle = getattr(entry, "field_angle", None)

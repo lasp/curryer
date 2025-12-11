@@ -48,13 +48,13 @@ def update_invalid_paths(
     for key, value in configs.items():
         if re.search(r"_FILE(?:_NAME|)$", key) is None:
             continue
-        if isinstance(value, (str, Path)):
+        if isinstance(value, str | Path):
             value = [value]
 
         new_vals = []
         modified_value = False
         for item in value:
-            if not isinstance(item, (str, Path)):
+            if not isinstance(item, str | Path):
                 new_vals.append(item)
                 continue
 

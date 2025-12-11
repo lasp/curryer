@@ -52,7 +52,7 @@ class KernelCreator:
             parent_dir = self._parent_dir
 
         # File-based inputs.
-        if isinstance(input_obj, (str, Path)):
+        if isinstance(input_obj, str | Path):
             filename = Path(input_obj)
             if parent_dir and not filename.is_file() and not filename.is_absolute():
                 filename = (Path(parent_dir) / filename).resolve()
@@ -246,7 +246,7 @@ def batch_kernels(
             raise ValueError(f"If specified, `time_range` must contain two times in increasing order: {time_range}")
 
         if buffer_hours:
-            if not isinstance(buffer_hours, (list, tuple)):
+            if not isinstance(buffer_hours, list | tuple):
                 buffer_hours = [buffer_hours, buffer_hours]
             time_range = [time_range[0] - int(buffer_hours[0] * 3.6e9), time_range[1] + int(buffer_hours[1] * 3.6e9)]
 
@@ -254,7 +254,7 @@ def batch_kernels(
     n_config = len(kernel_configs)
     if output_kernels is not None:
         # TODO: Support output directory!
-        if not isinstance(output_kernels, (list, tuple)):
+        if not isinstance(output_kernels, list | tuple):
             raise TypeError(f"`output_kernels` must be a list/tuple, not: {type(output_kernels)}")
         if not n_config == len(output_kernels):
             raise ValueError("`output_kernels` must be the same length as `kernel_configs` or None")

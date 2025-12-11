@@ -64,9 +64,9 @@ class load_kernel:
 
     def _iter_load(self, kernels):
         """Load multiple kernels."""
-        if isinstance(kernels, (str, Path)):
+        if isinstance(kernels, str | Path):
             self.load(str(kernels))
-        elif isinstance(kernels, (list, tuple)):
+        elif isinstance(kernels, list | tuple):
             for k in kernels:
                 self._iter_load(k)
         elif hasattr(kernels, "keys"):

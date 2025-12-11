@@ -311,7 +311,7 @@ class TLERemoteAccessor:
             TLE file text if `filename` was None, otherwise None is returned.
 
         """
-        if isinstance(filename, (str, Path)):
+        if isinstance(filename, str | Path):
             filename = Path(filename)
             if filename.is_file() and not overwrite and not append:
                 raise FileExistsError(filename)
