@@ -107,7 +107,7 @@ class SpatialTestCase(unittest.TestCase):
         """Explicit check that deprecated functions trigger warnings and call new code."""
         ugps = np.array([0])
         with patch("curryer.compute.spatial.compute_ellipsoid_intersection") as mock_new:
-            with pytest.warns(DeprecationWarning):
+            with pytest.warns(DeprecationWarning, match="Use compute_ellipsoid_intersection instead."):
                 spatial.instrument_intersect_ellipsoid(ugps, "TEST_INST")
             mock_new.assert_called_once()
 
@@ -607,7 +607,7 @@ class SpatialTestCase(unittest.TestCase):
             npix, qry_vectors = spatial.get_instrument_kernel_pointing_vectors("CPRS_HYSICS")
 
             # Using the deprecated function here to ensure it still returns valid data
-            with pytest.warns(DeprecationWarning):
+            with pytest.warns(DeprecationWarning, match="Use compute_ellipsoid_intersection instead."):
                 surf_points, sc_points, sqf = spatial.instrument_intersect_ellipsoid(
                     ugps_times, self.mkrn.mappings["CPRS_HYSICS"]
                 )
