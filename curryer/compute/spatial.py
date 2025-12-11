@@ -20,11 +20,13 @@ Terms:
 
 import logging
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from spiceypy.utils.exceptions import NotFoundError, SpiceyError
+from typing_extensions import deprecated
 
 from .. import spicetime, spicierpy
 from . import constants, elevation
@@ -58,7 +60,7 @@ class SpatialQueries:
             err_value=(np.full((3, 3), np.nan), np.full((3,), np.nan)),
             err_flag=SQF.from_spice_error,
             pass_flag=SQF.GOOD,
-            disable=False
+            disable=False,
         )(_query_rotation_and_position_raw)
     )
 
@@ -74,6 +76,29 @@ class SpatialQueries:
     ):
         """
         Query SPICE for rotation and position, optionally suppressing errors.
+
+        Parameters
+        ----------
+        sample_et : float
+            Ephemeris time to query.
+        instrument : spicierpy.obj.Body
+            Instrument to query.
+        perspective_correction : str
+            SPICE perspective correction to use.
+        observer_id : int, optional
+            Observer NAIF ID (default is Earth).
+        allow_nans : bool, optional
+            If True, suppress SPICE errors and return NaNs instead.
+            Default is False.
+        fixed_frame_name : str, optional
+            Fixed reference frame name (default is ECEF/ITRF93).
+
+        Returns
+        -------
+        tuple
+            Rotation matrix (3x3) and position vector (3,) in fixed frame.
+        SpatialQualityFlags
+            Quality flag indicating results.
         """
         # Dispatch to the appropriate method based on the flag
         if allow_nans:
@@ -137,6 +162,7 @@ def get_instrument_kernel_pointing_vectors(instrument: Union[int, str, spicierpy
     return count, vectors
 
 
+@deprecated("Use get_instrument_kernel_pointing_vectors instead.")
 def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument.
 
@@ -164,10 +190,9 @@ def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int,
     """
     # Print deprecation warning and call the new function.
 
-    logger.warning(
+    warnings.warn(
         "`pixel_vectors` is deprecated and will be removed in a future release. "
-        "Please use `get_instrument_kernel_pointing_vectors` instead.",
-        stacklevel=2,
+        "Please use `get_instrument_kernel_pointing_vectors` instead."
     )
     return get_instrument_kernel_pointing_vectors(instrument)
 
@@ -234,7 +259,7 @@ def instrument_pointing_state(
 
     # Optional multi-pixel support...
     if boresight_vector is None:
-        pix_count, pix_vectors = pixel_vectors(instrument)
+        pix_count, pix_vectors = get_instrument_kernel_pointing_vectors(instrument)
     else:
         pix_count = 1
         pix_vectors = np.array(boresight_vector)[None, ...]
@@ -306,6 +331,8 @@ def compute_ellipsoid_intersection(
     custom_pointing_vectors: Union[np.ndarray, None] = None,
     give_geodetic_output: bool = False,
     give_lat_lon_in_degrees: bool = True,
+    observer_id: int = spicierpy.obj.Body("EARTH").id,
+    fixed_frame_name: str = EARTH_FRAME,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """
     Compute the intersection points of an instrument's pointing vectors (boresight or pixels) with the Earth's surface,
@@ -390,7 +417,6 @@ def compute_ellipsoid_intersection(
     spacecraft_positions = np.full((et_times.size * pix_count, 3), np.nan)
     quality_flags = np.zeros((et_times.size * pix_count,), dtype=np.int64)
 
-    earth_id = spicierpy.obj.Body("EARTH").id
     if perspective_correction is None:
         perspective_correction = "NONE"
 
@@ -398,7 +424,7 @@ def compute_ellipsoid_intersection(
     for ith, et_time in enumerate(et_times):
         # Query the boresight pointing and position in ECEF.
         (fixed_rotation, fixed_position), qf_val = SpatialQueries.query_rotation_and_position(
-            et_time, instrument, perspective_correction, observer_id=earth_id, allow_nans=allow_nans
+            et_time, instrument, perspective_correction, observer_id=observer_id, allow_nans=allow_nans
         )
 
         if qf_val == SQF.GOOD:
@@ -442,13 +468,14 @@ def compute_ellipsoid_intersection(
     spacecraft_dataframe = pd.DataFrame(spacecraft_positions, columns=["x", "y", "z"], index=index)
     qflags_dataframe = pd.Series(quality_flags, name="qf", index=index)
 
-    surface_dataframe.columns.name = f"Ellipsoid[{instrument.name}]@{EARTH_FRAME}"
-    spacecraft_dataframe.columns.name = f"Position[{instrument.name}]@{EARTH_FRAME}"
+    surface_dataframe.columns.name = f"Ellipsoid[{instrument.name}]@{fixed_frame_name}"
+    spacecraft_dataframe.columns.name = f"Position[{instrument.name}]@{fixed_frame_name}"
 
     logger.info("Completed [%s x %s] Earth ellipsoid intercepts for [%s]", pix_count, len(et_times), instrument)
     return surface_dataframe, spacecraft_dataframe, qflags_dataframe
 
 
+@deprecated("Use compute_ellipsoid_intersection instead.")
 def instrument_intersect_ellipsoid(
     ugps_times: np.ndarray,
     instrument: int | str | spicierpy.obj.Body,
@@ -503,10 +530,9 @@ def instrument_intersect_ellipsoid(
 
     """
     # Print deprecation warning and call the new function.
-    logger.warning(
+    warnings.warn(
         "`instrument_intersect_ellipsoid` is deprecated and will be removed in a future release. "
-        "Please use `compute_ellipsoid_intersection` instead.",
-        stacklevel=2,
+        "Please use `compute_ellipsoid_intersection` instead."
     )
     return compute_ellipsoid_intersection(
         ugps_times,
@@ -1439,8 +1465,8 @@ class Geolocate:
             The index is the product of `ugps_times` and pixels across-track.
 
         """
-        ellips_lla_df, sc_xyz_df, ellips_qf_ds = instrument_intersect_ellipsoid(
-            ugps_times, self.instrument, geodetic=True, degrees=True
+        ellips_lla_df, sc_xyz_df, ellips_qf_ds = compute_ellipsoid_intersection(
+            ugps_times, self.instrument, give_geodetic_output=True, give_lat_lon_in_degrees=True
         )
         return ellips_lla_df, sc_xyz_df, ellips_qf_ds
 
@@ -1781,6 +1807,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
 
 # A little faster than the current impl when there's a single boresight/pixel
 # vector per time step, but MUCH slower when there's multiple vectors!
+@deprecated("Use `compute_ellipsoid_intersection` instead.")
 def legacy_intersect_ellipsoid(
     ugps_times, instrument, correction=None, allow_nans=True, boresight_vector=None, geodetic=False
 ):
@@ -1803,7 +1830,7 @@ def legacy_intersect_ellipsoid(
 
     # Optional multi-pixel support...
     if boresight_vector is None:
-        pix_count, pix_vectors = pixel_vectors(instrument)
+        pix_count, pix_vectors = get_instrument_kernel_pointing_vectors(instrument)
     else:
         pix_count = 1
         pix_vectors = [boresight_vector]

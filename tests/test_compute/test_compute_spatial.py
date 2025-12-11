@@ -29,6 +29,10 @@ class SpatialTestCase(unittest.TestCase):
         cls.data_dir = root_dir / "data" / "clarreo"
         cls.test_dir = root_dir / "tests" / "data" / "clarreo"
 
+        assert cls.generic_dir.is_dir()
+        assert cls.data_dir.is_dir()
+        assert cls.test_dir.is_dir()
+
         cls.mkrn = meta.MetaKernel.from_json(
             cls.test_dir / "cprs_v01.kernels.tm.testcase1.json",
             relative=True,
@@ -103,9 +107,8 @@ class SpatialTestCase(unittest.TestCase):
         """Explicit check that deprecated functions trigger warnings and call new code."""
         ugps = np.array([0])
         with patch("curryer.compute.spatial.compute_ellipsoid_intersection") as mock_new:
-            with self.assertLogs(spatial.logger, level="WARNING") as cm:
+            with pytest.warns(DeprecationWarning):
                 spatial.instrument_intersect_ellipsoid(ugps, "TEST_INST")
-            self.assertTrue(any("deprecated" in o for o in cm.output))
             mock_new.assert_called_once()
 
     # =========================================================================
@@ -221,9 +224,6 @@ class SpatialTestCase(unittest.TestCase):
             re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
             f=constants.WGS84_INVERSE_FLATTENING,
         )
-
-        # ... (Internal Math Verification Logic) ...
-        # Note: I'm trusting your math logic here was correct in the original file
 
         # Calling the actual function
         lla = spatial.ecef_to_geodetic(np.array([xx, yy, zz]), degrees=True)
@@ -521,6 +521,84 @@ class SpatialTestCase(unittest.TestCase):
             npt.assert_allclose(lla[:2], exp_lla[:2], rtol=1e-5)
             npt.assert_allclose(lla[2], exp_lla[2], atol=1e-3)  # Spice has non-zero altitude.
 
+    def test_calculate_intersect_ecef_output(self):
+        """
+        Integration test ensuring give_geodetic_output=False returns valid ECEF XYZ data.
+        Verifies against SPICE 'sincpt' which returns ECEF vectors naturally.
+        """
+        ugps_times = spicetime.adapt(np.array(["2023-01-01", "2023-01-01T00:01"]), "iso")
+
+        with self.mkrn.load():
+            # 1. Run with give_geodetic_output=False (Explicit check)
+            surf_points_xyz, sc_points, sqf = spatial.compute_ellipsoid_intersection(
+                ugps_times, self.mkrn.mappings["CPRS_HYSICS"], give_geodetic_output=False
+            )
+
+            # 2. Check structure
+            self.assertIsInstance(surf_points_xyz, pd.DataFrame)
+            self.assertListEqual(list(surf_points_xyz.columns), ["x", "y", "z"])
+
+            # 3. Compare against verified SPICE call (sincpt returns ECEF by default)
+            npix, pix_vecs = spatial.get_instrument_kernel_pointing_vectors("CPRS_HYSICS")
+            mid_idx = npix // 2
+            u1_inst = pix_vecs[mid_idx, :]
+
+            exp_pt_surf_ecef, _, _ = spicierpy.sincpt(
+                et=spicetime.adapt(ugps_times[0], to="et"),
+                abcorr="NONE",
+                method="ELLIPSOID",
+                target="EARTH",
+                fixref="ITRF93",
+                obsrvr="CPRS_HYSICS",
+                dref="CPRS_HYSICS_COORD",
+                dvec=u1_inst,
+            )
+
+            # Select the calculated value for the specific time and pixel
+            mid_pixel_result = surf_points_xyz.loc[(ugps_times[0], mid_idx + 1)].values
+
+            # Verify X, Y, Z values match SPICE within tolerance
+            npt.assert_allclose(
+                mid_pixel_result,
+                exp_pt_surf_ecef,
+                rtol=1e-5,
+                err_msg="Calculated ECEF XYZ does not match SPICE sincpt baseline",
+            )
+
+    def test_intersect_output_consistency(self):
+        """
+        Test that running the function with geodetic=False and converting the result
+        matches the output of running it with geodetic=True.
+        """
+        ugps_times = spicetime.adapt(np.array(["2023-01-01"]), "iso")
+
+        with self.mkrn.load():
+            # Run A: Get XYZ (ECEF)
+            surf_xyz, _, _ = spatial.compute_ellipsoid_intersection(
+                ugps_times, self.mkrn.mappings["CPRS_HYSICS"], give_geodetic_output=False
+            )
+
+            # Run B: Get LLA (Geodetic)
+            surf_lla, _, _ = spatial.compute_ellipsoid_intersection(
+                ugps_times, self.mkrn.mappings["CPRS_HYSICS"], give_geodetic_output=True, give_lat_lon_in_degrees=True
+            )
+
+            # Convert A to Geodetic manually using the utility function
+            surf_xyz_converted = spatial.ecef_to_geodetic(surf_xyz.values, degrees=True)
+
+            # Compare the columns
+            self.assertListEqual(list(surf_xyz.columns), ["x", "y", "z"])
+            self.assertListEqual(list(surf_lla.columns), ["lon", "lat", "alt"])
+
+            # Compare the values (Converted XYZ vs Direct LLA)
+            npt.assert_allclose(
+                surf_xyz_converted,
+                surf_lla.values,
+                rtol=1e-12,
+                atol=1e-8,
+                err_msg="Direct Geodetic output differs from converted XYZ output",
+            )
+
     def test_ellipsoid_intersect_instrument(self):
         """Original Integration test: Checking deprecated function for data validity."""
         ugps_times = spicetime.adapt(np.array(["2023-01-01", "2023-01-01T00:01"]), "iso")
@@ -529,7 +607,7 @@ class SpatialTestCase(unittest.TestCase):
             npix, qry_vectors = spatial.get_instrument_kernel_pointing_vectors("CPRS_HYSICS")
 
             # Using the deprecated function here to ensure it still returns valid data
-            with self.assertLogs(spatial.logger, level="WARNING"):
+            with pytest.warns(DeprecationWarning):
                 surf_points, sc_points, sqf = spatial.instrument_intersect_ellipsoid(
                     ugps_times, self.mkrn.mappings["CPRS_HYSICS"]
                 )
