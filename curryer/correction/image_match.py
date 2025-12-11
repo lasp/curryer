@@ -84,17 +84,24 @@ class ImageMatchingFunc(Protocol):
 
 def validate_image_matching_output(output: xr.Dataset) -> None:
     """
-    Validate that image matching output conforms to expected format.
+    Validate image matching output conforms to expected format.
 
-    Args:
-        output: Dataset returned by image matching function
+    Parameters
+    ----------
+    output : xr.Dataset
+        Dataset returned by image matching function.
 
-    Raises:
-        ValueError: If required fields are missing or malformed
+    Raises
+    ------
+    TypeError
+        If output is not an xarray Dataset.
+    ValueError
+        If required fields are missing or malformed.
 
-    Example:
-        >>> result = image_matching_func(...)
-        >>> validate_image_matching_output(result)
+    Examples
+    --------
+    >>> result = image_matching_func(...)
+    >>> validate_image_matching_output(result)
     """
     import xarray as xr
 
@@ -152,7 +159,34 @@ def integrated_image_match(
     geolocation_config: GeolocationConfig | None = None,
     search_config: SearchConfig | None = None,
 ) -> IntegratedImageMatchResult:
-    """Replicate the MATLAB IntegratedImageMatch workflow in Python."""
+    """
+    Perform complete image matching workflow with PSF modeling.
+
+    Replicates MATLAB IntegratedImageMatch: projects PSF, applies spacecraft
+    motion blur, convolves with GCP, and performs correlation-based search.
+
+    Parameters
+    ----------
+    subimage : ImageGrid
+        Observed image data with geolocation.
+    gcp : ImageGrid
+        Ground control point reference image.
+    r_iss_midframe_m : np.ndarray
+        Spacecraft position at mid-frame, shape (3,), units: meters.
+    los_vectors_hs : np.ndarray
+        Line-of-sight vectors in instrument frame, shape (n_pixels, 3).
+    optical_psfs : Iterable[OpticalPSFEntry]
+        Optical PSF samples at different field angles.
+    geolocation_config : GeolocationConfig, optional
+        PSF geolocation parameters. Defaults to standard config.
+    search_config : SearchConfig, optional
+        Image search parameters. Defaults to standard config.
+
+    Returns
+    -------
+    IntegratedImageMatchResult
+        Geolocation errors, correlation value, and intermediate products.
+    """
 
     geo_config = geolocation_config or GeolocationConfig()
     search_cfg = search_config or SearchConfig()
@@ -207,32 +241,37 @@ def load_image_grid_from_mat(
     mat_file: Path, key: str = "subimage", name: str | None = None, as_named: bool = False
 ) -> ImageGrid | NamedImageGrid:
     """
-    Load ImageGrid or NamedImageGrid from MATLAB .mat file.
+    Load ImageGrid from MATLAB .mat file.
 
-    Consolidates loading logic from:
-    - monte_carlo_image_match_adapter.load_gcp_from_mat()
-    - test_image_match.image_grid_from_struct()
-    - test_pairing._load_image_grid()
+    Parameters
+    ----------
+    mat_file : Path
+        Path to .mat file.
+    key : str, default="subimage"
+        MATLAB struct key (e.g., "subimage" for L1A, "GCP" for reference).
+    name : str, optional
+        Name for NamedImageGrid. Defaults to file path.
+    as_named : bool, default=False
+        If True, return NamedImageGrid; otherwise return ImageGrid.
 
-    Args:
-        mat_file: Path to .mat file
-        key: MATLAB struct key (default: "subimage" for L1A, "GCP" for GCPs)
-        name: Optional name for NamedImageGrid
-        as_named: If True, return NamedImageGrid; else return ImageGrid
+    Returns
+    -------
+    ImageGrid or NamedImageGrid
+        Loaded image grid with data, lat, lon, h fields.
 
-    Returns:
-        ImageGrid or NamedImageGrid with data, lat, lon, h fields
+    Raises
+    ------
+    FileNotFoundError
+        If mat_file doesn't exist.
+    KeyError
+        If key not found in MATLAB file.
 
-    Raises:
-        FileNotFoundError: If mat_file doesn't exist
-        KeyError: If key not found in MATLAB file
-
-    Examples:
-        >>> # Load L1A subimage
-        >>> l1a = load_image_grid_from_mat(Path("subimage.mat"), key="subimage", as_named=True)
-        >>>
-        >>> # Load GCP reference
-        >>> gcp = load_image_grid_from_mat(Path("gcp.mat"), key="GCP")
+    Examples
+    --------
+    >>> # Load L1A subimage
+    >>> l1a = load_image_grid_from_mat(Path("subimage.mat"), key="subimage")
+    >>> # Load GCP reference
+    >>> gcp = load_image_grid_from_mat(Path("gcp.mat"), key="GCP")
     """
     from scipy.io import loadmat
 
@@ -248,11 +287,13 @@ def load_image_grid_from_mat(
     struct = mat_data[key]
     h = getattr(struct, "h", None)
 
+    # Optimize: loadmat already returns numpy arrays, avoid redundant asarray() calls
+    # ImageGrid.__post_init__ will handle final type conversion
     grid_kwargs = {
-        "data": np.asarray(struct.data),
-        "lat": np.asarray(struct.lat),
-        "lon": np.asarray(struct.lon),
-        "h": np.asarray(h) if h is not None else None,
+        "data": struct.data,
+        "lat": struct.lat,
+        "lon": struct.lon,
+        "h": h,
     }
 
     if as_named:
@@ -266,20 +307,26 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
     """
     Load optical PSF entries from MATLAB .mat file.
 
-    Consolidates loading logic from:
-    - monte_carlo_image_match_adapter.load_optical_psf_from_mat()
-    - test_image_match inline PSF loading
+    Parameters
+    ----------
+    mat_file : Path
+        Path to MATLAB file with PSF data.
+    key : str, default="PSF_struct_675nm"
+        Primary key to try for PSF data.
 
-    Args:
-        mat_file: Path to MATLAB file with PSF data
-        key: Primary key to try (default: "PSF_struct_675nm")
+    Returns
+    -------
+    list[OpticalPSFEntry]
+        Optical PSF samples with data, x, and field_angle arrays.
 
-    Returns:
-        List of OpticalPSFEntry objects with data, x, and field_angle
-
-    Raises:
-        FileNotFoundError: If mat_file doesn't exist
-        KeyError: If no PSF data found with common key names
+    Raises
+    ------
+    FileNotFoundError
+        If mat_file doesn't exist.
+    KeyError
+        If no PSF data found with common key names.
+    ValueError
+        If PSF entries missing field angle attribute.
     """
     from scipy.io import loadmat
 
@@ -308,11 +355,13 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
                 if field_angle is None:
                     raise ValueError(f"PSF entry missing field angle attribute (tried 'FA' and 'field_angle')")
 
+                # Optimize: loadmat already returns numpy arrays, OpticalPSFEntry.__post_init__ handles conversion
+                # Use np.atleast_1d to ensure 1D arrays efficiently
                 psf_entries.append(
                     OpticalPSFEntry(
-                        data=np.asarray(entry.data),
-                        x=np.asarray(entry.x).ravel(),
-                        field_angle=np.asarray(field_angle).ravel(),
+                        data=entry.data,
+                        x=np.atleast_1d(entry.x).ravel(),
+                        field_angle=np.atleast_1d(field_angle).ravel(),
                     )
                 )
 
@@ -327,16 +376,24 @@ def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
     """
     Load line-of-sight vectors from MATLAB .mat file.
 
-    Args:
-        mat_file: Path to MATLAB file with LOS vectors
-        key: Primary key to try (default: "b_HS")
+    Parameters
+    ----------
+    mat_file : Path
+        Path to MATLAB file with LOS vectors.
+    key : str, default="b_HS"
+        Primary key to try for LOS data.
 
-    Returns:
-        np.ndarray, shape (n_pixels, 3) - LOS unit vectors in instrument frame
+    Returns
+    -------
+    np.ndarray
+        LOS unit vectors in instrument frame, shape (n_pixels, 3).
 
-    Raises:
-        FileNotFoundError: If mat_file doesn't exist
-        KeyError: If no LOS vectors found with common key names
+    Raises
+    ------
+    FileNotFoundError
+        If mat_file doesn't exist.
+    KeyError
+        If no LOS vectors found with common key names.
     """
     from scipy.io import loadmat
 
