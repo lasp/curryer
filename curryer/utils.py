@@ -8,7 +8,7 @@ import logging.config
 import subprocess
 import time
 import typing
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -225,7 +225,7 @@ def enable_logging(log_level=logging.DEBUG, log_file: bool | str | Path = False,
 
     # Optionally, add logging to a file.
     if log_file:
-        default_log_name = f"curryer.{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}.log"  # TODO[rename]
+        default_log_name = f"curryer.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}.log"  # TODO[rename]
         if log_file is True:
             log_file = Path.cwd() / default_log_name
         else:

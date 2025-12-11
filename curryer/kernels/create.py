@@ -8,7 +8,7 @@ import json
 import logging
 import shutil
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import chain
 from pathlib import Path
 
@@ -234,7 +234,7 @@ def batch_kernels(
         raise ValueError("can not specify both `time_range` and `lag_days`")
 
     if lag_days is not None:
-        dt = datetime.now(UTC).date()
+        dt = datetime.now(timezone.utc).date()
         dt0 = dt - timedelta(days=lag_days)
         dt1 = dt0 + timedelta(days=1)
         time_range = [dt0.isoformat(), dt1.isoformat()]
