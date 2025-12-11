@@ -2149,7 +2149,7 @@ def loop(
     Examples
     --------
         >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
-        >>> 
+        >>>
         >>> config = MonteCarloConfig(
         ...     seed=42,
         ...     n_iterations=100,
