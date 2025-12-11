@@ -170,9 +170,7 @@ def capture_subprocess(cmd, timeout=3600, capture_output=False):
     return
 
 
-def enable_logging(
-    log_level=logging.DEBUG, log_file: typing.Union[bool, str, Path] = False, extra_loggers: list[str] = None
-):
+def enable_logging(log_level=logging.DEBUG, log_file: bool | str | Path = False, extra_loggers: list[str] = None):
     """Enable logging to the console and optionally to a file.
 
     Parameters

@@ -516,8 +516,8 @@ def image_matching(
     calibration_dir: Path,
     params_info: list,
     config: "MonteCarloConfig",
-    los_vectors_cached: Optional[np.ndarray] = None,
-    optical_psfs_cached: Optional[list] = None,
+    los_vectors_cached: np.ndarray | None = None,
+    optical_psfs_cached: list | None = None,
 ) -> xr.Dataset:
     """
     Image matching using integrated_image_match() module.
@@ -866,7 +866,7 @@ class ParameterType(Enum):
 @dataclass
 class ParameterConfig:
     ptype: ParameterType
-    config_file: typing.Optional[Path]
+    config_file: Path | None
     data: typing.Any
 
 
@@ -877,7 +877,7 @@ class GeolocationConfig:
     dynamic_kernels: [Path]  # Kernels that are dynamic but *not* altered by param!
     instrument_name: str
     time_field: str
-    minimum_correlation: typing.Optional[float] = None  # Filter threshold for image matching quality (0.0-1.0)
+    minimum_correlation: float | None = None  # Filter threshold for image matching quality (0.0-1.0)
 
 
 @dataclass
@@ -908,11 +908,11 @@ class NetCDFConfig:
 
     # Parameter metadata - maps parameter config to NetCDF metadata
     # If None, will be auto-generated from config.parameters
-    parameter_metadata: typing.Optional[dict[str, NetCDFParameterMetadata]] = None
+    parameter_metadata: dict[str, NetCDFParameterMetadata] | None = None
 
     # Standard variable attributes - allows mission-specific overrides
     # If None, uses STANDARD_NETCDF_ATTRIBUTES module constant
-    standard_attributes: typing.Optional[dict[str, dict[str, str]]] = None
+    standard_attributes: dict[str, dict[str, str]] | None = None
 
     def get_threshold_metric_name(self) -> str:
         """Generate metric name dynamically from threshold."""
@@ -934,7 +934,7 @@ class NetCDFConfig:
             return STANDARD_NETCDF_ATTRIBUTES.copy()
 
     def get_parameter_netcdf_metadata(
-        self, param_config: ParameterConfig, angle_type: typing.Optional[str] = None
+        self, param_config: ParameterConfig, angle_type: str | None = None
     ) -> NetCDFParameterMetadata:
         """
         Get NetCDF metadata for a parameter.
@@ -964,7 +964,7 @@ class NetCDFConfig:
         return self._auto_generate_metadata(param_config, angle_type, lookup_key)
 
     def _auto_generate_metadata(
-        self, param_config: ParameterConfig, angle_type: typing.Optional[str], base_key: str
+        self, param_config: ParameterConfig, angle_type: str | None, base_key: str
     ) -> NetCDFParameterMetadata:
         """Auto-generate NetCDF metadata from parameter configuration."""
 
@@ -1078,7 +1078,7 @@ class MonteCarloConfig:
     """
 
     # CORE MONTE CARLO SETTINGS
-    seed: typing.Optional[int]
+    seed: int | None
     n_iterations: int
     parameters: list[ParameterConfig]
 
@@ -1089,21 +1089,21 @@ class MonteCarloConfig:
     earth_radius_m: float
 
     # DATA LOADERS
-    telemetry_loader: typing.Optional[TelemetryLoader] = None
-    science_loader: typing.Optional[ScienceLoader] = None
-    gcp_loader: typing.Optional[GCPLoader] = None
+    telemetry_loader: TelemetryLoader | None = None
+    science_loader: ScienceLoader | None = None
+    gcp_loader: GCPLoader | None = None
 
     # PROCESSING FUNCTIONS
-    gcp_pairing_func: typing.Optional[GCPPairingFunc] = None
-    image_matching_func: typing.Optional[ImageMatchingFunc] = None
+    gcp_pairing_func: GCPPairingFunc | None = None
+    image_matching_func: ImageMatchingFunc | None = None
 
     # OUTPUT CONFIGURATION
-    netcdf: typing.Optional[NetCDFConfig] = None
-    output_filename: typing.Optional[str] = None
+    netcdf: NetCDFConfig | None = None
+    output_filename: str | None = None
 
     # CALIBRATION CONFIGURATION
-    calibration_dir: typing.Optional[Path] = None
-    calibration_file_names: typing.Optional[dict[str, str]] = None
+    calibration_dir: Path | None = None
+    calibration_file_names: dict[str, str] | None = None
 
     # MISSION-SPECIFIC NAMING
     spacecraft_position_name: str = "sc_position"

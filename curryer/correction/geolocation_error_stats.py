@@ -15,7 +15,7 @@ The main processing pipeline:
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 import xarray as xr
@@ -33,11 +33,11 @@ class GeolocationConfig:
     earth_radius_m: float  # Earth radius in meters (e.g., WGS84: 6378140.0)
     performance_threshold_m: float  # Accuracy threshold (e.g., 250.0)
     performance_spec_percent: float  # Performance requirement percentage (e.g., 39.0)
-    minimum_correlation: Optional[float] = None  # Filter threshold (0.0-1.0)
+    minimum_correlation: float | None = None  # Filter threshold (0.0-1.0)
 
     # Mission-agnostic variable name mappings
     # Maps semantic names to actual variable names in the dataset
-    variable_names: Optional[dict[str, str]] = None  # If None, uses CLARREO defaults
+    variable_names: dict[str, str] | None = None  # If None, uses CLARREO defaults
 
     @classmethod
     def from_monte_carlo_config(cls, mc_config) -> "GeolocationConfig":
@@ -449,7 +449,7 @@ class ErrorStatsProcessor:
 
         return output_ds
 
-    def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> dict[str, Union[float, int]]:
+    def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> dict[str, float | int]:
         """Calculate performance statistics on nadir-equivalent errors."""
 
         # Count errors below threshold
@@ -471,9 +471,7 @@ class ErrorStatsProcessor:
 
         return stats
 
-    def process_from_netcdf(
-        self, filepath: Union[str, "Path"], minimum_correlation: Optional[float] = None
-    ) -> xr.Dataset:
+    def process_from_netcdf(self, filepath: Union[str, "Path"], minimum_correlation: float | None = None) -> xr.Dataset:
         """
         Load previous results from NetCDF and reprocess error statistics.
 
