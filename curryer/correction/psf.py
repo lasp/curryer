@@ -25,7 +25,24 @@ logger = logging.getLogger(__name__)
 
 
 def centroid(weights: np.ndarray) -> float:
-    """Return the center-of-mass index for a one-dimensional weight vector."""
+    """
+    Compute center-of-mass index for a one-dimensional weight vector.
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        One-dimensional weight array.
+
+    Returns
+    -------
+    float
+        Center-of-mass index position.
+
+    Raises
+    ------
+    ValueError
+        If weight vector has zero total mass.
+    """
 
     w = np.asarray(weights, dtype=float).ravel()
     total = w.sum()
@@ -41,7 +58,32 @@ def project_psf(
     subimage: ImageGrid,
     los_set_hs: np.ndarray,
 ) -> ProjectedPSF:
-    """Project the optical PSF onto the Earth's surface."""
+    """
+    Project optical PSF onto Earth's surface using vectorized ray tracing.
+
+    Parameters
+    ----------
+    r_iss_ctrs_m : np.ndarray
+        Spacecraft position in ECEF coordinates, shape (3,), units: meters.
+    optical_psfs : Iterable[OpticalPSFEntry]
+        Collection of optical PSF samples at different field angles.
+    subimage : ImageGrid
+        Image grid defining the observation geometry.
+    los_set_hs : np.ndarray
+        Line-of-sight unit vectors in instrument frame, shape (n_pixels, 3).
+
+    Returns
+    -------
+    ProjectedPSF
+        PSF projected onto Earth's surface with lat, lon, height grids.
+
+    Raises
+    ------
+    ValueError
+        If no optical PSF entries provided.
+    RuntimeError
+        If ray-ellipsoid intersection fails.
+    """
 
     r_iss = np.asarray(r_iss_ctrs_m, dtype=float).reshape(3)
     los_set = np.asarray(los_set_hs, dtype=float)
@@ -108,49 +150,81 @@ def project_psf(
     yangb = np.arcsin(center_los[1])
 
     ny, nx = psf_values.shape
-    psf_lat = np.zeros_like(psf_values)
-    psf_lon = np.zeros_like(psf_values)
-    psf_h = np.zeros_like(psf_values)
 
     # re = 6_378_140.0
     # rp = 6_356_750.0
+    # Optimize: Vectorize nested loops using NumPy broadcasting
+    # Create meshgrids for vectorized computation
     re = constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0
     rp = constants.WGS84_SEMI_MINOR_AXIS_KM * 1000.0
 
-    for i in range(ny):
-        for j in range(nx):
-            plos_hs = np.array(
-                [
-                    np.sin(xangb + xang[j]),
-                    np.sin(yangb + yang[i]),
-                    0.0,
-                ]
-            )
-            plos_hs[2] = np.sqrt(max(0.0, 1.0 - plos_hs[0] ** 2 - plos_hs[1] ** 2))
+    # Create full meshgrids for proper broadcasting
+    xang_mesh, yang_mesh = np.meshgrid(xang, yang, indexing="xy")  # Both shape: (ny, nx)
 
-            plos_ctrs = t_hs_to_ctrs @ plos_hs
+    # Compute LOS vectors for all PSF pixels at once
+    # plos_hs will be shape (ny, nx, 3)
+    plos_x = np.sin(xangb + xang_mesh)  # Shape: (ny, nx)
+    plos_y = np.sin(yangb + yang_mesh)  # Shape: (ny, nx)
+    plos_z = np.sqrt(np.maximum(0.0, 1.0 - plos_x**2 - plos_y**2))  # Shape: (ny, nx)
 
-            a = (plos_ctrs[0] / re) ** 2 + (plos_ctrs[1] / re) ** 2 + (plos_ctrs[2] / rp) ** 2
-            b = 2.0 * (r_iss[0] * plos_ctrs[0] + r_iss[1] * plos_ctrs[1]) / (re**2) + 2.0 * r_iss[2] * plos_ctrs[2] / (
-                rp**2
-            )
-            c = (r_iss[0] / re) ** 2 + (r_iss[1] / re) ** 2 + (r_iss[2] / rp) ** 2 - 1.0
-            discriminant = b * b - 4.0 * a * c
-            if discriminant < 0:
-                raise RuntimeError("Pseudo line of sight does not intersect the Earth ellipsoid.")
-            slant_range = (-b - np.sqrt(discriminant)) / (2.0 * a)
-            p_surface = r_iss + slant_range * plos_ctrs
-            # llh = ecef_to_lla(p_surface)  # lat first instead of lon!!!
-            llh = ecef_to_geodetic(p_surface, meters=True, degrees=True)
-            psf_lon[i, j] = llh[0]
-            psf_lat[i, j] = llh[1]
-            psf_h[i, j] = llh[2]
+    # Stack to create (ny, nx, 3) array
+    plos_hs = np.stack([plos_x, plos_y, plos_z], axis=-1)
+
+    # Transform all LOS vectors at once: (ny, nx, 3) @ (3, 3)^T = (ny, nx, 3)
+    # Using Einstein summation for efficient matrix multiplication
+    plos_ctrs = np.einsum("ijk,lk->ijl", plos_hs, t_hs_to_ctrs)
+
+    # Vectorized ray-ellipsoid intersection
+    re2 = re * re
+    rp2 = rp * rp
+
+    a = (plos_ctrs[..., 0] / re) ** 2 + (plos_ctrs[..., 1] / re) ** 2 + (plos_ctrs[..., 2] / rp) ** 2
+    b = (
+        2.0 * (r_iss[0] * plos_ctrs[..., 0] + r_iss[1] * plos_ctrs[..., 1]) / re2
+        + 2.0 * r_iss[2] * plos_ctrs[..., 2] / rp2
+    )
+    c = (r_iss[0] / re) ** 2 + (r_iss[1] / re) ** 2 + (r_iss[2] / rp) ** 2 - 1.0
+
+    discriminant = b * b - 4.0 * a * c
+    if np.any(discriminant < 0):
+        raise RuntimeError("Pseudo line of sight does not intersect the Earth ellipsoid.")
+
+    slant_range = (-b - np.sqrt(discriminant)) / (2.0 * a)  # Shape: (ny, nx)
+
+    # Compute surface intersection points: (ny, nx, 3)
+    p_surface = r_iss[np.newaxis, np.newaxis, :] + slant_range[..., np.newaxis] * plos_ctrs
+
+    # Reshape to (ny*nx, 3) for batch geodetic conversion
+    p_surface_flat = p_surface.reshape(-1, 3)
+
+    # Convert all points at once using vectorized ecef_to_geodetic
+    # ecef_to_geodetic already supports batch processing
+    llh_array = ecef_to_geodetic(p_surface_flat, meters=True, degrees=True)  # Shape: (ny*nx, 3)
+
+    # Reshape back to (ny, nx) grids
+    psf_lon = llh_array[:, 0].reshape(ny, nx)
+    psf_lat = llh_array[:, 1].reshape(ny, nx)
+    psf_h = llh_array[:, 2].reshape(ny, nx)
 
     return ProjectedPSF(data=psf_values, lat=psf_lat, lon=psf_lon, height=psf_h)
 
 
 def convolve_gcp_with_psf(gcp: ImageGrid, psf: PSFGrid) -> ImageGrid:
-    """Convolve the GCP chip with the dynamic PSF footprint."""
+    """
+    Convolve GCP reference image with dynamic PSF using FFT.
+
+    Parameters
+    ----------
+    gcp : ImageGrid
+        Ground control point reference image.
+    psf : PSFGrid
+        Point spread function to convolve with.
+
+    Returns
+    -------
+    ImageGrid
+        Convolved GCP image with same coordinate grids.
+    """
 
     kernel = np.flipud(psf.data)
     convolved = fftconvolve(gcp.data, kernel, mode="same")
@@ -162,7 +236,23 @@ def convolve_psf_with_spacecraft_motion(
     composite_img: ImageGrid,
     config: GeolocationConfig,
 ) -> PSFGrid:
-    """Apply spacecraft motion blur to the projected PSF."""
+    """
+    Apply spacecraft motion blur to projected PSF.
+
+    Parameters
+    ----------
+    psf : ProjectedPSF
+        Projected PSF on Earth's surface.
+    composite_img : ImageGrid
+        Composite image defining spacecraft motion direction.
+    config : GeolocationConfig
+        Configuration with PSF sampling parameters.
+
+    Returns
+    -------
+    PSFGrid
+        PSF convolved with spacecraft motion blur.
+    """
 
     logger.debug("Convolve with SC - Init")
     lat_motion = np.mean(np.diff(composite_img.lat, axis=1))
@@ -261,7 +351,24 @@ def convolve_psf_with_spacecraft_motion(
 
 
 def zero_pad_psf(psf: PSFGrid) -> PSFGrid:
-    """Zero pad the PSF so its centroid aligns with the grid center."""
+    """
+    Zero-pad PSF to center its centroid on the grid.
+
+    Parameters
+    ----------
+    psf : PSFGrid
+        Point spread function on rectilinear grid.
+
+    Returns
+    -------
+    PSFGrid
+        Zero-padded PSF with centered centroid.
+
+    Raises
+    ------
+    ValueError
+        If PSF lat/lon are not one-dimensional.
+    """
 
     x = np.asarray(psf.lon, dtype=float)
     y = np.asarray(psf.lat, dtype=float)
@@ -300,7 +407,26 @@ def zero_pad_psf(psf: PSFGrid) -> PSFGrid:
 
 
 def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
-    """Resample PSF to match the spacing of the GCP chip."""
+    """
+    Resample PSF to match GCP reference image resolution.
+
+    Parameters
+    ----------
+    psf : PSFGrid
+        Point spread function on rectilinear grid.
+    gcp : ImageGrid
+        Ground control point reference defining target resolution.
+
+    Returns
+    -------
+    PSFGrid
+        Resampled PSF at GCP resolution.
+
+    Raises
+    ------
+    ValueError
+        If PSF is not on a rectilinear grid.
+    """
 
     if psf.lat.ndim != 1 or psf.lon.ndim != 1:
         raise ValueError("PSF must be on a rectilinear grid before resampling.")
@@ -319,7 +445,24 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
 
 
 def normalize_psf(psf: PSFGrid) -> PSFGrid:
-    """Normalize PSF power to one."""
+    """
+    Normalize PSF to unit total power.
+
+    Parameters
+    ----------
+    psf : PSFGrid
+        Point spread function to normalize.
+
+    Returns
+    -------
+    PSFGrid
+        Normalized PSF with total power = 1.
+
+    Raises
+    ------
+    ValueError
+        If PSF has zero total power.
+    """
 
     total = np.nansum(psf.data)
     if total == 0.0:

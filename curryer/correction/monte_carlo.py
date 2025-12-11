@@ -58,7 +58,7 @@ import typing
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
+from typing import Any, NamedTuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -100,6 +100,65 @@ from curryer.correction.pairing import (
 from curryer.kernels import create
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Helper Data Structures
+# ============================================================================
+
+
+class KernelContext(NamedTuple):
+    """Context for SPICE kernel loading during geolocation.
+
+    Attributes
+    ----------
+    mkrn : meta.MetaKernel
+        MetaKernel instance with SDS and mission kernels
+    dynamic_kernels : list[Path]
+        List of dynamic kernel file paths (SC-SPK, SC-CK)
+    param_kernels : list[Path]
+        List of parameter-specific kernel file paths
+    """
+
+    mkrn: "meta.MetaKernel"
+    dynamic_kernels: list[Path]
+    param_kernels: list[Path]
+
+
+class CalibrationData(NamedTuple):
+    """Pre-loaded calibration data for image matching.
+
+    Attributes
+    ----------
+    los_vectors : Optional[np.ndarray]
+        Line-of-sight vectors array, or None if not using calibration
+    optical_psfs : Optional[list]
+        List of optical PSF entries, or None if not using calibration
+    """
+
+    los_vectors: Optional[np.ndarray]
+    optical_psfs: Optional[list]
+
+
+class ImageMatchingContext(NamedTuple):
+    """Context data needed for image matching operations.
+
+    Attributes
+    ----------
+    gcp_pairs : list[tuple]
+        List of GCP pairing tuples from pairing function
+    params : list[tuple]
+        List of (ParameterConfig, parameter_value) tuples for this iteration
+    pair_idx : int
+        Index of current GCP pair being processed
+    sci_key : str
+        Science dataset identifier for this pair
+    """
+
+    gcp_pairs: list[tuple]
+    params: list[tuple]
+    pair_idx: int
+    sci_key: str
 
 
 # ============================================================================
@@ -1667,141 +1726,491 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
     return netcdf_data
 
 
-def loop(
-    config: MonteCarloConfig,
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+# These functions extract reusable logic from the main loop to simplify the structure
+
+
+def _load_calibration_data(config: "MonteCarloConfig") -> CalibrationData:
+    """Load LOS vectors and optical PSF if calibration_dir is configured.
+
+    This function centralizes calibration data loading, which is now called once
+    per GCP pair in the optimized implementation (previously called once per parameter set).
+
+    Parameters
+    ----------
+    config : MonteCarloConfig
+        Configuration with calibration_dir and calibration settings
+
+    Returns
+    -------
+    CalibrationData
+        NamedTuple containing (los_vectors, optical_psfs), or (None, None) if
+        no calibration directory configured
+
+    Raises
+    ------
+    FileNotFoundError
+        If calibration directory is configured but files don't exist
+    ValueError
+        If calibration files exist but fail to load properly
+
+    Examples
+    --------
+    >>> calib_data = _load_calibration_data(config)
+    >>> if calib_data.los_vectors is not None:
+    ...     # Use calibration data in image matching
+    ...     pass
+    """
+    if not config.calibration_dir:
+        return CalibrationData(los_vectors=None, optical_psfs=None)
+
+    logger.info("Loading calibration data...")
+
+    # Use configurable calibration file names
+    los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+    los_file = config.calibration_dir / los_filename
+
+    if not los_file.exists():
+        raise FileNotFoundError(
+            f"LOS vectors calibration file not found: {los_file}\nExpected in calibration_dir: {config.calibration_dir}"
+        )
+
+    los_vectors_cached = load_los_vectors_from_mat(los_file)
+
+    if los_vectors_cached is None:
+        raise ValueError(
+            f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors_from_mat() returned None."
+        )
+
+    psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+    psf_file = config.calibration_dir / psf_filename
+
+    if not psf_file.exists():
+        raise FileNotFoundError(
+            f"Optical PSF calibration file not found: {psf_file}\nExpected in calibration_dir: {config.calibration_dir}"
+        )
+
+    optical_psfs_cached = load_optical_psf_from_mat(psf_file)
+
+    if optical_psfs_cached is None:
+        raise ValueError(
+            f"Failed to load optical PSF from {psf_file}. File exists but load_optical_psf_from_mat() returned None."
+        )
+
+    logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")
+    logger.info(f"  Cached optical PSF: {len(optical_psfs_cached)} entries")
+
+    return CalibrationData(los_vectors=los_vectors_cached, optical_psfs=optical_psfs_cached)
+
+
+def _load_image_pair_data(
+    tlm_key: str,
+    sci_key: str,
+    config: "MonteCarloConfig",
+    telemetry_loader: TelemetryLoader,
+    science_loader: ScienceLoader,
+) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
+    """Load telemetry and science data for an image pair.
+
+    Parameters
+    ----------
+    tlm_key : str
+        Identifier for telemetry data.
+    sci_key : str
+        Identifier for science data.
+    config : MonteCarloConfig
+        Configuration containing geolocation settings and field names.
+    telemetry_loader : callable
+        Function with signature ``telemetry_loader(tlm_key, config) -> pandas.DataFrame`` that
+        loads telemetry (L1) data for the given key.
+    science_loader : callable
+        Function with signature ``science_loader(sci_key, config) -> pandas.DataFrame`` that
+        loads science frame timing (L1A) data for the given key.
+
+    Returns
+    -------
+    tlm_dataset : pandas.DataFrame
+        DataFrame containing spacecraft state / telemetry records (position, velocity, attitude, time).
+    sci_dataset : pandas.DataFrame
+        DataFrame containing science frame timing information.
+    ugps_times : array_like
+        Time array extracted from the science dataset (e.g., uGPS times).
+
+    Raises
+    ------
+    ValueError
+        If required loader functions are not provided or returned data are invalid.
+    FileNotFoundError
+        If underlying loader raises when expected files are missing.
+
+    Notes
+    -----
+    This function loads and validates both telemetry and science datasets for a
+    single GCP pair. In the current implementation it is called once per image pair.
+
+    Examples
+    --------
+    >>> tlm, sci, times = _load_image_pair_data(
+    ...     "tlm_001", "sci_001", config, load_clarreo_telemetry, load_clarreo_science
+    ... )
+    """
+    # Load telemetry (L1) data using mission-specific loader
+    tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
+    validate_telemetry_output(tlm_dataset, config)
+
+    # Load science (L1A) data using mission-specific loader
+    sci_dataset = load_science(sci_key, config, loader_func=science_loader)
+    validate_science_output(sci_dataset, config)
+    ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps
+
+    return tlm_dataset, sci_dataset, ugps_times
+
+
+def _create_dynamic_kernels(
+    config: "MonteCarloConfig",
     work_dir: Path,
-    tlm_sci_gcp_sets: [(str, str, str)],
-    resume_from_checkpoint: bool = False,
-):
+    tlm_dataset: pd.DataFrame,
+    creator: "create.KernelCreator",
+) -> list[Path]:
+    """Create dynamic SPICE kernels from telemetry data.
+
+    Dynamic kernels (SC-SPK, SC-CK) are generated from spacecraft telemetry
+    and do not change with parameter variations. In the current implementation,
+    these are created once per image.
+
+    Parameters
+    ----------
+    config : MonteCarloConfig
+        Configuration with geo settings and dynamic_kernels list
+    work_dir : Path
+        Working directory for kernel files
+    tlm_dataset : pd.DataFrame
+        Spacecraft state data with position, velocity, attitude, and time columns
+    creator : create.KernelCreator
+        KernelCreator instance for writing kernels
+
+    Returns
+    -------
+    list[Path]
+        List of kernel file paths created (e.g., [sc_ephemeris.bsp, sc_attitude.bc])
+
+    Examples
+    --------
+    >>> from curryer.kernels import create
+    >>> creator = create.KernelCreator(overwrite=True, append=False)
+    >>> dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+    >>> # Use in SPICE context
+    >>> with sp.ext.load_kernel(dynamic_kernels):
+    ...     # Perform geolocation
+    ...     pass
     """
-    Main Monte Carlo loop for parameter sensitivity analysis.
-
-    Config-Centric Design: All configuration including data loaders and processing
-    functions comes from the config object, making it the single source of truth.
-
-    Args:
-        config: MonteCarloConfig - The single config containing all settings:
-            - Required: parameters, iterations, thresholds, geo config
-            - Required loaders: telemetry_loader, science_loader
-            - Optional processing: gcp_pairing_func, image_matching_func
-            - Calibration: calibration_dir (if image_matching_func uses calibration)
-            - Output: netcdf, output_filename
-        work_dir: Working directory for temporary files
-        tlm_sci_gcp_sets: List of (telemetry_key, science_key, gcp_key) tuples
-        resume_from_checkpoint: If True, resume from checkpoint if it exists
-
-    Returns:
-        Tuple of (results, netcdf_data)
-
-    Example (Test Mode):
-        from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
-        from test_monte_carlo import synthetic_gcp_pairing, synthetic_image_matching
-
-        config = MonteCarloConfig(
-            seed=42,
-            n_iterations=5,
-            parameters=[...],
-            geo=geo_config,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
-            earth_radius_m=6378140.0,
-            # Required loaders
-            telemetry_loader=load_clarreo_telemetry,
-            science_loader=load_clarreo_science,
-            # Test functions for pairing and matching
-            gcp_pairing_func=synthetic_gcp_pairing,
-            image_matching_func=synthetic_image_matching,
+    logger.info("    Creating dynamic kernels from telemetry...")
+    dynamic_kernels = []
+    for kernel_config in config.geo.dynamic_kernels:
+        dynamic_kernels.append(
+            creator.write_from_json(
+                kernel_config,
+                output_kernel=work_dir,
+                input_data=tlm_dataset,
+            )
         )
+    logger.info(f"    Created {len(dynamic_kernels)} dynamic kernels")
+    return dynamic_kernels
 
-        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
 
-    Example (Production Mode):
-        config = MonteCarloConfig(
-            seed=42,
-            n_iterations=100,
-            parameters=[...],
-            geo=geo_config,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
-            earth_radius_m=6378140.0,
-            # Required loaders
-            telemetry_loader=load_clarreo_telemetry,
-            science_loader=load_clarreo_science,
-            # Production processing - pass functions directly!
-            gcp_pairing_func=real_spatial_pairing,
-            image_matching_func=image_matching,  # Pass the function
-            calibration_dir=Path("calibration/"),
-        )
+def _create_parameter_kernels(
+    params: list[tuple["ParameterConfig", Any]],
+    work_dir: Path,
+    tlm_dataset: pd.DataFrame,
+    sci_dataset: pd.DataFrame,
+    ugps_times: Any,
+    config: "MonteCarloConfig",
+    creator: "create.KernelCreator",
+) -> tuple[list[Path], Any]:
+    """Create parameter-specific SPICE kernels and apply time offsets.
 
-        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+    This function applies parameter variations by creating modified kernels
+    (CONSTANT_KERNEL, OFFSET_KERNEL) or modifying time tags (OFFSET_TIME).
+    Each parameter set produces different kernels and/or time modifications.
+
+    Parameters
+    ----------
+    params : list[tuple[ParameterConfig, Any]]
+        List of (ParameterConfig, parameter_value) tuples for this iteration
+    work_dir : Path
+        Working directory for kernel files
+    tlm_dataset : pd.DataFrame
+        Spacecraft state data (may be modified for OFFSET_KERNEL) with position, velocity, attitude, and time columns
+    sci_dataset : pd.DataFrame
+        Science frame time data (may be modified for OFFSET_TIME), may include optional measurement columns
+    ugps_times : array-like
+        Original time array from science dataset
+    config : MonteCarloConfig
+        Configuration with geo settings
+    creator : create.KernelCreator
+        KernelCreator instance for writing kernels
+
+    Returns
+    -------
+    param_kernels : list[Path]
+        List of parameter-specific kernel file paths
+    ugps_times_modified : array-like
+        Modified time array if OFFSET_TIME applied, otherwise original times
+
+    Examples
+    --------
+    >>> param_kernels, times = _create_parameter_kernels(
+    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+    ... )
+    >>> # Use in SPICE context with dynamic kernels
+    >>> with sp.ext.load_kernel([dynamic_kernels, param_kernels]):
+    ...     geo = geolocate(times)
     """
-    # Initialize the entire set of parameters.
-    params_set = load_param_sets(config)
+    param_kernels = []
+    ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
 
-    # Get loaders and processing functions from config (Single Source of Truth)
-    telemetry_loader = config.telemetry_loader
-    science_loader = config.science_loader
-    # gcp_loader = config.gcp_loader
-    gcp_pairing_func = config.gcp_pairing_func
-    image_matching_func = config.image_matching_func
-
-    # Validate required loaders are provided
-    if telemetry_loader is None:
-        raise ValueError(
-            "config.telemetry_loader is required. Please specify a telemetry loading function in your MonteCarloConfig."
-        )
-    if science_loader is None:
-        raise ValueError(
-            "config.science_loader is required. Please specify a science loading function in your MonteCarloConfig."
-        )
-
-    # Set defaults for optional processing functions
-    if gcp_pairing_func is None:
-        logger.warning("No GCP pairing function provided in config - pairing will return empty results")
-
-        def gcp_pairing_func(x):
-            return []  # Empty stub
-
-    if image_matching_func is None:
-        # No image matching function provided - use empty stub
-        logger.warning("No image matching function provided - using empty stub (no validation will occur)")
-
-        def _empty_image_matching(geo_data, gcp_ref, tlm, calib, params, cfg, los=None, psf=None):
-            return xr.Dataset(
-                {
-                    "lat_error_deg": (["measurement"], []),
-                    "lon_error_deg": (["measurement"], []),
-                },
-                coords={"measurement": []},
+    # Apply each individual parameter change
+    logger.info("    Applying parameter changes:")
+    for a_param, p_data in params:  # [ParameterConfig, typing.Any]
+        # Create static changing SPICE kernels
+        if a_param.ptype == ParameterType.CONSTANT_KERNEL:
+            # Aka: BASE-CK, YOKE-CK, HYSICS-CK
+            param_kernels.append(
+                creator.write_from_json(
+                    a_param.config_file,
+                    output_kernel=work_dir,
+                    input_data=p_data,
+                )
             )
 
-        image_matching_func = _empty_image_matching
+        # Create dynamic changing SPICE kernels
+        elif a_param.ptype == ParameterType.OFFSET_KERNEL:
+            # Aka: AZ-CK, EL-CK
+            tlm_dataset_alt = apply_offset(a_param, p_data, tlm_dataset)
+            param_kernels.append(
+                creator.write_from_json(
+                    a_param.config_file,
+                    output_kernel=work_dir,
+                    input_data=tlm_dataset_alt,
+                )
+            )
 
-    # Initialize return data structure...
-    results = []
+        # Alter non-kernel data
+        elif a_param.ptype == ParameterType.OFFSET_TIME:
+            # Aka: Frame-times...
+            sci_dataset_alt = apply_offset(a_param, p_data, sci_dataset)
+            ugps_times_modified = sci_dataset_alt[config.geo.time_field].values
 
-    # Prepare NetCDF data structure for hierarchical output
+        else:
+            raise NotImplementedError(a_param.ptype)
+
+    logger.info(f"    Created {len(param_kernels)} parameter-specific kernels")
+    return param_kernels, ugps_times_modified
+
+
+def _geolocate_and_match(
+    config: "MonteCarloConfig",
+    kernel_ctx: KernelContext,
+    ugps_times_modified: Any,
+    tlm_dataset: pd.DataFrame,
+    calibration: CalibrationData,
+    image_matching_func: ImageMatchingFunc,
+    match_ctx: ImageMatchingContext,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Perform geolocation and image matching for a parameter set.
+
+    This function loads SPICE kernels, performs geolocation, and runs image
+    matching against GCP reference data. It's the core computation step that
+    combines all previous setup (kernels, data loading) into results.
+
+    Parameters
+    ----------
+    config : MonteCarloConfig
+        Configuration with geo and image matching settings
+    kernel_ctx : KernelContext
+        NamedTuple containing:
+        - mkrn: MetaKernel instance with SDS and mission kernels
+        - dynamic_kernels: List of dynamic kernel file paths
+        - param_kernels: List of parameter-specific kernel file paths
+    ugps_times_modified : array-like
+        Time array (possibly modified by OFFSET_TIME parameter)
+    tlm_dataset : pd.DataFrame
+        Spacecraft state telemetry data
+    calibration : CalibrationData
+        NamedTuple containing:
+        - los_vectors: Pre-loaded LOS vectors (or None)
+        - optical_psfs: Pre-loaded optical PSF (or None)
+    image_matching_func : ImageMatchingFunc
+        Function to perform image matching (e.g., integrated_image_match)
+    match_ctx : ImageMatchingContext
+        NamedTuple containing:
+        - gcp_pairs: List of GCP pairing tuples
+        - params: List of (ParameterConfig, parameter_value) tuples
+        - pair_idx: Index of current GCP pair
+        - sci_key: Science dataset identifier for this pair
+
+    Returns
+    -------
+    geo_dataset : xr.Dataset
+        Geolocated points with latitude, longitude, altitude
+    image_matching_output : xr.Dataset
+        Matching results with error measurements and metadata
+
+    Examples
+    --------
+    >>> kernel_ctx = KernelContext(mkrn, dynamic_kernels, param_kernels)
+    >>> calibration = CalibrationData(los_vectors, optical_psfs)
+    >>> match_ctx = ImageMatchingContext(gcp_pairs, params, 0, "sci_001")
+    >>> geo, matching = _geolocate_and_match(
+    ...     config, kernel_ctx, times, tlm_dataset,
+    ...     calibration, integrated_image_match, match_ctx
+    ... )
+    """
+    logger.info("    Performing geolocation...")
+    with sp.ext.load_kernel(
+        [
+            kernel_ctx.mkrn.sds_kernels,
+            kernel_ctx.mkrn.mission_kernels,
+            kernel_ctx.dynamic_kernels,
+            kernel_ctx.param_kernels,
+        ]
+    ):
+        geoloc_inst = spatial.Geolocate(config.geo.instrument_name)
+        geo_dataset = geoloc_inst(ugps_times_modified)
+
+        # === IMAGE MATCHING MODULE ===
+        logger.info("    === IMAGE MATCHING MODULE ===")
+
+        # Use injected image matching function
+        gcp_file = Path(match_ctx.gcp_pairs[0][1]) if match_ctx.gcp_pairs else Path("synthetic_gcp.tif")
+
+        # All image matching functions use the same signature
+        image_matching_output = image_matching_func(
+            geolocated_data=geo_dataset,
+            gcp_reference_file=gcp_file,
+            telemetry=tlm_dataset,
+            calibration_dir=config.calibration_dir,
+            params_info=match_ctx.params,
+            config=config,
+            los_vectors_cached=calibration.los_vectors,
+            optical_psfs_cached=calibration.optical_psfs,
+        )
+        validate_image_matching_output(image_matching_output)
+        logger.info("    Image matching complete")
+
+        logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
+
+        # Store metadata for tracking
+        image_matching_output.attrs["gcp_pair_index"] = match_ctx.pair_idx
+        image_matching_output.attrs["gcp_pair_id"] = f"{match_ctx.sci_key}_pair_{match_ctx.pair_idx}"
+
+    return geo_dataset, image_matching_output
+
+
+def loop(
+    config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
+):
+    """
+    Monte Carlo loop for parameter sensitivity analysis.
+
+    Parameters
+    ----------
+    config : MonteCarloConfig
+        The single configuration containing all settings:
+        - Required: parameters, iterations, thresholds, geo config
+        - Required loaders: telemetry_loader, science_loader
+        - Optional processing: gcp_pairing_func, image_matching_func
+        - Calibration: `calibration_dir` (if image_matching_func uses calibration)
+        - Output: netcdf, output_filename
+    work_dir : Path
+        Working directory for temporary files.
+    tlm_sci_gcp_sets : list of (str, str, str)
+        List of (`telemetry_key`, `science_key`, `gcp_key`) tuples.
+    resume_from_checkpoint : bool, optional
+        If True, resume from an existing checkpoint.
+
+    Returns
+    -------
+    results : list
+        List of iteration results (order: `pair_idx * N + param_idx`).
+    netcdf_data : dict
+        Dictionary of NetCDF variables indexed as `[param_idx, pair_idx]`.
+
+    Notes
+    -----
+    This implementation uses a pair-outer, parameter-inner loop order:
+    - Outer loop: GCP pairs (load data once per image)
+    - Inner loop: Parameter sets (reuse loaded data)
+    This reduces file I/O and centralizes mission-specific behavior through the
+    `config` object.
+
+    Examples
+    --------
+        >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        >>>
+        >>> config = MonteCarloConfig(
+        ...     seed=42,
+        ...     n_iterations=100,
+        ...     parameters=[...],
+        ...     geo=geo_config,
+        ...     telemetry_loader=load_clarreo_telemetry,
+        ...     science_loader=load_clarreo_science,
+        ...     gcp_pairing_func=spatial_pairing,
+        ...     image_matching_func=image_matching,
+        ... )
+        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+    """
+    logger.info("=== MONTE CARLO PIPELINE ===")
+    logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
+
+    # Extract injected functions
+    telemetry_loader = config.telemetry_loader
+    science_loader = config.science_loader
+    image_matching_func = config.image_matching_func
+    gcp_pairing_func = config.gcp_pairing_func
+
+    # Validate required loaders
+    if telemetry_loader is None:
+        raise ValueError("config.telemetry_loader is required but was None.")
+    if science_loader is None:
+        raise ValueError("config.science_loader is required but was None.")
+
+    # Validate required processing functions
+    if gcp_pairing_func is None:
+        raise ValueError("config.gcp_pairing_func is required but was None.")
+    if image_matching_func is None:
+        raise ValueError("config.image_matching_func is required but was None.")
+
+    # Initialize parameter sets
+    params_set = load_param_sets(config)
+    logger.info(f"  Parameter sets: {len(params_set)} (inner loop)")
+
+    # Build NetCDF data structure
     n_param_sets = len(params_set)
     n_gcp_pairs = len(tlm_sci_gcp_sets)
 
-    # Determine output file and try to load checkpoint
-    # Use configurable filename from config
-    output_filename = config.get_output_filename()
-    output_file = work_dir / output_filename
-    start_param_idx = 0
-
+    # Try to load checkpoint if resuming
+    output_file = work_dir / config.get_output_filename()
+    start_pair_idx = 0
     if resume_from_checkpoint:
-        netcdf_data, start_param_idx = _load_checkpoint(output_file, config)
-        if netcdf_data is not None:
-            logger.info(f"Resuming from parameter set {start_param_idx + 1}/{n_param_sets}")
+        checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
+        if checkpoint_data is not None:
+            netcdf_data = checkpoint_data
+            start_pair_idx = completed_pairs
+            logger.info(f"Resuming from checkpoint: starting at GCP pair {start_pair_idx + 1}/{n_gcp_pairs}")
         else:
-            logger.info("No valid checkpoint found, starting from beginning")
             netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+            logger.info("No valid checkpoint found, starting from beginning")
     else:
-        # Build NetCDF data structure dynamically from configuration
         netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
 
-    # Prepare meta kernel details and kernel writer.
+    # Initialize results dict with (param_idx, pair_idx) keys
+    # This avoids nested search complexity when aggregating statistics
+    results_dict = {}
+
+    # Prepare SPICE environment
     mkrn = meta.MetaKernel.from_json(
         config.geo.meta_kernel_file,
         relative=True,
@@ -1809,280 +2218,146 @@ def loop(
     )
     creator = create.KernelCreator(overwrite=True, append=False)
 
-    # Track placeholder usage for summary warning
-    placeholder_usage_count = 0
+    # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
+    calibration_data = _load_calibration_data(config)
 
-    # Process each parameter set (starting from checkpoint if resuming)
+    # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
-        # Skip already completed parameter sets when resuming
-        if param_idx < start_param_idx:
-            logger.info(f"=== Parameter Set {param_idx + 1}/{len(params_set)} - Skipped (already completed) ===")
-            continue
-
-        logger.info(f"=== Parameter Set {param_idx + 1}/{len(params_set)} ===")
-
-        # Extract and store parameter values for this set
         param_values = _extract_parameter_values(params)
         _store_parameter_values(netcdf_data, param_idx, param_values)
 
-        # Load calibration data ONCE per parameter set (before GCP pair loop)
-        # Only if calibration_dir is provided (for image matching that uses calibration)
-        los_vectors_cached = None
-        optical_psfs_cached = None
+    # OUTER LOOP: Iterate through GCP pairs
+    for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
+        # Skip already-completed pairs if resuming
+        if pair_idx < start_pair_idx:
+            logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} === (SKIPPED - already completed)")
+            continue
 
-        if config.calibration_dir:
-            logger.info("Loading calibration data once for all GCP pairs...")
+        logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
 
-            # Use configurable calibration file names
-            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-            los_file = config.calibration_dir / los_filename
-            los_vectors_cached = load_los_vectors_from_mat(los_file)
-
-            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-            psf_file = config.calibration_dir / psf_filename
-            optical_psfs_cached = load_optical_psf_from_mat(psf_file)
-
-            logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")
-            logger.info(f"  Cached optical PSF: {len(optical_psfs_cached)} entries")
-
-        # Collect image matching results from all GCP pairs for this parameter set
-        image_matching_results = []
-        gcp_pair_geolocation_data = []
-
-        # Process each pairing of image data to a GCP for this parameter set
-        for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
-            logger.info(f"  Processing GCP pair {pair_idx + 1}/{len(tlm_sci_gcp_sets)}: {sci_key}")
-
-            # Load telemetry (L1) data using mission-specific loader
-            tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
-            validate_telemetry_output(tlm_dataset, config)
-
-            # Load science (L1A) data using mission-specific loader
-            sci_dataset = load_science(sci_key, config, loader_func=science_loader)
-            validate_science_output(sci_dataset, config)
-            ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps.
-
-            # === GCP PAIRING MODULE ===
-            logger.info("    === GCP PAIRING MODULE ===")
-
-            # Use synthetic GCP pairing function (placeholder or real)
-            gcp_pairs = gcp_pairing_func([sci_key])
-            validate_gcp_pairing_output(gcp_pairs)
-
-            logger.info(f"    Found {len(gcp_pairs)} GCP pairs for processing")
-
-            # Create dynamic unmodified SPICE kernels...
-            #   Aka: SC-SPK, SC-CK
-            logger.info("    Creating dynamic kernels from telemetry...")
-            dynamic_kernels = []
-            for kernel_config in config.geo.dynamic_kernels:
-                dynamic_kernels.append(
-                    creator.write_from_json(
-                        kernel_config,
-                        output_kernel=work_dir,
-                        input_data=tlm_dataset,
-                    )
-                )
-            logger.info(f"    Created {len(dynamic_kernels)} dynamic kernels")
-
-            # Apply parameter changes for this parameter set
-            param_kernels = []
-            ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
-
-            # Apply each individual parameter change.
-            print("Applying parameter changes:")
-            for a_param, p_data in params:  # [ParameterConfig, typing.Any]
-                # Create static changing SPICE kernels.
-                if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-                    # Aka: BASE-CK, YOKE-CK, HYSICS-CK
-                    param_kernels.append(
-                        creator.write_from_json(
-                            a_param.config_file,
-                            output_kernel=work_dir,
-                            input_data=p_data,
-                        )
-                    )
-
-                # Create dynamic changing SPICE kernels.
-                elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-                    # Aka: AZ-CK, EL-CK
-                    tlm_dataset_alt = apply_offset(a_param, p_data, tlm_dataset)
-                    param_kernels.append(
-                        creator.write_from_json(
-                            a_param.config_file,
-                            output_kernel=work_dir,
-                            input_data=tlm_dataset_alt,
-                        )
-                    )
-
-                # Alter non-kernel data.
-                elif a_param.ptype == ParameterType.OFFSET_TIME:
-                    # Aka: Frame-times...
-                    sci_dataset_alt = apply_offset(a_param, p_data, sci_dataset)
-                    ugps_times_modified = sci_dataset_alt[config.geo.time_field].values
-
-                else:
-                    raise NotImplementedError(a_param.ptype)
-
-            logger.info(f"    Created {len(param_kernels)} parameter-specific kernels")
-
-            # Geolocate.
-            logger.info("    Performing geolocation...")
-            with sp.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels, dynamic_kernels, param_kernels]):
-                geoloc_inst = spatial.Geolocate(config.geo.instrument_name)
-                geo_dataset = geoloc_inst(ugps_times_modified)
-
-                # === IMAGE MATCHING MODULE ===
-                logger.info("    === IMAGE MATCHING MODULE ===")
-
-                # Use injected image matching function
-                gcp_file = Path(gcp_pairs[0][1]) if gcp_pairs else Path("synthetic_gcp.tif")
-
-                # All image matching functions use the same signature
-                image_matching_output = image_matching_func(
-                    geolocated_data=geo_dataset,
-                    gcp_reference_file=gcp_file,
-                    telemetry=tlm_dataset,
-                    calibration_dir=config.calibration_dir,
-                    params_info=params,
-                    config=config,
-                    los_vectors_cached=los_vectors_cached,
-                    optical_psfs_cached=optical_psfs_cached,
-                )
-                validate_image_matching_output(image_matching_output)
-                logger.info(f"    Image matching complete")
-
-                logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
-
-                # Store image matching result for aggregate processing
-                image_matching_output.attrs["gcp_pair_index"] = pair_idx
-                image_matching_output.attrs["gcp_pair_id"] = f"{sci_key}_pair_{pair_idx}"
-                image_matching_results.append(image_matching_output)
-
-                # Store geolocation data for backward compatibility
-                gcp_pair_geolocation_data.append(
-                    {
-                        "pair_index": pair_idx,
-                        "geolocation": geo_dataset,
-                        "gcp_pairs": gcp_pairs,
-                    }
-                )
-
-                logger.info(f"    GCP pair {pair_idx + 1} image matching complete")
-
-        # === ERROR STATISTICS MODULE (AGGREGATE PROCESSING) ===
-        logger.info(f"  === ERROR STATISTICS MODULE (AGGREGATE) ===")
-        logger.info(f"  Processing aggregate statistics from {len(image_matching_results)} GCP pairs")
-
-        # Call error stats module on aggregate of all image matching results
-        aggregate_stats = call_error_stats_module(image_matching_results, monte_carlo_config=config)
-
-        # Extract aggregate error metrics
-        aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
-
-        logger.info(
-            f"  Aggregate error statistics: RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
-            f"measurements = {aggregate_error_metrics['n_measurements']}"
+        # Load image pair data once
+        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(
+            tlm_key, sci_key, config, telemetry_loader, science_loader
         )
 
-        # Process individual GCP pair results for detailed NetCDF storage
-        pair_errors = []
-        for pair_idx, image_matching_result in enumerate(image_matching_results):
-            # Get individual pair error metrics from the single result
-            individual_stats = call_error_stats_module(image_matching_result, monte_carlo_config=config)
+        # Create dynamic kernels once (these don't change with parameters)
+        dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+
+        # Get GCP pairing ONCE
+        gcp_pairs = gcp_pairing_func([sci_key])
+        validate_gcp_pairing_output(gcp_pairs)
+        logger.info(f"  Found {len(gcp_pairs)} GCP pairs for processing")
+
+        # INNER LOOP: Iterate through parameter sets
+        for param_idx, params in enumerate(params_set):
+            logger.info(f"  Parameter Set {param_idx + 1}/{n_param_sets}")
+
+            # Create parameter-specific kernels (these change with parameters)
+            param_kernels, ugps_times_modified = _create_parameter_kernels(
+                params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+            )
+
+            # Prepare context objects for cleaner function call
+            kernel_ctx = KernelContext(mkrn=mkrn, dynamic_kernels=dynamic_kernels, param_kernels=param_kernels)
+            match_ctx = ImageMatchingContext(gcp_pairs=gcp_pairs, params=params, pair_idx=pair_idx, sci_key=sci_key)
+
+            # Geolocate and perform image matching
+            geo_dataset, image_matching_output = _geolocate_and_match(
+                config,
+                kernel_ctx,
+                ugps_times_modified,
+                tlm_dataset,
+                calibration_data,
+                image_matching_func,
+                match_ctx,
+            )
+
+            # Process individual pair error statistics
+            individual_stats = call_error_stats_module(image_matching_output, monte_carlo_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
-            pair_errors.append(individual_metrics["rms_error_m"])
-
-            # Store individual results in NetCDF structure
+            # Store results in NetCDF (maintain [param_idx, pair_idx] ordering)
             _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
-
-            # Store per-GCP-pair image matching results
-            netcdf_data["im_lat_error_km"][param_idx, pair_idx] = image_matching_result.attrs.get(
+            netcdf_data["im_lat_error_km"][param_idx, pair_idx] = image_matching_output.attrs.get(
                 "lat_error_km", np.nan
             )
-            netcdf_data["im_lon_error_km"][param_idx, pair_idx] = image_matching_result.attrs.get(
+            netcdf_data["im_lon_error_km"][param_idx, pair_idx] = image_matching_output.attrs.get(
                 "lon_error_km", np.nan
             )
-            netcdf_data["im_ccv"][param_idx, pair_idx] = image_matching_result.attrs.get("correlation_ccv", np.nan)
-            netcdf_data["im_grid_step_m"][param_idx, pair_idx] = image_matching_result.attrs.get(
+            netcdf_data["im_ccv"][param_idx, pair_idx] = image_matching_output.attrs.get("correlation_ccv", np.nan)
+            netcdf_data["im_grid_step_m"][param_idx, pair_idx] = image_matching_output.attrs.get(
                 "final_grid_step_m", np.nan
             )
 
-            logger.info(f"    GCP pair {pair_idx + 1}: RMS = {individual_metrics['rms_error_m']:.2f}m")
-
-        # Store comprehensive results for backward compatibility
-        for pair_idx, (image_matching_result, geo_data) in enumerate(
-            zip(image_matching_results, gcp_pair_geolocation_data)
-        ):
-            individual_stats = call_error_stats_module(image_matching_result, monte_carlo_config=config)
-            individual_metrics = _extract_error_metrics(individual_stats)
-
+            # Store results in dict with (param_idx, pair_idx) key
+            # Note: iteration index reflects reversed order (pair_idx * n_params + param_idx)
+            param_values = _extract_parameter_values(params)
             iteration_result = {
-                "iteration": len(results),
+                "iteration": pair_idx * n_param_sets + param_idx,
                 "pair_index": pair_idx,
                 "param_index": param_idx,
                 "parameters": param_values,
-                "geolocation": geo_data["geolocation"],
-                "gcp_pairs": geo_data["gcp_pairs"],
-                "image_matching": image_matching_result,
+                "geolocation": geo_dataset,
+                "gcp_pairs": gcp_pairs,
+                "image_matching": image_matching_output,
                 "error_stats": individual_stats,
-                "aggregate_error_stats": aggregate_stats,  # NEW: Include aggregate statistics
                 "rms_error_m": individual_metrics["rms_error_m"],
-                "aggregate_rms_error_m": aggregate_error_metrics["rms_error_m"],  # NEW: Include aggregate RMS
+                "aggregate_rms_error_m": None,
             }
-            results.append(iteration_result)
+            results_dict[(param_idx, pair_idx)] = iteration_result
 
-        # Compute overall performance metrics for this parameter set
+            logger.info(
+                f"    RMS error: {individual_metrics['rms_error_m']:.2f}m "
+                f"({individual_metrics['n_measurements']} measurements)"
+            )
+
+        logger.info(f"  GCP pair {pair_idx + 1} complete (processed {n_param_sets} parameter sets)")
+
+        # Save checkpoint after each pair completes
+        if resume_from_checkpoint:
+            _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx)
+
+    # Compute aggregate statistics for each parameter set (after all pairs complete)
+    logger.info("=== Computing aggregate statistics for all parameter sets ===")
+    for param_idx in range(n_param_sets):
+        # Collect all image matching results for this parameter set
+        param_image_matching_results = []
+        for pair_idx in range(n_gcp_pairs):
+            result = results_dict.get((param_idx, pair_idx))
+            if result:
+                param_image_matching_results.append(result["image_matching"])
+
+        # Compute aggregate statistics
+        aggregate_stats = call_error_stats_module(param_image_matching_results, monte_carlo_config=config)
+        aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
+
+        # Extract pair errors for threshold calculation
+        pair_errors = [netcdf_data["rms_error_m"][param_idx, pair_idx] for pair_idx in range(n_gcp_pairs)]
         _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=config.performance_threshold_m)
 
-        # Log parameter set summary with both individual and aggregate metrics
-        percent_under_250 = netcdf_data["percent_under_250m"][param_idx]
-        mean_rms = netcdf_data["mean_rms_all_pairs"][param_idx]
-        logger.info(f"Parameter set {param_idx + 1} complete:")
-        logger.info(f"  Individual pairs - {percent_under_250:.1f}% under 250m, mean RMS = {mean_rms:.2f}m")
-        logger.info(
-            f"  Aggregate - RMS = {aggregate_error_metrics['rms_error_m']:.2f}m, "
-            f"total measurements = {aggregate_error_metrics['n_measurements']}"
-        )
+        logger.info(f"  Parameter set {param_idx + 1}: Aggregate RMS = {aggregate_error_metrics['rms_error_m']:.2f}m")
 
-        # Save checkpoint after each parameter set
-        _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx)
+        # Add aggregate stats to all results for this parameter set
+        for pair_idx in range(n_gcp_pairs):
+            key = (param_idx, pair_idx)
+            if key in results_dict:
+                results_dict[key]["aggregate_error_stats"] = aggregate_stats
+                results_dict[key]["aggregate_rms_error_m"] = aggregate_error_metrics["rms_error_m"]
+    # Convert results_dict back to list for backward compatibility
+    # Sort by iteration index to maintain consistent ordering
+    results = [results_dict[key] for key in sorted(results_dict.keys(), key=lambda k: results_dict[k]["iteration"])]
 
-    # Summary warning if placeholder was used
-    if placeholder_usage_count > 0:
-        logger.warning("\n" + "=" * 80)
-        logger.warning("!!!  PLACEHOLDER FUNCTIONS WERE USED  !!!")
-        logger.warning("=" * 80)
-        logger.warning(f"Placeholder functions were called {placeholder_usage_count} times during this run")
-        logger.warning("Results contain SYNTHETIC data - NOT real measurements!")
-        logger.warning("")
-        logger.warning("This includes:")
-        logger.warning("  - SYNTHETIC GCP pairs (placeholder_gcp_pairing)")
-        logger.warning("  - SYNTHETIC error measurements (placeholder_image_matching)")
-        logger.warning("")
-        logger.warning("NetCDF output file does NOT contain actual results")
-        logger.warning("")
-        logger.warning("This may be intentional (e.g., upstream testing) or indicate a problem:")
-        logger.warning("  GCP Pairing:")
-        logger.warning("    - Check if config.gcp_pairing_func is set to real pairing function")
-        logger.warning("  Image Matching:")
-        logger.warning("    - Check if config.image_matching_func is set to real matching function")
-        logger.warning("    - Check if config.calibration_dir is valid (if matching requires calibration)")
-        logger.warning("    - Check if calibration files exist (b_HS.mat, optical_PSF_*.mat)")
-        logger.warning("  - Review error messages above for any failures")
-        logger.warning("=" * 80 + "\n")
-
-    # Save final NetCDF results (output_file defined above)
+    # Save final NetCDF results
     _save_netcdf_results(netcdf_data, output_file, config)
-    logger.info(f"Saved NetCDF results to: {output_file}")
 
     # Clean up checkpoint file after successful completion
-    _cleanup_checkpoint(output_file)
+    if resume_from_checkpoint:
+        _cleanup_checkpoint(output_file)
 
-    logger.info(
-        f"=== GCS Loop Complete: Processed {len(params_set)} parameter sets × {len(tlm_sci_gcp_sets)} GCP pairs ==="
-    )
+    logger.info(f"=== Loop Complete: Processed {n_gcp_pairs} GCP pairs × {n_param_sets} parameter sets ===")
+    logger.info(f"  Total iterations: {len(results)}")
+    logger.info(f"  NetCDF output: {output_file}")
+
     return results, netcdf_data
 
 
@@ -2207,17 +2482,18 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 # =============================================================================
 
 
-def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_completed):
+def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed):
     """
-    Save NetCDF checkpoint with partial results after each parameter set.
+    Save NetCDF checkpoint with partial results after each GCP pair completes.
 
     This enables resuming Monte Carlo runs if they are interrupted.
+    Adapted for pair-outer loop order where each pair processes all parameters.
 
     Args:
         netcdf_data: Dictionary with current NetCDF data
         output_file: Path to final output file (checkpoint uses .checkpoint.nc suffix)
         config: MonteCarloConfig with metadata
-        param_idx_completed: Index of the last completed parameter set
+        pair_idx_completed: Index of the last completed GCP pair (for pair-outer loop)
     """
     import xarray as xr
 
@@ -2260,8 +2536,8 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
 
     # Add checkpoint-specific metadata (NetCDF-compatible types)
     ds.attrs["checkpoint"] = 1  # Use integer instead of boolean for NetCDF compatibility
-    ds.attrs["completed_parameter_sets"] = int(param_idx_completed + 1)
-    ds.attrs["total_parameter_sets"] = int(len(netcdf_data["parameter_set_id"]))
+    ds.attrs["completed_gcp_pairs"] = int(pair_idx_completed + 1)
+    ds.attrs["total_gcp_pairs"] = int(len(netcdf_data["gcp_pair_id"]))
     ds.attrs["checkpoint_timestamp"] = pd.Timestamp.now().isoformat()
 
     # Add parameter variable attributes from config
@@ -2292,9 +2568,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, param_idx_complete
     ds.to_netcdf(checkpoint_file, mode="w")  # Force overwrite mode
     ds.close()
 
-    logger.info(
-        f"  Checkpoint saved: {param_idx_completed + 1}/{len(netcdf_data['parameter_set_id'])} parameter sets complete"
-    )
+    logger.info(f"  Checkpoint saved: {pair_idx_completed + 1}/{len(netcdf_data['gcp_pair_id'])} GCP pairs complete")
 
 
 def _load_checkpoint(output_file, config):
@@ -2318,7 +2592,7 @@ def _load_checkpoint(output_file, config):
     logger.info(f"Found checkpoint file: {checkpoint_file}")
 
     try:
-        ds = xr.open_dataset(checkpoint_file)
+        ds = xr.open_dataset(checkpoint_file, decode_timedelta=False)
 
         # Verify this is actually a checkpoint (checkpoint attribute is 1 for true, 0 or missing for false)
         checkpoint_flag = ds.attrs.get("checkpoint", 0)
@@ -2327,11 +2601,11 @@ def _load_checkpoint(output_file, config):
             ds.close()
             return None, 0
 
-        completed = ds.attrs.get("completed_parameter_sets", 0)
-        total = ds.attrs.get("total_parameter_sets", 0)
+        completed = ds.attrs.get("completed_gcp_pairs", 0)
+        total = ds.attrs.get("total_gcp_pairs", 0)
         timestamp = ds.attrs.get("checkpoint_timestamp", "unknown")
 
-        logger.info(f"Checkpoint from {timestamp}: {completed}/{total} parameter sets complete")
+        logger.info(f"Checkpoint from {timestamp}: {completed}/{total} GCP pairs complete")
 
         # Convert xarray.Dataset back to netcdf_data dictionary
         netcdf_data = {}
@@ -2346,7 +2620,7 @@ def _load_checkpoint(output_file, config):
 
         ds.close()
 
-        logger.info(f"Checkpoint loaded successfully, resuming from parameter set {completed}")
+        logger.info(f"Checkpoint loaded successfully, resuming from GCP pair {completed}")
 
         return netcdf_data, completed
 
