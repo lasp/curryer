@@ -2176,6 +2176,13 @@ def loop(
         raise ValueError("config.telemetry_loader is required but was None.")
     if science_loader is None:
         raise ValueError("config.science_loader is required but was None.")
+
+    # Validate required processing functions
+    if gcp_pairing_func is None:
+        raise ValueError("config.gcp_pairing_func is required but was None.")
+    if image_matching_func is None:
+        raise ValueError("config.image_matching_func is required but was None.")
+
     # Initialize parameter sets
     params_set = load_param_sets(config)
     logger.info(f"  Parameter sets: {len(params_set)} (inner loop)")
