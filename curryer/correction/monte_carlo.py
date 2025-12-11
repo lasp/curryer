@@ -58,7 +58,7 @@ import typing
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -136,8 +136,8 @@ class CalibrationData(NamedTuple):
         List of optical PSF entries, or None if not using calibration
     """
 
-    los_vectors: Optional[np.ndarray]
-    optical_psfs: Optional[list]
+    los_vectors: np.ndarray | None
+    optical_psfs: list | None
 
 
 class ImageMatchingContext(NamedTuple):
