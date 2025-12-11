@@ -2148,19 +2148,19 @@ def loop(
 
     Examples
     --------
-    from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
-
-    config = MonteCarloConfig(
-        seed=42,
-        n_iterations=100,
-        parameters=[...],
-        geo=geo_config,
-        telemetry_loader=load_clarreo_telemetry,
-        science_loader=load_clarreo_science,
-        gcp_pairing_func=spatial_pairing,
-        image_matching_func=image_matching,
-    )
-    results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+        >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        >>> 
+        >>> config = MonteCarloConfig(
+        ...     seed=42,
+        ...     n_iterations=100,
+        ...     parameters=[...],
+        ...     geo=geo_config,
+        ...     telemetry_loader=load_clarreo_telemetry,
+        ...     science_loader=load_clarreo_science,
+        ...     gcp_pairing_func=spatial_pairing,
+        ...     image_matching_func=image_matching,
+        ... )
+        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
     """
     logger.info("=== MONTE CARLO PIPELINE ===")
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
