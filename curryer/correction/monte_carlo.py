@@ -2211,6 +2211,9 @@ def loop(
     )
     creator = create.KernelCreator(overwrite=True, append=False)
 
+    # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
+    calibration_data = _load_calibration_data(config)
+
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
         param_values = _extract_parameter_values(params)
@@ -2232,9 +2235,6 @@ def loop(
 
         # Create dynamic kernels once (these don't change with parameters)
         dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
-
-        # Load calibration data (LOS vectors and psf) once
-        calibration_data = _load_calibration_data(config)
 
         # Get GCP pairing ONCE
         gcp_pairs = gcp_pairing_func([sci_key])
