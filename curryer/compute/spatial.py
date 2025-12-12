@@ -114,7 +114,7 @@ class SpatialQueries:
         return res, SQF.GOOD
 
 
-def get_instrument_kernel_pointing_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
+def get_instrument_kernel_pointing_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument from the instrument kernel.
 
     Boresight vector is queried from the instrument kernel, but superseded by
@@ -163,7 +163,7 @@ def get_instrument_kernel_pointing_vectors(instrument: Union[int, str, spicierpy
 
 
 @deprecated("Use get_instrument_kernel_pointing_vectors instead.")
-def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
+def pixel_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument.
 
     Boresight vector is queried from the instrument kernel, but superseded by
@@ -325,10 +325,10 @@ def instrument_pointing_state(
 
 def compute_ellipsoid_intersection(
     ugps_times: np.ndarray,
-    instrument: Union[int, str, spicierpy.obj.Body],
+    instrument: int | str | spicierpy.obj.Body,
     perspective_correction: str = None,
     allow_nans: bool = True,
-    custom_pointing_vectors: Union[np.ndarray, None] = None,
+    custom_pointing_vectors: np.ndarray | None = None,
     give_geodetic_output: bool = False,
     give_lat_lon_in_degrees: bool = True,
     observer_id: int = spicierpy.obj.Body("EARTH").id,
