@@ -112,7 +112,7 @@ print(mkrn)
 #   Body(CPRS_AZ), Body(CPRS_YOKE), Body(CPRS_EL), Body(CPRS_HYSICS))
 
 with spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    print(curryer.compute.spatial.pixel_vectors('CPRS_HYSICS'))
+    print(curryer.compute.spatial.get_instrument_kernel_pointing_vectors('CPRS_HYSICS'))
 # (480,
 #  array([[ 0.00173869, -0.08715574,  0.99619318],
 #         [ 0.0017315 , -0.08679351,  0.99622482],

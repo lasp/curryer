@@ -324,7 +324,7 @@ class PointingData(abstract.AbstractMissionData):
         # Option to geolocate.
         geoloc = None
         if self.with_geolocate:
-            surf_xyz, sc_xyz, sqf = spatial.instrument_intersect_ellipsoid(ugps_times, self.observer)
+            surf_xyz, sc_xyz, sqf = spatial.compute_ellipsoid_intersection(ugps_times, self.observer)
 
             surf_norm = surf_xyz.values / np.linalg.norm(surf_xyz.values, axis=1)[..., None]
             vec_norm = sc_xyz.values - surf_xyz.values
