@@ -8,9 +8,9 @@ consistent configuration and data loading.
 from pathlib import Path
 
 import pytest
-from clarreo_config import create_clarreo_monte_carlo_config
+from clarreo_config import create_clarreo_correction_config
 
-from curryer.correction import monte_carlo as mc
+from curryer.correction import correction as mc
 
 
 @pytest.fixture(scope="session")
@@ -23,7 +23,7 @@ def clarreo_config_from_json():
 
     Session scope ensures the config is loaded once and reused across all tests.
     """
-    config_path = Path(__file__).parent / "configs/clarreo_monte_carlo_config.json"
+    config_path = Path(__file__).parent / "configs/clarreo_correction_config.json"
 
     if not config_path.exists():
         pytest.skip(f"Config file not found: {config_path}. Run test_generate_clarreo_config_json() first.")
@@ -36,14 +36,14 @@ def clarreo_config_programmatic():
     """Generate CLARREO config programmatically (for comparison tests).
 
     This fixture creates the configuration programmatically using the
-    create_clarreo_monte_carlo_config() function. Useful for testing
+    create_clarreo_correction_config() function. Useful for testing
     that programmatic and JSON configs produce equivalent results.
 
     Session scope for efficiency across multiple tests.
     """
     data_dir = Path(__file__).parent.parent / "data/clarreo/gcs"
     generic_dir = Path("data/generic")
-    return create_clarreo_monte_carlo_config(data_dir, generic_dir)
+    return create_clarreo_correction_config(data_dir, generic_dir)
 
 
 @pytest.fixture(scope="session")
@@ -98,7 +98,7 @@ def temp_work_dir(tmp_path):
     Returns:
         Path: Temporary directory path
     """
-    work_dir = tmp_path / "monte_carlo_work"
+    work_dir = tmp_path / "correction_work"
     work_dir.mkdir(parents=True, exist_ok=True)
     return work_dir
 

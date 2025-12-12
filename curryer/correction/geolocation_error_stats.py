@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class GeolocationConfig:
     """Configuration parameters for geolocation processing.
 
-    All values should be provided from MonteCarloConfig - no hardcoded defaults.
+    All values should be provided from CorrectionConfig - no hardcoded defaults.
     """
 
     earth_radius_m: float  # Earth radius in meters (e.g., WGS84: 6378140.0)
@@ -40,31 +40,31 @@ class GeolocationConfig:
     variable_names: dict[str, str] | None = None  # If None, uses CLARREO defaults
 
     @classmethod
-    def from_monte_carlo_config(cls, mc_config) -> "GeolocationConfig":
+    def from_correction_config(cls, correction_config) -> "GeolocationConfig":
         """
-        Create GeolocationConfig from MonteCarloConfig.
+        Create GeolocationConfig from CorrectionConfig.
 
         This is the preferred way to create this config - extracts all settings
-        from the single source of truth (MonteCarloConfig).
+        from the single source of truth (CorrectionConfig).
 
         Args:
-            mc_config: MonteCarloConfig instance
+            correction_config: CorrectionConfig instance
 
         Returns:
-            GeolocationConfig with settings from MonteCarloConfig
+            GeolocationConfig with settings from CorrectionConfig
         """
         # Create variable name mapping
         variable_names = {
-            "spacecraft_position": mc_config.spacecraft_position_name,
-            "boresight": mc_config.boresight_name,
-            "transformation_matrix": mc_config.transformation_matrix_name,
+            "spacecraft_position": correction_config.spacecraft_position_name,
+            "boresight": correction_config.boresight_name,
+            "transformation_matrix": correction_config.transformation_matrix_name,
         }
 
         return cls(
-            earth_radius_m=mc_config.earth_radius_m,
-            performance_threshold_m=mc_config.performance_threshold_m,
-            performance_spec_percent=mc_config.performance_spec_percent,
-            minimum_correlation=mc_config.geo.minimum_correlation,
+            earth_radius_m=correction_config.earth_radius_m,
+            performance_threshold_m=correction_config.performance_threshold_m,
+            performance_spec_percent=correction_config.performance_spec_percent,
+            minimum_correlation=correction_config.geo.minimum_correlation,
             variable_names=variable_names,
         )
 
@@ -84,7 +84,7 @@ class GeolocationConfig:
         if self.variable_names is None:
             raise ValueError(
                 f"GeolocationConfig.variable_names is None. "
-                f"Use GeolocationConfig.from_monte_carlo_config() to create config with proper variable names."
+                f"Use GeolocationConfig.from_correction_config() to create config with proper variable names."
             )
 
         if semantic_name not in self.variable_names:
@@ -104,12 +104,12 @@ class ErrorStatsProcessor:
         Initialize processor with configuration.
 
         Args:
-            config: GeolocationConfig (required) - use GeolocationConfig.from_monte_carlo_config()
-                   to create from MonteCarloConfig
+            config: GeolocationConfig (required) - use GeolocationConfig.from_correction_config()
+                   to create from CorrectionConfig
         """
         if config is None:
             raise ValueError(
-                "GeolocationConfig is required. Use GeolocationConfig.from_monte_carlo_config(mc_config) to create."
+                "GeolocationConfig is required. Use GeolocationConfig.from_correction_config(correction_config) to create."
             )
         self.config = config
 
@@ -489,11 +489,11 @@ class ErrorStatsProcessor:
             >>> processor = ErrorStatsProcessor()
             >>> # Try different correlation thresholds
             >>> results_50 = processor.process_from_netcdf(
-            ...     "monte_carlo_results/run_001.nc",
+            ...     "correction_results/run_001.nc",
             ...     minimum_correlation=0.5
             ... )
             >>> results_70 = processor.process_from_netcdf(
-            ...     "monte_carlo_results/run_001.nc",
+            ...     "correction_results/run_001.nc",
             ...     minimum_correlation=0.7
             ... )
         """
