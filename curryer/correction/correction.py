@@ -1,7 +1,7 @@
 """
-Mission-Agnostic Monte Carlo Geolocation Correction Pipeline.
+Mission-Agnostic Geolocation Correction Pipeline.
 
-This module provides generic Monte Carlo correction infrastructure for
+This module provides generic correction infrastructure for
 geolocation component sensitivity analysis. It was developed for CLARREO,
 but intended to work with any Earth observation mission through configuration.
 
@@ -19,20 +19,20 @@ Instead, follow these steps:
    - Instrument name and settings
    - Performance thresholds
    - Earth radius and geodetic parameters
-4. Use create_your_mission_monte_carlo_config() to build MonteCarloConfig object
+4. Use create_your_mission_correction_config() to build CorrectionConfig object
 5. Optionally save config to JSON for reproducibility
 6. Pass the configuration object to Monte Carlo pipeline functions
 
 Quick Start:
 -----------
-    from curryer.correction import monte_carlo as mc
+    from curryer.correction import geolocation_correction as gc
     from your_mission_config import create_mission_config
 
     # Create configuration
     config = create_mission_config(data_dir, generic_dir)
 
     # Run Monte Carlo analysis
-    results = mc.run_monte_carlo_pipeline(config)
+    results = gc.run_correction_pipeline(config)
 
 For CLARREO Example:
 -------------------
@@ -45,7 +45,7 @@ See CONFIGURATION_GUIDE.md in the repository root.
 Mission-Agnostic Design:
 -----------------------
 This module contains NO mission-specific values, column names, or hardcoded constants.
-All mission-specific parameters must be provided through MonteCarloConfig.
+All mission-specific parameters must be provided through CorrectionConfig.
 
 Core modules in curryer/correction/ are generic. Mission-specific code belongs in
 your test or application directories (e.g., tests/test_correction/clarreo_*).
@@ -294,14 +294,14 @@ def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray
 # Configuration Loading Functions
 
 
-def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
-    """Load Monte Carlo configuration from a JSON file.
+def load_config_from_json(config_path: Path) -> "CorrectionConfig":
+    """Load correction configuration from a JSON file.
 
     Args:
         config_path: Path to the JSON configuration file (e.g., gcs_config.json)
 
     Returns:
-        MonteCarloConfig object populated from the JSON file
+        CorrectionConfig object populated from the JSON file
 
     Raises:
         FileNotFoundError: If config file doesn't exist
@@ -331,21 +331,21 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
     logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
 
     # Validate required sections exist
-    if "monte_carlo" not in config_data:
-        raise KeyError("Missing required 'monte_carlo' section in config file")
+    if "correction" not in config_data:
+        raise KeyError("Missing required 'correction' section in config file")
     if "geolocation" not in config_data:
         raise KeyError("Missing required 'geolocation' section in config file")
 
-    # Extract monte_carlo section
-    mc_config = config_data.get("monte_carlo", {})
+    # Extract correction section
+    corr_config = config_data.get("correction", {})
     geo_config = config_data.get("geolocation", {})
 
-    # Validate monte_carlo section
-    if "parameters" not in mc_config:
-        raise KeyError("Missing required 'parameters' in monte_carlo section")
-    if not isinstance(mc_config["parameters"], list):
+    # Validate correction section
+    if "parameters" not in corr_config:
+        raise KeyError("Missing required 'parameters' in correction section")
+    if not isinstance(corr_config["parameters"], list):
         raise ValueError("'parameters' must be a list")
-    if len(mc_config["parameters"]) == 0:
+    if len(corr_config["parameters"]) == 0:
         raise ValueError("No parameters defined in configuration")
 
     # Parse parameters and group related ones together
@@ -353,7 +353,7 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
     param_groups = {}
 
     # First pass: group parameters by their base name and type
-    for param_dict in mc_config.get("parameters", []):
+    for param_dict in corr_config.get("parameters", []):
         param_name = param_dict.get("name", "")
         ptype_str = param_dict.get("parameter_type", "CONSTANT_KERNEL")
         ptype = ParameterType[ptype_str]
@@ -436,7 +436,7 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
         )
 
     logger.info(
-        f"Loaded {len(parameters)} parameter groups from {len(mc_config.get('parameters', []))} individual parameters"
+        f"Loaded {len(parameters)} parameter groups from {len(corr_config.get('parameters', []))} individual parameters"
     )
 
     # Parse geolocation configuration
@@ -460,38 +460,38 @@ def load_config_from_json(config_path: Path) -> "MonteCarloConfig":
         time_field=time_field,
     )
 
-    # Extract required mission-specific parameters from monte_carlo section
+    # Extract required mission-specific parameters from correction section
     # These MUST be provided in the config file - no defaults
-    earth_radius_m = mc_config.get("earth_radius_m")
+    earth_radius_m = corr_config.get("earth_radius_m")
     if earth_radius_m is None:
         raise KeyError(
-            "Missing required 'earth_radius_m' in monte_carlo config section. "
+            "Missing required 'earth_radius_m' in correction config section. "
             "This must be specified for your mission (e.g., 6378140.0 for WGS84)."
         )
 
-    performance_threshold_m = mc_config.get("performance_threshold_m")
+    performance_threshold_m = corr_config.get("performance_threshold_m")
     if performance_threshold_m is None:
         raise KeyError(
-            "Missing required 'performance_threshold_m' in monte_carlo config section. "
+            "Missing required 'performance_threshold_m' in correction config section. "
             "This must be specified for your mission (e.g., 250.0 meters for CLARREO)."
         )
 
-    performance_spec_percent = mc_config.get("performance_spec_percent")
+    performance_spec_percent = corr_config.get("performance_spec_percent")
     if performance_spec_percent is None:
         raise KeyError(
-            "Missing required 'performance_spec_percent' in monte_carlo config section. "
+            "Missing required 'performance_spec_percent' in correction config section. "
             "This must be specified for your mission (e.g., 39.0 percent for CLARREO)."
         )
 
-    # Create MonteCarloConfig
-    config = MonteCarloConfig(
-        seed=mc_config.get("seed"),
-        n_iterations=mc_config.get("n_iterations", 10),
-        parameters=parameters,
-        geo=geo,
-        earth_radius_m=earth_radius_m,
+    # Create CorrectionConfig
+    config = CorrectionConfig(
         performance_threshold_m=performance_threshold_m,
         performance_spec_percent=performance_spec_percent,
+        earth_radius_m=earth_radius_m,
+        geo=geo,
+        n_iterations=corr_config.get("n_iterations", 10),
+        parameters=parameters,
+        seed=corr_config.get("seed"),
     )
 
     # Validate the loaded configuration
@@ -515,7 +515,7 @@ def image_matching(
     telemetry: pd.DataFrame,
     calibration_dir: Path,
     params_info: list,
-    config: "MonteCarloConfig",
+    config: "CorrectionConfig",
     los_vectors_cached: np.ndarray | None = None,
     optical_psfs_cached: list | None = None,
 ) -> xr.Dataset:
@@ -531,7 +531,7 @@ def image_matching(
         telemetry: Telemetry DataFrame with spacecraft state
         calibration_dir: Directory containing calibration files (LOS vectors, PSF)
         params_info: Current parameter values for error tracking
-        config: MonteCarloConfig with coordinate name mappings
+        config: CorrectionConfig with coordinate name mappings
         los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
         optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
 
@@ -678,14 +678,14 @@ def image_matching(
     return output
 
 
-def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCarloConfig"):
+def call_error_stats_module(image_matching_results, correction_config: "CorrectionConfig"):
     """
     Call the error_stats module with image matching output.
 
     Args:
         image_matching_results: Either a single image matching result (xarray.Dataset)
                               or a list of image matching results from multiple GCP pairs
-        monte_carlo_config: MonteCarloConfig with all configuration (REQUIRED)
+        correction_config: CorrectionConfig with all configuration (REQUIRED)
 
     Returns:
         Aggregate error statistics dataset
@@ -701,7 +701,7 @@ def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCa
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
         # Create error stats config directly from Monte Carlo config (single source of truth)
-        error_config = ErrorStatsGeolocationConfig.from_monte_carlo_config(monte_carlo_config)
+        error_config = ErrorStatsGeolocationConfig.from_correction_config(correction_config)
 
         processor = ErrorStatsProcessor(config=error_config)
 
@@ -710,7 +710,7 @@ def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCa
             error_results = processor.process_geolocation_errors(image_matching_results[0])
         else:
             # Multiple GCP pairs - aggregate the data first
-            aggregated_data = _aggregate_image_matching_results(image_matching_results, monte_carlo_config)
+            aggregated_data = _aggregate_image_matching_results(image_matching_results, correction_config)
             error_results = processor.process_geolocation_errors(aggregated_data)
 
         return error_results
@@ -754,13 +754,13 @@ def call_error_stats_module(image_matching_results, monte_carlo_config: "MonteCa
         )
 
 
-def _aggregate_image_matching_results(image_matching_results, config: "MonteCarloConfig"):
+def _aggregate_image_matching_results(image_matching_results, config: "CorrectionConfig"):
     """
     Aggregate multiple image matching results into a single dataset for error stats processing.
 
     Args:
         image_matching_results: List of xarray.Dataset objects from image matching
-        config: MonteCarloConfig with coordinate name mappings
+        config: CorrectionConfig with coordinate name mappings
 
     Returns:
         Single aggregated xarray.Dataset with all measurements combined
@@ -895,10 +895,10 @@ class NetCDFConfig:
 
     This class defines the structure and metadata for NetCDF output files.
     All mission-specific information should be provided here rather than
-    hardcoded in the monte_carlo module.
+    hardcoded in the correction module.
 
     The performance_threshold_m is required and should match the value in
-    MonteCarloConfig. It's used to generate threshold-specific variable names
+    CorrectionConfig. It's used to generate threshold-specific variable names
     in the NetCDF output (e.g., "percent_under_250m").
     """
 
@@ -1006,10 +1006,10 @@ class NetCDFConfig:
 
 
 @dataclass
-class MonteCarloConfig:
-    """The configuration object for Monte Carlo geolocation analysis.
+class CorrectionConfig:
+    """The configuration object for geolocation correction analysis.
 
-    This config contains everything needed for a Monte Carlo run:
+    This config contains everything needed for a Correction run:
     - What parameters to vary (parameters list)
     - How to vary them (seed, n_iterations)
     - How to load data (telemetry_loader, science_loader)
@@ -1018,11 +1018,11 @@ class MonteCarloConfig:
     - Success criteria (performance_threshold_m, performance_spec_percent)
     - Output configuration (netcdf: NetCDFConfig, output_filename)
 
-    Create one MonteCarloConfig object and pass it to mc.loop() to run.
+    Create one CorrectionConfig object and pass it to correction.loop() to run.
 
     Parameters
     ----------
-    CORE MONTE CARLO SETTINGS (Required - define what the analysis does):
+    CORE CORRECTION SETTINGS (Required - define what the analysis does):
         seed : Optional[int]
             Random seed for reproducibility, or None for non-reproducible runs.
         n_iterations : int
@@ -1036,15 +1036,17 @@ class MonteCarloConfig:
         performance_threshold_m : float
             Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO).
         performance_spec_percent : float
-            Requirement as percentage of observations that meet threshold (e.g., 39.0 for CLARREO).
+            Required percentage of observations meeting threshold (e.g., 39.0 for CLARREO).
         earth_radius_m : float
-            Earth radius for geodetic calculations (can use curryer.constants.WGS84_EARTH_RADIUS_M).
+            Earth radius for geodetic calculations (e.g., 6378137.0 for WGS84).
+        geo : GeolocationConfig
+            SPICE kernels and instrument configuration.
 
     DATA LOADERS (Required for pipeline execution - mission-specific implementations):
         telemetry_loader : Optional[TelemetryLoader], default=None
-            Load spacecraft telemetry. Must be set before calling mc.loop().
+            Load spacecraft telemetry. Must be set before calling correction.loop().
         science_loader : Optional[ScienceLoader], default=None
-            Load science frame timing. Must be set before calling mc.loop().
+            Load science frame timing. Must be set before calling correction.loop().
         gcp_loader : Optional[GCPLoader], default=None
             Load GCP reference data (optional).
 
@@ -1169,7 +1171,7 @@ class MonteCarloConfig:
                 )
 
         if errors:
-            error_msg = "MonteCarloConfig validation failed:\n  - " + "\n  - ".join(errors)
+            error_msg = "CorrectionConfig validation failed:\n  - " + "\n  - ".join(errors)
             error_msg += "\n\nThese values must be provided in your mission configuration."
             error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
             raise ValueError(error_msg)
@@ -1191,14 +1193,14 @@ class MonteCarloConfig:
                     "                   and set config.calibration_dir if needed"
                 )
 
-        logger.debug("MonteCarloConfig validation passed")
+        logger.debug("CorrectionConfig validation passed")
 
     def ensure_netcdf_config(self):
         """Ensure NetCDFConfig exists, creating with defaults if needed."""
         if self.netcdf is None:
             self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
 
-    def get_output_filename(self, default: str = "monte_carlo_results.nc") -> str:
+    def get_output_filename(self, default: str = "correction_results.nc") -> str:
         """
         Get output filename with optional auto-generation.
 
@@ -1213,24 +1215,24 @@ class MonteCarloConfig:
         return default
 
     @staticmethod
-    def generate_timestamped_filename(prefix: str = "monte_carlo", suffix: str = "") -> str:
+    def generate_timestamped_filename(prefix: str = "correction", suffix: str = "") -> str:
         """
         Generate a timestamped output filename for production use.
 
         This prevents overwriting previous results and provides unique identifiers.
 
         Args:
-            prefix: Filename prefix (e.g., 'monte_carlo', 'clarreo_gcs')
+            prefix: Filename prefix (e.g., 'correction', 'clarreo_gcs')
             suffix: Optional suffix before extension (e.g., 'upstream', 'test')
 
         Returns:
             Filename with format: {prefix}_YYYYMMDD_HHMMSS[_{suffix}].nc
 
         Examples:
-            >>> MonteCarloConfig.generate_timestamped_filename()
-            'monte_carlo_20251029_143022.nc'
+            >>> CorrectionConfig.generate_timestamped_filename()
+            'correction_20251029_143022.nc'
 
-            >>> MonteCarloConfig.generate_timestamped_filename('clarreo_gcs', 'production')
+            >>> CorrectionConfig.generate_timestamped_filename('clarreo_gcs', 'production')
             'clarreo_gcs_20251029_143022_production.nc'
         """
         import datetime
@@ -1241,7 +1243,7 @@ class MonteCarloConfig:
         return f"{prefix}_{timestamp}.nc"
 
 
-def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
+def load_param_sets(config: CorrectionConfig) -> [ParameterConfig, typing.Any]:
     """
     Generate random parameter sets for Monte Carlo iterations.
     Each parameter is sampled according to its distribution and bounds.
@@ -1470,7 +1472,7 @@ def load_param_sets(config: MonteCarloConfig) -> [ParameterConfig, typing.Any]:
     return output
 
 
-def load_telemetry(tlm_key: str, config: MonteCarloConfig, loader_func=None) -> pd.DataFrame:
+def load_telemetry(tlm_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
     """
     Load telemetry data using provided mission-specific loader function.
 
@@ -1502,7 +1504,7 @@ def load_telemetry(tlm_key: str, config: MonteCarloConfig, loader_func=None) -> 
     return loader_func(tlm_key, config)
 
 
-def load_science(sci_key: str, config: MonteCarloConfig, loader_func=None) -> pd.DataFrame:
+def load_science(sci_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
     """
     Load science data using provided mission-specific loader function.
 
@@ -1534,7 +1536,7 @@ def load_science(sci_key: str, config: MonteCarloConfig, loader_func=None) -> pd
     return loader_func(sci_key, config)
 
 
-def load_gcp(gcp_key: str, config: MonteCarloConfig, loader_func=None):
+def load_gcp(gcp_key: str, config: CorrectionConfig, loader_func=None):
     """
     Load Ground Control Point (GCP) reference data using mission-specific loader.
 
@@ -1632,7 +1634,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     return modified_data
 
 
-def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_pairs: int) -> dict:
+def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_pairs: int) -> dict:
     """
     Build NetCDF data structure dynamically from configuration.
 
@@ -1640,7 +1642,7 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
     the parameters defined in the configuration, avoiding hardcoded mission-specific names.
 
     Args:
-        config: MonteCarloConfig with parameters and optional NetCDF config
+        config: CorrectionConfig with parameters and optional NetCDF config
         n_param_sets: Number of parameter sets (iterations)
         n_gcp_pairs: Number of GCP pairs
 
@@ -1732,7 +1734,7 @@ def _build_netcdf_structure(config: MonteCarloConfig, n_param_sets: int, n_gcp_p
 # These functions extract reusable logic from the main loop to simplify the structure
 
 
-def _load_calibration_data(config: "MonteCarloConfig") -> CalibrationData:
+def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
     """Load LOS vectors and optical PSF if calibration_dir is configured.
 
     This function centralizes calibration data loading, which is now called once
@@ -1740,7 +1742,7 @@ def _load_calibration_data(config: "MonteCarloConfig") -> CalibrationData:
 
     Parameters
     ----------
-    config : MonteCarloConfig
+    config : CorrectionConfig
         Configuration with calibration_dir and calibration settings
 
     Returns
@@ -1808,7 +1810,7 @@ def _load_calibration_data(config: "MonteCarloConfig") -> CalibrationData:
 def _load_image_pair_data(
     tlm_key: str,
     sci_key: str,
-    config: "MonteCarloConfig",
+    config: "CorrectionConfig",
     telemetry_loader: TelemetryLoader,
     science_loader: ScienceLoader,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
@@ -1820,7 +1822,7 @@ def _load_image_pair_data(
         Identifier for telemetry data.
     sci_key : str
         Identifier for science data.
-    config : MonteCarloConfig
+    config : CorrectionConfig
         Configuration containing geolocation settings and field names.
     telemetry_loader : callable
         Function with signature ``telemetry_loader(tlm_key, config) -> pandas.DataFrame`` that
@@ -1869,7 +1871,7 @@ def _load_image_pair_data(
 
 
 def _create_dynamic_kernels(
-    config: "MonteCarloConfig",
+    config: "CorrectionConfig",
     work_dir: Path,
     tlm_dataset: pd.DataFrame,
     creator: "create.KernelCreator",
@@ -1882,7 +1884,7 @@ def _create_dynamic_kernels(
 
     Parameters
     ----------
-    config : MonteCarloConfig
+    config : CorrectionConfig
         Configuration with geo settings and dynamic_kernels list
     work_dir : Path
         Working directory for kernel files
@@ -1926,7 +1928,7 @@ def _create_parameter_kernels(
     tlm_dataset: pd.DataFrame,
     sci_dataset: pd.DataFrame,
     ugps_times: Any,
-    config: "MonteCarloConfig",
+    config: "CorrectionConfig",
     creator: "create.KernelCreator",
 ) -> tuple[list[Path], Any]:
     """Create parameter-specific SPICE kernels and apply time offsets.
@@ -1947,7 +1949,7 @@ def _create_parameter_kernels(
         Science frame time data (may be modified for OFFSET_TIME), may include optional measurement columns
     ugps_times : array-like
         Original time array from science dataset
-    config : MonteCarloConfig
+    config : CorrectionConfig
         Configuration with geo settings
     creator : create.KernelCreator
         KernelCreator instance for writing kernels
@@ -2011,7 +2013,7 @@ def _create_parameter_kernels(
 
 
 def _geolocate_and_match(
-    config: "MonteCarloConfig",
+    config: "CorrectionConfig",
     kernel_ctx: KernelContext,
     ugps_times_modified: Any,
     tlm_dataset: pd.DataFrame,
@@ -2027,7 +2029,7 @@ def _geolocate_and_match(
 
     Parameters
     ----------
-    config : MonteCarloConfig
+    config : CorrectionConfig
         Configuration with geo and image matching settings
     kernel_ctx : KernelContext
         NamedTuple containing:
@@ -2110,14 +2112,14 @@ def _geolocate_and_match(
 
 
 def loop(
-    config: MonteCarloConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
+    config: CorrectionConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
 ):
     """
     Monte Carlo loop for parameter sensitivity analysis.
 
     Parameters
     ----------
-    config : MonteCarloConfig
+    config : CorrectionConfig
         The single configuration containing all settings:
         - Required: parameters, iterations, thresholds, geo config
         - Required loaders: telemetry_loader, science_loader
@@ -2148,13 +2150,34 @@ def loop(
 
     Examples
     --------
+    Correction mode (parameter optimization):
+
         >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
         >>>
-        >>> config = MonteCarloConfig(
-        ...     seed=42,
-        ...     n_iterations=100,
-        ...     parameters=[...],
+        >>> config = CorrectionConfig(
+        ...     performance_threshold_m=250.0,
+        ...     performance_spec_percent=39.0,
+        ...     earth_radius_m=6378137.0,
         ...     geo=geo_config,
+        ...     n_iterations=100,
+        ...     parameters=[roll_param, pitch_param, yaw_param],
+        ...     seed=42,
+        ...     telemetry_loader=load_clarreo_telemetry,
+        ...     science_loader=load_clarreo_science,
+        ...     gcp_pairing_func=spatial_pairing,
+        ...     image_matching_func=image_matching,
+        ... )
+        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+
+    Verification mode (performance checking only):
+
+        >>> config = CorrectionConfig(
+        ...     performance_threshold_m=250.0,
+        ...     performance_spec_percent=39.0,
+        ...     earth_radius_m=6378137.0,
+        ...     geo=geo_config,
+        ...     n_iterations=1,  # Verification mode
+        ...     parameters=[],   # No parameter variation
         ...     telemetry_loader=load_clarreo_telemetry,
         ...     science_loader=load_clarreo_science,
         ...     gcp_pairing_func=spatial_pairing,
@@ -2194,6 +2217,8 @@ def loop(
     # Try to load checkpoint if resuming
     output_file = work_dir / config.get_output_filename()
     start_pair_idx = 0
+    # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
+    # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
     if resume_from_checkpoint:
         checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
         if checkpoint_data is not None:
@@ -2273,7 +2298,7 @@ def loop(
             )
 
             # Process individual pair error statistics
-            individual_stats = call_error_stats_module(image_matching_output, monte_carlo_config=config)
+            individual_stats = call_error_stats_module(image_matching_output, correction_config=config)
             individual_metrics = _extract_error_metrics(individual_stats)
 
             # Store results in NetCDF (maintain [param_idx, pair_idx] ordering)
@@ -2328,7 +2353,7 @@ def loop(
                 param_image_matching_results.append(result["image_matching"])
 
         # Compute aggregate statistics
-        aggregate_stats = call_error_stats_module(param_image_matching_results, monte_carlo_config=config)
+        aggregate_stats = call_error_stats_module(param_image_matching_results, correction_config=config)
         aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
 
         # Extract pair errors for threshold calculation
@@ -2492,7 +2517,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     Args:
         netcdf_data: Dictionary with current NetCDF data
         output_file: Path to final output file (checkpoint uses .checkpoint.nc suffix)
-        config: MonteCarloConfig with metadata
+        config: CorrectionConfig with metadata
         pair_idx_completed: Index of the last completed GCP pair (for pair-outer loop)
     """
     import xarray as xr
@@ -2527,7 +2552,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
             "title": config.netcdf.title,
             "description": config.netcdf.description,
             "created": pd.Timestamp.now().isoformat(),
-            "monte_carlo_iterations": config.n_iterations,
+            "correction_iterations": config.n_iterations,
             "performance_threshold_m": config.netcdf.performance_threshold_m,
             "parameter_count": len(config.parameters),
             "random_seed": str(config.seed) if config.seed is not None else "None",
@@ -2577,7 +2602,7 @@ def _load_checkpoint(output_file, config):
 
     Args:
         output_file: Path to final output file (will check for .checkpoint.nc)
-        config: MonteCarloConfig for structure information
+        config: CorrectionConfig for structure information
 
     Returns:
         Tuple of (netcdf_data dict, start_idx) or (None, 0) if no checkpoint
@@ -2657,7 +2682,7 @@ def _save_netcdf_results(netcdf_data, output_file, config):
     Args:
         netcdf_data: Dictionary with all NetCDF variables and data
         output_file: Path to output NetCDF file
-        config: MonteCarloConfig with NetCDF metadata
+        config: CorrectionConfig with NetCDF metadata
     """
     import xarray as xr
 
@@ -2696,7 +2721,7 @@ def _save_netcdf_results(netcdf_data, output_file, config):
             "title": config.netcdf.title,
             "description": config.netcdf.description,
             "created": pd.Timestamp.now().isoformat(),
-            "monte_carlo_iterations": config.n_iterations,
+            "correction_iterations": config.n_iterations,
             "performance_threshold_m": config.netcdf.performance_threshold_m,
             "parameter_count": len(config.parameters),
             "random_seed": str(config.seed) if config.seed is not None else "None",

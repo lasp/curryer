@@ -106,7 +106,7 @@ def _create_test_config(**overrides):
     Returns:
         GeolocationConfig with CLARREO test values
     """
-    # CLARREO mission defaults (from clarreo_monte_carlo_config.json)
+    # CLARREO mission defaults (from clarreo_correction_config.json)
     # These values should match the canonical CLARREO configuration
     defaults = {
         "earth_radius_m": 6378140.0,  # WGS84 Earth radius (CLARREO standard)
