@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Unified Monte Carlo Test Suite
+Unified Correction Test Suite
 
-This module consolidates two complementary Monte Carlo test approaches:
+This module consolidates two complementary Correction test approaches:
 
 1. UPSTREAM Testing (run_upstream_pipeline):
    - Tests kernel creation and geolocation with parameter variations
@@ -32,7 +32,7 @@ python tests/test_correction/test_correction.py --mode downstream --quick
 
 Requirements:
 -----------------
-These tests validate the complete Monte Carlo geolocation pipeline,
+These tests validate the complete Correction geolocation pipeline,
 demonstrating parameter sensitivity analysis and error statistics
 computation for mission requirements validation.
 
@@ -87,7 +87,7 @@ utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 # =============================================================================
 # TEST PLACEHOLDER FUNCTIONS (For Synthetic Data Generation)
 # =============================================================================
-# These functions generate SYNTHETIC test data for testing the Monte Carlo pipeline
+# These functions generate SYNTHETIC test data for testing the Correction pipeline
 
 
 class _PlaceholderConfig:
@@ -128,7 +128,7 @@ def synthetic_image_matching(
     Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself).
 
     This function matches the signature of the real image_matching() function
-    but only uses a subset of parameters for upstream testing of the monte carlo.
+    but only uses a subset of parameters for upstream testing of the Correction.
 
     Used parameters:
         geolocated_data: For generating realistic synthetic errors
@@ -712,9 +712,7 @@ def test_generate_clarreo_config_json(tmp_path):
     assert corr_cfg["performance_threshold_m"] == 250.0
     assert corr_cfg["performance_spec_percent"] == 39.0
 
-    logger.info(
-        f"✓ Monte Carlo config: {len(corr_cfg['parameters'])} parameters, {corr_cfg['n_iterations']} iterations"
-    )
+    logger.info(f"✓ Correction config: {len(corr_cfg['parameters'])} parameters, {corr_cfg['n_iterations']} iterations")
     logger.info(
         f"✓ Required fields: earth_radius={corr_cfg['earth_radius_m']}, "
         f"threshold={corr_cfg['performance_threshold_m']}m, "
@@ -760,7 +758,7 @@ def test_generate_clarreo_config_json(tmp_path):
 
 def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -> tuple[list, dict, Path]:
     """
-    Test UPSTREAM segment of Monte Carlo pipeline.
+    Test UPSTREAM segment of Correction pipeline.
 
     This tests:
     - Parameter set generation
@@ -776,7 +774,7 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
     and geolocation part of the pipeline.
 
     Args:
-        n_iterations: Number of Monte Carlo iterations
+        n_iterations: Number of Correction iterations
         work_dir: Working directory for outputs. If None, uses a temporary
                   directory that will be cleaned up when the process exits.
 
@@ -845,10 +843,10 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
 
     logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
 
-    # Execute the Monte Carlo loop - all config comes from config object!
+    # Execute the Correction loop - all config comes from config object!
     # This will test parameter generation, kernel creation, and geolocation
     logger.info("=" * 80)
-    logger.info("EXECUTING MONTE CARLO UPSTREAM WORKFLOW")
+    logger.info("EXECUTING CORRECTION UPSTREAM WORKFLOW")
     logger.info("=" * 80)
 
     results, netcdf_data = correction.loop(config, work_dir, tlm_sci_gcp_sets)
@@ -883,7 +881,7 @@ def run_downstream_pipeline(
     n_iterations: int = 5, test_cases: list[str] | None = None, work_dir: Path | None = None
 ) -> tuple[list, dict, Path]:
     """
-    Test DOWNSTREAM segment of Monte Carlo pipeline.
+    Test DOWNSTREAM segment of Correction pipeline.
 
     IMPORTANT: This test uses a CUSTOM LOOP (not correction.loop()) because it works with
     pre-geolocated test data that doesn't have the telemetry/parameters needed for
@@ -908,7 +906,7 @@ def run_downstream_pipeline(
         - True parameter sensitivity (simulated via error variation)
 
     Args:
-        n_iterations: Number of Monte Carlo iterations
+        n_iterations: Number of Correction iterations
         test_cases: Specific test cases to use (e.g., ['1', '2'])
         work_dir: Working directory for outputs. If None, uses a temporary
                   directory that will be cleaned up when the process exits.
@@ -1077,10 +1075,10 @@ def run_downstream_pipeline(
     logger.info(f"  Performance threshold: {config.performance_threshold_m}m")
 
     # ==========================================================================
-    # STEP 3: MONTE CARLO ITERATIONS
+    # STEP 3: CORRECTION ITERATIONS
     # ==========================================================================
     logger.info("\n" + "=" * 80)
-    logger.info("STEP 3: MONTE CARLO ITERATIONS")
+    logger.info("STEP 3: CORRECTION ITERATIONS")
     logger.info("=" * 80)
 
     n_param_sets = n_iterations
