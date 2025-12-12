@@ -641,7 +641,7 @@ def run_image_matching_with_applied_errors(
 # =============================================================================
 
 
-def test_generate_clarreo_config_json():
+def test_generate_clarreo_config_json(tmp_path):
     """Generate CLARREO config JSON and validate structure.
 
     This test generates the canonical CLARREO configuration JSON file
@@ -661,7 +661,7 @@ def test_generate_clarreo_config_json():
     # Define paths
     data_dir = Path(__file__).parent.parent / "data/clarreo/gcs"
     generic_dir = Path("data/generic")
-    output_path = Path(__file__).parent / "configs/clarreo_monte_carlo_config.json"
+    output_path = tmp_path / "configs/clarreo_monte_carlo_config.json"
 
     logger.info(f"Data directory: {data_dir}")
     logger.info(f"Generic kernels: {generic_dir}")

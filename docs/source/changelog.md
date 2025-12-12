@@ -10,3 +10,4 @@
 - Clarified function and parameter naming and improved testing for associated functions
 - Left deprecated spatial compute functions in place for backward compatibility with warnings
   - Both `pixel_vectors` and `instrument_intersect_ellipsoid` were deprecated
+- Bug fix for montecarlo testing using pytest tmp_path
