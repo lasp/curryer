@@ -94,7 +94,7 @@ def validate_pairing_output(pairs: list[tuple[str, str]]) -> None:
                 f"got {type(pair)} with length {len(pair) if isinstance(pair, tuple) else 'N/A'}"
             )
         sci_key, gcp_path = pair
-        if not isinstance(sci_key, str) or not isinstance(gcp_path, (str, Path)):
+        if not isinstance(sci_key, str) or not isinstance(gcp_path, str | Path):
             raise ValueError(
                 f"GCP pairing output[{i}] = ({type(sci_key).__name__}, {type(gcp_path).__name__}), expected (str, str)"
             )

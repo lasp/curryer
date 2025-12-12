@@ -7,7 +7,7 @@ configuration files. It contains NO mission-specific logic.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def get_kernel_mapping(config_data: dict[str, Any], kernel_type: str) -> dict[st
     return kernel_mappings.get(kernel_type, {})
 
 
-def find_kernel_file(name: str, kernel_mapping: dict[str, str]) -> Optional[str]:
+def find_kernel_file(name: str, kernel_mapping: dict[str, str]) -> str | None:
     """Find kernel file for a given name using substring matching.
 
     Performs case-insensitive matching against kernel mapping keys.

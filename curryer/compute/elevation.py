@@ -14,7 +14,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -50,7 +49,7 @@ class Elevation:
     LON_MID = -180 % LON_STEP
     LAT_MID = -90 % LAT_STEP
 
-    def __init__(self, data_dir: Union[str, Path] = None, meters=False, degrees=True):
+    def __init__(self, data_dir: str | Path = None, meters=False, degrees=True):
         """Initialize elevation data handling.
 
         Parameters
@@ -331,8 +330,8 @@ class Elevation:
         arcsec: float = None,
         stat: str = "mea",
         wrap_lon=False,
-        degrees: Union[bool, None] = None,
-    ) -> Optional[pd.Series]:
+        degrees: bool | None = None,
+    ) -> pd.Series | None:
         """Find the DEM file for a given lon/lat point.
 
         Parameters
@@ -455,8 +454,8 @@ class Elevation:
 
     @track_performance
     def get_geoid_height(
-        self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float], degrees: Union[bool, None] = None
-    ) -> Union[np.ndarray, float]:
+        self, lon: np.ndarray | float, lat: np.ndarray | float, degrees: bool | None = None
+    ) -> np.ndarray | float:
         """Query the geoid height for a given lon/lat(s).
 
         Parameters
@@ -490,7 +489,7 @@ class Elevation:
         return hts if self.meters else hts / 1e3
 
     @track_performance
-    def get_dem_height(self, lon: float, lat: float, filepath: Path, degrees: Union[bool, None] = None) -> float:
+    def get_dem_height(self, lon: float, lat: float, filepath: Path, degrees: bool | None = None) -> float:
         """Query the DEM height above the geoid for a given lon/lat.
 
         Parameters
@@ -853,8 +852,8 @@ class ElevationRegion:
         dx: float,
         dy: float,
         orthometric=None,
-        meters: Union[bool, None] = None,
-        degrees: Union[bool, None] = None,
+        meters: bool | None = None,
+        degrees: bool | None = None,
     ):
         """Initialize the region's elevation data.
 
@@ -930,9 +929,7 @@ class ElevationRegion:
         return cls(data, ulx, uly, dx, dy, **kwargs)
 
     @track_performance
-    def query(
-        self, lon: Union[np.ndarray, float], lat: Union[np.ndarray, float], orthometric=None
-    ) -> Union[np.ndarray, float]:
+    def query(self, lon: np.ndarray | float, lat: np.ndarray | float, orthometric=None) -> np.ndarray | float:
         """Query the surface (DEM + geoid) height above the ellipsoid a given
         lon/lat.
 

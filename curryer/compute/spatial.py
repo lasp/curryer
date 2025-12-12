@@ -20,7 +20,6 @@ Terms:
 
 import logging
 import time
-from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -37,7 +36,7 @@ EARTH_FRAME = "ITRF93"  # High-accuracy, requires extra kernels.
 # 'IAU_EARTH' is low-accuracy, but built-in.
 
 
-def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int, np.ndarray]:
+def pixel_vectors(instrument: int | str | spicierpy.obj.Body) -> tuple[int, np.ndarray]:
     """Load the pixel or boresight vector(s) for a given instrument.
 
     Boresight vector is queried from the instrument kernel, but superseded by
@@ -85,7 +84,7 @@ def pixel_vectors(instrument: Union[int, str, spicierpy.obj.Body]) -> tuple[int,
 
 def instrument_pointing_state(
     ugps_times: np.ndarray,
-    instrument: Union[int, str, spicierpy.obj.Body],
+    instrument: int | str | spicierpy.obj.Body,
     correction: str = None,
     allow_nans=True,
     boresight_vector=None,
@@ -211,7 +210,7 @@ def instrument_pointing_state(
 
 def instrument_intersect_ellipsoid(
     ugps_times: np.ndarray,
-    instrument: Union[int, str, spicierpy.obj.Body],
+    instrument: int | str | spicierpy.obj.Body,
     correction: str = None,
     allow_nans=True,
     boresight_vector=None,
@@ -957,7 +956,7 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
 def surface_angles(
     surface_positions: pd.DataFrame,
     target_positions: pd.DataFrame = None,
-    target_obj: Union[int, str, spicierpy.obj.Body] = None,
+    target_obj: int | str | spicierpy.obj.Body = None,
     degrees=False,
     allow_nans=False,
     signed=False,
@@ -1060,7 +1059,7 @@ def minmax_lon(lons: np.ndarray, degrees=False) -> (float, float):
 class Geolocate:
     """High-level class to manage the geolocation processing steps."""
 
-    def __init__(self, instrument: Union[str, int, spicierpy.obj.Body], dem_data_dir=None):
+    def __init__(self, instrument: str | int | spicierpy.obj.Body, dem_data_dir=None):
         """Set up the geolocation process.
 
         Parameters
