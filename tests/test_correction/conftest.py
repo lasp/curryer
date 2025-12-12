@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from clarreo_config import create_clarreo_correction_config
 
-from curryer.correction import correction as mc
+from curryer.correction import correction
 
 
 @pytest.fixture(scope="session")
@@ -28,7 +28,7 @@ def clarreo_config_from_json():
     if not config_path.exists():
         pytest.skip(f"Config file not found: {config_path}. Run test_generate_clarreo_config_json() first.")
 
-    return mc.load_config_from_json(config_path)
+    return correction.load_config_from_json(config_path)
 
 
 @pytest.fixture(scope="session")
