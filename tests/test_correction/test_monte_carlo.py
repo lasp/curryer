@@ -48,7 +48,6 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -170,7 +169,7 @@ def synthetic_image_matching(
     # Generate synthetic errors
     base_error = placeholder_cfg.base_error_m
     param_contribution = (
-        sum(abs(p) if isinstance(p, (int, float)) else np.linalg.norm(p) for _, p in params_info)
+        sum(abs(p) if isinstance(p, int | float) else np.linalg.norm(p) for _, p in params_info)
         * placeholder_cfg.param_error_scale
     )
     error_magnitude = base_error + param_contribution
@@ -273,7 +272,7 @@ def _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs)
 # code separate from mission-agnostic core functionality.
 
 
-def discover_test_image_match_cases(test_data_dir: Path, test_cases: Optional[list[str]] = None) -> list[dict]:
+def discover_test_image_match_cases(test_data_dir: Path, test_cases: list[str] | None = None) -> list[dict]:
     """
     Discover available image matching test cases.
 
@@ -526,7 +525,7 @@ def run_image_matching_with_applied_errors(
     randomize_errors: bool = True,
     error_variation_percent: float = 3.0,
     cache_results: bool = True,
-    cached_result: Optional[xr.Dataset] = None,
+    cached_result: xr.Dataset | None = None,
 ) -> xr.Dataset:
     """
     Run image matching with artificial errors applied to test data.
@@ -757,7 +756,7 @@ def test_generate_clarreo_config_json():
 # =============================================================================
 
 
-def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None) -> tuple[list, dict, Path]:
+def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -> tuple[list, dict, Path]:
     """
     Test UPSTREAM segment of Monte Carlo pipeline.
 
@@ -879,7 +878,7 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Optional[Path] = None
 
 
 def run_downstream_pipeline(
-    n_iterations: int = 5, test_cases: Optional[list[str]] = None, work_dir: Optional[Path] = None
+    n_iterations: int = 5, test_cases: list[str] | None = None, work_dir: Path | None = None
 ) -> tuple[list, dict, Path]:
     """
     Test DOWNSTREAM segment of Monte Carlo pipeline.

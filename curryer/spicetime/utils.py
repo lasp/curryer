@@ -107,7 +107,7 @@ class InputAsArray:
                 times = np.array([times], dtype=self.dtype)
 
             # Handle non-array iterable.
-            elif not isinstance(times, (np.ndarray, pd.Series)):
+            elif not isinstance(times, np.ndarray | pd.Series):
                 times = np.array(times, dtype=self.dtype)
 
             # Handle arrays of the wrong type.

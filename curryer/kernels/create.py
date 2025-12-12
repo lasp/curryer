@@ -3,12 +3,12 @@
 @author: Brandon Stone
 """
 
-import datetime
 import importlib
 import json
 import logging
 import shutil
 import sys
+from datetime import datetime, timedelta, timezone
 from itertools import chain
 from pathlib import Path
 
@@ -52,7 +52,7 @@ class KernelCreator:
             parent_dir = self._parent_dir
 
         # File-based inputs.
-        if isinstance(input_obj, (str, Path)):
+        if isinstance(input_obj, str | Path):
             filename = Path(input_obj)
             if parent_dir and not filename.is_file() and not filename.is_absolute():
                 filename = (Path(parent_dir) / filename).resolve()
@@ -234,9 +234,9 @@ def batch_kernels(
         raise ValueError("can not specify both `time_range` and `lag_days`")
 
     if lag_days is not None:
-        dt = datetime.datetime.utcnow().date()
-        dt0 = dt - datetime.timedelta(days=lag_days)
-        dt1 = dt0 + datetime.timedelta(days=1)
+        dt = datetime.now(timezone.utc).date()
+        dt0 = dt - timedelta(days=lag_days)
+        dt1 = dt0 + timedelta(days=1)
         time_range = [dt0.isoformat(), dt1.isoformat()]
         time_format = "utc"
 
@@ -246,7 +246,7 @@ def batch_kernels(
             raise ValueError(f"If specified, `time_range` must contain two times in increasing order: {time_range}")
 
         if buffer_hours:
-            if not isinstance(buffer_hours, (list, tuple)):
+            if not isinstance(buffer_hours, list | tuple):
                 buffer_hours = [buffer_hours, buffer_hours]
             time_range = [time_range[0] - int(buffer_hours[0] * 3.6e9), time_range[1] + int(buffer_hours[1] * 3.6e9)]
 
@@ -254,7 +254,7 @@ def batch_kernels(
     n_config = len(kernel_configs)
     if output_kernels is not None:
         # TODO: Support output directory!
-        if not isinstance(output_kernels, (list, tuple)):
+        if not isinstance(output_kernels, list | tuple):
             raise TypeError(f"`output_kernels` must be a list/tuple, not: {type(output_kernels)}")
         if not n_config == len(output_kernels):
             raise ValueError("`output_kernels` must be the same length as `kernel_configs` or None")

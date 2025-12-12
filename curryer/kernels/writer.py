@@ -6,7 +6,7 @@
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
@@ -48,13 +48,13 @@ def update_invalid_paths(
     for key, value in configs.items():
         if re.search(r"_FILE(?:_NAME|)$", key) is None:
             continue
-        if isinstance(value, (str, Path)):
+        if isinstance(value, str | Path):
             value = [value]
 
         new_vals = []
         modified_value = False
         for item in value:
-            if not isinstance(item, (str, Path)):
+            if not isinstance(item, str | Path):
                 new_vals.append(item)
                 continue
 
@@ -172,7 +172,7 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
         name=mappings.get("name"),
         code=mappings.get("code"),
         version=configs.pop("version", 0),
-        created=datetime.utcnow().strftime("%Y-%m-%d"),
+        created=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         configs=configs,
     )  # TODO(stone): Add key 'APPEND_TO_OUTPUT' with self.append value? Or does cmd line flag override it anyway?
 

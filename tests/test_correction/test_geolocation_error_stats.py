@@ -34,7 +34,6 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import numpy.testing as npt
@@ -60,7 +59,7 @@ np.set_printoptions(linewidth=120)
 # ============================================================================
 
 
-def _sample_from_validated_test_cases(n_measurements: int, seed: Optional[int] = None) -> xr.Dataset:
+def _sample_from_validated_test_cases(n_measurements: int, seed: int | None = None) -> xr.Dataset:
     """
     Sample test data from the validated 13 test cases with replacement.
 

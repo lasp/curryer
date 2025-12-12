@@ -412,7 +412,7 @@ class EphemerisTLEWriter(AbstractEphemerisWriter):
         tle_txt += "\n".join(row["tle_line1"] + "\n" + row["tle_line2"] for _, row in input_data.iterrows())
         tle_txt += "\n"  # SPICE will error out without this.
 
-        if isinstance(fobj_or_str, (str, Path)):
+        if isinstance(fobj_or_str, str | Path):
             Path(fobj_or_str).write_text(tle_txt)
         else:
             fobj_or_str.write(tle_txt)
