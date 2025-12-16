@@ -368,8 +368,8 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
             )
 
             t0 = pd.Timestamp.utcnow()
-            geoloc, sc_data, sqf = spatial.instrument_intersect_ellipsoid(
-                ugps_times, "CPRS_HYSICS", geodetic=True, degrees=True
+            geoloc, sc_data, sqf = spatial.compute_ellipsoid_intersection(
+                ugps_times, "CPRS_HYSICS", give_geodetic_output=True, give_lat_lon_in_degrees=True
             )
 
             t1 = pd.Timestamp.utcnow()
@@ -570,8 +570,8 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
 
             # Attempt to geolocate!
             # geoloc = spatial.geolocate(ugps_times, 'CPRS_HYSICS')
-            geoloc, sc_pos, sqf = spatial.instrument_intersect_ellipsoid(
-                ugps_times, "CPRS_HYSICS", geodetic=True, degrees=True
+            geoloc, sc_pos, sqf = spatial.compute_ellipsoid_intersection(
+                ugps_times, "CPRS_HYSICS", give_geodetic_output=True, give_lat_lon_in_degrees=True
             )
             calc_lon = geoloc["lon"][ugps_times[0]]
             calc_lat = geoloc["lat"][ugps_times[0]]
@@ -613,8 +613,12 @@ class ClarreoEngScenariosTestCase(unittest.TestCase):
 
             # Geolocate each individual pixel.
             for i in range(npix):
-                geoloc, _, _ = spatial.instrument_intersect_ellipsoid(
-                    ugps_times, "CPRS_HYSICS", boresight_vector=vectors[i, :], geodetic=True, degrees=True
+                geoloc, _, _ = spatial.compute_ellipsoid_intersection(
+                    ugps_times,
+                    "CPRS_HYSICS",
+                    custom_pointing_vectors=vectors[i, :],
+                    give_geodetic_output=True,
+                    give_lat_lon_in_degrees=True,
                 )
                 lonlats[i, :] = geoloc.iloc[0, :2].values
 
