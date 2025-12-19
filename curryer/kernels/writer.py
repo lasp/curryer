@@ -82,6 +82,8 @@ def update_invalid_paths(
     import shutil
     import tempfile
 
+    # Import inside function to avoid circular dependency (classes.py imports write_setup from this module)
+    # This deferred import pattern is safe because get_short_temp_dir doesn't depend on write_setup
     from .classes import get_short_temp_dir
 
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
@@ -97,15 +99,18 @@ def update_invalid_paths(
     # Track temporary files created for cleanup
     temp_files_created = []
 
-    wrap_configs = configs.copy()
+    # Use deepcopy to avoid mutating the caller's input dictionary
+    import copy
+
+    wrap_configs = copy.deepcopy(configs)
 
     # Check if we need to work on nested 'properties' dict
-    if "properties" in configs and isinstance(configs["properties"], dict):
+    if "properties" in wrap_configs and isinstance(wrap_configs["properties"], dict):
         # Work on the properties dict
-        properties = configs["properties"]
+        properties = wrap_configs["properties"]
     else:
         # Work on the top-level config
-        properties = configs
+        properties = wrap_configs
 
     for key, value in properties.items():
         # Skip non-string/Path/list values (like integers, bools, etc.)
@@ -113,6 +118,9 @@ def update_invalid_paths(
             continue
 
         # Check if this property likely contains file paths that need shortening
+        # Matches: any key ending in _FILE or _FILE_NAME (e.g., LEAPSECONDS_FILE, INPUT_DATA_FILE)
+        # Plus explicit common meta-kernel properties: clock_kernel, frame_kernel, etc.
+        # This covers most SPK, CK, meta-kernel, and other SPICE kernel file references
         is_file_property = re.search(r"_FILE(?:_NAME|)$", key) is not None or key in [
             "clock_kernel",
             "frame_kernel",
@@ -164,11 +172,18 @@ def update_invalid_paths(
 
                 # Strategy 1: Copy to temp directory with short path
                 if try_copy and fn.is_file():
+                    temp_path = None
                     try:
-                        temp_fd, temp_path = tempfile.mkstemp(
-                            suffix=fn.suffix, prefix=fn.stem[:10] + "_", dir=str(temp_dir)
-                        )
+                        # Use hash of full path to ensure uniqueness (not for security)
+                        import hashlib
+
+                        path_hash = hashlib.md5(str(fn).encode()).hexdigest()[:6]  # noqa: S324
+                        prefix = f"{fn.stem[:10]}_{path_hash}_"
+
+                        temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
                         os.close(temp_fd)
+
+                        # Copy the file - if this fails, temp file will be cleaned up in except block
                         shutil.copy2(fn, temp_path)
 
                         if len(temp_path) <= max_len:
@@ -187,8 +202,15 @@ def update_invalid_paths(
                         else:
                             # Temp path still too long, clean up and try other strategies
                             os.remove(temp_path)
-                            logger.warning(f"   Temp path still exceeds limit: {temp_path} ({len(temp_path)} chars)")
-                    except Exception as e:
+                            temp_path = None  # Mark as cleaned up
+                            logger.warning(f"   Temp path still exceeds limit ({len(temp_path)} chars)")
+                    except (OSError, PermissionError) as e:
+                        # Clean up temp file if it was created but copy/checks failed
+                        if temp_path and os.path.exists(temp_path):
+                            try:
+                                os.remove(temp_path)
+                            except OSError:
+                                pass  # Best effort cleanup
                         logger.warning(f"   Failed to copy to temp directory: {e}")
 
                 # Strategy 2: Check if a relative path would be shorter
