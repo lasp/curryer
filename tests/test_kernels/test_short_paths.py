@@ -170,13 +170,23 @@ class TestUpdateInvalidPaths(unittest.TestCase):
     def test_try_copy_false_uses_wrap(self):
         """Test that try_copy=False falls back to wrapping."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure"
+            # Use very long directory names to ensure path > 80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+            )
             long_path_dir.mkdir(parents=True, exist_ok=True)
 
-            test_file = long_path_dir / "test.tsc"
+            test_file = long_path_dir / "test_kernel_with_long_filename.tsc"
             test_file.write_text("CONTENT")
 
             config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is actually long enough
+            actual_len = len(str(test_file))
+            self.assertGreater(actual_len, 80, f"Test path not long enough: {actual_len} chars - {test_file}")
 
             # With try_copy=False, should wrap instead
             result, temp_files = update_invalid_paths(config, max_len=80, try_copy=False, try_wrap=True)
