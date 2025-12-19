@@ -180,13 +180,24 @@ class TestUpdateInvalidPaths(unittest.TestCase):
     def test_temp_file_cleanup_tracking(self):
         """Test that temp files are properly tracked for cleanup."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure" / "for" / "testing" / "purposes"
+            # Use very long directory names to ensure path > 80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
             long_path_dir.mkdir(parents=True, exist_ok=True)
 
-            test_file = long_path_dir / "test_kernel_with_long_name.tsc"
+            test_file = long_path_dir / "test_kernel_with_very_long_filename.tsc"
             test_file.write_text("CONTENT")
 
             config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is actually long enough
+            actual_len = len(str(test_file))
+            self.assertGreater(actual_len, 80, f"Test path not long enough: {actual_len} chars - {test_file}")
 
             # Generate shortened path
             result, temp_files = update_invalid_paths(config, max_len=80, try_copy=True)
