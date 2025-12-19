@@ -91,7 +91,13 @@ class TestUpdateInvalidPaths(unittest.TestCase):
         """Test that long paths are copied to short temp location."""
         # Create a test file with long path
         with tempfile.TemporaryDirectory() as tmpdir:
-            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure" / "for" / "testing"
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
             long_path_dir.mkdir(parents=True, exist_ok=True)
 
             test_file = long_path_dir / "test_kernel.tsc"
@@ -124,7 +130,13 @@ class TestUpdateInvalidPaths(unittest.TestCase):
     def test_multiple_kernel_properties(self):
         """Test that multiple kernel properties are all shortened."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure"
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
             long_path_dir.mkdir(parents=True, exist_ok=True)
 
             clock_file = long_path_dir / "clock_kernel.tsc"
