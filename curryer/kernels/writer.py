@@ -30,13 +30,59 @@ env = jinja2.Environment(
 
 # pylint: disable=too-many-branches,too-many-nested-blocks
 def update_invalid_paths(
-    configs, max_len=80, try_relative=False, try_wrap=True, wrap_char="+", relative_dir=None, parent_dir=None
+    configs,
+    max_len=80,
+    try_relative=False,
+    try_copy=True,
+    try_wrap=True,
+    wrap_char="+",
+    relative_dir=None,
+    parent_dir=None,
+    temp_dir=None,
 ):
-    """Update invalid paths (too long) by relativizing or wrapping.
-    See: https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/kernel.html
+    """Update invalid paths (too long) by copying, relativizing, or wrapping.
+
+    Attempts to fix paths that exceed the maximum length by trying strategies in order:
+    1. Copy file to temp directory with short path (if try_copy=True)
+    2. Relativize path (if try_relative=True)
+    3. Wrap path across multiple lines (if try_wrap=True)
+
+    Parameters
+    ----------
+    configs : dict
+        Configuration dictionary to update
+    max_len : int
+        Maximum path length (default: 80 for SPICE string values)
+    try_relative : bool
+        Try to use relative paths if shorter (default: False)
+    try_copy : bool
+        Try to copy file to temp directory with short path (default: True)
+    try_wrap : bool
+        Try to wrap long paths across multiple lines (default: True)
+    wrap_char : str
+        Character for line continuation (default: "+")
+    relative_dir : Path
+        Base directory for relative paths
+    parent_dir : Path
+        Parent directory for resolving relative paths
+    temp_dir : Path
+        Base directory for temp copies (default: /tmp on Unix, C:/Temp on Windows)
+
+    Returns
+    -------
+    tuple
+        (updated_config_dict, list_of_temp_files)
+        - updated_config_dict: Configuration with shortened paths
+        - list_of_temp_files: List of temp file paths created (for cleanup)
+
+    See Also
+    --------
+    https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/kernel.html
     """
-    # TODO: Do this for all strings, not just filenames?
-    # TODO: Only works in meta-kernels!
+    import shutil
+    import tempfile
+
+    from .classes import get_short_temp_dir
 
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
@@ -44,10 +90,39 @@ def update_invalid_paths(
         if parent_dir.is_file():
             parent_dir = parent_dir.parent
 
+    # Determine temp directory base - use helper for consistency
+    if temp_dir is None:
+        temp_dir = get_short_temp_dir()
+
+    # Track temporary files created for cleanup
+    temp_files_created = []
+
     wrap_configs = configs.copy()
-    for key, value in configs.items():
-        if re.search(r"_FILE(?:_NAME|)$", key) is None:
+
+    # Check if we need to work on nested 'properties' dict
+    if "properties" in configs and isinstance(configs["properties"], dict):
+        # Work on the properties dict
+        properties = configs["properties"]
+    else:
+        # Work on the top-level config
+        properties = configs
+
+    for key, value in properties.items():
+        # Look for keys ending in _FILE, _FILE_NAME, or common kernel property names
+        # Note: Only processes file paths (not all strings) since only paths need shortening
+        # Note: Works for all kernel types (SPK, CK, meta-kernels, etc.)
+        if re.search(r"_FILE(?:_NAME|)$", key) is None and key not in [
+            "clock_kernel",
+            "frame_kernel",
+            "leapsecond_kernel",
+            "meta_kernel",
+            "planet_kernels",
+        ]:
             continue
+
+        # Track if original value was a list or single string
+        was_list = isinstance(value, list)
+
         if isinstance(value, str | Path):
             value = [value]
 
@@ -61,7 +136,7 @@ def update_invalid_paths(
             modified_item = False
             fn_section = None
 
-            # Contains a path that needs to be wrapped.
+            # Contains a path that needs to be processed
             fn = Path(item)
 
             if parent_dir and not (fn.is_file() or fn.is_dir()) and not fn.is_absolute():
@@ -72,16 +147,48 @@ def update_invalid_paths(
                     modified_item = True
 
             if (fn.is_file() or fn.is_dir()) and len(str(item)) > max_len:
-                # Check if a relative path would be shorter.
-                #   Note: Requires that the CWD doesn't change!!!
-                if try_relative:
+                # Log that we detected a long path that needs shortening
+                logger.info(f"Path exceeds {max_len} chars ({len(str(item))} chars): {fn.name}")
+                logger.debug(f"  Full path: {item}")
+
+                # Strategy 1: Copy to temp directory with short path
+                if try_copy and fn.is_file():
+                    try:
+                        temp_fd, temp_path = tempfile.mkstemp(
+                            suffix=fn.suffix, prefix=fn.stem[:10] + "_", dir=str(temp_dir)
+                        )
+                        os.close(temp_fd)
+                        shutil.copy2(fn, temp_path)
+
+                        if len(temp_path) <= max_len:
+                            logger.info(f"   Copied to short path: {temp_path} ({len(temp_path)} chars)")
+                            logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
+
+                            # Track temp file for cleanup
+                            temp_files_created.append(temp_path)
+
+                            item = temp_path
+                            modified_item = True
+                            # Success! Skip other strategies
+                            new_vals.append(str(item) if isinstance(item, Path) else item)
+                            modified_value = True
+                            continue
+                        else:
+                            # Temp path still too long, clean up and try other strategies
+                            os.remove(temp_path)
+                            logger.warning(f"   Temp path still exceeds limit: {temp_path} ({len(temp_path)} chars)")
+                    except Exception as e:
+                        logger.warning(f"   Failed to copy to temp directory: {e}")
+
+                # Strategy 2: Check if a relative path would be shorter
+                if try_relative and not modified_item:
                     rel_fn = os.path.relpath(fn, start=relative_dir)
                     if len(rel_fn) <= max_len:
                         logger.debug("Updated path [%s] to be relative to [%s]", rel_fn, relative_dir)
                         modified_item = True
                         fn_section = rel_fn
 
-                # Build strings up to the limit.
+                # Strategy 3: Build strings up to the limit (wrapping)
                 if try_wrap and not modified_item:
                     logger.debug("Wrapping path [%s]", fn)
                     modified_item = True
@@ -114,9 +221,17 @@ def update_invalid_paths(
             modified_value |= modified_item
 
         if modified_value:
-            wrap_configs[key] = new_vals
+            # Unwrap if original was a single string/path
+            if not was_list and len(new_vals) == 1:
+                properties[key] = new_vals[0]
+            else:
+                properties[key] = new_vals
 
-    return wrap_configs
+    # If we worked on nested properties, put them back in wrap_configs
+    if "properties" in configs and isinstance(configs["properties"], dict):
+        wrap_configs["properties"] = properties
+
+    return wrap_configs, temp_files_created
 
 
 def write_setup(setup_file, template, configs, mappings=None, overwrite=False, validate=True, parent_dir=None):

@@ -5,6 +5,7 @@
 
 import logging
 import os
+import platform
 import shutil
 import tempfile
 import typing
@@ -21,6 +22,53 @@ from .. import spicetime, utils
 from .writer import write_setup
 
 logger = logging.getLogger(__name__)
+
+
+def get_short_temp_dir() -> Path:
+    """Get a short base directory for temporary files.
+
+    Returns a platform-appropriate short path that respects
+    environment variables for customization. This avoids SPICE's
+    80-character path limit by using short base directories.
+
+    Returns
+    -------
+    Path
+        A short base path for temporary directories.
+
+    Notes
+    -----
+    Priority order:
+    1. CURRYER_TEMP_DIR environment variable (if set)
+    2. Platform-specific short defaults (/tmp on Unix, C:/Temp on Windows)
+
+    Examples
+    --------
+    >>> import os
+    >>> os.environ["CURRYER_TEMP_DIR"] = "/custom/path"
+    >>> get_short_temp_dir()
+    PosixPath('/custom/path')
+    """
+    # Allow user override via environment variable
+    if "CURRYER_TEMP_DIR" in os.environ:
+        custom_path = Path(os.environ["CURRYER_TEMP_DIR"])
+        custom_path.mkdir(parents=True, exist_ok=True)
+        return custom_path
+
+    # Platform-specific short defaults
+    system = platform.system()
+
+    if system == "Windows":
+        # Use C:\Temp instead of the deep AppData path
+        short_base = Path("C:/Temp")
+    else:
+        # Unix-like systems to use /tmp directly
+        short_base = Path("/tmp")  # noqa: S108
+
+    # Create if it doesn't exist
+    short_base.mkdir(parents=True, exist_ok=True)
+
+    return short_base
 
 
 class TypedDataDescriptor:
@@ -140,6 +188,9 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         self.input_file = None
         self.setup_file = None
 
+        # Track temporary kernel files created during path shortening for cleanup
+        self._temp_kernel_files = []
+
     def __call__(self, input_data: pd.DataFrame, filename, overwrite=False, append=False):
         """Prepare and then create a kernel file."""
         if not isinstance(input_data, pd.DataFrame):
@@ -250,9 +301,69 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         else:
             raise AttributeError(f"`input_file` must be a str or None, not: {self.input_file!r}")
 
+    def _auto_shorten_kernel_paths(self, config, max_length=80):
+        """Auto-shorten kernel file paths that exceed SPICE's string length limit.
+
+        Delegates to update_invalid_paths() with try_copy=True to copy files
+        to temp directories with short paths.
+
+        Parameters
+        ----------
+        config : dict
+            Kernel configuration dictionary
+        max_length : int
+            Maximum allowed path length (default: 80 for SPICE)
+
+        Returns
+        -------
+        dict
+            Modified config with shortened paths
+        """
+        from .writer import update_invalid_paths
+
+        # Use the enhanced update_invalid_paths with try_copy enabled
+        result_config, temp_files = update_invalid_paths(
+            config,
+            max_len=max_length,
+            try_relative=False,  # Relative paths can break if CWD changes
+            try_copy=True,  # Copy to /tmp with short paths
+            try_wrap=False,  # Don't wrap - some SPICE tools don't support it
+            parent_dir=self.parent_dir,
+        )
+
+        # Track temp files for cleanup
+        self._temp_kernel_files.extend(temp_files)
+
+        return result_config
+
+    def _cleanup_temp_kernel_files(self):
+        """Clean up temporary kernel files created during path shortening.
+
+        These are kernel files that were copied to /tmp to avoid the 80-character
+        path limit. They need to exist during kernel generation but should be
+        cleaned up afterward to avoid accumulating in /tmp.
+
+        Notes
+        -----
+        This method is called automatically in the finally block of write_kernel()
+        to ensure cleanup happens even if kernel generation fails. Errors during
+        cleanup are logged but do not interrupt the process.
+        """
+        for temp_file in self._temp_kernel_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                    logger.debug(f"Cleaned up temp kernel file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up {temp_file}: {e}")
+        self._temp_kernel_files.clear()
+
     def prepare_setup_config(self):
         """Prepare the kernel file's setup configuration (pseudo kernel)."""
         config = self.properties.to_dict()
+
+        # Auto-shorten long kernel paths to avoid SPICE 80-char limit
+        config = self._auto_shorten_kernel_paths(config, max_length=80)
 
         # Format the setup file text. Doesn't actually write to a file since
         # none was provided.
@@ -281,7 +392,9 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         # Write to a temporary file if one isn't defined.
         if self.setup_file is None:
             try:
-                fd, self.setup_file = tempfile.mkstemp(text=True)
+                # Use short temp directory to avoid SPICE 80-char path limit
+                temp_base = get_short_temp_dir()
+                fd, self.setup_file = tempfile.mkstemp(text=True, dir=str(temp_base))
                 logger.debug("Created temporary setup file: %s", self.setup_file)
 
                 with os.fdopen(fd, mode="w") as fobj:
@@ -394,39 +507,44 @@ class AbstractKernelWriter(metaclass=ABCMeta):
 
     def write_kernel(self, filename, input_data, setup_txt, overwrite=False, append=False):
         """Create a new kernel or append to an existing one (config setting)."""
-        if isinstance(input_data, list):
-            n_segments = len(input_data)
-        else:
-            n_segments = 1
-            input_data = [input_data]
+        try:
+            if isinstance(input_data, list):
+                n_segments = len(input_data)
+            else:
+                n_segments = 1
+                input_data = [input_data]
 
-        if n_segments == 0:
-            logger.warning(
-                "Skipping kernel creation due to missing input data: %s (n_segments=%d)", filename, n_segments
+            if n_segments == 0:
+                logger.warning(
+                    "Skipping kernel creation due to missing input data: %s (n_segments=%d)", filename, n_segments
+                )
+                return str(filename), None
+
+            logger.info(
+                "Creating kernel: %s (n_segments=%d, overwrite=%s, append=%s)", filename, n_segments, overwrite, append
             )
-            return str(filename), None
+            filename = str(filename)
 
-        logger.info(
-            "Creating kernel: %s (n_segments=%d, overwrite=%s, append=%s)", filename, n_segments, overwrite, append
-        )
-        filename = str(filename)
+            # Create a temporary backup of the kernel (if it exists).
+            #   This is necessary because failures during appends may corrupt the
+            #   file. See the `mkspk` documentation for details.
+            with self._backup_file(filename):
+                # Check how the file should be handled (overwrite vs. append).
+                self._check_write_behavior(filename, overwrite=overwrite, append=append)
 
-        # Create a temporary backup of the kernel (if it exists).
-        #   This is necessary because failures during appends may corrupt the
-        #   file. See the `mkspk` documentation for details.
-        with self._backup_file(filename):
-            # Check how the file should be handled (overwrite vs. append).
-            self._check_write_behavior(filename, overwrite=overwrite, append=append)
+                # Write the kernel!
+                #   Context will create temporary files on enter, and delete them
+                #   on exit (e.g., on error or after writing the kernel).
+                with self._safe_write_setup_config(setup_txt) as setup_file:
+                    for ith, accessor in enumerate(input_data, 1):
+                        if n_segments > 1:
+                            logger.info("Processing input for kernel segment [%d/%d]", ith, n_segments)
+                        with self._safe_write_input_data(accessor) as input_file:
+                            cmd = self._write_kernel(setup_file, input_file, filename, append=append or ith > 1)
+                            utils.capture_subprocess(cmd)
 
-            # Write the kernel!
-            #   Context will create temporary files on enter, and delete them
-            #   on exit (e.g., on error or after writing the kernel).
-            with self._safe_write_setup_config(setup_txt) as setup_file:
-                for ith, accessor in enumerate(input_data, 1):
-                    if n_segments > 1:
-                        logger.info("Processing input for kernel segment [%d/%d]", ith, n_segments)
-                    with self._safe_write_input_data(accessor) as input_file:
-                        cmd = self._write_kernel(setup_file, input_file, filename, append=append or ith > 1)
-                        utils.capture_subprocess(cmd)
+            return filename, None
 
-        return filename, None
+        finally:
+            # Clean up temporary kernel files created during path shortening
+            self._cleanup_temp_kernel_files()
