@@ -108,17 +108,18 @@ def update_invalid_paths(
         properties = configs
 
     for key, value in properties.items():
-        # Look for keys ending in _FILE, _FILE_NAME, or common kernel property names
-        # Note: Only processes file paths (not all strings) since only paths need shortening
-        # Note: Works for all kernel types (SPK, CK, meta-kernels, etc.)
-        if re.search(r"_FILE(?:_NAME|)$", key) is None and key not in [
+        # Skip non-string/Path/list values (like integers, bools, etc.)
+        if not isinstance(value, str | Path | list):
+            continue
+
+        # Check if this property likely contains file paths that need shortening
+        is_file_property = re.search(r"_FILE(?:_NAME|)$", key) is not None or key in [
             "clock_kernel",
             "frame_kernel",
             "leapsecond_kernel",
             "meta_kernel",
             "planet_kernels",
-        ]:
-            continue
+        ]
 
         # Track if original value was a list or single string
         was_list = isinstance(value, list)
@@ -130,6 +131,16 @@ def update_invalid_paths(
         modified_value = False
         for item in value:
             if not isinstance(item, str | Path):
+                new_vals.append(item)
+                continue
+
+            # Convert Path objects to strings early to avoid template issues
+            if isinstance(item, Path):
+                item = str(item)
+                modified_value = True
+
+            # Only apply path shortening strategies to file properties
+            if not is_file_property:
                 new_vals.append(item)
                 continue
 
@@ -212,6 +223,7 @@ def update_invalid_paths(
 
                 item = fn if fn_section is None else fn_section
 
+            # Ensure item is always a string (could be Path if fn_section was None)
             if isinstance(item, Path):
                 item = str(item)
                 modified_item = True
@@ -232,6 +244,29 @@ def update_invalid_paths(
         wrap_configs["properties"] = properties
 
     return wrap_configs, temp_files_created
+
+
+def _convert_paths_to_strings(obj):
+    """Recursively convert all Path objects to strings in a data structure.
+
+    Parameters
+    ----------
+    obj : any
+        Object to convert (dict, list, Path, or other)
+
+    Returns
+    -------
+    any
+        Object with all Path instances converted to strings
+    """
+    if isinstance(obj, Path):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {key: _convert_paths_to_strings(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [_convert_paths_to_strings(item) for item in obj]
+    else:
+        return obj
 
 
 def write_setup(setup_file, template, configs, mappings=None, overwrite=False, validate=True, parent_dir=None):
@@ -278,7 +313,10 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
     # TODO: Only works in meta-kernels?
     #   Nope, just not supported by mkspk (etc). They don't respect the rules!
     # Wrap paths that are too long.
-    configs = update_invalid_paths(configs, try_relative=True, try_wrap=False, parent_dir=parent_dir)
+    configs, _ = update_invalid_paths(configs, try_relative=True, try_wrap=False, parent_dir=parent_dir)
+
+    # Ensure all Path objects are converted to strings before template rendering
+    configs = _convert_paths_to_strings(configs)
 
     # Generate the text.
     logger.debug("Using template: %s", template)

@@ -180,10 +180,10 @@ class TestUpdateInvalidPaths(unittest.TestCase):
     def test_temp_file_cleanup_tracking(self):
         """Test that temp files are properly tracked for cleanup."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure"
+            long_path_dir = Path(tmpdir) / "very" / "long" / "path" / "structure" / "for" / "testing" / "purposes"
             long_path_dir.mkdir(parents=True, exist_ok=True)
 
-            test_file = long_path_dir / "test_kernel.tsc"
+            test_file = long_path_dir / "test_kernel_with_long_name.tsc"
             test_file.write_text("CONTENT")
 
             config = {"properties": {"clock_kernel": str(test_file)}}
