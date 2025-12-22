@@ -240,5 +240,189 @@ class TestUpdateInvalidPaths(unittest.TestCase):
             self.assertFalse(Path(temp_file_path).exists(), "Temp file should be deleted after cleanup")
 
 
+class TestCleanupTempKernelFiles(unittest.TestCase):
+    """Test _cleanup_temp_kernel_files() exception handling."""
+
+    def test_cleanup_with_missing_file(self):
+        """Test that cleanup handles missing files gracefully."""
+        from unittest.mock import MagicMock
+
+        from curryer.kernels.classes import AbstractKernelWriter
+
+        # Create a mock kernel instance with temp files
+        kernel = MagicMock(spec=AbstractKernelWriter)
+        kernel._temp_kernel_files = ["/tmp/nonexistent_file_12345.tsc"]
+
+        # Manually call the real cleanup method
+        AbstractKernelWriter._cleanup_temp_kernel_files(kernel)
+
+        # Should have cleared the list even though file didn't exist
+        self.assertEqual(len(kernel._temp_kernel_files), 0, "Temp files list should be empty after cleanup")
+
+    def test_cleanup_with_permission_error(self):
+        """Test that cleanup handles permission errors gracefully."""
+        from unittest.mock import MagicMock, patch
+
+        from curryer.kernels.classes import AbstractKernelWriter
+
+        # Create a temporary file to test cleanup
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
+            temp_file_path = tmp.name
+            tmp.write("TEST CONTENT")
+
+        try:
+            # Create a mock kernel instance
+            kernel = MagicMock(spec=AbstractKernelWriter)
+            kernel._temp_kernel_files = [temp_file_path]
+
+            # Mock os.remove to raise OSError (simulating permission error)
+            with patch("os.remove", side_effect=OSError("Permission denied")):
+                with patch("os.path.exists", return_value=True):
+                    # Should not raise, just log warning
+                    with self.assertLogs("curryer.kernels.classes", level="WARNING") as log_context:
+                        AbstractKernelWriter._cleanup_temp_kernel_files(kernel)
+
+                    # Verify warning was logged
+                    self.assertTrue(
+                        any("Failed to clean up" in message for message in log_context.output),
+                        "Should log warning about cleanup failure",
+                    )
+
+            # Verify list was cleared despite error
+            self.assertEqual(len(kernel._temp_kernel_files), 0, "Temp files list should be empty after cleanup")
+
+        finally:
+            # Clean up the test file if it still exists
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+    def test_cleanup_successful_removal(self):
+        """Test successful cleanup of temp files."""
+        from unittest.mock import MagicMock
+
+        from curryer.kernels.classes import AbstractKernelWriter
+
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
+            temp_file_path = tmp.name
+            tmp.write("TEST CONTENT")
+
+        try:
+            # Verify file exists before cleanup
+            self.assertTrue(os.path.exists(temp_file_path))
+
+            # Create a mock kernel instance
+            kernel = MagicMock(spec=AbstractKernelWriter)
+            kernel._temp_kernel_files = [temp_file_path]
+
+            # Perform cleanup - should succeed and log debug message
+            with self.assertLogs("curryer.kernels.classes", level="DEBUG") as log_context:
+                AbstractKernelWriter._cleanup_temp_kernel_files(kernel)
+
+            # Verify debug message was logged
+            self.assertTrue(
+                any("Cleaned up temp kernel file" in message for message in log_context.output),
+                "Should log debug message about successful cleanup",
+            )
+
+            # Verify file was actually removed
+            self.assertFalse(os.path.exists(temp_file_path), "Temp file should be removed after cleanup")
+
+            # Verify list was cleared
+            self.assertEqual(len(kernel._temp_kernel_files), 0, "Temp files list should be empty after cleanup")
+
+        finally:
+            # Clean up if somehow it still exists
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+    def test_cleanup_multiple_files_with_mixed_results(self):
+        """Test cleanup with multiple files where some fail."""
+        from unittest.mock import MagicMock
+
+        from curryer.kernels.classes import AbstractKernelWriter
+
+        # Create two temporary files
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp1:
+            temp_file1 = tmp1.name
+            tmp1.write("FILE1")
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp2:
+            temp_file2 = tmp2.name
+            tmp2.write("FILE2")
+
+        nonexistent_file = "/tmp/nonexistent_file_99999.tsc"
+
+        try:
+            # Create mock kernel with 3 files: 2 exist, 1 doesn't
+            kernel = MagicMock(spec=AbstractKernelWriter)
+            kernel._temp_kernel_files = [temp_file1, nonexistent_file, temp_file2]
+
+            # Perform cleanup
+            with self.assertLogs("curryer.kernels.classes", level="DEBUG") as log_context:
+                AbstractKernelWriter._cleanup_temp_kernel_files(kernel)
+
+            # Verify both existing files were removed
+            self.assertFalse(os.path.exists(temp_file1), "First temp file should be removed")
+            self.assertFalse(os.path.exists(temp_file2), "Second temp file should be removed")
+
+            # Verify debug messages for successful cleanups (2 files)
+            cleanup_messages = [msg for msg in log_context.output if "Cleaned up temp kernel file" in msg]
+            self.assertEqual(len(cleanup_messages), 2, "Should log 2 successful cleanups")
+
+            # Verify list was cleared
+            self.assertEqual(len(kernel._temp_kernel_files), 0, "Temp files list should be empty after cleanup")
+
+        finally:
+            # Clean up any remaining files
+            for path in [temp_file1, temp_file2]:
+                if os.path.exists(path):
+                    os.remove(path)
+
+    def test_cleanup_with_read_only_file(self):
+        """Test cleanup handles read-only file errors."""
+        from unittest.mock import MagicMock, patch
+
+        from curryer.kernels.classes import AbstractKernelWriter
+
+        # Create a temporary file and make it read-only
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
+            temp_file_path = tmp.name
+            tmp.write("TEST CONTENT")
+
+        try:
+            # Make file read-only to simulate permission issue
+            os.chmod(temp_file_path, 0o444)
+
+            # Create mock kernel
+            kernel = MagicMock(spec=AbstractKernelWriter)
+            kernel._temp_kernel_files = [temp_file_path]
+
+            # On some systems, removing read-only files might fail
+            # Use mock to guarantee we test the exception path
+            with patch("os.remove", side_effect=OSError("Read-only file")):
+                with patch("os.path.exists", return_value=True):
+                    with self.assertLogs("curryer.kernels.classes", level="WARNING") as log_context:
+                        # Should not raise exception
+                        AbstractKernelWriter._cleanup_temp_kernel_files(kernel)
+
+                    # Verify warning was logged
+                    warning_messages = [msg for msg in log_context.output if "Failed to clean up" in msg]
+                    self.assertEqual(len(warning_messages), 1, "Should log one warning")
+                    self.assertIn("Read-only file", warning_messages[0])
+
+            # Verify list was still cleared
+            self.assertEqual(len(kernel._temp_kernel_files), 0, "Temp files list should be empty after cleanup")
+
+        finally:
+            # Restore permissions and clean up
+            try:
+                os.chmod(temp_file_path, 0o644)
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            except (OSError, PermissionError):
+                pass  # Best effort cleanup
+
+
 if __name__ == "__main__":
     unittest.main()

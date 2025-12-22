@@ -2,8 +2,6 @@
 
 This module provides utility functions used across the kernels package,
 particularly for handling SPICE's 80-character path limitation.
-
-@author: Assistant (2024-12-22)
 """
 
 import logging
