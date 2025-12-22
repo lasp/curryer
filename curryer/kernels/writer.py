@@ -3,9 +3,13 @@
 @author: Brandon Stone
 """
 
+import copy
+import hashlib
 import logging
 import os
 import re
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -81,8 +85,6 @@ def update_invalid_paths(
     --------
     https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/kernel.html
     """
-    import shutil
-    import tempfile
 
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
@@ -98,7 +100,6 @@ def update_invalid_paths(
     temp_files_created = []
 
     # Use deepcopy to avoid mutating the caller's input dictionary
-    import copy
 
     wrap_configs = copy.deepcopy(configs)
 
@@ -182,7 +183,6 @@ def update_invalid_paths(
                     temp_path = None
                     try:
                         # Use hash of full path to ensure uniqueness (not for security)
-                        import hashlib
 
                         path_hash = hashlib.md5(str(fn).encode()).hexdigest()[:6]  # noqa: S324
                         prefix = f"{fn.stem[:10]}_{path_hash}_"

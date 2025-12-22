@@ -5,7 +5,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from curryer.kernels.classes import AbstractKernelWriter
 from curryer.kernels.path_utils import get_short_temp_dir
 from curryer.kernels.writer import update_invalid_paths
 
@@ -242,10 +244,6 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
     def test_cleanup_with_missing_file(self):
         """Test that cleanup handles missing files gracefully."""
-        from unittest.mock import MagicMock
-
-        from curryer.kernels.classes import AbstractKernelWriter
-
         # Create a mock kernel instance with temp files
         kernel = MagicMock(spec=AbstractKernelWriter)
         kernel._temp_kernel_files = ["/tmp/nonexistent_file_12345.tsc"]
@@ -258,9 +256,6 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
     def test_cleanup_with_permission_error(self):
         """Test that cleanup handles permission errors gracefully."""
-        from unittest.mock import MagicMock, patch
-
-        from curryer.kernels.classes import AbstractKernelWriter
 
         # Create a temporary file to test cleanup
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
@@ -295,9 +290,6 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
     def test_cleanup_successful_removal(self):
         """Test successful cleanup of temp files."""
-        from unittest.mock import MagicMock
-
-        from curryer.kernels.classes import AbstractKernelWriter
 
         # Create a temporary file
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
@@ -335,9 +327,6 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
     def test_cleanup_multiple_files_with_mixed_results(self):
         """Test cleanup with multiple files where some fail."""
-        from unittest.mock import MagicMock
-
-        from curryer.kernels.classes import AbstractKernelWriter
 
         # Create two temporary files
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp1:
@@ -378,9 +367,6 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
     def test_cleanup_with_read_only_file(self):
         """Test cleanup handles read-only file errors."""
-        from unittest.mock import MagicMock, patch
-
-        from curryer.kernels.classes import AbstractKernelWriter
 
         # Create a temporary file and make it read-only
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tsc") as tmp:
