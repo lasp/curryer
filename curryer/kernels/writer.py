@@ -218,9 +218,10 @@ def update_invalid_paths(
                                 continue
                             else:
                                 # Temp path still too long, clean up and try other strategies
+                                actual_length = len(temp_path)
                                 os.remove(temp_path)
                                 temp_path = None  # Mark as cleaned up
-                                logger.warning(f"   Temp path still exceeds limit ({len(temp_path)} chars)")
+                                logger.warning(f"   Temp path still exceeds limit ({actual_length} chars)")
                     except (OSError, PermissionError, shutil.Error) as e:
                         # Clean up temp file if it was created but copy/checks failed
                         # Catches: OSError, PermissionError (file system issues)
