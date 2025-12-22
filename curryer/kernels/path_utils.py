@@ -58,7 +58,7 @@ def get_short_temp_dir() -> Path:
         # Exclude /tmp and /var/tmp since those are meant for temporary files
         sensitive_dirs = ["/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/sbin", "/sys", "/usr"]
         if platform.system() == "Windows":
-            sensitive_dirs = ["C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
+            sensitive_dirs = ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
 
         resolved_path = custom_path.resolve()
         for sensitive in sensitive_dirs:
