@@ -95,7 +95,7 @@ def get_short_temp_dir() -> Path:
         # Use C:\Temp instead of the deep AppData path
         short_base = Path("C:/Temp")
     else:
-        # Unix-like systems to use /tmp directly
+        # Unix-like systems use /tmp directly
         short_base = Path("/tmp")  # noqa: S108
 
     # Create if it doesn't exist
