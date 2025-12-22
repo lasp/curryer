@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from curryer.kernels.classes import get_short_temp_dir
+from curryer.kernels.path_utils import get_short_temp_dir
 from curryer.kernels.writer import update_invalid_paths
 
 logger = logging.getLogger(__name__)

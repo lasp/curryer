@@ -5,7 +5,6 @@
 
 import logging
 import os
-import platform
 import shutil
 import tempfile
 import typing
@@ -19,89 +18,10 @@ import numpy as np
 import pandas as pd
 
 from .. import spicetime, utils
+from .path_utils import get_short_temp_dir
 from .writer import write_setup
 
 logger = logging.getLogger(__name__)
-
-
-def get_short_temp_dir() -> Path:
-    """Get a short base directory for temporary files.
-
-    Returns a platform-appropriate short path that respects
-    environment variables for customization. This avoids SPICE's
-    80-character path limit by using short base directories.
-
-    Returns
-    -------
-    Path
-        A short base path for temporary directories.
-
-    Raises
-    ------
-    ValueError
-        If CURRYER_TEMP_DIR is set to an invalid path (too long, not writable,
-        or pointing to a sensitive system directory).
-
-    Notes
-    -----
-    Priority order:
-    1. CURRYER_TEMP_DIR environment variable (if set and validated)
-    2. Platform-specific short defaults (/tmp on Unix, C:/Temp on Windows)
-
-    Examples
-    --------
-    >>> import os
-    >>> os.environ["CURRYER_TEMP_DIR"] = "/custom/path"
-    >>> get_short_temp_dir()
-    PosixPath('/custom/path')
-    """
-    # Allow user override via environment variable with validation
-    if "CURRYER_TEMP_DIR" in os.environ:
-        custom_path = Path(os.environ["CURRYER_TEMP_DIR"])
-
-        # Validate the path isn't too long (defeats the purpose)
-        if len(str(custom_path)) > 50:
-            raise ValueError(
-                f"CURRYER_TEMP_DIR path is too long ({len(str(custom_path))} chars): {custom_path}. "
-                "Must be ≤50 characters to ensure temp file paths stay under SPICE's 80-char limit."
-            )
-
-        # Validate it's not pointing to sensitive system directories
-        sensitive_dirs = ["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/sbin", "/sys", "/usr"]
-        if platform.system() == "Windows":
-            sensitive_dirs = ["C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
-
-        resolved_path = custom_path.resolve()
-        for sensitive in sensitive_dirs:
-            if resolved_path == Path(sensitive).resolve():
-                raise ValueError(f"CURRYER_TEMP_DIR cannot point to sensitive system directory: {custom_path}")
-
-        # Try to create and verify it's writable
-        try:
-            custom_path.mkdir(parents=True, exist_ok=True)
-            # Test writability with a temporary file
-            test_file = custom_path / ".curryer_write_test"
-            test_file.touch()
-            test_file.unlink()
-        except (OSError, PermissionError) as e:
-            raise ValueError(f"CURRYER_TEMP_DIR is not writable: {custom_path}. Error: {e}") from e
-
-        return custom_path
-
-    # Platform-specific short defaults
-    system = platform.system()
-
-    if system == "Windows":
-        # Use C:\Temp instead of the deep AppData path
-        short_base = Path("C:/Temp")
-    else:
-        # Unix-like systems use /tmp directly
-        short_base = Path("/tmp")  # noqa: S108
-
-    # Create if it doesn't exist
-    short_base.mkdir(parents=True, exist_ok=True)
-
-    return short_base
 
 
 class TypedDataDescriptor:
@@ -381,6 +301,16 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         This method is called automatically in the finally block of write_kernel()
         to ensure cleanup happens even if kernel generation fails. Errors during
         cleanup are logged but do not interrupt the process.
+
+        **Cleanup Limitations**: If the process is killed abnormally (SIGKILL, crash,
+        system shutdown) before cleanup executes, temp files will persist in /tmp.
+        This is acceptable since:
+        1. Modern OS typically clean /tmp on reboot or periodically
+        2. Files are namespaced with unique hashes to avoid conflicts
+        3. The tradeoff favors simplicity over guaranteed cleanup
+
+        For production environments with strict cleanup requirements, consider
+        implementing additional cleanup strategies (e.g., cron jobs, monitoring).
         """
         for temp_file in self._temp_kernel_files:
             try:

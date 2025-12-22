@@ -12,6 +12,8 @@ from pathlib import Path
 
 import jinja2
 
+from .path_utils import get_short_temp_dir
+
 logger = logging.getLogger(__name__)
 
 TEMPLATE_NAMES = {
@@ -82,10 +84,6 @@ def update_invalid_paths(
     import shutil
     import tempfile
 
-    # Import inside function to avoid circular dependency (classes.py imports write_setup from this module)
-    # This deferred import pattern is safe because get_short_temp_dir doesn't depend on write_setup
-    from .classes import get_short_temp_dir
-
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
         parent_dir = Path(parent_dir)
@@ -118,9 +116,12 @@ def update_invalid_paths(
             continue
 
         # Check if this property likely contains file paths that need shortening
-        # Matches: any key ending in _FILE or _FILE_NAME (e.g., LEAPSECONDS_FILE, INPUT_DATA_FILE)
-        # Plus explicit common meta-kernel properties: clock_kernel, frame_kernel, etc.
-        # This covers most SPK, CK, meta-kernel, and other SPICE kernel file references
+        # Two matching strategies (either one triggers processing):
+        # 1. Regex: Matches keys ending in _FILE or _FILE_NAME (e.g., LEAPSECONDS_FILE, INPUT_DATA_FILE)
+        #    This handles most SPICE tool config files which follow this naming convention
+        # 2. Explicit list: Known meta-kernel properties that don't follow the _FILE convention
+        #    (clock_kernel, frame_kernel, etc.) - these are standard SPICE meta-kernel keys
+        # This dual approach covers both user configs and meta-kernel properties
         is_file_property = re.search(r"_FILE(?:_NAME|)$", key) is not None or key in [
             "clock_kernel",
             "frame_kernel",
@@ -142,15 +143,21 @@ def update_invalid_paths(
                 new_vals.append(item)
                 continue
 
+            # Only apply path shortening strategies to file properties
+            # Skip early to avoid unnecessary Path processing for non-file properties
+            if not is_file_property:
+                # Still need to convert Path to string for template compatibility
+                if isinstance(item, Path):
+                    new_vals.append(str(item))
+                    modified_value = True
+                else:
+                    new_vals.append(item)
+                continue
+
             # Convert Path objects to strings early to avoid template issues
             if isinstance(item, Path):
                 item = str(item)
                 modified_value = True
-
-            # Only apply path shortening strategies to file properties
-            if not is_file_property:
-                new_vals.append(item)
-                continue
 
             modified_item = False
             fn_section = None
@@ -180,32 +187,44 @@ def update_invalid_paths(
                         path_hash = hashlib.md5(str(fn).encode()).hexdigest()[:6]  # noqa: S324
                         prefix = f"{fn.stem[:10]}_{path_hash}_"
 
-                        temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
-                        os.close(temp_fd)
-
-                        # Copy the file - if this fails, temp file will be cleaned up in except block
-                        shutil.copy2(fn, temp_path)
-
-                        if len(temp_path) <= max_len:
-                            logger.info(f"   Copied to short path: {temp_path} ({len(temp_path)} chars)")
-                            logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
-
-                            # Track temp file for cleanup
-                            temp_files_created.append(temp_path)
-
-                            item = temp_path
-                            modified_item = True
-                            # Success! Skip other strategies
-                            new_vals.append(str(item) if isinstance(item, Path) else item)
-                            modified_value = True
-                            continue
+                        # Pre-calculate expected temp path length to avoid unnecessary copy
+                        # mkstemp adds 8 random chars, so estimate: temp_dir + / + prefix + 8 + suffix
+                        estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 8 + len(fn.suffix)
+                        if estimated_length > max_len:
+                            logger.warning(
+                                f"   Temp path would be too long ({estimated_length} chars estimated), "
+                                "skipping copy strategy"
+                            )
                         else:
-                            # Temp path still too long, clean up and try other strategies
-                            os.remove(temp_path)
-                            temp_path = None  # Mark as cleaned up
-                            logger.warning(f"   Temp path still exceeds limit ({len(temp_path)} chars)")
-                    except (OSError, PermissionError) as e:
+                            temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
+                            os.close(temp_fd)
+
+                            # Verify actual path is short enough (should match estimate)
+                            if len(temp_path) <= max_len:
+                                # Copy the file - if this fails, temp file will be cleaned up in except block
+                                shutil.copy2(fn, temp_path)
+
+                                logger.info(f"   Copied to short path: {temp_path} ({len(temp_path)} chars)")
+                                logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
+
+                                # Track temp file for cleanup
+                                temp_files_created.append(temp_path)
+
+                                item = temp_path
+                                modified_item = True
+                                # Success! Skip other strategies
+                                new_vals.append(str(item) if isinstance(item, Path) else item)
+                                modified_value = True
+                                continue
+                            else:
+                                # Temp path still too long, clean up and try other strategies
+                                os.remove(temp_path)
+                                temp_path = None  # Mark as cleaned up
+                                logger.warning(f"   Temp path still exceeds limit ({len(temp_path)} chars)")
+                    except (OSError, PermissionError, shutil.Error) as e:
                         # Clean up temp file if it was created but copy/checks failed
+                        # Catches: OSError, PermissionError (file system issues)
+                        #          shutil.Error, SameFileError, etc. (shutil-specific issues)
                         if temp_path and os.path.exists(temp_path):
                             try:
                                 os.remove(temp_path)
