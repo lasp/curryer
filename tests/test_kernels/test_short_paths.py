@@ -1,7 +1,4 @@
-"""Test short temp directory functionality and path shortening.
-
-@author: Assistant (2024-12-19)
-"""
+"""Test short temp directory functionality and path shortening."""
 
 import logging
 import os
