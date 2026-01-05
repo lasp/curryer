@@ -60,9 +60,9 @@ def get_short_temp_dir() -> Path:
         if platform.system() == "Windows":
             sensitive_dirs = ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
 
-        resolved_path = custom_path.resolve()
+        resolved_path = custom_path.resolve(strict=False)
         for sensitive in sensitive_dirs:
-            sensitive_path = Path(sensitive).resolve()
+            sensitive_path = Path(sensitive).resolve(strict=False)
             # Check if custom path is under a sensitive directory
             try:
                 resolved_path.relative_to(sensitive_path)
@@ -92,7 +92,7 @@ def get_short_temp_dir() -> Path:
     system = platform.system()
 
     if system == "Windows":
-        # Use C:\Temp instead of the deep AppData path
+        # Use C:\Temp on Windows
         # Path constructor handles platform-specific separators
         short_base = Path("C:", "Temp")
     else:

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,7 +62,7 @@ class TestShortTempDir(unittest.TestCase):
         finally:
             # Clean up
             if Path(custom_path).exists():
-                Path(custom_path).rmdir()
+                shutil.rmtree(custom_path, ignore_errors=True)
 
     def test_multiple_calls_same_result(self):
         """Test that multiple calls return the same directory."""

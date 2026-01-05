@@ -101,15 +101,15 @@ def update_invalid_paths(
 
     # Use deepcopy to avoid mutating the caller's input dictionary
 
-    wrap_configs = copy.deepcopy(configs)
+    updated_configs = copy.deepcopy(configs)
 
     # Check if we need to work on nested 'properties' dict
-    if "properties" in wrap_configs and isinstance(wrap_configs["properties"], dict):
+    if "properties" in updated_configs and isinstance(updated_configs["properties"], dict):
         # Work on the properties dict
-        properties = wrap_configs["properties"]
+        properties = updated_configs["properties"]
     else:
         # Work on the top-level config
-        properties = wrap_configs
+        properties = updated_configs
 
     for key, value in properties.items():
         # Skip non-string/Path/list values (like integers, bools, etc.)
@@ -155,16 +155,14 @@ def update_invalid_paths(
                     new_vals.append(item)
                 continue
 
-            # Convert Path objects to strings early to avoid template issues
-            if isinstance(item, Path):
-                item = str(item)
-                modified_value = True
-
             modified_item = False
             fn_section = None
 
-            # Contains a path that needs to be processed
-            fn = Path(item)
+            # Work with Path object directly
+            if isinstance(item, Path):
+                fn = item
+            else:
+                fn = Path(item)
 
             if parent_dir and not (fn.is_file() or fn.is_dir()) and not fn.is_absolute():
                 abs_fn = parent_dir / fn
@@ -198,12 +196,24 @@ def update_invalid_paths(
                             )
                         else:
                             temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
-                            os.close(temp_fd)
 
                             # Verify actual path is short enough (should match estimate)
                             if len(temp_path) <= max_len:
+                                # Keep fd open during copy to prevent race condition
                                 # Copy the file - if this fails, temp file will be cleaned up in except block
-                                shutil.copy2(fn, temp_path)
+                                try:
+                                    with os.fdopen(temp_fd, "wb") as temp_file:
+                                        with open(fn, "rb") as source_file:
+                                            shutil.copyfileobj(source_file, temp_file)
+                                    # Copy metadata after closing the file
+                                    shutil.copystat(fn, temp_path)
+                                except Exception:
+                                    # If copy fails, close fd if still open
+                                    try:
+                                        os.close(temp_fd)
+                                    except OSError:
+                                        pass
+                                    raise
 
                                 logger.info(f"   Copied to short path: {temp_path} ({len(temp_path)} chars)")
                                 logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
@@ -219,6 +229,11 @@ def update_invalid_paths(
                                 continue
                             else:
                                 # Temp path still too long, clean up and try other strategies
+                                # Close the file descriptor first
+                                try:
+                                    os.close(temp_fd)
+                                except OSError:
+                                    pass
                                 actual_length = len(temp_path)
                                 os.remove(temp_path)
                                 temp_path = None  # Mark as cleaned up
@@ -279,14 +294,19 @@ def update_invalid_paths(
             # Unwrap if original was a single string/path
             if not was_list and len(new_vals) == 1:
                 properties[key] = new_vals[0]
+            elif not was_list and len(new_vals) == 0:
+                # All items were filtered out - preserve empty list or skip
+                # This shouldn't normally happen but prevents IndexError
+                logger.warning(f"All items filtered from property '{key}', setting to empty list")
+                properties[key] = []
             else:
                 properties[key] = new_vals
 
-    # If we worked on nested properties, put them back in wrap_configs
+    # If we worked on nested properties, put them back in updated_configs
     if "properties" in configs and isinstance(configs["properties"], dict):
-        wrap_configs["properties"] = properties
+        updated_configs["properties"] = properties
 
-    return wrap_configs, temp_files_created
+    return updated_configs, temp_files_created
 
 
 def _convert_paths_to_strings(obj):
