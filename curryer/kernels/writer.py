@@ -188,8 +188,9 @@ def update_invalid_paths(
                         prefix = f"{fn.stem[:10]}_{path_hash}_"
 
                         # Pre-calculate expected temp path length to avoid unnecessary copy
-                        # mkstemp adds 8 random chars, so estimate: temp_dir + / + prefix + 8 + suffix
-                        estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 8 + len(fn.suffix)
+                        # mkstemp adds random chars (conservative estimate: 12 to handle platform variations)
+                        # Estimated: temp_dir + / + prefix + random_chars + suffix
+                        estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 12 + len(fn.suffix)
                         if estimated_length > max_len:
                             logger.warning(
                                 f"   Temp path would be too long ({estimated_length} chars estimated), "
@@ -222,10 +223,10 @@ def update_invalid_paths(
                                 os.remove(temp_path)
                                 temp_path = None  # Mark as cleaned up
                                 logger.warning(f"   Temp path still exceeds limit ({actual_length} chars)")
-                    except (OSError, PermissionError, shutil.Error) as e:
+                    except (OSError, PermissionError, shutil.SameFileError, shutil.Error) as e:
                         # Clean up temp file if it was created but copy/checks failed
                         # Catches: OSError, PermissionError (file system issues)
-                        #          shutil.Error, SameFileError, etc. (shutil-specific issues)
+                        #          shutil.SameFileError and other shutil.Error subclasses (shutil-specific issues)
                         if temp_path and os.path.exists(temp_path):
                             try:
                                 os.remove(temp_path)
@@ -355,7 +356,8 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
     # TODO: Only works in meta-kernels?
     #   Nope, just not supported by mkspk (etc). They don't respect the rules!
     # Wrap paths that are too long.
-    configs, _ = update_invalid_paths(configs, try_relative=True, try_wrap=False, parent_dir=parent_dir)
+    # Explicitly use try_copy=False since we don't want to create temp files that need cleanup tracking
+    configs, _ = update_invalid_paths(configs, try_relative=True, try_copy=False, try_wrap=False, parent_dir=parent_dir)
 
     # Ensure all Path objects are converted to strings before template rendering
     configs = _convert_paths_to_strings(configs)

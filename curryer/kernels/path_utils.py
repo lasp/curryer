@@ -66,18 +66,16 @@ def get_short_temp_dir() -> Path:
             # Check if custom path is under a sensitive directory
             try:
                 resolved_path.relative_to(sensitive_path)
+            except ValueError:
+                # relative_to raises ValueError if paths are unrelated - this is what we want
+                # Not under this sensitive directory; check the next one
+                continue
+            else:
                 # If we get here, resolved_path is under sensitive_path
                 raise ValueError(
                     f"CURRYER_TEMP_DIR cannot point to or be under sensitive system directory. "
                     f"Attempted: {custom_path}, resolves to: {resolved_path}, sensitive parent: {sensitive_path}"
                 )
-            except ValueError as e:
-                # relative_to raises ValueError if paths are unrelated - this is what we want
-                if "cannot point to" in str(e):
-                    raise  # Re-raise our custom error
-                # Otherwise it's the "not relative" ValueError - continue checking other sensitive dirs
-                continue
-
         # Try to create and verify it's writable
         try:
             custom_path.mkdir(parents=True, exist_ok=True)

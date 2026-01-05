@@ -70,6 +70,72 @@ class TestShortTempDir(unittest.TestCase):
 
         self.assertEqual(temp_dir1, temp_dir2)
 
+    def test_custom_temp_dir_too_long(self):
+        """Test that CURRYER_TEMP_DIR raises ValueError if path is too long."""
+        # Create a path longer than 50 characters
+        long_path = "/tmp/" + "a" * 60
+        os.environ["CURRYER_TEMP_DIR"] = long_path
+
+        try:
+            with self.assertRaises(ValueError) as context:
+                get_short_temp_dir()
+
+            self.assertIn("too long", str(context.exception))
+            self.assertIn("Must be ≤50 characters", str(context.exception))
+        finally:
+            if "CURRYER_TEMP_DIR" in os.environ:
+                del os.environ["CURRYER_TEMP_DIR"]
+
+    def test_custom_temp_dir_not_writable(self):
+        """Test that CURRYER_TEMP_DIR raises ValueError if path is not writable."""
+        # Use a short path that we can mock to simulate write failure
+        if os.name != "nt":
+            test_path = "/tmp/test_rw"
+            os.environ["CURRYER_TEMP_DIR"] = test_path
+
+            try:
+                # Mock the touch() operation to raise PermissionError
+                with patch("pathlib.Path.touch", side_effect=PermissionError("Permission denied")):
+                    with self.assertRaises(ValueError) as context:
+                        get_short_temp_dir()
+
+                    self.assertIn("not writable", str(context.exception))
+            finally:
+                if "CURRYER_TEMP_DIR" in os.environ:
+                    del os.environ["CURRYER_TEMP_DIR"]
+        else:
+            # On Windows, skip this test as it's hard to find a reliably unwritable path
+            self.skipTest("Not applicable on Windows")
+
+    def test_custom_temp_dir_sensitive_directory(self):
+        """Test that CURRYER_TEMP_DIR raises ValueError if pointing to sensitive directory."""
+        if os.name != "nt":
+            # Try to use /etc which is a sensitive system directory
+            sensitive_path = "/etc/curryer_test"
+            os.environ["CURRYER_TEMP_DIR"] = sensitive_path
+
+            try:
+                with self.assertRaises(ValueError) as context:
+                    get_short_temp_dir()
+
+                self.assertIn("sensitive system directory", str(context.exception))
+            finally:
+                if "CURRYER_TEMP_DIR" in os.environ:
+                    del os.environ["CURRYER_TEMP_DIR"]
+        else:
+            # On Windows, test C:\Windows
+            sensitive_path = "C:\\Windows\\curryer_test"
+            os.environ["CURRYER_TEMP_DIR"] = sensitive_path
+
+            try:
+                with self.assertRaises(ValueError) as context:
+                    get_short_temp_dir()
+
+                self.assertIn("sensitive system directory", str(context.exception))
+            finally:
+                if "CURRYER_TEMP_DIR" in os.environ:
+                    del os.environ["CURRYER_TEMP_DIR"]
+
 
 class TestUpdateInvalidPaths(unittest.TestCase):
     """Test update_invalid_paths() with try_copy strategy."""
