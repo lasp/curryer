@@ -969,6 +969,69 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
 
         self.assertTrue(config["warn_on_copy"], "Should warn on copy by default")
 
+    def test_curryer_warn_copy_threshold(self):
+        """Test CURRYER_WARN_COPY_THRESHOLD environment variable."""
+        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "50"
+
+        try:
+            from curryer.kernels.path_utils import get_path_strategy_config
+
+            config = get_path_strategy_config()
+
+            self.assertEqual(config["warn_copy_threshold_mb"], 50, "Should use custom threshold")
+
+        finally:
+            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
+
+    def test_warn_on_large_file_copy(self):
+        """Test that warnings are logged when copying large files."""
+        os.environ["CURRYER_WARN_ON_COPY"] = "true"
+        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "1"  # 1 MB threshold
+        os.environ["CURRYER_PATH_STRATEGY"] = "copy"  # Force copy strategy
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Create a large file (2 MB)
+                long_path_dir = (
+                    Path(tmpdir)
+                    / "very_long_directory_name_for_testing"
+                    / "another_long_directory_name"
+                    / "yet_another_long_directory_name"
+                    / "and_one_more_long_directory"
+                )
+                long_path_dir.mkdir(parents=True, exist_ok=True)
+
+                test_file = long_path_dir / "large_test.tls"
+                # Write 2 MB of data
+                with open(test_file, "wb") as f:
+                    f.write(b"X" * (2 * 1024 * 1024))
+
+                config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+                # Capture log output
+                with self.assertLogs("curryer.kernels.writer", level="WARNING") as log_context:
+                    result, temp_files = update_invalid_paths(config, max_len=80)
+
+                # Verify warning was logged
+                self.assertTrue(
+                    any("Copying large file" in message for message in log_context.output),
+                    "Should log warning about large file copy",
+                )
+
+                # Verify file was copied
+                fixed_path = result["properties"]["leapsecond_kernel"]
+                self.assertLess(len(fixed_path), 80, "Path should be shortened")
+
+                # Clean up
+                for f in temp_files:
+                    if os.path.exists(f):
+                        os.remove(f)
+
+        finally:
+            del os.environ["CURRYER_WARN_ON_COPY"]
+            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
+            del os.environ["CURRYER_PATH_STRATEGY"]
+
 
 if __name__ == "__main__":
     unittest.main()

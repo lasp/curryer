@@ -65,10 +65,11 @@ export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"  # Default
 export CURRYER_DISABLE_SYMLINKS="true"  # Disable symlink-based shortening
 
 # Custom short temp directory
-export CURRYER_TEMP_DIR="/tmp/spice"  # Default: /tmp (Unix), C:/Temp (Windows)
+export CURRYER_TEMP_DIR="/tmp/spice"  # Default: /tmp (Unix), C:\Temp (Windows)
 
 # Warn when copying large files
-export CURRYER_WARN_ON_COPY="true"  # Default
+export CURRYER_WARN_ON_COPY="true"  # Default: true
+export CURRYER_WARN_COPY_THRESHOLD="10"  # Size in MB to trigger warning (default: 10)
 ```
 
 ### Logging

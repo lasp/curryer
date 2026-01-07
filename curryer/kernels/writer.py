@@ -100,6 +100,10 @@ def update_invalid_paths(
     strategy_order = env_config["strategy_order"]
     use_custom_order = os.getenv("CURRYER_PATH_STRATEGY") is not None
 
+    # Get warn_on_copy configuration
+    warn_on_copy = env_config["warn_on_copy"]
+    warn_copy_threshold_mb = env_config["warn_copy_threshold_mb"]
+
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
         parent_dir = Path(parent_dir)
@@ -308,6 +312,20 @@ def update_invalid_paths(
                             )
                             return False
                         else:
+                            # Check file size and warn if large (if configured)
+                            if warn_on_copy:
+                                try:
+                                    file_size_bytes = fn.stat().st_size
+                                    file_size_mb = file_size_bytes / (1024 * 1024)
+                                    if file_size_mb > warn_copy_threshold_mb:
+                                        logger.warning(
+                                            f"  ⚠ Copying large file: {fn.name} ({file_size_mb:.1f} MB) - "
+                                            f"consider using symlinks or optimizing path structure"
+                                        )
+                                except OSError:
+                                    # If we can't get file size, continue without warning
+                                    pass
+
                             temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
 
                             # Verify actual path is short enough (should match estimate)

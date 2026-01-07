@@ -157,11 +157,23 @@ def get_path_strategy_config() -> dict:
     - CURRYER_DISABLE_SYMLINKS: "true" to disable symlinks (default: "false")
     - CURRYER_TEMP_DIR: Custom short temp directory (already implemented)
     - CURRYER_WARN_ON_COPY: "true" to warn on large file copies (default: "true")
+    - CURRYER_WARN_COPY_THRESHOLD: File size in MB to trigger warning (default: "10")
 
     Returns
     -------
     dict
-        Configuration with keys: strategy_order, disable_symlinks, temp_dir, warn_on_copy
+        Configuration with keys: strategy_order, disable_symlinks, temp_dir, warn_on_copy, warn_copy_threshold_mb
+
+    Examples
+    --------
+    >>> import os
+    >>> os.environ["CURRYER_WARN_ON_COPY"] = "true"
+    >>> os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "50"  # Warn on files > 50 MB
+    >>> config = get_path_strategy_config()
+    >>> config["warn_on_copy"]
+    True
+    >>> config["warn_copy_threshold_mb"]
+    50
     """
     strategy_str = os.getenv("CURRYER_PATH_STRATEGY", "symlink,wrap,relative,copy")
     strategy_order = [s.strip() for s in strategy_str.split(",")]
@@ -170,9 +182,20 @@ def get_path_strategy_config() -> dict:
     warn_on_copy = os.getenv("CURRYER_WARN_ON_COPY", "true").lower() == "true"
     temp_dir = os.getenv("CURRYER_TEMP_DIR", None)
 
+    # Parse threshold from env var, default to 10 MB
+    warn_copy_threshold_str = os.getenv("CURRYER_WARN_COPY_THRESHOLD", "10")
+    try:
+        warn_copy_threshold_mb = int(warn_copy_threshold_str)
+    except ValueError:
+        logger.warning(
+            f"Invalid CURRYER_WARN_COPY_THRESHOLD value '{warn_copy_threshold_str}', using default of 10 MB"
+        )
+        warn_copy_threshold_mb = 10
+
     return {
         "strategy_order": strategy_order,
         "disable_symlinks": disable_symlinks,
         "temp_dir": temp_dir,
         "warn_on_copy": warn_on_copy,
+        "warn_copy_threshold_mb": warn_copy_threshold_mb,
     }
