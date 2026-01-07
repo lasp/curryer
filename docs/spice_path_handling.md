@@ -61,7 +61,8 @@ Control path shortening behavior:
 export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"  # Default
 
 # Disable symlinks (e.g., for Windows, restricted containers)
-export CURRYER_DISABLE_SYMLINKS="false"  # Default
+# Default behavior: symlinks are enabled when CURRYER_DISABLE_SYMLINKS is unset
+export CURRYER_DISABLE_SYMLINKS="true"  # Disable symlink-based shortening
 
 # Custom short temp directory
 export CURRYER_TEMP_DIR="/tmp/spice"  # Default: /tmp (Unix), C:/Temp (Windows)
