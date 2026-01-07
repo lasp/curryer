@@ -802,9 +802,9 @@ class TestRelativePathStrategy(unittest.TestCase):
             # Verify relative path is used
             self.assertNotEqual(fixed_path, str(test_file), "Should use relative path, not absolute")
 
-            # Verify it's the relative path
-            expected_rel = "data/k.tsc"
-            self.assertEqual(fixed_path, expected_rel, "Should be the short relative path")
+            # Verify it's the relative path (normalize separators via Path)
+            expected_rel = Path("data") / "k.tsc"
+            self.assertEqual(Path(fixed_path), expected_rel, "Should be the short relative path")
 
             # Verify length is under limit
             self.assertLessEqual(len(fixed_path), 80, "Relative path should be under limit")
