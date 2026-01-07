@@ -132,22 +132,57 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
     - May fail in restricted containers (seccomp policies)
     - Failures should be logged but not raise exceptions
     """
-    try:
-        # Generate unique short filename using hash
-        path_hash = hashlib.md5(str(source_path).encode()).hexdigest()[:8]  # noqa: S324
-        symlink_name = f"{source_path.stem[:10]}_{path_hash}{source_path.suffix}"
+    # Generate base short filename using hash
+    path_hash = hashlib.md5(str(source_path).encode()).hexdigest()[:8]  # noqa: S324
+    stem_part = source_path.stem[:10]
+    suffix = source_path.suffix
+
+    # Resolve source to an absolute, normalized path for comparison
+    source_real = os.path.realpath(str(source_path))
+
+    last_error: OSError | None = None
+
+    # Try primary name first, then fall back to suffixed variants on collision
+    for i in range(10):
+        if i == 0:
+            symlink_name = f"{stem_part}_{path_hash}{suffix}"
+        else:
+            symlink_name = f"{stem_part}_{path_hash}_{i}{suffix}"
+
         symlink_path = temp_dir / symlink_name
 
-        # Create symlink
-        os.symlink(source_path, symlink_path)
+        # If something already exists at this path, see if we can reuse it
+        if symlink_path.exists() or symlink_path.is_symlink():
+            if symlink_path.is_symlink():
+                try:
+                    target = os.readlink(str(symlink_path))
+                    target_real = os.path.realpath(target)
+                except OSError as e:
+                    # Can't read target; treat as collision and try another name
+                    last_error = e
+                    continue
 
-        return symlink_path
-    except OSError as e:
-        # Expected failures: Windows permissions, container restrictions
-        logger.debug(f"Symlink creation failed: {e}")
-        return None
+                # Reuse existing symlink if it already points to the same source
+                if target_real == source_real:
+                    return symlink_path
 
+            # Existing path points elsewhere (or is not a symlink): try another name
+            continue
 
+        # No existing entry: try to create the symlink
+        try:
+            os.symlink(source_path, symlink_path)
+            return symlink_path
+        except OSError as e:
+            # Record the last error and break if it's not a simple collision
+            last_error = e
+            # For permissions or platform issues, further attempts are unlikely to succeed
+            break
+
+    if last_error is not None:
+        # Expected failures: Windows permissions, container restrictions, etc.
+        logger.debug(f"Symlink creation failed: {last_error}")
+    return None
 def get_path_strategy_config() -> dict:
     """
     Read path shortening configuration from environment variables.
