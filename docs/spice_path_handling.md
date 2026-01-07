@@ -113,8 +113,8 @@ Control path shortening behavior through environment variables:
 # Default: "symlink,wrap,relative,copy"
 export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"
 
-# Disable symlinks (e.g., for Windows, restricted containers)
-# Default behavior: symlinks are enabled when CURRYER_DISABLE_SYMLINKS is unset
+# Set to 'true' to disable symlinks (default is 'false', meaning symlinks are enabled)
+# Useful for Windows or restricted containers where symlinks may not work
 export CURRYER_DISABLE_SYMLINKS="true"
 
 # Custom short temp directory

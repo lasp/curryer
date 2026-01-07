@@ -156,7 +156,11 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
             if symlink_path.is_symlink():
                 try:
                     target = os.readlink(str(symlink_path))
-                    target_real = os.path.realpath(target)
+                    # Resolve relative symlink targets relative to symlink's directory
+                    target_path = Path(target)
+                    if not target_path.is_absolute():
+                        target_path = (symlink_path.parent / target_path)
+                    target_real = os.path.realpath(str(target_path))
                 except OSError as e:
                     # Can't read target; treat as collision and try another name
                     last_error = e

@@ -399,18 +399,18 @@ def update_invalid_paths(
                     for strategy_name in strategy_order:
                         if strategy_name in strategy_functions:
                             if strategy_functions[strategy_name]():
-                                # Strategy succeeded, check if we should skip remaining
-                                if skip_normal_append[0]:
-                                    break  # Skip remaining strategies and normal append
+                                # Strategy succeeded - break to prevent other strategies
+                                # skip_normal_append[0] determines if normal append happens
+                                break
                         else:
                             logger.warning(f"  Unknown strategy '{strategy_name}' in CURRYER_PATH_STRATEGY, skipping")
                 else:
                     # Use default order: symlink → wrap → relative → copy
                     for strategy_func in [try_symlink_strategy, try_wrap_strategy, try_relative_strategy, try_copy_strategy]:
                         if strategy_func():
-                            # Strategy succeeded, check if we should skip remaining
-                            if skip_normal_append[0]:
-                                break  # Skip remaining strategies and normal append
+                            # Strategy succeeded - break to prevent other strategies
+                            # skip_normal_append[0] determines if normal append happens
+                            break
 
                 # Update modified_value from flag
                 modified_value = modified_value_flag[0]
