@@ -254,8 +254,10 @@ class TestUpdateInvalidPaths(unittest.TestCase):
             actual_len = len(str(test_file))
             self.assertGreater(actual_len, 80, f"Test path not long enough: {actual_len} chars - {test_file}")
 
-            # With try_copy=False, should wrap instead
-            result, temp_files = update_invalid_paths(config, max_len=80, try_copy=False, try_wrap=True)
+            # With try_copy=False and try_symlink=False, should wrap instead
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=False, try_copy=False, try_wrap=True
+            )
 
             fixed_value = result["properties"]["clock_kernel"]
 
@@ -472,6 +474,650 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
                     os.remove(temp_file_path)
             except (OSError, PermissionError):
                 pass  # Best effort cleanup
+
+
+class TestSymlinkStrategy(unittest.TestCase):
+    """Test symlink-based path shortening."""
+
+    def test_symlink_creation_success(self):
+        """Test successful symlink creation on Unix/macOS."""
+        # Skip on Windows if not supported
+        if os.name == "nt":
+            self.skipTest("Symlinks may require admin on Windows")
+
+        # Create test file with long path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel.tls"
+            test_file.write_text("DUMMY KERNEL CONTENT FOR TESTING")
+
+            config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+            # Original path should be long
+            self.assertGreater(len(str(test_file)), 80)
+
+            # Call update_invalid_paths with try_symlink=True
+            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True)
+
+            fixed_path = result["properties"]["leapsecond_kernel"]
+
+            # Verify symlink was created and path shortened
+            self.assertLess(len(fixed_path), 80, f"Symlink path should be < 80 chars: {fixed_path}")
+
+            # Verify symlink exists
+            self.assertTrue(Path(fixed_path).exists(), "Symlink should exist")
+
+            # Verify symlink points to original file
+            self.assertTrue(Path(fixed_path).is_symlink(), "Should be a symlink")
+
+            # Verify original file content accessible through symlink
+            with open(fixed_path) as f:
+                content = f.read()
+            self.assertEqual(content, "DUMMY KERNEL CONTENT FOR TESTING")
+
+            # Verify symlink tracked for cleanup
+            self.assertEqual(len(temp_files), 1)
+            self.assertEqual(temp_files[0], fixed_path)
+
+            # Clean up symlink
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+    def test_symlink_fallback_to_copy(self):
+        """Test fallback to copy when symlink fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel.tls"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+            # Mock os.symlink in curryer.kernels.path_utils to raise OSError (simulate symlink failure)
+            with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
+                # Should fall back to copy strategy
+                result, temp_files = update_invalid_paths(
+                    config, max_len=80, try_symlink=True, try_copy=True, try_wrap=False
+                )
+
+                fixed_path = result["properties"]["leapsecond_kernel"]
+
+                # Verify file copy strategy was used (not a symlink)
+                self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
+                self.assertTrue(Path(fixed_path).exists(), "Copied file should exist")
+
+                # Verify path is shortened
+                self.assertLess(len(fixed_path), 80)
+
+                # Clean up
+                if os.path.exists(fixed_path):
+                    os.remove(fixed_path)
+
+    def test_symlink_cleanup(self):
+        """Test symlinks are removed after kernel generation."""
+        # Skip on Windows if not supported
+        if os.name == "nt":
+            self.skipTest("Symlinks may require admin on Windows")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel.tls"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+            # Create symlink
+            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True)
+
+            symlink_path = result["properties"]["leapsecond_kernel"]
+
+            # Verify symlink exists during generation
+            self.assertTrue(Path(symlink_path).exists())
+            self.assertTrue(Path(symlink_path).is_symlink())
+
+            # Simulate cleanup
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+
+            # Verify symlink removed after cleanup
+            self.assertFalse(Path(symlink_path).exists())
+
+    def test_symlink_disabled_via_env_var(self):
+        """Test CURRYER_DISABLE_SYMLINKS environment variable."""
+        # Skip on Windows if not supported
+        if os.name == "nt":
+            self.skipTest("Symlinks may require admin on Windows")
+
+        os.environ["CURRYER_DISABLE_SYMLINKS"] = "true"
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                long_path_dir = (
+                    Path(tmpdir)
+                    / "very_long_directory_name_for_testing"
+                    / "another_long_directory_name"
+                    / "yet_another_long_directory_name"
+                    / "and_one_more_long_directory"
+                )
+                long_path_dir.mkdir(parents=True, exist_ok=True)
+
+                test_file = long_path_dir / "test_kernel.tls"
+                test_file.write_text("CONTENT")
+
+                config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+                # Symlink strategy should be skipped
+                result, temp_files = update_invalid_paths(
+                    config, max_len=80, try_symlink=True, try_copy=True, try_wrap=False
+                )
+
+                fixed_path = result["properties"]["leapsecond_kernel"]
+
+                # Verify symlink strategy was skipped (should use copy instead)
+                self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
+                self.assertTrue(Path(fixed_path).exists(), "Should use copy strategy")
+
+                # Clean up
+                if os.path.exists(fixed_path):
+                    os.remove(fixed_path)
+        finally:
+            del os.environ["CURRYER_DISABLE_SYMLINKS"]
+
+
+class TestContinuationCharacterStrategy(unittest.TestCase):
+    """Test continuation character (+) path wrapping."""
+
+    def test_wrap_success_multiple_short_segments(self):
+        """Test wrapping succeeds when all segments are short."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Path with long total but short components - ensure >80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "directory1"
+                / "directory2"
+                / "directory3"
+                / "directory4"
+                / "directory5"
+                / "directory6"
+                / "directory7"
+                / "directory8"
+                / "directory9"
+                / "directory10"
+                / "directory11"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel_file.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is long enough
+            self.assertGreater(len(str(test_file)), 80, f"Path should be >80 chars: {len(str(test_file))}")
+
+            # Try wrapping (disable symlink and copy to test wrap)
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=False, try_wrap=True, try_copy=False
+            )
+
+            fixed_value = result["properties"]["clock_kernel"]
+
+            # Verify wrapping applied
+            self.assertIsInstance(fixed_value, list, "Should return wrapped path as list")
+
+            # Verify each line <= 80 chars
+            for line in fixed_value:
+                self.assertLessEqual(len(line), 80, f"Each wrapped line should be <= 80 chars: {line}")
+
+    def test_wrap_failure_single_long_segment(self):
+        """Test wrapping fails when a single directory exceeds limit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Path with one directory name >80 chars
+            long_dir_name = "a" * 85  # Directory name longer than 80 chars
+            long_path_dir = Path(tmpdir) / long_dir_name
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "kernel.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Try wrapping - should fail and fall back to copy
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=False, try_wrap=True, try_copy=True
+            )
+
+            fixed_path = result["properties"]["clock_kernel"]
+
+            # Verify wrapping was skipped (should use copy instead)
+            self.assertIsInstance(fixed_path, str, "Should return string (not wrapped list)")
+            self.assertLess(len(fixed_path), 80, "Should use copy strategy")
+
+            # Clean up
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+    def test_wrap_preferred_over_copy(self):
+        """Test wrapping is tried before copying."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Path with short segments (wrappable) - ensure >80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "directory1"
+                / "directory2"
+                / "directory3"
+                / "directory4"
+                / "directory5"
+                / "directory6"
+                / "directory7"
+                / "directory8"
+                / "directory9"
+                / "directory10"
+                / "directory11"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel_file.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is long enough
+            self.assertGreater(len(str(test_file)), 80, f"Path should be >80 chars: {len(str(test_file))}")
+
+            # Enable both try_wrap and try_copy (disable symlink)
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=False, try_wrap=True, try_copy=True
+            )
+
+            fixed_value = result["properties"]["clock_kernel"]
+
+            # Verify wrap was used (returns list), not copy (returns string)
+            self.assertIsInstance(fixed_value, list, "Should use wrap strategy, not copy")
+
+            # No temp files should be created
+            self.assertEqual(len(temp_files), 0, "Wrap strategy should not create temp files")
+
+
+class TestRelativePathStrategy(unittest.TestCase):
+    """Test relative path optimization."""
+
+    def test_relative_path_shortening(self):
+        """Test relative path used when shorter than absolute."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a deeply nested temp directory to make absolute path long
+            # But use short relative path from a subdirectory
+            deep_tmpdir = Path(tmpdir) / "very_long_directory_name_for_testing" / "another_long_directory_name"
+            deep_tmpdir.mkdir(parents=True, exist_ok=True)
+
+            # Create file in a subdirectory with short name
+            test_dir = deep_tmpdir / "data"
+            test_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = test_dir / "k.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify absolute path is long enough
+            self.assertGreater(len(str(test_file)), 80, f"Absolute path should be >80: {len(str(test_file))}")
+
+            # Try relative path from deep_tmpdir (making relative path short)
+            result, temp_files = update_invalid_paths(
+                config,
+                max_len=80,
+                try_symlink=False,
+                try_wrap=False,
+                try_relative=True,
+                try_copy=False,
+                relative_dir=deep_tmpdir,
+            )
+
+            fixed_path = result["properties"]["clock_kernel"]
+
+            # Verify relative path is used
+            self.assertNotEqual(fixed_path, str(test_file), "Should use relative path, not absolute")
+
+            # Verify it's the relative path (normalize separators via Path)
+            expected_rel = Path("data") / "k.tsc"
+            self.assertEqual(Path(fixed_path), expected_rel, "Should be the short relative path")
+
+            # Verify length is under limit
+            self.assertLessEqual(len(fixed_path), 80, "Relative path should be under limit")
+
+    def test_relative_path_still_too_long(self):
+        """Test fallback when relative path also exceeds limit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create path where both absolute and relative are >80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "kernel.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Both absolute and relative paths >80 chars from root
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=False, try_wrap=False, try_relative=True, try_copy=True, relative_dir="/"
+            )
+
+            fixed_path = result["properties"]["clock_kernel"]
+
+            # Verify relative path was attempted but copy was used
+            self.assertLess(len(fixed_path), 80, "Should fall back to copy")
+
+            # Clean up
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+
+class TestStrategyPriorityOrder(unittest.TestCase):
+    """Test strategies execute in correct priority order."""
+
+    def test_strategy_order_symlink_wrap_relative_copy(self):
+        """Test default priority: symlink → wrap → relative → copy."""
+        # Skip on Windows if not supported
+        if os.name == "nt":
+            self.skipTest("Symlinks may require admin on Windows")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create path with short segments (wrappable) - ensure >80 chars
+            long_path_dir = (
+                Path(tmpdir)
+                / "directory1"
+                / "directory2"
+                / "directory3"
+                / "directory4"
+                / "directory5"
+                / "directory6"
+                / "directory7"
+                / "directory8"
+                / "directory9"
+                / "directory10"
+                / "directory11"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "test_kernel_file.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is long enough
+            self.assertGreater(len(str(test_file)), 80, f"Path should be >80 chars: {len(str(test_file))}")
+
+            # Enable all strategies
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=True, try_wrap=True, try_relative=True, try_copy=True
+            )
+
+            fixed_path = result["properties"]["clock_kernel"]
+
+            # First successful strategy (symlink) should be used
+            self.assertTrue(Path(fixed_path).is_symlink(), "Should use symlink strategy (priority 1)")
+
+            # Clean up
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+    def test_first_successful_strategy_stops_chain(self):
+        """Test that first successful strategy prevents later attempts."""
+        # Skip on Windows if not supported
+        if os.name == "nt":
+            self.skipTest("Symlinks may require admin on Windows")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            long_path_dir = (
+                Path(tmpdir)
+                / "very_long_directory_name_for_testing"
+                / "another_long_directory_name"
+                / "yet_another_long_directory_name"
+                / "and_one_more_long_directory"
+            )
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "kernel.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Enable all strategies - symlink should succeed first
+            result, temp_files = update_invalid_paths(
+                config, max_len=80, try_symlink=True, try_wrap=True, try_relative=True, try_copy=True
+            )
+
+            fixed_path = result["properties"]["clock_kernel"]
+
+            # Verify symlink was created (first strategy)
+            self.assertTrue(Path(fixed_path).is_symlink(), "Should use symlink")
+
+            # Verify no file copy occurred (only one temp file - the symlink)
+            self.assertEqual(len(temp_files), 1, "Only symlink should be tracked")
+
+            # Clean up
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+    def test_full_strategy_chain_fallback(self):
+        """Test complete strategy cascade: symlink → wrap → relative → copy.
+
+        This test explicitly verifies that when each strategy fails, the next
+        one is tried, ultimately falling back to the bulletproof copy strategy.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a path where:
+            # 1. Symlink will fail (mocked)
+            # 2. Wrap will fail (has segment >79 chars)
+            # 3. Relative will fail (still too long from root)
+            # 4. Copy will succeed (always works)
+
+            # Create a directory name that's too long for wrapping (>79 chars)
+            long_segment = "a" * 85  # This exceeds max_len - len(wrap_char) = 79
+            long_path_dir = Path(tmpdir) / "short1" / long_segment / "short2"
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "kernel.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is long enough to trigger shortening
+            self.assertGreater(len(str(test_file)), 80, "Path should be >80 chars")
+
+            # Mock symlink to fail (simulating Windows/restricted environment)
+            with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
+                # Capture log output to verify strategy attempts
+                with self.assertLogs("curryer.kernels.writer", level="INFO") as log_context:
+                    result, temp_files = update_invalid_paths(
+                        config,
+                        max_len=80,
+                        try_symlink=True,  # Will fail (mocked)
+                        try_wrap=True,     # Will fail (segment too long)
+                        try_relative=True, # Will be attempted
+                        try_copy=True,     # Will succeed
+                        relative_dir="/",  # Use root to ensure relative path is still long
+                    )
+
+                fixed_path = result["properties"]["clock_kernel"]
+
+                # Verify all strategies were attempted in order
+                log_output = "\n".join(log_context.output)
+
+                # Strategy 1: Symlink attempted and failed
+                self.assertIn("Attempting symlink strategy", log_output,
+                            "Should attempt symlink first")
+                self.assertIn("Symlink creation failed", log_output,
+                            "Symlink should fail (mocked)")
+
+                # Strategy 2: Wrap attempted and failed
+                self.assertIn("Attempting continuation character (+) wrapping", log_output,
+                            "Should attempt wrap after symlink fails")
+                self.assertIn("Wrapping not possible: segment exceeds", log_output,
+                            "Wrap should fail (segment too long)")
+
+                # Strategy 3: Relative attempted
+                self.assertIn("Attempting relative path optimization", log_output,
+                            "Should attempt relative after wrap fails")
+                # Note: Relative path failure is logged at DEBUG level, not captured here
+                # The key is that it was attempted and didn't stop the chain
+
+                # Strategy 4: Copy attempted and succeeded
+                self.assertIn("Attempting file copy strategy", log_output,
+                            "Should attempt copy after relative fails")
+                self.assertIn("Copied to short path", log_output,
+                            "Copy should succeed (bulletproof fallback)")
+
+                # Verify the file was actually copied (not symlinked)
+                self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
+                self.assertTrue(Path(fixed_path).exists(), "Copied file should exist")
+                self.assertLess(len(fixed_path), 80, "Final path should be <80 chars")
+
+                # Verify copy strategy was used (temp file tracked)
+                self.assertEqual(len(temp_files), 1, "Should have one temp file from copy")
+
+                # Verify all four strategies were attempted by counting "Attempting" messages
+                attempting_count = log_output.count("Attempting")
+                self.assertEqual(attempting_count, 4,
+                               f"All 4 strategies should be attempted (found {attempting_count})")
+
+                # Clean up
+                for f in temp_files:
+                    if os.path.exists(f):
+                        os.remove(f)
+
+
+class TestEnvironmentVariableConfig(unittest.TestCase):
+    """Test environment variable configuration."""
+
+    def test_curryer_disable_symlinks(self):
+        """Test CURRYER_DISABLE_SYMLINKS=true."""
+        os.environ["CURRYER_DISABLE_SYMLINKS"] = "true"
+
+        try:
+            from curryer.kernels.path_utils import get_path_strategy_config
+
+            config = get_path_strategy_config()
+
+            self.assertTrue(config["disable_symlinks"], "Should disable symlinks")
+
+        finally:
+            del os.environ["CURRYER_DISABLE_SYMLINKS"]
+
+    def test_curryer_path_strategy(self):
+        """Test custom strategy priority via CURRYER_PATH_STRATEGY."""
+        os.environ["CURRYER_PATH_STRATEGY"] = "copy,symlink,wrap,relative"
+
+        try:
+            from curryer.kernels.path_utils import get_path_strategy_config
+
+            config = get_path_strategy_config()
+
+            self.assertEqual(config["strategy_order"], ["copy", "symlink", "wrap", "relative"])
+
+        finally:
+            del os.environ["CURRYER_PATH_STRATEGY"]
+
+    def test_curryer_warn_on_copy_default(self):
+        """Test CURRYER_WARN_ON_COPY default value."""
+        from curryer.kernels.path_utils import get_path_strategy_config
+
+        config = get_path_strategy_config()
+
+        self.assertTrue(config["warn_on_copy"], "Should warn on copy by default")
+
+    def test_curryer_warn_copy_threshold(self):
+        """Test CURRYER_WARN_COPY_THRESHOLD environment variable."""
+        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "50"
+
+        try:
+            from curryer.kernels.path_utils import get_path_strategy_config
+
+            config = get_path_strategy_config()
+
+            self.assertEqual(config["warn_copy_threshold_mb"], 50, "Should use custom threshold")
+
+        finally:
+            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
+
+    def test_warn_on_large_file_copy(self):
+        """Test that warnings are logged when copying large files."""
+        os.environ["CURRYER_WARN_ON_COPY"] = "true"
+        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "1"  # 1 MB threshold
+        os.environ["CURRYER_PATH_STRATEGY"] = "copy"  # Force copy strategy
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Create a large file (2 MB)
+                long_path_dir = (
+                    Path(tmpdir)
+                    / "very_long_directory_name_for_testing"
+                    / "another_long_directory_name"
+                    / "yet_another_long_directory_name"
+                    / "and_one_more_long_directory"
+                )
+                long_path_dir.mkdir(parents=True, exist_ok=True)
+
+                test_file = long_path_dir / "large_test.tls"
+                # Write 2 MB of data
+                with open(test_file, "wb") as f:
+                    f.write(b"X" * (2 * 1024 * 1024))
+
+                config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+                # Capture log output
+                with self.assertLogs("curryer.kernels.writer", level="WARNING") as log_context:
+                    result, temp_files = update_invalid_paths(config, max_len=80)
+
+                # Verify warning was logged
+                self.assertTrue(
+                    any("Copying large file" in message for message in log_context.output),
+                    "Should log warning about large file copy",
+                )
+
+                # Verify file was copied
+                fixed_path = result["properties"]["leapsecond_kernel"]
+                self.assertLess(len(fixed_path), 80, "Path should be shortened")
+
+                # Clean up
+                for f in temp_files:
+                    if os.path.exists(f):
+                        os.remove(f)
+
+        finally:
+            del os.environ["CURRYER_WARN_ON_COPY"]
+            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
+            del os.environ["CURRYER_PATH_STRATEGY"]
 
 
 if __name__ == "__main__":

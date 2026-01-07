@@ -16,7 +16,7 @@ from pathlib import Path
 
 import jinja2
 
-from .path_utils import get_short_temp_dir
+from .path_utils import create_short_symlink, get_path_strategy_config, get_short_temp_dir
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ env = jinja2.Environment(
 def update_invalid_paths(
     configs,
     max_len=80,
+    try_symlink=True,
     try_relative=False,
     try_copy=True,
     try_wrap=True,
@@ -49,9 +50,10 @@ def update_invalid_paths(
     """Update invalid paths (too long) by copying, relativizing, or wrapping.
 
     Attempts to fix paths that exceed the maximum length by trying strategies in order:
-    1. Copy file to temp directory with short path (if try_copy=True)
-    2. Relativize path (if try_relative=True)
-    3. Wrap path across multiple lines (if try_wrap=True)
+    1. Symlink to temp directory with short path (if try_symlink=True)
+    2. Wrap path across multiple lines (if try_wrap=True)
+    3. Relativize path (if try_relative=True)
+    4. Copy file to temp directory with short path (if try_copy=True)
 
     Parameters
     ----------
@@ -59,6 +61,8 @@ def update_invalid_paths(
         Configuration dictionary to update
     max_len : int
         Maximum path length (default: 80 for SPICE string values)
+    try_symlink : bool
+        Try to create symlink in temp directory with short path (default: True)
     try_relative : bool
         Try to use relative paths if shorter (default: False)
     try_copy : bool
@@ -85,6 +89,20 @@ def update_invalid_paths(
     --------
     https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/kernel.html
     """
+    # Read environment variable configuration
+    env_config = get_path_strategy_config()
+
+    # Override parameters based on env vars
+    if env_config["disable_symlinks"]:
+        try_symlink = False
+
+    # Use custom strategy order if CURRYER_PATH_STRATEGY is set
+    strategy_order = env_config["strategy_order"]
+    use_custom_order = os.getenv("CURRYER_PATH_STRATEGY") is not None
+
+    # Get warn_on_copy configuration
+    warn_on_copy = env_config["warn_on_copy"]
+    warn_copy_threshold_mb = env_config["warn_copy_threshold_mb"]
 
     relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
@@ -176,12 +194,112 @@ def update_invalid_paths(
                 logger.info(f"Path exceeds {max_len} chars ({len(str(item))} chars): {fn.name}")
                 logger.debug(f"  Full path: {item}")
 
-                # Strategy 1: Copy to temp directory with short path
-                if try_copy and fn.is_file():
+                # Use flags to track state modifications across nested functions
+                modified_value_flag = [modified_value]
+                skip_normal_append = [False]  # Flag to skip normal item append when strategy handles it
+
+                # Define strategy execution functions
+                def try_symlink_strategy():
+                    nonlocal item, modified_item, fn_section
+                    if not try_symlink or not fn.is_file() or modified_item:
+                        return False
+
+                    logger.info("  Attempting symlink strategy...")
+                    symlink_path = create_short_symlink(fn, temp_dir)
+
+                    if symlink_path and len(str(symlink_path)) <= max_len:
+                        logger.info(f"  ✓ Created symlink: {symlink_path} ({len(str(symlink_path))} chars)")
+                        item = symlink_path
+                        modified_item = True
+                        # Track for cleanup (symlinks need to be removed like temp files)
+                        temp_files_created.append(str(symlink_path))
+                        new_vals.append(str(item))
+                        modified_value_flag[0] = True
+                        skip_normal_append[0] = True  # Strategy handled append, skip normal path
+                        return True  # Success! Skip other strategies
+                    else:
+                        logger.warning("  ✗ Symlink creation failed or path still too long")
+                        return False
+
+                def try_wrap_strategy():
+                    nonlocal item, modified_item, fn_section
+                    if not try_wrap or modified_item:
+                        return False
+
+                    logger.info("  Attempting continuation character (+) wrapping...")
+
+                    # Split path into components
+                    parts = fn.parts
+
+                    # Validate: each component must be short enough when wrapped.
+                    # We subtract len(wrap_char) for the continuation marker and 1 for the path separator.
+                    # Can't split in middle of directory names.
+                    max_segment_len = max_len - len(wrap_char) - 1
+                    valid_wrap = True
+                    for part in parts:
+                        if len(part) > max_segment_len:
+                            logger.warning(
+                                f"  ✗ Wrapping not possible: segment exceeds {max_segment_len} chars: {part}"
+                            )
+                            valid_wrap = False
+                            break
+
+                    if valid_wrap:
+                        # Build wrapped string
+                        logger.debug("Wrapping path [%s]", fn)
+                        modified_item = True
+                        fn_section = None
+
+                        line_count = 0
+                        for fn_part in parts:
+                            if fn_section is None:
+                                fn_section = fn_part
+                                continue
+
+                            next_section = str(Path(fn_section) / fn_part)
+                            if len(next_section) >= max_len:
+                                fn_section += wrap_char
+                                new_vals.append(fn_section)
+                                line_count += 1
+                                fn_section = os.path.sep + fn_part
+                            else:
+                                fn_section = next_section
+
+                        if modified_item and line_count > 0:
+                            logger.info(f"  ✓ Wrapped path across {line_count + 1} lines")
+                            return True
+                        else:
+                            # Wrapping didn't actually split the path
+                            modified_item = False
+                            fn_section = None
+                            return False
+                    return False
+
+                def try_relative_strategy():
+                    nonlocal item, modified_item, fn_section
+                    if not try_relative or modified_item:
+                        return False
+
+                    logger.info("  Attempting relative path optimization...")
+                    rel_fn = os.path.relpath(fn, start=relative_dir)
+                    if len(rel_fn) <= max_len:
+                        logger.info(f"  ✓ Using relative path ({len(rel_fn)} chars)")
+                        modified_item = True
+                        fn_section = rel_fn
+                        return True
+                    else:
+                        logger.debug(f"  ✗ Relative path still too long ({len(rel_fn)} chars)")
+                        return False
+
+                def try_copy_strategy():
+                    nonlocal item, modified_item, fn_section
+                    if not try_copy or not fn.is_file() or modified_item:
+                        return False
+
+                    logger.info("  Attempting file copy strategy...")
                     temp_path = None
                     try:
                         # Use hash of full path to ensure uniqueness (not for security)
-
                         path_hash = hashlib.md5(str(fn).encode()).hexdigest()[:6]  # noqa: S324
                         prefix = f"{fn.stem[:10]}_{path_hash}_"
 
@@ -191,10 +309,25 @@ def update_invalid_paths(
                         estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 12 + len(fn.suffix)
                         if estimated_length > max_len:
                             logger.warning(
-                                f"   Temp path would be too long ({estimated_length} chars estimated), "
+                                f"  ✗ Temp path would be too long ({estimated_length} chars estimated), "
                                 "skipping copy strategy"
                             )
+                            return False
                         else:
+                            # Check file size and warn if large (if configured)
+                            if warn_on_copy:
+                                try:
+                                    file_size_bytes = fn.stat().st_size
+                                    file_size_mb = file_size_bytes / (1024 * 1024)
+                                    if file_size_mb > warn_copy_threshold_mb:
+                                        logger.warning(
+                                            f"  ⚠ Copying large file: {fn.name} ({file_size_mb:.1f} MB) - "
+                                            f"consider using symlinks or optimizing path structure"
+                                        )
+                                except OSError:
+                                    # If we can't get file size, continue without warning
+                                    pass
+
                             temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
 
                             # Verify actual path is short enough (should match estimate)
@@ -215,7 +348,7 @@ def update_invalid_paths(
                                         pass
                                     raise
 
-                                logger.info(f"   Copied to short path: {temp_path} ({len(temp_path)} chars)")
+                                logger.info(f"  ✓ Copied to short path: {temp_path} ({len(temp_path)} chars)")
                                 logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
 
                                 # Track temp file for cleanup
@@ -225,8 +358,9 @@ def update_invalid_paths(
                                 modified_item = True
                                 # Success! Skip other strategies
                                 new_vals.append(str(item) if isinstance(item, Path) else item)
-                                modified_value = True
-                                continue
+                                modified_value_flag[0] = True
+                                skip_normal_append[0] = True  # Strategy handled append, skip normal path
+                                return True
                             else:
                                 # Temp path still too long, clean up and try other strategies
                                 # Close the file descriptor first
@@ -237,7 +371,8 @@ def update_invalid_paths(
                                 actual_length = len(temp_path)
                                 os.remove(temp_path)
                                 temp_path = None  # Mark as cleaned up
-                                logger.warning(f"   Temp path still exceeds limit ({actual_length} chars)")
+                                logger.warning(f"  ✗ Temp path still exceeds limit ({actual_length} chars)")
+                                return False
                     except (OSError, PermissionError, shutil.SameFileError, shutil.Error) as e:
                         # Clean up temp file if it was created but copy/checks failed
                         # Catches: OSError, PermissionError (file system issues)
@@ -247,48 +382,61 @@ def update_invalid_paths(
                                 os.remove(temp_path)
                             except OSError:
                                 pass  # Best effort cleanup
-                        logger.warning(f"   Failed to copy to temp directory: {e}")
+                        logger.warning(f"  ✗ Failed to copy to temp directory: {e}")
+                        return False
 
-                # Strategy 2: Check if a relative path would be shorter
-                if try_relative and not modified_item:
-                    rel_fn = os.path.relpath(fn, start=relative_dir)
-                    if len(rel_fn) <= max_len:
-                        logger.debug("Updated path [%s] to be relative to [%s]", rel_fn, relative_dir)
+                # Map strategy names to functions
+                strategy_functions = {
+                    "symlink": try_symlink_strategy,
+                    "wrap": try_wrap_strategy,
+                    "relative": try_relative_strategy,
+                    "copy": try_copy_strategy,
+                }
+
+                # Execute strategies in order
+                if use_custom_order:
+                    # Use custom strategy order from environment variable
+                    for strategy_name in strategy_order:
+                        if strategy_name in strategy_functions:
+                            if strategy_functions[strategy_name]():
+                                # Strategy succeeded - break to prevent other strategies
+                                # skip_normal_append[0] determines if normal append happens
+                                break
+                        else:
+                            logger.warning(f"  Unknown strategy '{strategy_name}' in CURRYER_PATH_STRATEGY, skipping")
+                else:
+                    # Use default order: symlink → wrap → relative → copy
+                    for strategy_func in [try_symlink_strategy, try_wrap_strategy, try_relative_strategy, try_copy_strategy]:
+                        if strategy_func():
+                            # Strategy succeeded - break to prevent other strategies
+                            # skip_normal_append[0] determines if normal append happens
+                            break
+
+                # Update modified_value from flag
+                modified_value = modified_value_flag[0]
+
+                # Only process item normally if no strategy handled it
+                if not skip_normal_append[0]:
+                    item = fn if fn_section is None else fn_section
+
+                    # Ensure item is always a string (could be Path if fn_section was None)
+                    if isinstance(item, Path):
+                        item = str(item)
                         modified_item = True
-                        fn_section = rel_fn
 
-                # Strategy 3: Build strings up to the limit (wrapping)
-                if try_wrap and not modified_item:
-                    logger.debug("Wrapping path [%s]", fn)
+                    new_vals.append(item)
+
+                    modified_value |= modified_item
+            else:
+                # Path doesn't need shortening, add it as-is
+                # Ensure item is always a string (could be Path)
+                if isinstance(item, Path):
+                    item = str(item)
                     modified_item = True
 
-                    for fn_part in fn.parts:
-                        if len(fn_part) > (max_len - len(wrap_char)):
-                            raise ValueError(
-                                f"File part [{fn_part}] is too long! Each part must be < {max_len - len(wrap_char)} char!"
-                            )
-                        if fn_section is None:
-                            fn_section = fn_part
-                            continue
+                new_vals.append(item)
 
-                        next_section = str(Path(fn_section) / fn_part)
-                        if len(next_section) >= max_len:
-                            fn_section += wrap_char
-                            new_vals.append(fn_section)
-                            fn_section = os.path.sep + fn_part
-                        else:
-                            fn_section = next_section
-
-                item = fn if fn_section is None else fn_section
-
-            # Ensure item is always a string (could be Path if fn_section was None)
-            if isinstance(item, Path):
-                item = str(item)
-                modified_item = True
-
-            new_vals.append(item)
-
-            modified_value |= modified_item
+                modified_value |= modified_item
 
         if modified_value:
             # Unwrap if original was a single string/path
