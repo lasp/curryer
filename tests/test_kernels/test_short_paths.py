@@ -1,4 +1,9 @@
-"""Test short temp directory functionality and path shortening."""
+"""Test short temp directory functionality and path shortening.
+
+This module comprehensively tests the SPICE path shortening functionality
+that automatically handles paths exceeding the 80-character limit through
+multiple strategies: symlink → wrap → relative → copy.
+"""
 
 import logging
 import os
@@ -9,14 +14,18 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from curryer.kernels.classes import AbstractKernelWriter
-from curryer.kernels.path_utils import get_short_temp_dir
-from curryer.kernels.writer import update_invalid_paths
+from curryer.kernels.path_utils import get_short_temp_dir, update_invalid_paths
 
 logger = logging.getLogger(__name__)
 
 
 class TestShortTempDir(unittest.TestCase):
-    """Test get_short_temp_dir() helper function."""
+    """Test get_short_temp_dir() helper function.
+
+    Tests the temporary directory helper that provides short base paths
+    for temporary files to avoid SPICE's 80-character limit.
+    Covers platform-specific defaults, custom paths, validation, and security.
+    """
 
     def setUp(self):
         """Clean up any existing CURRYER_TEMP_DIR env var."""
@@ -139,7 +148,12 @@ class TestShortTempDir(unittest.TestCase):
 
 
 class TestUpdateInvalidPaths(unittest.TestCase):
-    """Test update_invalid_paths() with try_copy strategy."""
+    """Test update_invalid_paths() with path shortening strategies.
+
+    Tests the core path shortening function that detects paths exceeding
+    the maximum length and applies appropriate strategies. Covers file
+    copying, wrapping, and tracking of temporary files.
+    """
 
     def test_short_path_unchanged(self):
         """Test that short paths are not modified."""
@@ -309,7 +323,12 @@ class TestUpdateInvalidPaths(unittest.TestCase):
 
 
 class TestCleanupTempKernelFiles(unittest.TestCase):
-    """Test _cleanup_temp_kernel_files() exception handling."""
+    """Test _cleanup_temp_kernel_files() exception handling.
+
+    Tests the cleanup functionality that removes temporary files created
+    during path shortening. Covers successful cleanup, missing files,
+    permission errors, and partial cleanup scenarios.
+    """
 
     def test_cleanup_with_missing_file(self):
         """Test that cleanup handles missing files gracefully."""
@@ -477,7 +496,13 @@ class TestCleanupTempKernelFiles(unittest.TestCase):
 
 
 class TestSymlinkStrategy(unittest.TestCase):
-    """Test symlink-based path shortening."""
+    """Test symlink-based path shortening (Strategy #1 - preferred).
+
+    Tests the symlink strategy which creates symbolic links in a short
+    temp directory. This is the preferred strategy as it has zero storage
+    overhead and zero I/O cost. Covers creation, fallback, cleanup, and
+    environment variable configuration.
+    """
 
     def test_symlink_creation_success(self):
         """Test successful symlink creation on Unix/macOS."""
@@ -649,7 +674,13 @@ class TestSymlinkStrategy(unittest.TestCase):
 
 
 class TestContinuationCharacterStrategy(unittest.TestCase):
-    """Test continuation character (+) path wrapping."""
+    """Test continuation character (+) path wrapping (Strategy #2).
+
+    Tests the wrap strategy which splits long paths across multiple lines
+    using SPICE's continuation character (+). This works for paths with
+    short segments. Covers successful wrapping, failure cases, and priority
+    over copying.
+    """
 
     def test_wrap_success_multiple_short_segments(self):
         """Test wrapping succeeds when all segments are short."""
@@ -764,7 +795,12 @@ class TestContinuationCharacterStrategy(unittest.TestCase):
 
 
 class TestRelativePathStrategy(unittest.TestCase):
-    """Test relative path optimization."""
+    """Test relative path optimization (Strategy #3).
+
+    Tests the relative path strategy which converts absolute paths to
+    relative paths when shorter. This is useful when working in deeply
+    nested directory structures. Covers shortening and fallback scenarios.
+    """
 
     def test_relative_path_shortening(self):
         """Test relative path used when shorter than absolute."""
@@ -843,7 +879,19 @@ class TestRelativePathStrategy(unittest.TestCase):
 
 
 class TestStrategyPriorityOrder(unittest.TestCase):
-    """Test strategies execute in correct priority order."""
+    """Test strategies execute in correct priority order.
+
+    Tests the default strategy priority (symlink → wrap → relative → copy)
+    and ensures that strategies are tried in order, with the first successful
+    strategy preventing later attempts. Also verifies the complete fallback
+    chain when earlier strategies fail.
+
+    Strategy Priority (default order):
+    1. Symlink - Zero overhead, preferred when available
+    2. Wrap - No file copying, works for paths with short segments
+    3. Relative - No copying, works when relative path is shorter
+    4. Copy - Bulletproof fallback, always works but creates temp files
+    """
 
     def test_strategy_order_symlink_wrap_relative_copy(self):
         """Test default priority: symlink → wrap → relative → copy."""
@@ -958,7 +1006,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             # Mock symlink to fail (simulating Windows/restricted environment)
             with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Capture log output to verify strategy attempts
-                with self.assertLogs("curryer.kernels.writer", level="INFO") as log_context:
+                with self.assertLogs("curryer.kernels.path_utils", level="INFO") as log_context:
                     result, temp_files = update_invalid_paths(
                         config,
                         max_len=80,
@@ -1018,7 +1066,14 @@ class TestStrategyPriorityOrder(unittest.TestCase):
 
 
 class TestEnvironmentVariableConfig(unittest.TestCase):
-    """Test environment variable configuration."""
+    """Test environment variable configuration.
+
+    Tests configuration via environment variables including:
+    - CURRYER_DISABLE_SYMLINKS: Disable symlink strategy
+    - CURRYER_PATH_STRATEGY: Custom strategy priority order
+    - CURRYER_WARN_ON_COPY: Enable warnings for large file copies
+    - CURRYER_WARN_COPY_THRESHOLD: Size threshold for copy warnings
+    """
 
     def test_curryer_disable_symlinks(self):
         """Test CURRYER_DISABLE_SYMLINKS=true."""
@@ -1096,7 +1151,7 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
                 config = {"properties": {"leapsecond_kernel": str(test_file)}}
 
                 # Capture log output
-                with self.assertLogs("curryer.kernels.writer", level="WARNING") as log_context:
+                with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
                     result, temp_files = update_invalid_paths(config, max_len=80)
 
                 # Verify warning was logged
