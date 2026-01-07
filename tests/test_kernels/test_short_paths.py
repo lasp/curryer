@@ -548,8 +548,8 @@ class TestSymlinkStrategy(unittest.TestCase):
 
             config = {"properties": {"leapsecond_kernel": str(test_file)}}
 
-            # Mock os.symlink to raise OSError (simulate symlink failure)
-            with patch("os.symlink", side_effect=OSError("Operation not permitted")):
+            # Mock os.symlink in curryer.kernels.path_utils to raise OSError (simulate symlink failure)
+            with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Should fall back to copy strategy
                 result, temp_files = update_invalid_paths(
                     config, max_len=80, try_symlink=True, try_copy=True, try_wrap=False
