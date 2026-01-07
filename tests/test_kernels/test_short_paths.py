@@ -929,6 +929,93 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             if os.path.exists(fixed_path):
                 os.remove(fixed_path)
 
+    def test_full_strategy_chain_fallback(self):
+        """Test complete strategy cascade: symlink → wrap → relative → copy.
+
+        This test explicitly verifies that when each strategy fails, the next
+        one is tried, ultimately falling back to the bulletproof copy strategy.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a path where:
+            # 1. Symlink will fail (mocked)
+            # 2. Wrap will fail (has segment >79 chars)
+            # 3. Relative will fail (still too long from root)
+            # 4. Copy will succeed (always works)
+
+            # Create a directory name that's too long for wrapping (>79 chars)
+            long_segment = "a" * 85  # This exceeds max_len - len(wrap_char) = 79
+            long_path_dir = Path(tmpdir) / "short1" / long_segment / "short2"
+            long_path_dir.mkdir(parents=True, exist_ok=True)
+
+            test_file = long_path_dir / "kernel.tsc"
+            test_file.write_text("CONTENT")
+
+            config = {"properties": {"clock_kernel": str(test_file)}}
+
+            # Verify path is long enough to trigger shortening
+            self.assertGreater(len(str(test_file)), 80, "Path should be >80 chars")
+
+            # Mock symlink to fail (simulating Windows/restricted environment)
+            with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
+                # Capture log output to verify strategy attempts
+                with self.assertLogs("curryer.kernels.writer", level="INFO") as log_context:
+                    result, temp_files = update_invalid_paths(
+                        config,
+                        max_len=80,
+                        try_symlink=True,  # Will fail (mocked)
+                        try_wrap=True,     # Will fail (segment too long)
+                        try_relative=True, # Will be attempted
+                        try_copy=True,     # Will succeed
+                        relative_dir="/",  # Use root to ensure relative path is still long
+                    )
+
+                fixed_path = result["properties"]["clock_kernel"]
+
+                # Verify all strategies were attempted in order
+                log_output = "\n".join(log_context.output)
+
+                # Strategy 1: Symlink attempted and failed
+                self.assertIn("Attempting symlink strategy", log_output,
+                            "Should attempt symlink first")
+                self.assertIn("Symlink creation failed", log_output,
+                            "Symlink should fail (mocked)")
+
+                # Strategy 2: Wrap attempted and failed
+                self.assertIn("Attempting continuation character (+) wrapping", log_output,
+                            "Should attempt wrap after symlink fails")
+                self.assertIn("Wrapping not possible: segment exceeds", log_output,
+                            "Wrap should fail (segment too long)")
+
+                # Strategy 3: Relative attempted
+                self.assertIn("Attempting relative path optimization", log_output,
+                            "Should attempt relative after wrap fails")
+                # Note: Relative path failure is logged at DEBUG level, not captured here
+                # The key is that it was attempted and didn't stop the chain
+
+                # Strategy 4: Copy attempted and succeeded
+                self.assertIn("Attempting file copy strategy", log_output,
+                            "Should attempt copy after relative fails")
+                self.assertIn("Copied to short path", log_output,
+                            "Copy should succeed (bulletproof fallback)")
+
+                # Verify the file was actually copied (not symlinked)
+                self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
+                self.assertTrue(Path(fixed_path).exists(), "Copied file should exist")
+                self.assertLess(len(fixed_path), 80, "Final path should be <80 chars")
+
+                # Verify copy strategy was used (temp file tracked)
+                self.assertEqual(len(temp_files), 1, "Should have one temp file from copy")
+
+                # Verify all four strategies were attempted by counting "Attempting" messages
+                attempting_count = log_output.count("Attempting")
+                self.assertEqual(attempting_count, 4,
+                               f"All 4 strategies should be attempted (found {attempting_count})")
+
+                # Clean up
+                for f in temp_files:
+                    if os.path.exists(f):
+                        os.remove(f)
+
 
 class TestEnvironmentVariableConfig(unittest.TestCase):
     """Test environment variable configuration."""
