@@ -4,6 +4,7 @@ This module provides utility functions used across the kernels package,
 particularly for handling SPICE's 80-character path limitation.
 """
 
+import hashlib
 import logging
 import os
 import platform
@@ -103,3 +104,75 @@ def get_short_temp_dir() -> Path:
     short_base.mkdir(parents=True, exist_ok=True)
 
     return short_base
+
+
+def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
+    """
+    Attempt to create a symlink in a short temp directory.
+
+    This is the preferred strategy because it requires no file copying
+    (zero storage overhead, zero I/O).
+
+    Parameters
+    ----------
+    source_path : Path
+        Original file path that's too long
+    temp_dir : Path
+        Short base directory for symlink (e.g., /tmp/spice)
+
+    Returns
+    -------
+    Path | None
+        Path to symlink if successful, None if creation failed
+
+    Notes
+    -----
+    - Works on Linux/macOS by default
+    - May fail on Windows (requires admin/developer mode)
+    - May fail in restricted containers (seccomp policies)
+    - Failures should be logged but not raise exceptions
+    """
+    try:
+        # Generate unique short filename using hash
+        path_hash = hashlib.md5(str(source_path).encode()).hexdigest()[:8]  # noqa: S324
+        symlink_name = f"{source_path.stem[:10]}_{path_hash}{source_path.suffix}"
+        symlink_path = temp_dir / symlink_name
+
+        # Create symlink
+        os.symlink(source_path, symlink_path)
+
+        return symlink_path
+    except OSError as e:
+        # Expected failures: Windows permissions, container restrictions
+        logger.debug(f"Symlink creation failed: {e}")
+        return None
+
+
+def get_path_strategy_config() -> dict:
+    """
+    Read path shortening configuration from environment variables.
+
+    Supported variables:
+    - CURRYER_PATH_STRATEGY: Comma-separated priority list (default: "symlink,wrap,relative,copy")
+    - CURRYER_DISABLE_SYMLINKS: "true" to disable symlinks (default: "false")
+    - CURRYER_TEMP_DIR: Custom short temp directory (already implemented)
+    - CURRYER_WARN_ON_COPY: "true" to warn on large file copies (default: "true")
+
+    Returns
+    -------
+    dict
+        Configuration with keys: strategy_order, disable_symlinks, temp_dir, warn_on_copy
+    """
+    strategy_str = os.getenv("CURRYER_PATH_STRATEGY", "symlink,wrap,relative,copy")
+    strategy_order = [s.strip() for s in strategy_str.split(",")]
+
+    disable_symlinks = os.getenv("CURRYER_DISABLE_SYMLINKS", "false").lower() == "true"
+    warn_on_copy = os.getenv("CURRYER_WARN_ON_COPY", "true").lower() == "true"
+    temp_dir = os.getenv("CURRYER_TEMP_DIR", None)
+
+    return {
+        "strategy_order": strategy_order,
+        "disable_symlinks": disable_symlinks,
+        "temp_dir": temp_dir,
+        "warn_on_copy": warn_on_copy,
+    }

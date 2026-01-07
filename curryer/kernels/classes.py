@@ -278,9 +278,10 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         result_config, temp_files = update_invalid_paths(
             config,
             max_len=max_length,
-            try_relative=False,  # Relative paths can break if CWD changes
-            try_copy=True,  # Copy to /tmp with short paths
-            try_wrap=False,  # Don't wrap - some SPICE tools don't support it
+            try_symlink=True,  # Try symlink first (preferred - zero copy)
+            try_wrap=True,  # Try wrapping if symlink fails
+            try_relative=True,  # Try relative paths if wrapping fails
+            try_copy=True,  # Copy to /tmp with short paths (bulletproof fallback)
             parent_dir=self.parent_dir,
         )
 
