@@ -183,6 +183,8 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
         # Expected failures: Windows permissions, container restrictions, etc.
         logger.debug(f"Symlink creation failed: {last_error}")
     return None
+
+
 def get_path_strategy_config() -> dict:
     """
     Read path shortening configuration from environment variables.
@@ -222,9 +224,7 @@ def get_path_strategy_config() -> dict:
     try:
         warn_copy_threshold_mb = int(warn_copy_threshold_str)
     except ValueError:
-        logger.warning(
-            f"Invalid CURRYER_WARN_COPY_THRESHOLD value '{warn_copy_threshold_str}', using default of 10 MB"
-        )
+        logger.warning(f"Invalid CURRYER_WARN_COPY_THRESHOLD value '{warn_copy_threshold_str}', using default of 10 MB")
         warn_copy_threshold_mb = 10
 
     return {
