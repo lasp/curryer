@@ -231,13 +231,15 @@ def update_invalid_paths(
                     # Split path into components
                     parts = fn.parts
 
-                    # Validate: each component must be <= max_len when wrapped
-                    # Can't split in middle of directory names
+                    # Validate: each component must be short enough when wrapped.
+                    # We subtract len(wrap_char) for the continuation marker and 1 for the path separator.
+                    # Can't split in middle of directory names.
+                    max_segment_len = max_len - len(wrap_char) - 1
                     valid_wrap = True
                     for part in parts:
-                        if len(part) > (max_len - len(wrap_char)):
+                        if len(part) > max_segment_len:
                             logger.warning(
-                                f"  ✗ Wrapping not possible: segment exceeds {max_len - len(wrap_char)} chars: {part}"
+                                f"  ✗ Wrapping not possible: segment exceeds {max_segment_len} chars: {part}"
                             )
                             valid_wrap = False
                             break
