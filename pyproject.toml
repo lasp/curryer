@@ -1,6 +1,6 @@
 [project]
 name = "lasp-curryer"
-version = "0.2.0"
+version = "0.2.1"
 description = "LASP SPICE extentions and geospatial data product generation tools."
 authors = [{ name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" }]
 readme = "README.md"
@@ -50,7 +50,8 @@ dependencies = [
     "spiceypy>=6",
     "openpyxl>=3",
     "numpy >=1.23,<2.0",
-    "boto3"
+    "boto3",
+    "typing-extensions"
 ]
 
 [project.optional-dependencies]
