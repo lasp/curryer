@@ -520,6 +520,7 @@ def attempt_copy_strategy(fn, item, temp_dir, max_len, modified_item, warn_on_co
                     try:
                         os.close(temp_fd)
                     except OSError:
+                        # fd may already be closed or invalid; ignore errors during cleanup
                         pass
                     raise
 
@@ -533,6 +534,7 @@ def attempt_copy_strategy(fn, item, temp_dir, max_len, modified_item, warn_on_co
                 try:
                     os.close(temp_fd)
                 except OSError:
+                    # fd may already be closed or invalid; ignore errors during cleanup
                     pass
                 actual_length = len(temp_path)
                 os.remove(temp_path)
