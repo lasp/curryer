@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 class ImageMatchingFunc(Protocol):
     """
-    Protocol for image matching functions in Monte Carlo pipeline.
+    Protocol for image matching functions in Correction pipeline.
 
     Image matching functions perform spatial correlation between geolocated
     observations and GCP reference imagery to measure geolocation errors.
@@ -64,7 +64,7 @@ class ImageMatchingFunc(Protocol):
         - gcp_lat_deg, gcp_lon_deg, gcp_alt: GCP location
         - Spacecraft state: position, boresight, transformation matrix
 
-    See monte_carlo.image_matching() for reference implementation.
+    See correction.image_matching() for reference implementation.
     """
 
     def __call__(

@@ -21,7 +21,7 @@ Instead, follow these steps:
    - Earth radius and geodetic parameters
 4. Use create_your_mission_correction_config() to build CorrectionConfig object
 5. Optionally save config to JSON for reproducibility
-6. Pass the configuration object to Monte Carlo pipeline functions
+6. Pass the configuration object to Correction pipeline functions
 
 Quick Start:
 -----------
@@ -31,7 +31,7 @@ Quick Start:
     # Create configuration
     config = create_mission_config(data_dir, generic_dir)
 
-    # Run Monte Carlo analysis
+    # Run Correction analysis
     results = gc.run_correction_pipeline(config)
 
 For CLARREO Example:
@@ -209,13 +209,13 @@ STANDARD_VAR_NAMES = {
 
 
 # ============================================================================
-# Internal Adapter Functions (Monte Carlo <-> Image Matching)
+# Internal Adapter Functions (Correction <-> Image Matching)
 # ============================================================================
 
 
 def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
     """
-    Convert Monte Carlo geolocation output to ImageGrid for image matching.
+    Convert Correction geolocation output to ImageGrid for image matching.
 
     Internal adapter function: converts xarray.Dataset from geolocation step
     to ImageGrid format expected by image_match module.
@@ -252,7 +252,7 @@ def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
 
 def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray:
     """
-    Extract spacecraft position at mid-frame from Monte Carlo telemetry.
+    Extract spacecraft position at mid-frame from telemetry.
 
     Internal adapter function: extracts position from telemetry DataFrame
     with fallback logic for different column naming conventions.
@@ -313,7 +313,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    logger.info(f"Loading Monte Carlo configuration from: {config_path}")
+    logger.info(f"Loading Correction configuration from: {config_path}")
 
     try:
         with open(config_path) as f:
@@ -700,7 +700,7 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
-        # Create error stats config directly from Monte Carlo config (single source of truth)
+        # Create error stats config directly from Correction config (single source of truth)
         error_config = ErrorStatsGeolocationConfig.from_correction_config(correction_config)
 
         processor = ErrorStatsProcessor(config=error_config)
@@ -903,7 +903,7 @@ class NetCDFConfig:
     """
 
     performance_threshold_m: float  # Required: accuracy threshold in meters
-    title: str = "Monte Carlo Geolocation Analysis Results"
+    title: str = "Correction Geolocation Analysis Results"
     description: str = "Parameter sensitivity analysis"
 
     # Parameter metadata - maps parameter config to NetCDF metadata
@@ -1079,7 +1079,7 @@ class CorrectionConfig:
             Variable name for transformation matrix in output NetCDF.
     """
 
-    # CORE MONTE CARLO SETTINGS
+    # CORE CORRECTION SETTINGS
     seed: int | None
     n_iterations: int
     parameters: list[ParameterConfig]
@@ -1245,7 +1245,7 @@ class CorrectionConfig:
 
 def load_param_sets(config: CorrectionConfig) -> [ParameterConfig, typing.Any]:
     """
-    Generate random parameter sets for Monte Carlo iterations.
+    Generate random parameter sets for Correction iterations.
     Each parameter is sampled according to its distribution and bounds.
 
     The parameter generation works as follows:
@@ -1481,7 +1481,7 @@ def load_telemetry(tlm_key: str, config: CorrectionConfig, loader_func=None) -> 
 
     Args:
         tlm_key: Identifier for telemetry data (path, key, etc.)
-        config: Monte Carlo configuration
+        config: Correction configuration
         loader_func: Mission-specific loader function(tlm_key, config) -> DataFrame
 
     Returns:
@@ -1513,7 +1513,7 @@ def load_science(sci_key: str, config: CorrectionConfig, loader_func=None) -> pd
 
     Args:
         sci_key: Identifier for science data (path, key, etc.)
-        config: Monte Carlo configuration
+        config: Correction configuration
         loader_func: Mission-specific loader function(sci_key, config) -> DataFrame
 
     Returns:
@@ -1545,7 +1545,7 @@ def load_gcp(gcp_key: str, config: CorrectionConfig, loader_func=None):
 
     Args:
         gcp_key: Identifier for GCP data (path, key, etc.)
-        config: Monte Carlo configuration
+        config: Correction configuration
         loader_func: Mission-specific loader function(gcp_key, config) -> GCP data
 
     Returns:
@@ -2115,7 +2115,7 @@ def loop(
     config: CorrectionConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
 ):
     """
-    Monte Carlo loop for parameter sensitivity analysis.
+    Correction loop for parameter sensitivity analysis.
 
     Parameters
     ----------
@@ -2185,7 +2185,7 @@ def loop(
         ... )
         >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
     """
-    logger.info("=== MONTE CARLO PIPELINE ===")
+    logger.info("=== CORRECTION PIPELINE ===")
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
     # Extract injected functions
@@ -2218,7 +2218,7 @@ def loop(
     output_file = work_dir / config.get_output_filename()
     start_pair_idx = 0
     # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
-    # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
+    # TODO [CURRYER-100]: Fix checkpoint resume for CORRECTION GCS
     if resume_from_checkpoint:
         checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
         if checkpoint_data is not None:
@@ -2511,7 +2511,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     """
     Save NetCDF checkpoint with partial results after each GCP pair completes.
 
-    This enables resuming Monte Carlo runs if they are interrupted.
+    This enables resuming correction runs if they are interrupted.
     Adapted for pair-outer loop order where each pair processes all parameters.
 
     Args:

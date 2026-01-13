@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CLARREO-specific data loading functions for Monte Carlo testing.
+CLARREO-specific data loading functions for Correction testing.
 
 This module contains all CLARREO/HySICS-specific data loading logic that was
-previously in monte_carlo.py. These functions handle the specific file formats,
+previously in correction.py. These functions handle the specific file formats,
 naming conventions, and data transformations needed for CLARREO Pathfinder data.
 
 Other missions should create similar modules with their own data loading logic.
@@ -14,7 +14,6 @@ Usage:
     tlm_data = load_clarreo_telemetry(tlm_key, config)
     sci_data = load_clarreo_science(sci_key, config)
 
-Author: Mission-Agnostic Monte Carlo Implementation
 Date: October 28, 2025
 """
 
@@ -42,7 +41,7 @@ def load_clarreo_telemetry(tlm_key: str, config) -> pd.DataFrame:
 
     Args:
         tlm_key: Path to telemetry file or identifier (used to construct paths)
-        config: Monte Carlo configuration
+        config: Correction configuration
 
     Returns:
         DataFrame with merged telemetry data
@@ -142,7 +141,7 @@ def load_clarreo_science(sci_key: str, config) -> pd.DataFrame:
 
     Args:
         sci_key: Path to science file or identifier
-        config: Monte Carlo configuration
+        config: Correction configuration
 
     Returns:
         DataFrame with science frame timestamps
@@ -192,7 +191,7 @@ def load_clarreo_gcp(gcp_key: str, config):
 
     Args:
         gcp_key: Path to GCP file or identifier
-        config: Monte Carlo configuration
+        config: Correction configuration
 
     Returns:
         GCP reference data (format TBD based on GCP pairing module requirements)

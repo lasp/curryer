@@ -475,11 +475,11 @@ class ErrorStatsProcessor:
         """
         Load previous results from NetCDF and reprocess error statistics.
 
-        This enables iterative post-processing of Monte Carlo results without
+        This enables iterative post-processing of Correction results without
         re-running expensive image matching operations.
 
         Args:
-            filepath: Path to NetCDF file from previous Monte Carlo run
+            filepath: Path to NetCDF file from previous Correction run
             minimum_correlation: Override correlation threshold (if provided)
 
         Returns:

@@ -1,4 +1,4 @@
-"""Mission-agnostic configuration utilities for Monte Carlo geolocation analysis.
+"""Mission-agnostic configuration utilities for geolocation Correction analysis.
 
 This module provides general-purpose functions for reading and validating
 configuration files. It contains NO mission-specific logic.
@@ -31,7 +31,7 @@ def load_config_schema() -> dict[str, Any]:
                 "offset_kernel": "Dict[str, str] - Sensor names to kernel files",
             },
         },
-        "monte_carlo": {"required": ["parameters"], "optional": ["seed", "n_iterations"]},
+        "correction": {"required": ["parameters"], "optional": ["seed", "n_iterations"]},
         "geolocation": {
             "required": ["meta_kernel_file", "generic_kernel_dir", "instrument_name", "time_field"],
             "optional": ["dynamic_kernels", "minimum_correlation"],

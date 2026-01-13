@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 class GCPPairingFunc(Protocol):
     """
-    Protocol for GCP pairing functions in Monte Carlo pipeline.
+    Protocol for GCP pairing functions in Correction pipeline.
 
     Pairing functions determine which science observations (L1A images)
     overlap with which ground control points (GCP reference images).
@@ -45,7 +45,7 @@ class GCPPairingFunc(Protocol):
         List of (science_key, gcp_reference_path) tuples, one per valid pair
 
     Note:
-        This is a simplified interface for Monte Carlo compatibility.
+        This is a simplified interface for Correction compatibility.
         Real implementations (like find_l1a_gcp_pairs below) may use more
         sophisticated spatial algorithms internally, but must return results
         in this simple tuple format.
