@@ -272,7 +272,7 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         dict
             Modified config with shortened paths
         """
-        from .writer import update_invalid_paths
+        from .path_utils import update_invalid_paths
 
         # Use the enhanced update_invalid_paths with try_copy enabled
         result_config, temp_files = update_invalid_paths(
