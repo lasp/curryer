@@ -2218,7 +2218,7 @@ def loop(
     output_file = work_dir / config.get_output_filename()
     start_pair_idx = 0
     # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
-    # TODO [CURRYER-100]: Fix checkpoint resume for CORRECTION GCS
+    # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
     if resume_from_checkpoint:
         checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
         if checkpoint_data is not None:
