@@ -25,14 +25,21 @@ Instead, follow these steps:
 
 Quick Start:
 -----------
-    from curryer.correction import geolocation_correction as gc
-    from your_mission_config import create_mission_config
+    from curryer.correction import correction
+    from your_mission_config import create_mission_correction_config
+    from your_mission_loaders import load_mission_telemetry, load_mission_science
 
     # Create configuration
-    config = create_mission_config(data_dir, generic_dir)
+    config = create_mission_correction_config(data_dir, generic_dir)
+
+    # Add required loaders
+    config.telemetry_loader = load_mission_telemetry
+    config.science_loader = load_mission_science
+    config.gcp_pairing_func = your_pairing_function
+    config.image_matching_func = your_image_matching_function
 
     # Run Correction analysis
-    results = gc.run_correction_pipeline(config)
+    results, netcdf_data = correction.loop(config, work_dir, tlm_sci_gcp_sets)
 
 For CLARREO Example:
 -------------------
@@ -485,13 +492,13 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
 
     # Create CorrectionConfig
     config = CorrectionConfig(
+        seed=corr_config.get("seed"),
+        n_iterations=corr_config.get("n_iterations", 10),
+        parameters=parameters,
+        geo=geo,
         performance_threshold_m=performance_threshold_m,
         performance_spec_percent=performance_spec_percent,
         earth_radius_m=earth_radius_m,
-        geo=geo,
-        n_iterations=corr_config.get("n_iterations", 10),
-        parameters=parameters,
-        seed=corr_config.get("seed"),
     )
 
     # Validate the loaded configuration
@@ -2153,36 +2160,36 @@ def loop(
     Correction mode (parameter optimization):
 
         >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        >>> from clarreo_config import create_clarreo_correction_config
         >>>
-        >>> config = CorrectionConfig(
-        ...     performance_threshold_m=250.0,
-        ...     performance_spec_percent=39.0,
-        ...     earth_radius_m=6378137.0,
-        ...     geo=geo_config,
-        ...     n_iterations=100,
-        ...     parameters=[roll_param, pitch_param, yaw_param],
-        ...     seed=42,
-        ...     telemetry_loader=load_clarreo_telemetry,
-        ...     science_loader=load_clarreo_science,
-        ...     gcp_pairing_func=spatial_pairing,
-        ...     image_matching_func=image_matching,
-        ... )
+        >>> # Create base config with required parameters
+        >>> config = create_clarreo_correction_config(data_dir, generic_dir)
+        >>>
+        >>> # Add required loaders
+        >>> config.telemetry_loader = load_clarreo_telemetry
+        >>> config.science_loader = load_clarreo_science
+        >>> config.gcp_pairing_func = spatial_pairing
+        >>> config.image_matching_func = image_matching
+        >>>
+        >>> # Run correction analysis
         >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
 
     Verification mode (performance checking only):
 
+        >>> # Create config with minimal iterations for verification
         >>> config = CorrectionConfig(
+        ...     seed=42,
+        ...     n_iterations=1,  # Verification mode
+        ...     parameters=[],   # No parameter variation
+        ...     geo=geo_config,
         ...     performance_threshold_m=250.0,
         ...     performance_spec_percent=39.0,
         ...     earth_radius_m=6378137.0,
-        ...     geo=geo_config,
-        ...     n_iterations=1,  # Verification mode
-        ...     parameters=[],   # No parameter variation
-        ...     telemetry_loader=load_clarreo_telemetry,
-        ...     science_loader=load_clarreo_science,
-        ...     gcp_pairing_func=spatial_pairing,
-        ...     image_matching_func=image_matching,
         ... )
+        >>> config.telemetry_loader = load_clarreo_telemetry
+        >>> config.science_loader = load_clarreo_science
+        >>> config.gcp_pairing_func = spatial_pairing
+        >>> config.image_matching_func = image_matching
         >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
     """
     logger.info("=== CORRECTION PIPELINE ===")
