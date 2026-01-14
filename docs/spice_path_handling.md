@@ -1,6 +1,6 @@
 # SPICE Path Length Handling
 
-Curryer provides automatic path shortening to handle SPICE tools' 80-character path limit, using a multi-strategy approach that prioritizes zero-overhead solutions before falling back to file copying.
+Curryer provides automatic path shortening to handle SPICE tools' 80-character path limit, using a two-strategy approach that prioritizes zero-overhead symlinks before falling back to file copying.
 
 ## Overview
 
@@ -17,7 +17,7 @@ SPICE tools (MSOPCK, MKSPK) enforce an **80-character per-line limit** for all s
 
 ## Strategy Chain
 
-Curryer automatically shortens paths using a **priority-ordered strategy chain**. Each strategy is tried in sequence, and the first one that successfully shortens the path is used. This ensures optimal performance while guaranteeing success.
+Curryer automatically shortens paths using a **two-strategy approach**. Each strategy is tried in sequence, and the first one that successfully shortens the path is used.
 
 ### Strategy 1: Symlink (Preferred)
 
@@ -34,7 +34,7 @@ Curryer automatically shortens paths using a **priority-ordered strategy chain**
 - ✅ **Works:** Linux, macOS, most containers
 - ⚠️ **May fail:** Windows (requires admin/dev mode), restricted containers (seccomp policies)
 
-**Fallback:** Automatically tries next strategy if symlink creation fails
+**Fallback:** Automatically tries copy strategy if symlink creation fails
 
 **Example:**
 ```
@@ -42,43 +42,7 @@ Original: /very/long/conda/env/lib/python3.10/site-packages/data/kernels/naif001
 Symlink:  /tmp/spice/naif0012_a1b2c3d4.tls (33 chars)
 ```
 
-### Strategy 2: Continuation Character (`+`)
-
-**How it works:** Wraps path across multiple lines using `+` character
-
-**Advantages:**
-- No file operations
-- Works if all path segments ≤ 79 chars
-- Zero overhead
-
-**Limitations:**
-- Limited applicability—fails if any single directory name exceeds 79 chars
-- Not all SPICE tools may support this (though most do)
-
-**Example:**
-```
-Original: /very/long/path/to/many/nested/directories/kernel.tls
-
-Wrapped:  '/very/long/path/to/many/+
-          nested/directories/kernel.tls'
-```
-
-### Strategy 3: Relative Path
-
-**How it works:** Converts absolute path to relative path (if shorter)
-
-**Advantages:**
-- No file operations
-- Zero overhead
-
-**Limitations:**
-- Requires controlled working directory
-- Limited applicability (only useful when relative path is significantly shorter)
-- May not work across different mount points
-
-**Note:** Only used if resulting path is < 80 chars
-
-### Strategy 4: File Copy (Bulletproof Fallback)
+### Strategy 2: File Copy (Bulletproof Fallback)
 
 **How it works:** Copies file to short temp directory
 
@@ -104,23 +68,66 @@ Warning:  ⚠ Copying large file: kernel.bsp (125.0 MB) - consider using symlink
 
 ## Configuration
 
+Both strategies are enabled by default (symlink first, then copy). Configure behavior through environment variables:
+
 ### Environment Variables
 
-Control path shortening behavior through environment variables:
+#### Strategy Control
 
 ```bash
-# Strategy priority order (comma-separated)
-# Default: "symlink,wrap,relative,copy"
-export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"
+# Default: Both strategies enabled (symlink → copy)
+# Strategies are tried in order: symlink first, then copy as fallback
 
-# Set to 'true' to disable symlinks (default is 'false', meaning symlinks are enabled)
-# Useful for Windows or restricted containers where symlinks may not work
+# Disable symlinks (Windows/restricted environments)
+# When disabled, only copy strategy is used
 export CURRYER_DISABLE_SYMLINKS="true"
 
+# Disable file copying (AWS/cloud environments to avoid storage costs)
+# When disabled, only symlink strategy is used
+export CURRYER_DISABLE_COPY="true"
+
+# Advanced: Custom strategy order (if you need different priority)
+# Default: "symlink,copy"
+export CURRYER_PATH_STRATEGY="symlink,copy"
+```
+
+#### AWS/Cloud Configuration
+
+For AWS deployments using EFS or network storage, disable expensive file copying:
+
+```bash
+# AWS: Use symlinks only (avoid copying large files from EFS)
+export CURRYER_DISABLE_COPY="true"
+
+# Alternatively, use strategy list to only enable symlink
+export CURRYER_PATH_STRATEGY="symlink"
+```
+
+If symlinks also fail in your AWS environment, you may need to accept the copying costs or restructure your deployment to use shorter paths.
+
+#### Windows Configuration
+
+For Windows where symlinks may require admin privileges:
+
+```bash
+# Windows: Use copy only (symlinks may not work)
+export CURRYER_DISABLE_SYMLINKS="true"
+
+# Alternatively, use strategy list to only enable copy
+export CURRYER_PATH_STRATEGY="copy"
+```
+
+#### Temporary Directory Location
+
+```bash
 # Custom short temp directory
 # Default: /tmp (Unix), C:\Temp (Windows)
 export CURRYER_TEMP_DIR="/tmp/spice"
+```
 
+#### Copy Warning Configuration
+
+```bash
 # Warn when copying large files
 # Default: true
 export CURRYER_WARN_ON_COPY="true"
@@ -130,19 +137,47 @@ export CURRYER_WARN_ON_COPY="true"
 export CURRYER_WARN_COPY_THRESHOLD="10"
 ```
 
-### Custom Strategy Order
+### Configuration Examples
 
-You can customize which strategies are used and in what order:
+#### Default Behavior (No Configuration Needed)
 
 ```bash
-# Only use non-I/O strategies (skip copy)
-export CURRYER_PATH_STRATEGY="symlink,wrap,relative"
+# Both strategies enabled: symlink → copy
+# Works out of the box for most environments
+# No environment variables needed
+```
 
-# Prioritize copy over symlinks (e.g., for debugging)
+#### AWS/Cloud: Avoid Expensive File Copying
+
+```bash
+# Option 1: Use disable flag (recommended)
+export CURRYER_DISABLE_COPY="true"
+
+# Option 2: Use strategy list
+export CURRYER_PATH_STRATEGY="symlink"
+```
+
+#### Windows: Disable Symlinks
+
+```bash
+# Option 1: Use disable flag (recommended)
+export CURRYER_DISABLE_SYMLINKS="true"
+
+# Option 2: Use strategy list
+export CURRYER_PATH_STRATEGY="copy"
+```
+
+#### Custom Strategy Order (Advanced)
+
+```bash
+# Reverse priority: try copy before symlink
 export CURRYER_PATH_STRATEGY="copy,symlink"
 
 # Only use symlinks (fail if symlinks don't work)
 export CURRYER_PATH_STRATEGY="symlink"
+
+# Only use copy (skip symlink attempt)
+export CURRYER_PATH_STRATEGY="copy"
 ```
 
 ### Logging
@@ -162,10 +197,6 @@ INFO:   ✓ Created symlink: /tmp/spice/kernel_abc123.tls (30 chars)
 INFO: Path exceeds 80 chars (135 chars): large_kernel.bsp
 INFO:   Attempting symlink strategy...
 WARNING:   ✗ Symlink creation failed (OSError: Operation not permitted)
-INFO:   Attempting continuation character (+) wrapping...
-WARNING:   ✗ Wrapping not possible: segment exceeds 79 chars
-INFO:   Attempting relative path optimization...
-DEBUG:   ✗ Relative path still too long (120 chars)
 INFO:   Attempting file copy strategy...
 WARNING:   ⚠ Copying large file: large_kernel.bsp (125.5 MB) - consider using symlinks
 INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
@@ -175,7 +206,7 @@ INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
 
 ### Linux/macOS
 
-- **All strategies work**
+- **Both strategies work**
 - Symlinks preferred (fastest, no overhead)
 - Default temp directory: `/tmp`
 
@@ -195,7 +226,6 @@ INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
 ```bash
 # Disable symlinks if not running as admin
 export CURRYER_DISABLE_SYMLINKS="true"
-export CURRYER_PATH_STRATEGY="wrap,relative,copy"
 ```
 
 **Enabling Developer Mode for Symlinks:**
@@ -222,14 +252,17 @@ export CURRYER_DISABLE_SYMLINKS="true"
 
 - **Symlinks work on EC2 instances**
 - File copy may have I/O costs if reading from EFS/network storage
-- Consider symlinks to minimize data transfer costs
+- **Disable copying to avoid network transfer costs**
 
 **Recommended configuration:**
 ```bash
+# AWS: Disable file copying to avoid EFS transfer costs
+export CURRYER_DISABLE_COPY="true"
+
 # Use local temp directory (not EFS)
 export CURRYER_TEMP_DIR="/tmp/spice"
 
-# Set high threshold for large files
+# Set high threshold for large files (if you keep copying enabled)
 export CURRYER_WARN_COPY_THRESHOLD="100"  # 100 MB
 ```
 
