@@ -21,18 +21,31 @@ pip install lasp-curryer
 
 ## SPICE Path Length Handling
 
-Curryer automatically handles SPICE's 80-character path limit by trying multiple strategies:
-1. **Symlinks** (preferred—zero overhead)
-2. **Path wrapping** with continuation character
-3. **Relative paths**
-4. **File copying** to short temp directory (bulletproof fallback)
+Curryer automatically handles SPICE's 80-character path limit using a two-strategy approach:
+1. **Symlinks** (preferred—zero overhead, fastest)
+2. **File copying** to short temp directory (bulletproof fallback)
 
-Configuration via environment variables:
+Both strategies are enabled by default. Configure behavior via environment variables:
+
 ```bash
-export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"
+# Default: Both strategies enabled (symlink → copy)
+
+# Disable symlinks (Windows/restricted environments)
+export CURRYER_DISABLE_SYMLINKS="true"
+
+# Disable file copying (AWS/cloud to avoid storage costs)
+export CURRYER_DISABLE_COPY="true"
+
+# Custom temp directory
 export CURRYER_TEMP_DIR="/tmp/spice"
-export CURRYER_DISABLE_SYMLINKS="false"  # Set to "true" on Windows or restricted environments
+
+# Advanced: Custom strategy order
+export CURRYER_PATH_STRATEGY="symlink,copy"
 ```
+
+**Common configurations:**
+- **Windows:** `export CURRYER_DISABLE_SYMLINKS="true"`
+- **AWS/Cloud:** `export CURRYER_DISABLE_COPY="true"`
 
 See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for details.
 
