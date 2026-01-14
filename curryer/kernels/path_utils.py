@@ -201,8 +201,9 @@ def get_path_strategy_config() -> dict:
     Read path shortening configuration from environment variables.
 
     Supported variables:
-    - CURRYER_PATH_STRATEGY: Comma-separated priority list (default: "symlink,wrap,relative,copy")
+    - CURRYER_PATH_STRATEGY: Comma-separated priority list (default: "symlink,copy")
     - CURRYER_DISABLE_SYMLINKS: "true" to disable symlinks (default: "false")
+    - CURRYER_DISABLE_COPY: "true" to disable file copying (default: "false")
     - CURRYER_TEMP_DIR: Custom short temp directory (already implemented)
     - CURRYER_WARN_ON_COPY: "true" to warn on large file copies (default: "true")
     - CURRYER_WARN_COPY_THRESHOLD: File size in MB to trigger warning (default: "10")
@@ -210,7 +211,7 @@ def get_path_strategy_config() -> dict:
     Returns
     -------
     dict
-        Configuration with keys: strategy_order, disable_symlinks, temp_dir, warn_on_copy, warn_copy_threshold_mb
+        Configuration with keys: strategy_order, disable_symlinks, disable_copy, temp_dir, warn_on_copy, warn_copy_threshold_mb
 
     Examples
     --------
@@ -223,10 +224,11 @@ def get_path_strategy_config() -> dict:
     >>> config["warn_copy_threshold_mb"]
     50
     """
-    strategy_str = os.getenv("CURRYER_PATH_STRATEGY", "symlink,wrap,relative,copy")
+    strategy_str = os.getenv("CURRYER_PATH_STRATEGY", "symlink,copy")
     strategy_order = [s.strip() for s in strategy_str.split(",")]
 
     disable_symlinks = os.getenv("CURRYER_DISABLE_SYMLINKS", "false").lower() == "true"
+    disable_copy = os.getenv("CURRYER_DISABLE_COPY", "false").lower() == "true"
     warn_on_copy = os.getenv("CURRYER_WARN_ON_COPY", "true").lower() == "true"
     temp_dir = os.getenv("CURRYER_TEMP_DIR", None)
 
@@ -241,6 +243,7 @@ def get_path_strategy_config() -> dict:
     return {
         "strategy_order": strategy_order,
         "disable_symlinks": disable_symlinks,
+        "disable_copy": disable_copy,
         "temp_dir": temp_dir,
         "warn_on_copy": warn_on_copy,
         "warn_copy_threshold_mb": warn_copy_threshold_mb,
@@ -333,113 +336,6 @@ def attempt_symlink_strategy(fn, item, temp_dir, max_len, modified_item):
         return True, symlink_path, True, None
     else:
         logger.warning("  ✗ Symlink creation failed or path still too long")
-        return False, item, modified_item, None
-
-
-def attempt_wrap_strategy(fn, item, max_len, wrap_char, modified_item):
-    """Attempt to wrap path across multiple lines using continuation character.
-
-    Parameters
-    ----------
-    fn : Path
-        Original file path
-    item : str or Path
-        Current item value
-    max_len : int
-        Maximum path length
-    wrap_char : str
-        Continuation character
-    modified_item : bool
-        Whether item has been modified
-
-    Returns
-    -------
-    tuple
-        (success: bool, new_item: str|Path, new_modified_item: bool, fn_section: str|None, wrapped_lines: list)
-    """
-    if modified_item:
-        return False, item, modified_item, None, []
-
-    logger.info("  Attempting continuation character (+) wrapping...")
-
-    # Split path into components
-    parts = fn.parts
-
-    # Validate: each component must be short enough when wrapped.
-    # We subtract len(wrap_char) for the continuation marker and 1 for the path separator.
-    # Can't split in middle of directory names.
-    max_segment_len = max_len - len(wrap_char) - 1
-    valid_wrap = True
-    for part in parts:
-        if len(part) > max_segment_len:
-            logger.warning(
-                f"  ✗ Wrapping not possible: segment exceeds {max_segment_len} chars: {part}"
-            )
-            valid_wrap = False
-            break
-
-    if not valid_wrap:
-        return False, item, modified_item, None, []
-
-    # Build wrapped string
-    logger.debug("Wrapping path [%s]", fn)
-    fn_section = None
-    wrapped_lines = []
-
-    line_count = 0
-    for fn_part in parts:
-        if fn_section is None:
-            fn_section = fn_part
-            continue
-
-        next_section = str(Path(fn_section) / fn_part)
-        if len(next_section) >= max_len:
-            fn_section += wrap_char
-            wrapped_lines.append(fn_section)
-            line_count += 1
-            fn_section = os.path.sep + fn_part
-        else:
-            fn_section = next_section
-
-    if line_count > 0:
-        logger.info(f"  ✓ Wrapped path across {line_count + 1} lines")
-        return True, item, True, fn_section, wrapped_lines
-    else:
-        # Wrapping didn't actually split the path
-        return False, item, modified_item, None, []
-
-
-def attempt_relative_strategy(fn, item, max_len, relative_dir, modified_item):
-    """Attempt to use relative path if shorter than absolute.
-
-    Parameters
-    ----------
-    fn : Path
-        Original file path
-    item : str or Path
-        Current item value
-    max_len : int
-        Maximum path length
-    relative_dir : Path
-        Base directory for relative paths
-    modified_item : bool
-        Whether item has been modified
-
-    Returns
-    -------
-    tuple
-        (success: bool, new_item: str|Path, new_modified_item: bool, fn_section: str|None)
-    """
-    if modified_item:
-        return False, item, modified_item, None
-
-    logger.info("  Attempting relative path optimization...")
-    rel_fn = os.path.relpath(fn, start=relative_dir)
-    if len(rel_fn) <= max_len:
-        logger.info(f"  ✓ Using relative path ({len(rel_fn)} chars)")
-        return True, item, True, rel_fn
-    else:
-        logger.debug(f"  ✗ Relative path still too long ({len(rel_fn)} chars)")
         return False, item, modified_item, None
 
 
@@ -559,12 +455,8 @@ def _try_strategies(
     item,
     temp_dir,
     max_len,
-    wrap_char,
-    relative_dir,
     modified_item,
     try_symlink,
-    try_wrap,
-    try_relative,
     try_copy,
     strategy_order,
     use_custom_order,
@@ -583,18 +475,10 @@ def _try_strategies(
         Temporary directory base
     max_len : int
         Maximum path length
-    wrap_char : str
-        Continuation character
-    relative_dir : Path
-        Base directory for relative paths
     modified_item : bool
         Whether item has been modified
     try_symlink : bool
         Whether to try symlink strategy
-    try_wrap : bool
-        Whether to try wrap strategy
-    try_relative : bool
-        Whether to try relative strategy
     try_copy : bool
         Whether to try copy strategy
     strategy_order : list
@@ -609,11 +493,10 @@ def _try_strategies(
     Returns
     -------
     tuple
-        (item: str|Path, modified_item: bool, fn_section: str|None, temp_file_created: str|None, wrapped_lines: list)
+        (item: str|Path, modified_item: bool, fn_section: str|None, temp_file_created: str|None)
     """
     fn_section = None
     temp_file_created = None
-    wrapped_lines = []
 
     # Map strategy names to functions
     def try_symlink_func():
@@ -625,35 +508,6 @@ def _try_strategies(
             item = new_item
             modified_item = new_modified
             temp_file_created = str(new_item)
-            return True
-        return False
-
-    def try_wrap_func():
-        nonlocal item, modified_item, fn_section, wrapped_lines
-        if not try_wrap:
-            return False
-        success, new_item, new_modified, new_fn_section, new_wrapped_lines = attempt_wrap_strategy(
-            fn, item, max_len, wrap_char, modified_item
-        )
-        if success:
-            item = new_item
-            modified_item = new_modified
-            fn_section = new_fn_section
-            wrapped_lines = new_wrapped_lines
-            return True
-        return False
-
-    def try_relative_func():
-        nonlocal item, modified_item, fn_section
-        if not try_relative:
-            return False
-        success, new_item, new_modified, new_fn_section = attempt_relative_strategy(
-            fn, item, max_len, relative_dir, modified_item
-        )
-        if success:
-            item = new_item
-            modified_item = new_modified
-            fn_section = new_fn_section
             return True
         return False
 
@@ -673,8 +527,6 @@ def _try_strategies(
 
     strategy_functions = {
         "symlink": try_symlink_func,
-        "wrap": try_wrap_func,
-        "relative": try_relative_func,
         "copy": try_copy_func,
     }
 
@@ -689,13 +541,13 @@ def _try_strategies(
             else:
                 logger.warning(f"  Unknown strategy '{strategy_name}' in CURRYER_PATH_STRATEGY, skipping")
     else:
-        # Use default order: symlink → wrap → relative → copy
-        for strategy_func in [try_symlink_func, try_wrap_func, try_relative_func, try_copy_func]:
+        # Use default order: symlink → copy
+        for strategy_func in [try_symlink_func, try_copy_func]:
             if strategy_func():
                 # Strategy succeeded - break to prevent other strategies
                 break
 
-    return item, modified_item, fn_section, temp_file_created, wrapped_lines
+    return item, modified_item, fn_section, temp_file_created
 
 
 # pylint: disable=too-many-branches,too-many-nested-blocks
@@ -703,21 +555,15 @@ def update_invalid_paths(
     configs,
     max_len=80,
     try_symlink=True,
-    try_relative=False,
     try_copy=True,
-    try_wrap=True,
-    wrap_char="+",
-    relative_dir=None,
     parent_dir=None,
     temp_dir=None,
 ):
-    """Update invalid paths (too long) by copying, relativizing, or wrapping.
+    """Update invalid paths (too long) by creating symlinks or copying to short temp paths.
 
     Attempts to fix paths that exceed the maximum length by trying strategies in order:
     1. Symlink to temp directory with short path (if try_symlink=True)
-    2. Wrap path across multiple lines (if try_wrap=True)
-    3. Relativize path (if try_relative=True)
-    4. Copy file to temp directory with short path (if try_copy=True)
+    2. Copy file to temp directory with short path (if try_copy=True)
 
     Parameters
     ----------
@@ -727,16 +573,8 @@ def update_invalid_paths(
         Maximum path length (default: 80 for SPICE string values)
     try_symlink : bool
         Try to create symlink in temp directory with short path (default: True)
-    try_relative : bool
-        Try to use relative paths if shorter (default: False)
     try_copy : bool
         Try to copy file to temp directory with short path (default: True)
-    try_wrap : bool
-        Try to wrap long paths across multiple lines (default: True)
-    wrap_char : str
-        Character for line continuation (default: "+")
-    relative_dir : Path
-        Base directory for relative paths
     parent_dir : Path
         Parent directory for resolving relative paths
     temp_dir : Path
@@ -759,6 +597,8 @@ def update_invalid_paths(
     # Override parameters based on env vars
     if env_config["disable_symlinks"]:
         try_symlink = False
+    if env_config["disable_copy"]:
+        try_copy = False
 
     # Use custom strategy order if CURRYER_PATH_STRATEGY is set
     strategy_order = env_config["strategy_order"]
@@ -768,7 +608,6 @@ def update_invalid_paths(
     warn_on_copy = env_config["warn_on_copy"]
     warn_copy_threshold_mb = env_config["warn_copy_threshold_mb"]
 
-    relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
     if parent_dir is not None:
         parent_dir = Path(parent_dir)
         if parent_dir.is_file():
@@ -846,17 +685,13 @@ def update_invalid_paths(
                 logger.debug(f"  Full path: {item}")
 
                 # Try strategies until one succeeds
-                item, modified_item, fn_section, temp_file_created, wrapped_lines = _try_strategies(
+                item, modified_item, fn_section, temp_file_created = _try_strategies(
                     fn,
                     item,
                     temp_dir,
                     max_len,
-                    wrap_char,
-                    relative_dir,
                     modified_item,
                     try_symlink,
-                    try_wrap,
-                    try_relative,
                     try_copy,
                     strategy_order,
                     use_custom_order,
@@ -867,11 +702,6 @@ def update_invalid_paths(
                 # Track temp file if created
                 if temp_file_created:
                     temp_files_created.append(temp_file_created)
-
-                # Handle wrapped lines (add them to new_vals)
-                if wrapped_lines:
-                    new_vals.extend(wrapped_lines)
-                    modified_value = True
 
                 # Process the final item
                 if fn_section is None:
@@ -884,9 +714,7 @@ def update_invalid_paths(
                     item = str(item)
                     modified_item = True
 
-                # Only append if not already added by wrapped lines
-                if not wrapped_lines:
-                    new_vals.append(item)
+                new_vals.append(item)
 
                 modified_value |= modified_item
             else:

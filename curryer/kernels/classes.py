@@ -257,8 +257,8 @@ class AbstractKernelWriter(metaclass=ABCMeta):
     def _auto_shorten_kernel_paths(self, config, max_length=80):
         """Auto-shorten kernel file paths that exceed SPICE's string length limit.
 
-        Delegates to update_invalid_paths() with try_copy=True to copy files
-        to temp directories with short paths.
+        Uses a two-strategy approach: symlinks first (zero overhead), then file copying
+        (always works) if symlinks fail. Both strategies enabled by default.
 
         Parameters
         ----------
@@ -274,14 +274,12 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         """
         from .path_utils import update_invalid_paths
 
-        # Use the enhanced update_invalid_paths with try_copy enabled
+        # Use symlink → copy strategy (both enabled by default)
         result_config, temp_files = update_invalid_paths(
             config,
             max_len=max_length,
-            try_symlink=True,  # Try symlink first (preferred - zero copy, early exit on success)
-            try_wrap=True,  # Try wrapping (if symlink didn't succeed)
-            try_relative=True,  # Try relative paths (if symlink and wrap didn't succeed)
-            try_copy=True,  # Copy to /tmp with short paths (bulletproof fallback if all else fails)
+            try_symlink=True,  # Try symlink first (preferred - zero overhead)
+            try_copy=True,  # Copy to temp dir with short paths (bulletproof fallback)
             parent_dir=self.parent_dir,
         )
 
