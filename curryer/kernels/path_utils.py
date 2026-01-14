@@ -166,7 +166,7 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
                     # Resolve relative symlink targets relative to symlink's directory
                     target_path = Path(target)
                     if not target_path.is_absolute():
-                        target_path = (symlink_path.parent / target_path)
+                        target_path = symlink_path.parent / target_path
                     target_real = os.path.realpath(str(target_path))
                 except OSError as e:
                     # Can't read target; treat as collision and try another name
@@ -211,7 +211,8 @@ def get_path_strategy_config() -> dict:
     Returns
     -------
     dict
-        Configuration with keys: strategy_order, disable_symlinks, disable_copy, temp_dir, warn_on_copy, warn_copy_threshold_mb
+        Configuration with keys: strategy_order, disable_symlinks, disable_copy, temp_dir,
+        warn_on_copy, warn_copy_threshold_mb
 
     Examples
     --------
@@ -380,8 +381,7 @@ def attempt_copy_strategy(fn, item, temp_dir, max_len, modified_item, warn_on_co
         estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 12 + len(fn.suffix)
         if estimated_length > max_len:
             logger.warning(
-                f"  ✗ Temp path would be too long ({estimated_length} chars estimated), "
-                "skipping copy strategy"
+                f"  ✗ Temp path would be too long ({estimated_length} chars estimated), skipping copy strategy"
             )
             return False, item, modified_item, None, None
         else:

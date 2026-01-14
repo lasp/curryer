@@ -543,7 +543,7 @@ class TestSymlinkStrategy(unittest.TestCase):
             with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Should fall back to copy strategy
                 result, temp_files = update_invalid_paths(
-                    config, max_len=80, try_symlink=True, try_copy=True, try_wrap=False
+                    config, max_len=80, try_symlink=True, try_copy=True
                 )
 
                 fixed_path = result["properties"]["leapsecond_kernel"]
@@ -623,7 +623,7 @@ class TestSymlinkStrategy(unittest.TestCase):
 
                 # Symlink strategy should be skipped
                 result, temp_files = update_invalid_paths(
-                    config, max_len=80, try_symlink=True, try_copy=True, try_wrap=False
+                    config, max_len=80, try_symlink=True, try_copy=True
                 )
 
                 fixed_path = result["properties"]["leapsecond_kernel"]
@@ -637,8 +637,6 @@ class TestSymlinkStrategy(unittest.TestCase):
                     os.remove(fixed_path)
         finally:
             del os.environ["CURRYER_DISABLE_SYMLINKS"]
-
-
 
 
 class TestStrategyPriorityOrder(unittest.TestCase):
@@ -687,9 +685,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             self.assertGreater(len(str(test_file)), 80, f"Path should be >80 chars: {len(str(test_file))}")
 
             # Enable both strategies (default behavior)
-            result, temp_files = update_invalid_paths(
-                config, max_len=80, try_symlink=True, try_copy=True
-            )
+            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True, try_copy=True)
 
             fixed_path = result["properties"]["clock_kernel"]
 
@@ -722,9 +718,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             config = {"properties": {"clock_kernel": str(test_file)}}
 
             # Enable both strategies - symlink should succeed first
-            result, temp_files = update_invalid_paths(
-                config, max_len=80, try_symlink=True, try_copy=True
-            )
+            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True, try_copy=True)
 
             fixed_path = result["properties"]["clock_kernel"]
 
@@ -741,7 +735,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
     def test_full_strategy_chain_fallback(self):
         """Test complete strategy cascade: symlink → copy.
 
-        This test explicitly verifies that when symlink fails, 
+        This test explicitly verifies that when symlink fails,
         the copy strategy is tried as the bulletproof fallback.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -769,7 +763,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
                         config,
                         max_len=80,
                         try_symlink=True,  # Will fail (mocked)
-                        try_copy=True,     # Will succeed
+                        try_copy=True,  # Will succeed
                     )
 
                 fixed_path = result["properties"]["clock_kernel"]
@@ -778,16 +772,12 @@ class TestStrategyPriorityOrder(unittest.TestCase):
                 log_output = "\n".join(log_context.output)
 
                 # Strategy 1: Symlink attempted and failed
-                self.assertIn("Attempting symlink strategy", log_output,
-                            "Should attempt symlink first")
-                self.assertIn("Symlink creation failed", log_output,
-                            "Symlink should fail (mocked)")
+                self.assertIn("Attempting symlink strategy", log_output, "Should attempt symlink first")
+                self.assertIn("Symlink creation failed", log_output, "Symlink should fail (mocked)")
 
                 # Strategy 2: Copy attempted and succeeded
-                self.assertIn("Attempting file copy strategy", log_output,
-                            "Should attempt copy after symlink fails")
-                self.assertIn("Copied to short path", log_output,
-                            "Copy should succeed (bulletproof fallback)")
+                self.assertIn("Attempting file copy strategy", log_output, "Should attempt copy after symlink fails")
+                self.assertIn("Copied to short path", log_output, "Copy should succeed (bulletproof fallback)")
 
                 # Verify the file was actually copied (not symlinked)
                 self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
@@ -799,8 +789,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
 
                 # Verify both strategies were attempted by counting "Attempting" messages
                 attempting_count = log_output.count("Attempting")
-                self.assertEqual(attempting_count, 2,
-                               f"Both strategies should be attempted (found {attempting_count})")
+                self.assertEqual(attempting_count, 2, f"Both strategies should be attempted (found {attempting_count})")
 
                 # Clean up
                 for f in temp_files:
@@ -808,13 +797,12 @@ class TestStrategyPriorityOrder(unittest.TestCase):
                         os.remove(f)
 
 
-
 class TestEnvironmentVariableConfig(unittest.TestCase):
     """Test environment variable configuration.
 
     Tests configuration via environment variables including:
     - CURRYER_DISABLE_SYMLINKS: Disable symlink strategy
-    - CURRYER_DISABLE_COPY: Disable file copy strategy  
+    - CURRYER_DISABLE_COPY: Disable file copy strategy
     - CURRYER_PATH_STRATEGY: Custom strategy priority order
     - CURRYER_WARN_ON_COPY: Enable warnings for large file copies
     - CURRYER_WARN_COPY_THRESHOLD: Size threshold for copy warnings
