@@ -2,9 +2,6 @@
 
 This module provides utility functions used across the kernels package,
 particularly for handling SPICE's 80-character path limitation.
-
-This module is standalone and has no dependencies on other kernel modules,
-making it reusable and testable in isolation.
 """
 
 import copy
@@ -115,15 +112,15 @@ def get_short_temp_dir() -> Path:
 
 def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
     """
-    Attempt to create a symlink in a short temp directory.
+    Attempt to make a symlink in a short temp directory.
 
-    This is the preferred strategy because it requires no file copying
-    (zero storage overhead, zero I/O).
+    This is the preferred strategy as it requires no file copying
+    (minimal overhead).
 
     Parameters
     ----------
     source_path : Path
-        Original file path that's too long
+        Original long file path
     temp_dir : Path
         Short base directory for symlink (e.g., /tmp/spice)
 
@@ -135,8 +132,7 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
     Notes
     -----
     - Works on Linux/macOS by default
-    - May fail on Windows (requires admin/developer mode)
-    - May fail in restricted containers (seccomp policies)
+    - May fail on Windows or restricted environments
     - Failures should be logged but not raise exceptions
     """
     # Generate base short filename using hash

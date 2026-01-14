@@ -257,8 +257,8 @@ class AbstractKernelWriter(metaclass=ABCMeta):
     def _auto_shorten_kernel_paths(self, config, max_length=80):
         """Auto-shorten kernel file paths that exceed SPICE's string length limit.
 
-        Uses a two-strategy approach: symlinks first (zero overhead), then file copying
-        (always works) if symlinks fail. Both strategies enabled by default.
+        Uses a two-strategy approach: symlinks first, then file copying only if symlinks fail.
+        Both strategies are enabled by default, but can be disabled.
 
         Parameters
         ----------
@@ -274,12 +274,12 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         """
         from .path_utils import update_invalid_paths
 
-        # Use symlink → copy strategy (both enabled by default)
+        # Use symlink to copy strategy (both enabled by default)
         result_config, temp_files = update_invalid_paths(
             config,
             max_len=max_length,
-            try_symlink=True,  # Try symlink first (preferred - zero overhead)
-            try_copy=True,  # Copy to temp dir with short paths (bulletproof fallback)
+            try_symlink=True,  # Try symlink first (preferred)
+            try_copy=True,  # Copy to temp dir with short paths (fallback)
             parent_dir=self.parent_dir,
         )
 
@@ -300,16 +300,6 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         This method is called automatically in the finally block of write_kernel()
         to ensure cleanup happens even if kernel generation fails. Errors during
         cleanup are logged but do not interrupt the process.
-
-        **Cleanup Limitations**: If the process is killed abnormally (SIGKILL, crash,
-        system shutdown) before cleanup executes, temp files will persist in /tmp.
-        This is acceptable since:
-        1. Modern OS typically clean /tmp on reboot or periodically
-        2. Files are namespaced with unique hashes to avoid conflicts
-        3. The tradeoff favors simplicity over guaranteed cleanup
-
-        For production environments with strict cleanup requirements, consider
-        implementing additional cleanup strategies (e.g., cron jobs, monitoring).
         """
         for temp_file in self._temp_kernel_files:
             try:
