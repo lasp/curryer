@@ -19,6 +19,23 @@ A library for SPICE extensions and geospatial data product generation.
 pip install lasp-curryer
 ```
 
+## SPICE Path Length Handling
+
+Curryer automatically handles SPICE's 80-character path limit by trying multiple strategies:
+1. **Symlinks** (preferred—zero overhead)
+2. **Path wrapping** with continuation character
+3. **Relative paths**
+4. **File copying** to short temp directory (bulletproof fallback)
+
+Configuration via environment variables:
+```bash
+export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"
+export CURRYER_TEMP_DIR="/tmp/spice"
+export CURRYER_DISABLE_SYMLINKS="false"  # Set to "true" on Windows or restricted environments
+```
+
+See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for details.
+
 ### Data / Binary Files
 
 _NOTE: Data files and precompiled binaries are not currently automated and thus
