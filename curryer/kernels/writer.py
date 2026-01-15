@@ -70,11 +70,9 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
     if mappings is None:
         mappings = {}
 
-    # TODO: Only works in meta-kernels?
-    #   Nope, just not supported by mkspk (etc). They don't respect the rules!
     # Try to shorten paths, but don't use copy strategy since we don't want temp files that need cleanup tracking
     # Only symlinks are attempted here - if that fails, paths remain unchanged
-    configs, _ = update_invalid_paths(configs, try_symlink=True, try_copy=False, parent_dir=parent_dir)
+    configs, _ = update_invalid_paths(configs, try_copy=False, parent_dir=parent_dir)
 
     # Ensure all Path objects are converted to strings before template rendering
     configs = _convert_paths_to_strings(configs)
