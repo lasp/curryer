@@ -764,5 +764,288 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
         self.assertTrue(config["try_copy"], "try_copy should be True by default")
 
 
+class TestAdditionalCoverage(unittest.TestCase):
+    """Additional tests to achieve comprehensive coverage of path_utils.py."""
+
+    def setUp(self):
+        """Clean up environment variables."""
+        self.orig_tmpdir = os.environ.get("TMPDIR")
+        self.orig_curryer_temp = os.environ.get("CURRYER_TEMP_DIR")
+
+    def tearDown(self):
+        """Restore environment variables."""
+        if self.orig_tmpdir:
+            os.environ["TMPDIR"] = self.orig_tmpdir
+        elif "TMPDIR" in os.environ:
+            del os.environ["TMPDIR"]
+
+        if self.orig_curryer_temp:
+            os.environ["CURRYER_TEMP_DIR"] = self.orig_curryer_temp
+        elif "CURRYER_TEMP_DIR" in os.environ:
+            del os.environ["CURRYER_TEMP_DIR"]
+
+    @unittest.skipIf(os.name == "nt", "Unix-specific test")
+    def test_long_system_temp_dir_warning(self):
+        """Test that warning is logged when system temp dir is too long."""
+        # Set TMPDIR to a long path to trigger fallback warning
+        long_tmpdir = "/very/long/system/temp/directory/path/that/exceeds/normal/length"
+        os.environ["TMPDIR"] = long_tmpdir
+
+        # Clear CURRYER_TEMP_DIR to force fallback
+        if "CURRYER_TEMP_DIR" in os.environ:
+            del os.environ["CURRYER_TEMP_DIR"]
+
+        # Mock /tmp to not exist to force gettempdir() usage
+        with patch("pathlib.Path.exists", return_value=False):
+            with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
+                from curryer.kernels.path_utils import get_short_temp_dir
+
+                temp_dir = get_short_temp_dir()
+                temp_dir.exists()
+
+                # Should log warning about long path
+                self.assertTrue(
+                    any("System temp directory is long" in msg for msg in log_context.output),
+                    "Should warn about long system temp directory",
+                )
+
+    @unittest.skipIf(os.name != "nt", "Windows-specific test")
+    def test_windows_c_temp_creation(self):
+        """Test Windows C:\\Temp path creation."""
+        # This test only runs on Windows
+        from curryer.kernels.path_utils import get_short_temp_dir
+
+        if "CURRYER_TEMP_DIR" in os.environ:
+            del os.environ["CURRYER_TEMP_DIR"]
+
+        temp_dir = get_short_temp_dir()
+
+        # On Windows, should prefer C:\Temp if possible
+        self.assertTrue(temp_dir.exists())
+        self.assertTrue(os.access(str(temp_dir), os.W_OK))
+
+    def test_copy_to_short_path_with_long_temp_dir(self):
+        """Test copy_to_short_path when resulting path is still too long."""
+        from curryer.kernels.path_utils import copy_to_short_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a test file
+            test_file = Path(tmpdir) / "test.txt"
+            test_file.write_text("test content")
+
+            # Create a very long temp directory path
+            long_temp = Path(tmpdir) / ("x" * 100)
+            long_temp.mkdir(parents=True)
+
+            # Try to copy with a very short max_len to trigger the warning
+            with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
+                result = copy_to_short_path(test_file, long_temp, max_len=20)
+
+                # Should return None and log warning
+                self.assertIsNone(result, "Should return None when temp path too long")
+                self.assertTrue(
+                    any("Temp directory base path too long" in msg for msg in log_context.output),
+                    "Should warn about temp directory being too long",
+                )
+
+    def test_copy_to_short_path_oserror(self):
+        """Test copy_to_short_path handles OSError gracefully."""
+        from curryer.kernels.path_utils import copy_to_short_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.txt"
+            test_file.write_text("test")
+
+            temp_dir = Path(tmpdir) / "temp"
+            temp_dir.mkdir()
+
+            # Mock mkstemp to raise OSError
+            with patch("tempfile.mkstemp", side_effect=OSError("Mock error")):
+                with self.assertLogs("curryer.kernels.path_utils", level="DEBUG") as log_context:
+                    result = copy_to_short_path(test_file, temp_dir, max_len=80)
+
+                    # Should return None and log error
+                    self.assertIsNone(result)
+                    self.assertTrue(any("Copy failed" in msg for msg in log_context.output))
+
+    def test_update_invalid_paths_with_non_file_properties(self):
+        """Test update_invalid_paths skips non-file properties."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        config = {
+            "properties": {
+                "some_number": 42,
+                "some_bool": True,
+                "some_dict": {"nested": "value"},
+                "kernel_path": "/tmp/test.txt",  # This is a file property
+            }
+        }
+
+        result, temp_files = update_invalid_paths(config, max_len=80)
+
+        # Non-file properties should be unchanged
+        self.assertEqual(result["properties"]["some_number"], 42)
+        self.assertEqual(result["properties"]["some_bool"], True)
+        self.assertEqual(result["properties"]["some_dict"], {"nested": "value"})
+
+    def test_update_invalid_paths_with_path_objects(self):
+        """Test update_invalid_paths converts Path objects to strings."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        config = {"properties": {"short_path": Path("/tmp/short.txt"), "another_path": Path("/tmp/another.txt")}}
+
+        result, temp_files = update_invalid_paths(config, max_len=80)
+
+        # Path objects should be converted to strings
+        self.assertIsInstance(result["properties"]["short_path"], str)
+        self.assertIsInstance(result["properties"]["another_path"], str)
+        self.assertEqual(result["properties"]["short_path"], "/tmp/short.txt")
+
+    def test_update_invalid_paths_with_list_of_paths(self):
+        """Test update_invalid_paths handles lists of paths."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        config = {
+            "properties": {"planet_kernels": [Path("/tmp/kernel1.bsp"), "/tmp/kernel2.bsp", Path("/tmp/kernel3.bsp")]}
+        }
+
+        result, temp_files = update_invalid_paths(config, max_len=80)
+
+        # All paths in list should be strings
+        kernels = result["properties"]["planet_kernels"]
+        self.assertEqual(len(kernels), 3)
+        for kernel in kernels:
+            self.assertIsInstance(kernel, str)
+
+    def test_update_invalid_paths_without_properties_key(self):
+        """Test update_invalid_paths works on top-level config without 'properties' key."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        config = {"kernel_path": "/tmp/test.txt", "another_key": "value"}
+
+        result, temp_files = update_invalid_paths(config, max_len=80)
+
+        # Should work on top-level dict
+        self.assertEqual(result["kernel_path"], "/tmp/test.txt")
+        self.assertEqual(result["another_key"], "value")
+
+    def test_update_invalid_paths_with_relative_paths(self):
+        """Test update_invalid_paths resolves relative paths with parent_dir."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a test file
+            test_file = Path(tmpdir) / "test_kernel.txt"
+            test_file.write_text("test")
+
+            config = {
+                "properties": {
+                    "kernel_path": "test_kernel.txt"  # Relative path
+                }
+            }
+
+            result, temp_files = update_invalid_paths(config, max_len=80, parent_dir=tmpdir)
+
+            # Should resolve relative path
+            result_path = result["properties"]["kernel_path"]
+            self.assertTrue(os.path.isabs(result_path) or result_path == "test_kernel.txt")
+
+    def test_update_invalid_paths_parent_dir_is_file(self):
+        """Test update_invalid_paths handles parent_dir that is a file."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent_file = Path(tmpdir) / "parent.txt"
+            parent_file.write_text("parent")
+
+            config = {"properties": {"kernel_path": "/tmp/test.txt"}}
+
+            # Should use parent directory of the file
+            result, temp_files = update_invalid_paths(
+                config,
+                max_len=80,
+                parent_dir=parent_file,  # Pass a file, not a directory
+            )
+
+            # Should not crash
+            self.assertIsNotNone(result)
+
+    def test_update_invalid_paths_all_strategies_fail(self):
+        """Test update_invalid_paths when both symlink and copy fail."""
+        from curryer.kernels.path_utils import update_invalid_paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a long path that exceeds max_len
+            long_dir = Path(tmpdir) / ("x" * 30)
+            long_dir.mkdir(parents=True)
+            test_file = long_dir / "test_kernel.txt"
+            test_file.write_text("test")
+
+            # Verify the file exists and path is long
+            self.assertTrue(test_file.exists())
+            self.assertGreater(len(str(test_file)), 50)
+
+            config = {"properties": {"leapsecond_kernel": str(test_file)}}
+
+            # Mock both strategies to fail
+            with patch("curryer.kernels.path_utils.create_short_symlink", return_value=None):
+                with patch("curryer.kernels.path_utils.copy_to_short_path", return_value=None):
+                    with self.assertLogs("curryer.kernels.path_utils", level="INFO") as log_context:
+                        result, temp_files = update_invalid_paths(config, max_len=50, try_copy=True)
+
+                        # Should log warning about failure
+                        log_output = "\n".join(log_context.output)
+                        self.assertTrue(
+                            "Failed to shorten path" in log_output,
+                            f"Expected warning about failed shortening. Got logs:\n{log_output}",
+                        )
+
+                        # Path should remain unchanged
+                        self.assertEqual(result["properties"]["leapsecond_kernel"], str(test_file))
+
+    def test_convert_paths_to_strings(self):
+        """Test _convert_paths_to_strings helper function."""
+        from curryer.kernels.path_utils import _convert_paths_to_strings
+
+        # Test with nested structure
+        data = {
+            "path": Path("/tmp/test.txt"),
+            "nested": {"another_path": Path("/tmp/nested.txt"), "number": 42},
+            "list": [Path("/tmp/list1.txt"), Path("/tmp/list2.txt"), "string"],
+            "plain_string": "unchanged",
+        }
+
+        result = _convert_paths_to_strings(data)
+
+        # All Path objects should be converted to strings
+        self.assertIsInstance(result["path"], str)
+        self.assertIsInstance(result["nested"]["another_path"], str)
+        self.assertIsInstance(result["list"][0], str)
+        self.assertIsInstance(result["list"][1], str)
+        self.assertEqual(result["nested"]["number"], 42)
+        self.assertEqual(result["plain_string"], "unchanged")
+
+    def test_is_file_property(self):
+        """Test _is_file_property helper function."""
+        from curryer.kernels.path_utils import _is_file_property
+
+        # Should match _FILE pattern
+        self.assertTrue(_is_file_property("LEAPSECONDS_FILE"))
+        self.assertTrue(_is_file_property("INPUT_DATA_FILE_NAME"))
+        self.assertTrue(_is_file_property("PCK_FILE"))
+
+        # Should match explicit list
+        self.assertTrue(_is_file_property("clock_kernel"))
+        self.assertTrue(_is_file_property("frame_kernel"))
+        self.assertTrue(_is_file_property("leapsecond_kernel"))
+        self.assertTrue(_is_file_property("meta_kernel"))
+        self.assertTrue(_is_file_property("planet_kernels"))
+
+        # Should not match non-file properties
+        self.assertFalse(_is_file_property("some_number"))
+        self.assertFalse(_is_file_property("input_data"))
+        self.assertFalse(_is_file_property("version"))
+
+
 if __name__ == "__main__":
     unittest.main()
