@@ -19,38 +19,6 @@ A library for SPICE extensions and geospatial data product generation.
 pip install lasp-curryer
 ```
 
-## SPICE Path Length Handling
-
-Curryer automatically handles SPICE's 80-character path limit using a two-strategy approach:
-
-1. **Symlinks** (preferred—zero overhead, fastest)
-2. **File copying** to short temp directory (bulletproof fallback)
-
-Both strategies are enabled by default. Configure behavior via environment variables:
-
-```bash
-# Default: Both strategies enabled (symlink → copy)
-
-# Disable symlinks (Windows/restricted environments)
-export CURRYER_DISABLE_SYMLINKS="true"
-
-# Disable file copying (AWS/cloud to avoid storage costs)
-export CURRYER_DISABLE_COPY="true"
-
-# Custom temp directory
-export CURRYER_TEMP_DIR="/tmp/spice"
-
-# Advanced: Custom strategy order
-export CURRYER_PATH_STRATEGY="symlink,copy"
-```
-
-**Common configurations:**
-
-- **Windows:** `export CURRYER_DISABLE_SYMLINKS="true"`
-- **AWS/Cloud:** `export CURRYER_DISABLE_COPY="true"`
-
-See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for details.
-
 ### Data / Binary Files
 
 _NOTE: Data files and precompiled binaries are not currently automated and thus
@@ -216,3 +184,40 @@ with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels])
 
 _Assumes dynamic kernels have been created and their file names defined within
 the metakernel JSON file._
+
+## SPICE Path Length Handling
+
+Curryer automatically handles SPICE's 80-character path limit using a simple two-strategy approach:
+
+1. **Symlink** (always tried first—zero overhead, no copying)
+2. **File copy** to temp directory (bulletproof fallback if symlink fails)
+
+No configuration needed for most users—it just works! Temp files are automatically cleaned up after kernel generation.
+
+### Configuration (Optional)
+
+```bash
+# Custom temp directory (default: /tmp on Unix, auto-detected on Windows)
+export CURRYER_TEMP_DIR="/tmp"
+
+# AWS/Cloud: Disable file copying to avoid storage costs
+export CURRYER_DISABLE_COPY="true"
+```
+
+### How It Works
+
+When kernel paths exceed 80 characters:
+
+```
+INFO: Path exceeds 80 chars (102 chars): naif0012.tls
+INFO:   → Using symlink: /tmp/curryer_naif0012.tls
+```
+
+Or if symlinks fail (Windows without Developer Mode, restricted containers):
+
+```
+INFO: Path exceeds 80 chars (102 chars): naif0012.tls
+INFO:   → Using copy: /tmp/curryer_abc12345.tls
+```
+
+See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for details.
