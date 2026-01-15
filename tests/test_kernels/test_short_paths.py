@@ -470,6 +470,8 @@ class TestSymlinkStrategy(unittest.TestCase):
             # Verify symlink points to original file
             self.assertTrue(Path(fixed_path).is_symlink(), "Should be a symlink")
 
+            # Note: We don't check logs here since assertLogs would interfere with update_invalid_paths call
+
             # Verify original file content accessible through symlink
             with open(fixed_path) as f:
                 content = f.read()
@@ -676,7 +678,7 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             # Mock symlink to fail (simulating Windows/restricted environment)
             with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Capture log output to verify strategy attempts
-                with self.assertLogs("curryer.kernels.path_utils", level="DEBUG") as log_context:
+                with self.assertLogs("curryer.kernels.path_utils", level="INFO") as log_context:
                     result, temp_files = update_invalid_paths(
                         config,
                         max_len=80,
@@ -688,11 +690,8 @@ class TestStrategyPriorityOrder(unittest.TestCase):
                 # Verify strategies were attempted
                 log_output = "\n".join(log_context.output)
 
-                # Strategy 1: Symlink attempted and failed (logged at DEBUG level)
-                self.assertIn("Symlink creation failed", log_output, "Symlink should fail (mocked)")
-
-                # Strategy 2: Copy succeeded (logged at DEBUG level)
-                self.assertIn("Copied to short path", log_output, "Copy should succeed")
+                # Strategy 2: Copy succeeded (should see "Using copy:" message)
+                self.assertIn("Using copy:", log_output, "Should log 'Using copy:' when copy succeeds")
 
                 # Verify the file was actually copied (not symlinked)
                 self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")

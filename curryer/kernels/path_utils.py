@@ -402,7 +402,7 @@ def update_invalid_paths(
                     item = str(symlink_path)  # Convert Path to str for config dict
                     temp_files_created.append(str(symlink_path))
                     modified_item = True
-                    logger.debug(f"  ✓ Created symlink: {symlink_path}")
+                    logger.info(f"  → Using symlink: {symlink_path}")
 
                 # Strategy 2: Copy (if symlink failed and enabled)
                 elif try_copy:
@@ -411,7 +411,7 @@ def update_invalid_paths(
                         item = str(temp_path)  # Convert Path to str for config dict
                         temp_files_created.append(str(temp_path))
                         modified_item = True
-                        logger.debug(f"  ✓ Copied to short path: {temp_path}")
+                        logger.info(f"  → Using copy: {temp_path}")
                     else:
                         logger.warning(f"  ✗ Failed to shorten path: {fn.name} ({len(str(fn))} chars)")
 
