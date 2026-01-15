@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLARREO-specific Monte Carlo configuration generation.
+"""CLARREO-specific Correction configuration generation.
 
 This module demonstrates how to create mission-specific configurations
 for the mission-agnostic correction module. All CLARREO-specific values
@@ -9,15 +9,15 @@ This serves as a template for other missions - copy this file and modify
 the kernel names, parameter values, and instrument settings for your mission.
 
 Usage:
-    from tests.test_correction.clarreo_config import create_clarreo_monte_carlo_config
+    from tests.test_correction.clarreo_config import create_clarreo_correction_config
 
     data_dir = Path('tests/data/clarreo/gcs')
     generic_dir = Path('data/generic')
-    config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+    config = create_clarreo_correction_config(data_dir, generic_dir)
 
     # Optionally save to JSON
-    config_path = Path('tests/test_correction/configs/clarreo_monte_carlo_config.json')
-    create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=config_path)
+    config_path = Path('tests/test_correction/configs/clarreo_correction_config.json')
+    create_clarreo_correction_config(data_dir, generic_dir, config_output_path=config_path)
 
 Author: Matthew Maclay
 Date: October 27, 2025
@@ -27,19 +27,19 @@ import json
 import logging
 from pathlib import Path
 
-from curryer.correction import monte_carlo as mc
+from curryer.correction import correction
 
 logger = logging.getLogger(__name__)
 
 
-def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=None):
+def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=None):
     """
-    Create the CLARREO Monte Carlo configuration with all 12 parameters.
+    Create the CLARREO Correction configuration with all 12 parameters.
 
     This is mission-specific configuration. It defines all CLARREO-specific
     kernel files, parameter ranges, and iteration settings.
 
-    USER CONFIGURATION: This is the main place to adjust Monte Carlo parameters.
+    USER CONFIGURATION: This is the main place to adjust Correction parameters.
     You can modify:
     - current_value: Starting parameter values
     - bounds: Limits for parameter variation
@@ -52,14 +52,14 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     - 1 OFFSET_TIME parameter (timing correction)
 
     Returns:
-        MonteCarloConfig: THE single config object containing all CLARREO settings.
+        CorrectionConfig: THE single config object containing all CLARREO settings.
 
     IMPORTANT - Config-Centric Design:
-        This function creates the base MonteCarloConfig (THE one config) with all
+        This function creates the base CorrectionConfig (THE one config) with all
         CLARREO-specific parameters and settings. After creation, you MUST add
         data loaders and processing functions before using:
 
-            config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+            config = create_clarreo_correction_config(data_dir, generic_dir)
 
             # Add required loaders
             config.telemetry_loader = load_clarreo_telemetry
@@ -71,7 +71,7 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
 
             # Validate and use
             config.validate(check_loaders=True)
-            results = mc.loop(config, work_dir, data_sets)
+            results = correction.loop(config, work_dir, data_sets)
 
     Args:
         data_dir: Path to the CLARREO GCS data directory
@@ -79,10 +79,10 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         config_output_path: Optional path to save the configuration as JSON file
 
     Returns:
-        MonteCarloConfig object (you must add loaders before calling mc.loop())
+        CorrectionConfig object (you must add loaders before calling correction.loop())
 
     Example:
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
 
         # Add required loaders
         config.telemetry_loader = load_clarreo_telemetry
@@ -93,17 +93,17 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         config.image_matching_func = synthetic_image_matching
 
         # Now ready to use
-        results = mc.loop(config, work_dir, data_sets)
+        results = correction.loop(config, work_dir, data_sets)
     """
-    logger.info("=== CREATING CLARREO MONTE CARLO CONFIGURATION ===")
+    logger.info("=== CREATING CLARREO CORRECTION CONFIGURATION ===")
 
     # Define the 12 parameters for CLARREO geolocation correction
     parameters = [
         # ===== CONSTANT_KERNEL Parameters (9 total) =====
         # These are fixed attitude corrections for instrument frames
         # BASE frame corrections (roll, pitch, yaw)
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.CONSTANT_KERNEL,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_base_v01.attitude.ck.json",
             data=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values in arcseconds
@@ -116,8 +116,8 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
             ),
         ),
         # YOKE frame corrections (roll, pitch, yaw)
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.CONSTANT_KERNEL,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
             data=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
@@ -130,8 +130,8 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
             ),
         ),
         # HYSICS frame corrections (roll, pitch, yaw)
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.CONSTANT_KERNEL,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
             data=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
@@ -146,8 +146,8 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         # ===== OFFSET_KERNEL Parameters (2 total) =====
         # These are dynamic angle biases applied to telemetry
         # Azimuth angle bias correction
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.OFFSET_KERNEL,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_az_v01.attitude.ck.json",
             data=dict(
                 field="hps.az_ang_nonlin",  # Telemetry field to modify
@@ -161,8 +161,8 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
             ),
         ),
         # Elevation angle bias correction
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.OFFSET_KERNEL,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_el_v01.attitude.ck.json",
             data=dict(
                 field="hps.el_ang_nonlin",  # Telemetry field to modify
@@ -178,8 +178,8 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
         # ===== OFFSET_TIME Parameters (1 total) =====
         # Timing corrections for science frames
         # Science frame timing correction
-        mc.ParameterConfig(
-            ptype=mc.ParameterType.OFFSET_TIME,
+        correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
             config_file=None,  # No config file needed for time corrections
             data=dict(
                 field="corrected_timestamp",  # Science timing field to modify
@@ -193,7 +193,7 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     ]
 
     # Geolocation configuration
-    geo_config = mc.GeolocationConfig(
+    geo_config = correction.GeolocationConfig(
         meta_kernel_file=data_dir / "cprs_v01.kernels.tm.json",
         generic_kernel_dir=generic_dir,
         dynamic_kernels=[
@@ -206,15 +206,15 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
     )
 
     # NetCDF output configuration (NEW - Phase 1)
-    netcdf_config = mc.NetCDFConfig(
-        title="CLARREO Pathfinder Geolocation Monte Carlo Analysis",
+    netcdf_config = correction.NetCDFConfig(
+        title="CLARREO Pathfinder Geolocation Correction Analysis",
         description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
         performance_threshold_m=250.0,  # CLARREO requirement
         parameter_metadata=None,  # Auto-generate from parameters
     )
 
-    # Create complete Monte Carlo configuration
-    config = mc.MonteCarloConfig(
+    # Create complete Correction configuration
+    config = correction.CorrectionConfig(
         seed=42,  # For reproducible results
         n_iterations=5,  # Number of parameter sets to test
         parameters=parameters,
@@ -268,7 +268,7 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
                     },
                 },
             },
-            "monte_carlo": {
+            "correction": {
                 "seed": config.seed,
                 "n_iterations": config.n_iterations,
                 "performance_threshold_m": config.performance_threshold_m,
@@ -305,7 +305,7 @@ def create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=
             if "coordinate_frames" in param.data:
                 param_dict["coordinate_frames"] = param.data["coordinate_frames"]
 
-            config_dict["monte_carlo"]["parameters"].append(param_dict)
+            config_dict["correction"]["parameters"].append(param_dict)
 
         # Write to file
         config_output_path.parent.mkdir(parents=True, exist_ok=True)

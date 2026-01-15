@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Unified Monte Carlo Test Suite
+Unified Correction Test Suite
 
-This module consolidates two complementary Monte Carlo test approaches:
+This module consolidates two complementary Correction test approaches:
 
 1. UPSTREAM Testing (run_upstream_pipeline):
    - Tests kernel creation and geolocation with parameter variations
@@ -22,17 +22,17 @@ for their specific testing needs.
 Running Tests:
 -------------
 # Via pytest (recommended)
-pytest tests/test_correction/test_monte_carlo.py -v
+pytest tests/test_correction/test_correction.py -v
 
 # Run specific test
-pytest tests/test_correction/test_monte_carlo.py::test_generate_clarreo_config_json -v
+pytest tests/test_correction/test_correction.py::test_generate_clarreo_config_json -v
 
 # Standalone execution with arguments (for pipeline runs)
-python tests/test_correction/test_monte_carlo.py --mode downstream --quick
+python tests/test_correction/test_correction.py --mode downstream --quick
 
 Requirements:
 -----------------
-These tests validate the complete Monte Carlo geolocation pipeline,
+These tests validate the complete Correction geolocation pipeline,
 demonstrating parameter sensitivity analysis and error statistics
 computation for mission requirements validation.
 
@@ -58,7 +58,7 @@ from scipy.io import loadmat
 from curryer import meta, utils
 from curryer import spicierpy as sp
 from curryer.compute import constants
-from curryer.correction import monte_carlo as mc
+from curryer.correction import correction
 from curryer.correction.data_structures import (
     GeolocationConfig as ImageMatchGeolocationConfig,
 )
@@ -77,7 +77,7 @@ from curryer.kernels import create
 
 # Import CLARREO config and data loaders
 sys.path.insert(0, str(Path(__file__).parent))
-from clarreo_config import create_clarreo_monte_carlo_config
+from clarreo_config import create_clarreo_correction_config
 from clarreo_data_loaders import load_clarreo_gcp, load_clarreo_science, load_clarreo_telemetry
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 # =============================================================================
 # TEST PLACEHOLDER FUNCTIONS (For Synthetic Data Generation)
 # =============================================================================
-# These functions generate SYNTHETIC test data for testing the Monte Carlo pipeline
+# These functions generate SYNTHETIC test data for testing the Correction pipeline
 
 
 class _PlaceholderConfig:
@@ -128,7 +128,7 @@ def synthetic_image_matching(
     Generate SYNTHETIC image matching error data (TEST ONLY - not a test itself).
 
     This function matches the signature of the real image_matching() function
-    but only uses a subset of parameters for upstream testing of the monte carlo.
+    but only uses a subset of parameters for upstream testing of the Correction.
 
     Used parameters:
         geolocated_data: For generating realistic synthetic errors
@@ -266,9 +266,9 @@ def _generate_nadir_aligned_transforms(n_measurements, riss_ctrs, boresights_hs)
 
 
 # =============================================================================
-# TEST MODE FUNCTIONS (Extracted from monte_carlo.py)
+# TEST MODE FUNCTIONS (Extracted from correction.py)
 # =============================================================================
-# These functions were moved from the core monte_carlo module to keep test-specific
+# These functions were moved from the core correction module to keep test-specific
 # code separate from mission-agnostic core functionality.
 
 
@@ -661,7 +661,7 @@ def test_generate_clarreo_config_json(tmp_path):
     # Define paths
     data_dir = Path(__file__).parent.parent / "data/clarreo/gcs"
     generic_dir = Path("data/generic")
-    output_path = tmp_path / "configs/clarreo_monte_carlo_config.json"
+    output_path = tmp_path / "configs/clarreo_correction_config.json"
 
     logger.info(f"Data directory: {data_dir}")
     logger.info(f"Generic kernels: {generic_dir}")
@@ -669,7 +669,7 @@ def test_generate_clarreo_config_json(tmp_path):
 
     # Generate config programmatically
     logger.info("\n1. Generating config programmatically...")
-    config = create_clarreo_monte_carlo_config(data_dir, generic_dir, config_output_path=output_path)
+    config = create_clarreo_correction_config(data_dir, generic_dir, config_output_path=output_path)
 
     logger.info(f"✓ Config created: {len(config.parameters)} parameter groups, {config.n_iterations} iterations")
 
@@ -685,7 +685,7 @@ def test_generate_clarreo_config_json(tmp_path):
 
     # Validate top-level sections
     assert "mission_config" in config_data, "Missing 'mission_config' section"
-    assert "monte_carlo" in config_data, "Missing 'monte_carlo' section"
+    assert "correction" in config_data, "Missing 'correction' section"
     assert "geolocation" in config_data, "Missing 'geolocation' section"
     logger.info("✓ All required top-level sections present")
 
@@ -695,28 +695,28 @@ def test_generate_clarreo_config_json(tmp_path):
     assert "kernel_mappings" in mission_cfg
     logger.info(f"✓ Mission: {mission_cfg['mission_name']}")
 
-    # Validate monte_carlo config
-    mc_cfg = config_data["monte_carlo"]
-    assert "parameters" in mc_cfg
-    assert isinstance(mc_cfg["parameters"], list)
-    assert len(mc_cfg["parameters"]) > 0
-    assert "seed" in mc_cfg
-    assert "n_iterations" in mc_cfg
+    # Validate correction config
+    corr_cfg = config_data["correction"]
+    assert "parameters" in corr_cfg
+    assert isinstance(corr_cfg["parameters"], list)
+    assert len(corr_cfg["parameters"]) > 0
+    assert "seed" in corr_cfg
+    assert "n_iterations" in corr_cfg
 
     # NEW: Validate required fields are present
-    assert "earth_radius_m" in mc_cfg, "Missing 'earth_radius_m' in monte_carlo config"
-    assert "performance_threshold_m" in mc_cfg, "Missing 'performance_threshold_m'"
-    assert "performance_spec_percent" in mc_cfg, "Missing 'performance_spec_percent'"
+    assert "earth_radius_m" in corr_cfg, "Missing 'earth_radius_m' in correction config"
+    assert "performance_threshold_m" in corr_cfg, "Missing 'performance_threshold_m'"
+    assert "performance_spec_percent" in corr_cfg, "Missing 'performance_spec_percent'"
 
-    assert mc_cfg["earth_radius_m"] == 6378140.0
-    assert mc_cfg["performance_threshold_m"] == 250.0
-    assert mc_cfg["performance_spec_percent"] == 39.0
+    assert corr_cfg["earth_radius_m"] == 6378140.0
+    assert corr_cfg["performance_threshold_m"] == 250.0
+    assert corr_cfg["performance_spec_percent"] == 39.0
 
-    logger.info(f"✓ Monte Carlo config: {len(mc_cfg['parameters'])} parameters, {mc_cfg['n_iterations']} iterations")
+    logger.info(f"✓ Correction config: {len(corr_cfg['parameters'])} parameters, {corr_cfg['n_iterations']} iterations")
     logger.info(
-        f"✓ Required fields: earth_radius={mc_cfg['earth_radius_m']}, "
-        f"threshold={mc_cfg['performance_threshold_m']}m, "
-        f"spec={mc_cfg['performance_spec_percent']}%"
+        f"✓ Required fields: earth_radius={corr_cfg['earth_radius_m']}, "
+        f"threshold={corr_cfg['performance_threshold_m']}m, "
+        f"spec={corr_cfg['performance_spec_percent']}%"
     )
 
     # Validate geolocation config
@@ -726,15 +726,15 @@ def test_generate_clarreo_config_json(tmp_path):
     assert geo_cfg["instrument_name"] == "CPRS_HYSICS"
     logger.info(f"✓ Geolocation config: instrument={geo_cfg['instrument_name']}")
 
-    # Test that JSON can be loaded back into MonteCarloConfig
-    logger.info("\n4. Testing JSON → MonteCarloConfig loading...")
-    reloaded_config = mc.load_config_from_json(output_path)
+    # Test that JSON can be loaded back into CorrectionConfig
+    logger.info("\n4. Testing JSON → CorrectionConfig loading...")
+    reloaded_config = correction.load_config_from_json(output_path)
     assert reloaded_config.n_iterations == config.n_iterations
     assert len(reloaded_config.parameters) == len(config.parameters)
     assert reloaded_config.earth_radius_m == 6378140.0
     assert reloaded_config.performance_threshold_m == 250.0
     assert reloaded_config.performance_spec_percent == 39.0
-    logger.info("✓ JSON successfully loads into MonteCarloConfig")
+    logger.info("✓ JSON successfully loads into CorrectionConfig")
 
     # Validate reloaded config
     logger.info("\n5. Validating reloaded config...")
@@ -758,7 +758,7 @@ def test_generate_clarreo_config_json(tmp_path):
 
 def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -> tuple[list, dict, Path]:
     """
-    Test UPSTREAM segment of Monte Carlo pipeline.
+    Test UPSTREAM segment of Correction pipeline.
 
     This tests:
     - Parameter set generation
@@ -774,7 +774,7 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
     and geolocation part of the pipeline.
 
     Args:
-        n_iterations: Number of Monte Carlo iterations
+        n_iterations: Number of Correction iterations
         work_dir: Working directory for outputs. If None, uses a temporary
                   directory that will be cleaned up when the process exits.
 
@@ -815,7 +815,7 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
     logger.info(f"Iterations: {n_iterations}")
 
     # Create configuration using CLARREO config
-    config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+    config = create_clarreo_correction_config(data_dir, generic_dir)
     config.n_iterations = n_iterations
     # Set output filename for test (consistent name for version control)
     config.output_filename = "upstream_results.nc"
@@ -843,13 +843,13 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
 
     logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
 
-    # Execute the Monte Carlo loop - all config comes from config object!
+    # Execute the Correction loop - all config comes from config object!
     # This will test parameter generation, kernel creation, and geolocation
     logger.info("=" * 80)
-    logger.info("EXECUTING MONTE CARLO UPSTREAM WORKFLOW")
+    logger.info("EXECUTING CORRECTION UPSTREAM WORKFLOW")
     logger.info("=" * 80)
 
-    results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets)
+    results, netcdf_data = correction.loop(config, work_dir, tlm_sci_gcp_sets)
 
     logger.info("=" * 80)
     logger.info("UPSTREAM PIPELINE COMPLETE")
@@ -881,14 +881,14 @@ def run_downstream_pipeline(
     n_iterations: int = 5, test_cases: list[str] | None = None, work_dir: Path | None = None
 ) -> tuple[list, dict, Path]:
     """
-    Test DOWNSTREAM segment of Monte Carlo pipeline.
+    Test DOWNSTREAM segment of Correction pipeline.
 
-    IMPORTANT: This test uses a CUSTOM LOOP (not mc.loop()) because it works with
+    IMPORTANT: This test uses a CUSTOM LOOP (not correction.loop()) because it works with
     pre-geolocated test data that doesn't have the telemetry/parameters needed for
     the normal upstream pipeline.
 
     Pipeline Comparison:
-        Normal mc.loop():  Parameters → Kernels → Geolocation → Matching → Stats
+        Normal correction.loop():  Parameters → Kernels → Geolocation → Matching → Stats
         This test:         Pre-geolocated Test Data → Pairing → Matching → Stats
 
     Parameter effects are simulated by varying the geolocation errors directly
@@ -906,7 +906,7 @@ def run_downstream_pipeline(
         - True parameter sensitivity (simulated via error variation)
 
     Args:
-        n_iterations: Number of Monte Carlo iterations
+        n_iterations: Number of Correction iterations
         test_cases: Specific test cases to use (e.g., ['1', '2'])
         work_dir: Working directory for outputs. If None, uses a temporary
                   directory that will be cleaned up when the process exits.
@@ -1022,19 +1022,19 @@ def run_downstream_pipeline(
     logger.info("=" * 80)
 
     # Create base CLARREO config to get standard settings
-    base_config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+    base_config = create_clarreo_correction_config(data_dir, generic_dir)
 
-    # Create minimal test config (MonteCarloConfig = THE one config)
+    # Create minimal test config (CorrectionConfig = THE one config)
     # For downstream testing, we use minimal parameters (sigma=0) because
     # variations come from test_mode_config randomization, not parameter tweaking
-    config = mc.MonteCarloConfig(
+    config = correction.CorrectionConfig(
         # Core settings
         seed=42,
         n_iterations=n_iterations,
         # Minimal parameter (no real variation - sigma=0)
         parameters=[
-            mc.ParameterConfig(
-                ptype=mc.ParameterType.CONSTANT_KERNEL,
+            correction.ParameterConfig(
+                ptype=correction.ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 data={
                     "current_value": [0.0, 0.0, 0.0],
@@ -1075,17 +1075,17 @@ def run_downstream_pipeline(
     logger.info(f"  Performance threshold: {config.performance_threshold_m}m")
 
     # ==========================================================================
-    # STEP 3: MONTE CARLO ITERATIONS
+    # STEP 3: CORRECTION ITERATIONS
     # ==========================================================================
     logger.info("\n" + "=" * 80)
-    logger.info("STEP 3: MONTE CARLO ITERATIONS")
+    logger.info("STEP 3: CORRECTION ITERATIONS")
     logger.info("=" * 80)
 
     n_param_sets = n_iterations
     n_gcp_pairs = len(paired_test_cases)
 
     # Use dynamic NetCDF structure builder instead of hardcoded
-    netcdf_data = mc._build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+    netcdf_data = correction._build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
     logger.info(f"NetCDF structure built dynamically with {len(netcdf_data)} variables")
 
     # Get threshold metric name dynamically
@@ -1161,7 +1161,7 @@ def run_downstream_pipeline(
     logger.info("STEP 4: ERROR STATISTICS")
     logger.info("=" * 80)
 
-    error_stats = mc.call_error_stats_module(image_matching_results, monte_carlo_config=config)
+    error_stats = correction.call_error_stats_module(image_matching_results, correction_config=config)
     logger.info(f"Error statistics computed: {len(error_stats)} metrics")
 
     # ==========================================================================
@@ -1172,7 +1172,7 @@ def run_downstream_pipeline(
     logger.info("=" * 80)
 
     output_file = work_dir / "downstream_results.nc"
-    mc._save_netcdf_results(netcdf_data, output_file, config)
+    correction._save_netcdf_results(netcdf_data, output_file, config)
 
     logger.info("=" * 80)
     logger.info("DOWNSTREAM TEST COMPLETE")
@@ -1191,7 +1191,7 @@ def run_downstream_pipeline(
 # =============================================================================
 
 
-class MonteCarloUnifiedTests(unittest.TestCase):
+class CorrectionUnifiedTests(unittest.TestCase):
     """Unified test cases for both upstream and downstream pipelines.
 
     Note: Only test_upstream_quick requires GMTED elevation data and is marked
@@ -1215,7 +1215,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         data_dir = self.root_dir / "tests" / "data" / "clarreo" / "gcs"
         generic_dir = self.root_dir / "data" / "generic"
 
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
 
         # Add required loaders (Config-Centric Design)
         config.telemetry_loader = load_clarreo_telemetry
@@ -1370,7 +1370,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         Test loop() function (optimized pair-outer implementation).
 
         This test validates the main loop() function which is now the optimized
-        default implementation. It covers the core Monte Carlo workflow.
+        default implementation. It covers the core Correction workflow.
         """
         logger.info("=" * 80)
         logger.info("TEST: loop() (OPTIMIZED IMPLEMENTATION)")
@@ -1381,7 +1381,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
 
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
         config.n_iterations = 2  # Small for fast testing
         config.output_filename = "test_loop_optimized.nc"
 
@@ -1403,7 +1403,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         # Run loop()
         logger.info("Running loop()...")
         np.random.seed(42)
-        results, netcdf_data = mc.loop(config, work_dir, tlm_sci_gcp_sets, resume_from_checkpoint=False)
+        results, netcdf_data = correction.loop(config, work_dir, tlm_sci_gcp_sets, resume_from_checkpoint=False)
 
         # Validate results structure
         self.assertIsInstance(results, list)
@@ -1443,8 +1443,8 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         logger.info("Testing _extract_parameter_values...")
 
         # Create sample params with proper structure for CONSTANT_KERNEL type
-        param_config = mc.ParameterConfig(
-            ptype=mc.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), data=None
+        param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), data=None
         )
         # Create DataFrame with angle data as expected by the function
         param_data = pd.DataFrame(
@@ -1456,7 +1456,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         )
         params = [(param_config, param_data)]
 
-        result = mc._extract_parameter_values(params)
+        result = correction._extract_parameter_values(params)
 
         self.assertIsInstance(result, dict)
         # Should extract 3 values: roll, pitch, yaw
@@ -1474,12 +1474,12 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         root_dir = Path(__file__).parents[2]
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
 
         n_params = 3
         n_pairs = 2
 
-        netcdf_data = mc._build_netcdf_structure(config, n_params, n_pairs)
+        netcdf_data = correction._build_netcdf_structure(config, n_params, n_pairs)
 
         # Validate structure
         self.assertIsInstance(netcdf_data, dict)
@@ -1507,7 +1507,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         stats_dataset.attrs["std_error_m"] = 10.0
         stats_dataset.attrs["total_measurements"] = 3  # Correct attribute name
 
-        metrics = mc._extract_error_metrics(stats_dataset)
+        metrics = correction._extract_error_metrics(stats_dataset)
 
         # Validate metrics
         self.assertIsInstance(metrics, dict)
@@ -1532,7 +1532,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         param_values = {"test_param": 1.5}
         param_idx = 1
 
-        mc._store_parameter_values(netcdf_data, param_idx, param_values)
+        correction._store_parameter_values(netcdf_data, param_idx, param_values)
 
         # Validate storage
         self.assertEqual(netcdf_data["param_test_param"][param_idx], 1.5)
@@ -1562,7 +1562,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         param_idx = 0
         pair_idx = 1
 
-        mc._store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics)
+        correction._store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics)
 
         # Validate storage
         self.assertEqual(netcdf_data["rms_error_m"][param_idx, pair_idx], 150.0)
@@ -1586,7 +1586,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         param_idx = 0
         threshold_m = 250.0
 
-        mc._compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m)
+        correction._compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m)
 
         # Validate computed metrics
         self.assertGreater(netcdf_data["percent_under_250m"][param_idx], 0)
@@ -1603,9 +1603,9 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         root_dir = Path(__file__).parents[2]
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
 
-        tlm_dataset, sci_dataset, ugps_times = mc._load_image_pair_data(
+        tlm_dataset, sci_dataset, ugps_times = correction._load_image_pair_data(
             "telemetry_5a", "science_5a", config, load_clarreo_telemetry, load_clarreo_science
         )
 
@@ -1623,7 +1623,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         root_dir = Path(__file__).parents[2]
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
 
         work_dir = self.work_dir / "test_dynamic_kernels"
         work_dir.mkdir(exist_ok=True)
@@ -1640,7 +1640,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
             sds_dir=config.geo.generic_kernel_dir,
         )
         with sp.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-            dynamic_kernels = mc._create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+            dynamic_kernels = correction._create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
 
         # Validate
         self.assertIsInstance(dynamic_kernels, list)
@@ -1654,11 +1654,11 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         root_dir = Path(__file__).parents[2]
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
         config.calibration_dir = None
 
         # Load LOS vectors and PSF data into calibration data.
-        calibration_data = mc._load_calibration_data(config)
+        calibration_data = correction._load_calibration_data(config)
 
         # Should return CalibrationData with None values when no calibration dir
         self.assertIsNone(calibration_data.los_vectors)
@@ -1676,7 +1676,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         generic_dir = root_dir / "data" / "generic"
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
 
-        config = create_clarreo_monte_carlo_config(data_dir, generic_dir)
+        config = create_clarreo_correction_config(data_dir, generic_dir)
         config.n_iterations = 2
         config.output_filename = "test_checkpoint.nc"
 
@@ -1693,13 +1693,13 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         output_file = work_dir / config.output_filename
 
         # Build simple netcdf structure for testing
-        netcdf_data = mc._build_netcdf_structure(config, 2, 2)
+        netcdf_data = correction._build_netcdf_structure(config, 2, 2)
         netcdf_data["rms_error_m"][0, 0] = 100.0
         netcdf_data["rms_error_m"][1, 0] = 150.0
 
         # Save checkpoint
         logger.info("Saving checkpoint...")
-        mc._save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed=0)
+        correction._save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed=0)
 
         checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
         self.assertTrue(checkpoint_file.exists())
@@ -1707,7 +1707,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 
         # Load checkpoint
         logger.info("Loading checkpoint...")
-        loaded_data, completed_pairs = mc._load_checkpoint(output_file, config)
+        loaded_data, completed_pairs = correction._load_checkpoint(output_file, config)
 
         self.assertIsNotNone(loaded_data)
         self.assertEqual(completed_pairs, 1)  # 0-indexed, so pair 0 completed = 1
@@ -1716,7 +1716,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
         logger.info(f"✓ Checkpoint loaded correctly, completed pairs = {completed_pairs}")
 
         # Cleanup
-        mc._cleanup_checkpoint(output_file)
+        correction._cleanup_checkpoint(output_file)
         self.assertFalse(checkpoint_file.exists())
         logger.info(f"✓ Checkpoint cleanup successful")
 
@@ -1733,7 +1733,7 @@ class MonteCarloUnifiedTests(unittest.TestCase):
 def main():
     """Main entry point for standalone execution."""
     parser = argparse.ArgumentParser(
-        description="Unified Monte Carlo Test Suite",
+        description="Unified Correction Test Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Test Modes:
@@ -1745,17 +1745,17 @@ unittest     - Run all unit tests
 Examples:
 ---------
 # Run downstream test
-python test_monte_carlo.py --mode downstream --quick
+python test_correction.py --mode downstream --quick
 
 # Run with specific test cases
-python test_monte_carlo.py --mode downstream --test-cases 1 2 --iterations 10
+python test_correction.py --mode downstream --test-cases 1 2 --iterations 10
 
 # Run unit tests
-python test_monte_carlo.py --mode unittest
-pytest test_monte_carlo.py -v
+python test_correction.py --mode unittest
+pytest test_correction.py -v
 
 # Run upstream test (when implemented)
-python test_monte_carlo.py --mode upstream --iterations 5
+python test_correction.py --mode upstream --iterations 5
         """,
     )
 
@@ -1763,7 +1763,7 @@ python test_monte_carlo.py --mode upstream --iterations 5
         "--mode", type=str, choices=["upstream", "downstream", "unittest"], required=True, help="Test mode to run"
     )
     parser.add_argument("--quick", action="store_true", help="Quick test (2 iterations, test case 1 only)")
-    parser.add_argument("--iterations", type=int, default=5, help="Number of Monte Carlo iterations (default: 5)")
+    parser.add_argument("--iterations", type=int, default=5, help="Number of correction iterations (default: 5)")
     parser.add_argument(
         "--test-cases", nargs="+", default=None, help="Specific test cases for downstream mode (e.g., 1 2 3)"
     )

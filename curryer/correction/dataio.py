@@ -120,7 +120,7 @@ def validate_telemetry_output(df: pd.DataFrame, config) -> None:
 
     Args:
         df: DataFrame returned by telemetry loader
-        config: MonteCarloConfig object
+        config: CorrectionConfig object
 
     Raises:
         TypeError: If not a DataFrame
@@ -145,7 +145,7 @@ def validate_science_output(df: pd.DataFrame, config) -> None:
 
     Args:
         df: DataFrame returned by science loader
-        config: MonteCarloConfig object
+        config: CorrectionConfig object
 
     Raises:
         TypeError: If not a DataFrame
