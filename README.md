@@ -209,11 +209,11 @@ export CURRYER_DISABLE_COPY="true"
 When kernel paths exceed 80 characters:
 
 ```
-INFO: Path exceeds 80 chars (102 chars): naif0012.tls
+INFO: Path exceeds 80 chars (102 chars): /very/long/path.../naif0012.tls
 INFO:   → Using symlink: /tmp/curryer_naif0012.tls
 ```
 
-Or if symlinks fail (Windows without Developer Mode, restricted containers):
+Or if symlinks fail:
 
 ```
 INFO: Path exceeds 80 chars (102 chars): naif0012.tls
