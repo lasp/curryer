@@ -6,18 +6,18 @@ Curryer provides automatic path shortening to handle SPICE tools' 80-character p
 
 SPICE tools (MSOPCK, MKSPK) enforce an **80-character per-line limit** for all string values in setup files, including file paths. This causes kernel generation to fail when:
 
-- Kernels are installed in Conda/pip environments (deep directory structures)
+- Kernels are located in Conda/pip environments (deep directory structures)
 - System temp directories have long base paths
 - Docker containers use long mount paths
 - AWS deployments use network storage with long paths
 
-### Why PATH_SYMBOLS Don't Work
+### Why SPICE's PATH_SYMBOLS Don't Always Work
 
 `PATH_SYMBOLS` and `PATH_VALUES` are **only** interpreted by `furnsh_c` in meta-kernels (`.tm` files). MSOPCK and MKSPK setup files are text kernels but **not** meta-kernels—they require literal file paths and do not support symbolic substitution.
 
 ## Automatic Path Shortening
 
-Curryer automatically shortens paths using a **two-strategy approach**. Strategies are tried in a fixed order, and the first one that successfully shortens the path is used.
+Curryer automatically shortens long paths using a **two-strategy approach**. Strategies are tried in a fixed order, and the first one that successfully shortens the path is used.
 
 ### Strategy 1: Symlink (Preferred - Always Tried First)
 
@@ -25,18 +25,17 @@ Curryer automatically shortens paths using a **two-strategy approach**. Strategi
 
 **Advantages:**
 
-- Zero file copying (no I/O overhead)
+- Zero file copying
 - Zero storage overhead
 - Fastest option
 - No data duplication
-- Idempotent (safe to recreate)
 
 **Platform Support:**
 
-- ✅ **Works:** Linux, macOS, most containers
-- ⚠️ **May fail:** Windows (requires admin/dev mode), restricted containers (seccomp policies)
+- **Works:** Linux, macOS, Unix, EC2, most containers
+- **May fail:** Windows (requires admin/dev mode), restricted containers (seccomp policies)
 
-**Automatic Fallback:** If symlink creation fails, automatically tries copy strategy
+**Automatic Fallback:** If symlink creation fails, curryer automatically tries the copy strategy
 
 **Example:**
 
@@ -45,13 +44,13 @@ Original: /var/folders/3r/2r3w66hn4zdbtyfcw2d5b_ww00cdsj/T/kernels/naif0012.tls 
 Symlink:  /tmp/curryer_naif0012.tls (25 chars)
 ```
 
-### Strategy 2: File Copy (Bulletproof Fallback)
+### Strategy 2: File Copy (Fallback option)
 
 **How it works:** Copies file to short temp directory using `tempfile.mkstemp()` for unique naming
 
 **Advantages:**
 
-- **Always works** (guaranteed success)
+- **Works across platforms**
 - No platform dependencies
 - Handles any path length
 
@@ -59,7 +58,7 @@ Symlink:  /tmp/curryer_naif0012.tls (25 chars)
 
 - I/O overhead (must copy entire file)
 - Doubles storage during operation
-- AWS costs if copying from EFS/network storage
+- Potential Cloud/AWS costs if copying from EFS/network storage
 
 **Cleanup:** Temp files are **tracked** during creation. The calling code (e.g., `AbstractKernelWriter`) automatically deletes them in a `finally` block after kernel generation completes.
 
@@ -80,7 +79,7 @@ Both strategies are enabled by default (symlink first, then copy as fallback). C
 
 Only **2 environment variables** are supported for simplicity:
 
-#### `CURRYER_TEMP_DIR` - Custom Temporary Directory
+#### 1. `CURRYER_TEMP_DIR` - Custom Temporary Directory
 
 Set a custom short temp directory for maximum filename space:
 
@@ -103,7 +102,7 @@ export CURRYER_TEMP_DIR="/opt/tmp"
 - **Windows:** Tries `C:\Temp` first (7 chars)
 - **Fallback:** Uses `tempfile.gettempdir()` (with warning if >20 chars)
 
-#### `CURRYER_DISABLE_COPY` - Disable File Copying (AWS/Cloud)
+#### 2. `CURRYER_DISABLE_COPY` - Disable File Copying (AWS/Cloud)
 
 Disable the file copy fallback to avoid storage costs in cloud environments:
 
@@ -157,30 +156,15 @@ If you see warnings about long temp directories:
 export CURRYER_TEMP_DIR="/tmp"
 ```
 
-### What Was Removed (Simplification)
-
-The following environment variables have been **removed** for simplicity:
-
-- ~~`CURRYER_DISABLE_SYMLINKS`~~ - Removed (symlinks fail gracefully, no need to disable)
-- ~~`CURRYER_PATH_STRATEGY`~~ - Removed (fixed order: symlink → copy)
-- ~~`CURRYER_WARN_ON_COPY`~~ - Removed (reduced log noise)
-- ~~`CURRYER_WARN_COPY_THRESHOLD`~~ - Removed (over-engineered)
-
-**Rationale:** These variables added complexity without significant benefit. The simplified implementation:
-
-- Always tries symlink first (zero cost)
-- Falls back to copy automatically
-- Users control cost via `CURRYER_DISABLE_COPY` if needed
-
 ### Logging
 
-Curryer logs path-shortening operations at appropriate levels:
+Curryer logs path-shortening operations at INFO level for visibility:
 
-**Successful shortening:**
+**Successful symlink:**
 
 ```
-INFO: Path exceeds 80 chars (85 chars): naif0012.tls
-DEBUG: Created symlink: /tmp/curryer_naif0012.tls
+INFO: Path exceeds 80 chars (102 chars): naif0012.tls
+INFO:   → Using symlink: /tmp/curryer_naif0012.tls
 ```
 
 **Fallback to copy:**
@@ -188,7 +172,7 @@ DEBUG: Created symlink: /tmp/curryer_naif0012.tls
 ```
 INFO: Path exceeds 80 chars (127 chars): large_kernel.bsp
 DEBUG: Symlink creation failed: Operation not permitted
-DEBUG: Copied to short path: /tmp/curryer_abc12345.bsp
+INFO:   → Using copy: /tmp/curryer_abc12345.bsp
 ```
 
 **Both strategies fail:**
@@ -202,129 +186,25 @@ WARNING: Failed to shorten path: very_long_file.txt (150 chars)
 
 ## Platform-Specific Behavior
 
-### Linux/macOS
+**Recommended configurations:**
 
-- **Both strategies work**
-- Symlinks preferred (fastest, no overhead)
-- Default temp directory: `/tmp` (4 chars - maximum filename space)
+### **Tips:**
 
-**Recommended configuration:**
-
-```bash
-# Use defaults (symlinks preferred, /tmp for max space)
-# No configuration needed
-```
-
-### Windows
-
-- **Symlinks require administrator privileges or Developer Mode**
-- If symlinks fail, automatically falls back to copy
-- Default temp directory: `C:\Temp` (7 chars)
-
-**Recommended configuration:**
-
-```bash
-# No configuration needed - automatic fallback works well
-```
-
-**Enabling Developer Mode for Symlinks:**
-
-1. Settings → Update & Security → For Developers
-2. Enable "Developer Mode"
-3. Restart terminal/IDE
-
-### Docker/Containers
-
-- **Most containers support symlinks**
-- Some security policies (seccomp) may restrict symlink creation
-- Curryer automatically falls back to copy if restricted
-
-**Recommended configuration:**
-
-```bash
-# Use short temp directory inside container
-export CURRYER_TEMP_DIR="/tmp"
-```
-
-### AWS (EC2, Lambda, ECS)
-
-- **Symlinks work on EC2 instances**
-- File copy may have I/O costs if reading from EFS/network storage
-- **Disable copying to avoid network transfer costs**
-
-**Recommended configuration:**
-
-```bash
-# AWS: Disable file copying to avoid EFS transfer costs
-export CURRYER_DISABLE_COPY="true"
-
-# Use local temp directory (not EFS)
-export CURRYER_TEMP_DIR="/tmp"
-```
-
-## Troubleshooting
-
-### "Path still exceeds 80 characters after shortening"
-
-**Cause:** Temp directory itself is too long
-
-**Solution:**
-
-```bash
-export CURRYER_TEMP_DIR="/tmp"  # Use very short base directory
-```
-
-### "Symlink creation failed"
-
-**Cause:** Insufficient permissions or restricted environment
-
-**Solutions:**
-
-1. **Enable symlinks** (if platform supports):
-
-   - Windows: Enable Developer Mode
-   - Container: Check seccomp profile
-
-2. **Let copy fallback work** (automatic - no action needed):
-
-   - Curryer automatically tries copy if symlink fails
-
-3. **Check logs** to see why symlink failed
-
-### "Copying files is slow / high AWS costs"
-
-**Cause:** File copy strategy used for large kernels from network storage
-
-**Solutions:**
-
-1. **Enable symlinks** (if platform supports and not already enabled):
+1. **Enable symlinks**
 
    - Symlinks work by default on Linux/macOS
    - Check logs to see if symlinks are failing
 
-2. **Disable copy fallback** (AWS/cloud environments):
+2. **Disable copy fallback** on AWS/cloud environments:
 
    ```bash
    export CURRYER_DISABLE_COPY="true"
    ```
 
-   Note: This requires symlinks to work
-
 3. **Use local storage** for `CURRYER_TEMP_DIR`:
    ```bash
    export CURRYER_TEMP_DIR="/tmp"  # Local SSD, not network storage
    ```
-
-### "System temp directory is long" warning
-
-**Cause:** On macOS, `TMPDIR` may be set to `/var/folders/.../T` (~49 chars)
-
-**Solution:**
-
-```bash
-# Override to use /tmp instead (4 chars - much more space)
-export CURRYER_TEMP_DIR="/tmp"
-```
 
 **Note:** Curryer automatically prefers `/tmp` when available, but logs a warning if falling back to longer paths.
 
