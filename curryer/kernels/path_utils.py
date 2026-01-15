@@ -5,10 +5,8 @@ particularly for handling SPICE's 80-character path limitation.
 """
 
 import copy
-import hashlib
 import logging
 import os
-import platform
 import re
 import shutil
 import tempfile
@@ -32,14 +30,21 @@ def get_short_temp_dir() -> Path:
     Raises
     ------
     ValueError
-        If CURRYER_TEMP_DIR is set to an invalid path (too long, not writable,
-        or pointing to a sensitive system directory).
+        If CURRYER_TEMP_DIR is set to an invalid path (too long).
 
     Notes
     -----
     Priority order:
     1. CURRYER_TEMP_DIR environment variable (if set and validated)
-    2. Platform-specific short defaults (/tmp on Unix, C:/Temp on Windows)
+    2. /tmp on Unix (bypasses macOS TMPDIR which can be longer by default)
+    3. C:\\Temp on Windows (shorter than default AppData path)
+    4. Python's tempfile.gettempdir() (fallback, could be 40 characters)
+
+    Why not just use tempfile.gettempdir()?
+    - On macOS, TMPDIR is set to /var/folders/.../T (~49 chars)
+    - This leaves only ~30 chars for filenames
+    - We prefer /tmp (4 chars) to maximize filename space (75 chars)
+    - Users can still override with CURRYER_TEMP_DIR if needed
 
     Examples
     --------
@@ -55,74 +60,58 @@ def get_short_temp_dir() -> Path:
         # Validate the path isn't too long (defeats the purpose)
         if len(str(custom_path)) > 50:
             raise ValueError(
-                f"CURRYER_TEMP_DIR path is too long ({len(str(custom_path))} chars): {custom_path}. "
-                "Must be ≤50 characters to ensure temp file paths stay under SPICE's 80-char limit."
+                f"CURRYER_TEMP_DIR too long ({len(str(custom_path))} chars). Must be ≤50 characters: {custom_path}"
             )
 
-        # Validate it's not pointing to sensitive system directories (or subdirectories)
-        # Exclude /tmp and /var/tmp since those are meant for temporary files
-        sensitive_dirs = ["/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/sbin", "/sys", "/usr"]
-        if platform.system() == "Windows":
-            sensitive_dirs = ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
-
-        resolved_path = custom_path.resolve(strict=False)
-        for sensitive in sensitive_dirs:
-            sensitive_path = Path(sensitive).resolve(strict=False)
-            # Check if custom path is under a sensitive directory
-            try:
-                resolved_path.relative_to(sensitive_path)
-            except ValueError:
-                # relative_to raises ValueError if paths are unrelated - this is what we want
-                # Not under this sensitive directory; check the next one
-                continue
-            else:
-                # If we get here, resolved_path is under sensitive_path
-                raise ValueError(
-                    f"CURRYER_TEMP_DIR cannot point to or be under sensitive system directory. "
-                    f"Attempted: {custom_path}, resolves to: {resolved_path}, sensitive parent: {sensitive_path}"
-                )
-        # Try to create and verify it's writable
-        try:
-            custom_path.mkdir(parents=True, exist_ok=True)
-            # Test writability with a temporary file
-            test_file = custom_path / ".curryer_write_test"
-            test_file.touch()
-            test_file.unlink()
-        except (OSError, PermissionError) as e:
-            raise ValueError(f"CURRYER_TEMP_DIR is not writable: {custom_path}. Error: {e}") from e
-
+        custom_path.mkdir(parents=True, exist_ok=True)
         return custom_path
 
-    # Platform-specific short defaults
-    system = platform.system()
+    # Try to use the shortest available temp directory
+    # This bypasses macOS TMPDIR env var which points to long user-specific paths
 
-    if system == "Windows":
-        # Use C:\Temp on Windows
-        # Path constructor handles platform-specific separators
-        short_base = Path("C:", "Temp")
+    if os.name != "nt":
+        # Unix/Linux/macOS: Try /tmp first (only 4 chars, leaves 75 chars for filename)
+        # Note: macOS sets TMPDIR=/var/folders/.../T leaving only ~30 chars for filenames
+        tmp_path = Path("/tmp")  # noqa: S108
+        if tmp_path.exists() and os.access(str(tmp_path), os.W_OK):
+            return tmp_path
     else:
-        # Unix-like systems use /tmp directly
-        short_base = Path("/tmp")  # noqa: S108
+        # Windows: Try C:\Temp first (7 chars, leaves 72 chars for filename)
+        c_temp = Path("C:\\Temp")
+        try:
+            c_temp.mkdir(parents=True, exist_ok=True)
+            if os.access(str(c_temp), os.W_OK):
+                return c_temp
+        except (OSError, PermissionError):
+            pass  # Fall back to system temp
 
-    # Create if it doesn't exist
-    short_base.mkdir(parents=True, exist_ok=True)
+    # Fallback: Use Python's standard temp directory (cross-platform)
+    # This respects TMPDIR, TEMP, TMP env vars and platform defaults
+    temp_dir = Path(tempfile.gettempdir())
 
-    return short_base
+    # Warn if system temp directory is too long (leaves less room for filenames)
+    if len(str(temp_dir)) > 35:
+        logger.warning(
+            f"System temp directory is long ({len(str(temp_dir))} chars): {temp_dir}. "
+            f"This leaves only ~{80 - len(str(temp_dir)) - 1} chars for filenames. "
+            f"Consider setting CURRYER_TEMP_DIR=/tmp for shorter paths."
+        )
+
+    return temp_dir
 
 
 def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
-    """
-    Attempt to make a symlink in a short temp directory.
+    """Create a symlink in a short temp directory.
 
-    This is the preferred strategy as it requires no file copying
-    (minimal overhead).
+    Uses a simple naming scheme since symlinks are cheap to create/replace.
+    If a symlink already exists, it's replaced (idempotent operation).
 
     Parameters
     ----------
     source_path : Path
-        Original long file path
+        Original file path
     temp_dir : Path
-        Short base directory for symlink (e.g., /tmp/spice)
+        Short base directory for symlink (e.g., /tmp)
 
     Returns
     -------
@@ -133,117 +122,54 @@ def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
     -----
     - Works on Linux/macOS by default
     - May fail on Windows or restricted environments
-    - Failures should be logged but not raise exceptions
+    - Failures are logged but don't raise exceptions
+    - Idempotent: reusing the same symlink name is safe
     """
-    # Generate base short filename using hash
-    path_hash = hashlib.md5(str(source_path).encode()).hexdigest()[:8]  # noqa: S324
-    stem_part = source_path.stem[:10]
-    suffix = source_path.suffix
-
-    # Resolve source to an absolute, normalized path for comparison
-    source_real = os.path.realpath(str(source_path))
-
-    last_error: OSError | None = None
-
-    # Try primary name first, then fall back to suffixed variants on collision
-    for i in range(10):
-        if i == 0:
-            symlink_name = f"{stem_part}_{path_hash}{suffix}"
-        else:
-            symlink_name = f"{stem_part}_{path_hash}_{i}{suffix}"
-
+    try:
+        # Simple unique name: prefix + original name
+        # No hash needed - symlinks are free to create/overwrite
+        symlink_name = f"curryer_{source_path.name}"
         symlink_path = temp_dir / symlink_name
 
-        # If something already exists at this path, see if we can reuse it
+        # Remove existing symlink/file if present (idempotent)
         if symlink_path.exists() or symlink_path.is_symlink():
-            if symlink_path.is_symlink():
-                try:
-                    target = os.readlink(str(symlink_path))
-                    # Resolve relative symlink targets relative to symlink's directory
-                    target_path = Path(target)
-                    if not target_path.is_absolute():
-                        target_path = symlink_path.parent / target_path
-                    target_real = os.path.realpath(str(target_path))
-                except OSError as e:
-                    # Can't read target; treat as collision and try another name
-                    last_error = e
-                    continue
+            symlink_path.unlink()
 
-                # Reuse existing symlink if it already points to the same source
-                if target_real == source_real:
-                    return symlink_path
+        os.symlink(source_path, symlink_path)
+        logger.debug(f"Created symlink: {symlink_path}")
+        return symlink_path
 
-            # Existing path points elsewhere (or is not a symlink): try another name
-            continue
-
-        # No existing entry: try to create the symlink
-        try:
-            os.symlink(source_path, symlink_path)
-            return symlink_path
-        except OSError as e:
-            # Record the last error and break if it's not a simple collision
-            last_error = e
-            # For permissions or platform issues, further attempts are unlikely to succeed
-            break
-
-    if last_error is not None:
-        # Expected failures: Windows permissions, container restrictions, etc.
-        logger.debug(f"Symlink creation failed: {last_error}")
-    return None
+    except OSError as e:
+        logger.debug(f"Symlink creation failed: {e}")
+        return None
 
 
 def get_path_strategy_config() -> dict:
-    """
-    Read path shortening configuration from environment variables.
+    """Read path shortening configuration from environment variables.
 
     Supported variables:
-    - CURRYER_PATH_STRATEGY: Comma-separated priority list (default: "symlink,copy")
-    - CURRYER_DISABLE_SYMLINKS: "true" to disable symlinks (default: "false")
     - CURRYER_DISABLE_COPY: "true" to disable file copying (default: "false")
-    - CURRYER_TEMP_DIR: Custom short temp directory (already implemented)
-    - CURRYER_WARN_ON_COPY: "true" to warn on large file copies (default: "true")
-    - CURRYER_WARN_COPY_THRESHOLD: File size in MB to trigger warning (default: "10")
+    - CURRYER_TEMP_DIR: Custom short temp directory (handled by get_short_temp_dir())
 
     Returns
     -------
     dict
-        Configuration with keys: strategy_order, disable_symlinks, disable_copy, temp_dir,
-        warn_on_copy, warn_copy_threshold_mb
+        Configuration with keys: disable_copy, try_symlink, try_copy
 
     Examples
     --------
     >>> import os
-    >>> os.environ["CURRYER_WARN_ON_COPY"] = "true"
-    >>> os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "50"  # Warn on files > 50 MB
+    >>> os.environ["CURRYER_DISABLE_COPY"] = "true"
     >>> config = get_path_strategy_config()
-    >>> config["warn_on_copy"]
-    True
-    >>> config["warn_copy_threshold_mb"]
-    50
+    >>> config["try_copy"]
+    False
     """
-    strategy_str = os.getenv("CURRYER_PATH_STRATEGY", "symlink,copy")
-    strategy_order = [s.strip() for s in strategy_str.split(",")]
-
-    disable_symlinks = os.getenv("CURRYER_DISABLE_SYMLINKS", "false").lower() == "true"
     disable_copy = os.getenv("CURRYER_DISABLE_COPY", "false").lower() == "true"
-    warn_on_copy = os.getenv("CURRYER_WARN_ON_COPY", "true").lower() == "true"
-    temp_dir = os.getenv("CURRYER_TEMP_DIR", None)
-
-    # Parse threshold from env var, default to 10 MB
-    warn_copy_threshold_str = os.getenv("CURRYER_WARN_COPY_THRESHOLD", "10")
-    try:
-        warn_copy_threshold_mb = int(warn_copy_threshold_str)
-    except ValueError:
-        logger.warning(f"Invalid CURRYER_WARN_COPY_THRESHOLD value '{warn_copy_threshold_str}', using default of 10 MB")
-        warn_copy_threshold_mb = 10
 
     return {
-        "strategy_order": strategy_order,
-        "disable_symlinks": disable_symlinks,
         "disable_copy": disable_copy,
-        "temp_dir": temp_dir,
-        "warn_on_copy": warn_on_copy,
-        "warn_copy_threshold_mb": warn_copy_threshold_mb,
+        "try_symlink": True,  # Always try symlink first (zero cost)
+        "try_copy": not disable_copy,  # Copy fallback unless disabled
     }
 
 
@@ -301,256 +227,60 @@ def _convert_paths_to_strings(obj):
         return obj
 
 
-def attempt_symlink_strategy(fn, item, temp_dir, max_len, modified_item):
-    """Attempt to create a symlink in a short temp directory.
+def copy_to_short_path(source_path: Path, temp_dir: Path, max_len: int) -> Path | None:
+    """Copy file to temp directory with short path.
+
+    Returns Path object for consistency with create_short_symlink().
 
     Parameters
     ----------
-    fn : Path
+    source_path : Path
         Original file path
-    item : str or Path
-        Current item value
     temp_dir : Path
         Temporary directory base
     max_len : int
-        Maximum path length
-    modified_item : bool
-        Whether item has been modified
+        Maximum path length (default: 80 for SPICE)
 
     Returns
     -------
-    tuple
-        (success: bool, new_item: str|Path, new_modified_item: bool, fn_section: str|None)
+    Path | None
+        Path to copied file if successful, None if copy failed
+
+    Notes
+    -----
+    Uses tempfile.mkstemp() for unique naming. Warns if temp directory
+    base path is too long.
     """
-    if not fn.is_file() or modified_item:
-        return False, item, modified_item, None
-
-    logger.info("  Attempting symlink strategy...")
-    symlink_path = create_short_symlink(fn, temp_dir)
-
-    if symlink_path and len(str(symlink_path)) <= max_len:
-        logger.info(f"  ✓ Created symlink: {symlink_path} ({len(str(symlink_path))} chars)")
-        return True, symlink_path, True, None
-    else:
-        logger.warning("  ✗ Symlink creation failed or path still too long")
-        return False, item, modified_item, None
-
-
-def attempt_copy_strategy(fn, item, temp_dir, max_len, modified_item, warn_on_copy, warn_copy_threshold_mb):
-    """Attempt to copy file to temp directory with short path.
-
-    Parameters
-    ----------
-    fn : Path
-        Original file path
-    item : str or Path
-        Current item value
-    temp_dir : Path
-        Temporary directory base
-    max_len : int
-        Maximum path length
-    modified_item : bool
-        Whether item has been modified
-    warn_on_copy : bool
-        Whether to warn on large file copies
-    warn_copy_threshold_mb : int
-        File size threshold for warnings (MB)
-
-    Returns
-    -------
-    tuple
-        (success: bool, new_item: str|Path, new_modified_item: bool, fn_section: str|None, temp_file_path: str|None)
-    """
-    if not fn.is_file() or modified_item:
-        return False, item, modified_item, None, None
-
-    logger.info("  Attempting file copy strategy...")
-    temp_path = None
     try:
-        # Use hash of full path to ensure uniqueness (not for security)
-        path_hash = hashlib.md5(str(fn).encode()).hexdigest()[:6]  # noqa: S324
-        prefix = f"{fn.stem[:10]}_{path_hash}_"
+        temp_fd, temp_path = tempfile.mkstemp(suffix=source_path.suffix, prefix="curryer_", dir=str(temp_dir))
 
-        # Pre-calculate expected temp path length to avoid unnecessary copy
-        # mkstemp adds random chars (conservative estimate: 12 to handle platform variations)
-        # Estimated: temp_dir + / + prefix + random_chars + suffix
-        estimated_length = len(str(temp_dir)) + 1 + len(prefix) + 12 + len(fn.suffix)
-        if estimated_length > max_len:
+        if len(temp_path) > max_len:
             logger.warning(
-                f"  ✗ Temp path would be too long ({estimated_length} chars estimated), skipping copy strategy"
+                f"Temp directory base path too long for SPICE ({len(str(temp_dir))} chars). "
+                f"Consider setting CURRYER_TEMP_DIR to a shorter path."
             )
-            return False, item, modified_item, None, None
-        else:
-            # Check file size and warn if large (if configured)
-            if warn_on_copy:
-                try:
-                    file_size_bytes = fn.stat().st_size
-                    file_size_mb = file_size_bytes / (1024 * 1024)
-                    if file_size_mb > warn_copy_threshold_mb:
-                        logger.warning(
-                            f"  ⚠ Copying large file: {fn.name} ({file_size_mb:.1f} MB) - "
-                            f"consider using symlinks or optimizing path structure"
-                        )
-                except OSError:
-                    # If we can't get file size, continue without warning
-                    pass
+            os.close(temp_fd)
+            os.remove(temp_path)
+            return None
 
-            temp_fd, temp_path = tempfile.mkstemp(suffix=fn.suffix, prefix=prefix, dir=str(temp_dir))
+        # Copy file
+        with os.fdopen(temp_fd, "wb") as dst:
+            with open(source_path, "rb") as src:
+                shutil.copyfileobj(src, dst)
 
-            # Verify actual path is short enough (should match estimate)
-            if len(temp_path) <= max_len:
-                # Keep fd open during copy to prevent race condition
-                # Copy the file - if this fails, temp file will be cleaned up in except block
-                try:
-                    with os.fdopen(temp_fd, "wb") as temp_file:
-                        with open(fn, "rb") as source_file:
-                            shutil.copyfileobj(source_file, temp_file)
-                    # Copy metadata after closing the file
-                    shutil.copystat(fn, temp_path)
-                except Exception:
-                    # If copy fails, close fd if still open
-                    try:
-                        os.close(temp_fd)
-                    except OSError:
-                        # fd may already be closed or invalid; ignore errors during cleanup
-                        pass
-                    raise
+        shutil.copystat(source_path, temp_path)
+        logger.debug(f"Copied to short path: {temp_path}")
+        return Path(temp_path)
 
-                logger.info(f"  ✓ Copied to short path: {temp_path} ({len(temp_path)} chars)")
-                logger.debug(f"   Successfully shortened from {len(str(fn))} to {len(temp_path)} chars")
-
-                return True, temp_path, True, None, temp_path
-            else:
-                # Temp path still too long, clean up and try other strategies
-                # Close the file descriptor first
-                try:
-                    os.close(temp_fd)
-                except OSError:
-                    # fd may already be closed or invalid; ignore errors during cleanup
-                    pass
-                actual_length = len(temp_path)
-                os.remove(temp_path)
-                temp_path = None  # Mark as cleaned up
-                logger.warning(f"  ✗ Temp path still exceeds limit ({actual_length} chars)")
-                return False, item, modified_item, None, None
-    except (OSError, PermissionError, shutil.SameFileError, shutil.Error) as e:
-        # Clean up temp file if it was created but copy/checks failed
-        # Catches: OSError, PermissionError (file system issues)
-        #          shutil.SameFileError and other shutil.Error subclasses (shutil-specific issues)
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass  # Best effort cleanup
-        logger.warning(f"  ✗ Failed to copy to temp directory: {e}")
-        return False, item, modified_item, None, None
-
-
-def _try_strategies(
-    fn,
-    item,
-    temp_dir,
-    max_len,
-    modified_item,
-    try_symlink,
-    try_copy,
-    strategy_order,
-    use_custom_order,
-    warn_on_copy,
-    warn_copy_threshold_mb,
-):
-    """Try path shortening strategies in order until one succeeds.
-
-    Parameters
-    ----------
-    fn : Path
-        Original file path
-    item : str or Path
-        Current item value
-    temp_dir : Path
-        Temporary directory base
-    max_len : int
-        Maximum path length
-    modified_item : bool
-        Whether item has been modified
-    try_symlink : bool
-        Whether to try symlink strategy
-    try_copy : bool
-        Whether to try copy strategy
-    strategy_order : list
-        Custom strategy order
-    use_custom_order : bool
-        Whether to use custom strategy order
-    warn_on_copy : bool
-        Whether to warn on large file copies
-    warn_copy_threshold_mb : int
-        File size threshold for warnings (MB)
-
-    Returns
-    -------
-    tuple
-        (item: str|Path, modified_item: bool, fn_section: str|None, temp_file_created: str|None)
-    """
-    fn_section = None
-    temp_file_created = None
-
-    # Map strategy names to functions
-    def try_symlink_func():
-        nonlocal item, modified_item, fn_section, temp_file_created
-        if not try_symlink:
-            return False
-        success, new_item, new_modified, _ = attempt_symlink_strategy(fn, item, temp_dir, max_len, modified_item)
-        if success:
-            item = new_item
-            modified_item = new_modified
-            temp_file_created = str(new_item)
-            return True
-        return False
-
-    def try_copy_func():
-        nonlocal item, modified_item, fn_section, temp_file_created
-        if not try_copy:
-            return False
-        success, new_item, new_modified, _, new_temp_file = attempt_copy_strategy(
-            fn, item, temp_dir, max_len, modified_item, warn_on_copy, warn_copy_threshold_mb
-        )
-        if success:
-            item = new_item
-            modified_item = new_modified
-            temp_file_created = new_temp_file
-            return True
-        return False
-
-    strategy_functions = {
-        "symlink": try_symlink_func,
-        "copy": try_copy_func,
-    }
-
-    # Execute strategies in order
-    if use_custom_order:
-        # Use custom strategy order from environment variable
-        for strategy_name in strategy_order:
-            if strategy_name in strategy_functions:
-                if strategy_functions[strategy_name]():
-                    # Strategy succeeded - break to prevent other strategies
-                    break
-            else:
-                logger.warning(f"  Unknown strategy '{strategy_name}' in CURRYER_PATH_STRATEGY, skipping")
-    else:
-        # Use default order: symlink → copy
-        for strategy_func in [try_symlink_func, try_copy_func]:
-            if strategy_func():
-                # Strategy succeeded - break to prevent other strategies
-                break
-
-    return item, modified_item, fn_section, temp_file_created
+    except OSError as e:
+        logger.debug(f"Copy failed: {e}")
+        return None
 
 
 # pylint: disable=too-many-branches,too-many-nested-blocks
 def update_invalid_paths(
     configs,
     max_len=80,
-    try_symlink=True,
     try_copy=True,
     parent_dir=None,
     temp_dir=None,
@@ -558,8 +288,8 @@ def update_invalid_paths(
     """Update invalid paths (too long) by creating symlinks or copying to short temp paths.
 
     Attempts to fix paths that exceed the maximum length by trying strategies in order:
-    1. Symlink to temp directory with short path (if try_symlink=True)
-    2. Copy file to temp directory with short path (if try_copy=True)
+    1. Symlink to temp directory with short path (always tried first - zero cost)
+    2. Copy file to temp directory with short path (fallback if symlink fails)
 
     Parameters
     ----------
@@ -567,14 +297,12 @@ def update_invalid_paths(
         Configuration dictionary to update
     max_len : int
         Maximum path length (default: 80 for SPICE string values)
-    try_symlink : bool
-        Try to create symlink in temp directory with short path (default: True)
     try_copy : bool
         Try to copy file to temp directory with short path (default: True)
     parent_dir : Path
         Parent directory for resolving relative paths
     temp_dir : Path
-        Base directory for temp copies (default: /tmp on Unix, C:/Temp on Windows)
+        Base directory for temp copies (default: uses tempfile.gettempdir())
 
     Returns
     -------
@@ -591,18 +319,8 @@ def update_invalid_paths(
     env_config = get_path_strategy_config()
 
     # Override parameters based on env vars
-    if env_config["disable_symlinks"]:
-        try_symlink = False
     if env_config["disable_copy"]:
         try_copy = False
-
-    # Use custom strategy order if CURRYER_PATH_STRATEGY is set
-    strategy_order = env_config["strategy_order"]
-    use_custom_order = os.getenv("CURRYER_PATH_STRATEGY") is not None
-
-    # Get warn_on_copy configuration
-    warn_on_copy = env_config["warn_on_copy"]
-    warn_copy_threshold_mb = env_config["warn_copy_threshold_mb"]
 
     if parent_dir is not None:
         parent_dir = Path(parent_dir)
@@ -660,7 +378,6 @@ def update_invalid_paths(
                 continue
 
             modified_item = False
-            fn_section = None
 
             # Work with Path object directly
             if isinstance(item, Path):
@@ -678,37 +395,29 @@ def update_invalid_paths(
             if (fn.is_file() or fn.is_dir()) and len(str(item)) > max_len:
                 # Log that we detected a long path that needs shortening
                 logger.info(f"Path exceeds {max_len} chars ({len(str(item))} chars): {fn.name}")
-                logger.debug(f"  Full path: {item}")
 
-                # Try strategies until one succeeds
-                item, modified_item, fn_section, temp_file_created = _try_strategies(
-                    fn,
-                    item,
-                    temp_dir,
-                    max_len,
-                    modified_item,
-                    try_symlink,
-                    try_copy,
-                    strategy_order,
-                    use_custom_order,
-                    warn_on_copy,
-                    warn_copy_threshold_mb,
-                )
-
-                # Track temp file if created
-                if temp_file_created:
-                    temp_files_created.append(temp_file_created)
-
-                # Process the final item
-                if fn_section is None:
-                    item = fn if not modified_item else item
-                else:
-                    item = fn_section
-
-                # Ensure item is always a string (could be Path if fn_section was None)
-                if isinstance(item, Path):
-                    item = str(item)
+                # Strategy 1: Symlink (always try first - zero cost)
+                symlink_path = create_short_symlink(fn, temp_dir)
+                if symlink_path and len(str(symlink_path)) <= max_len:
+                    item = str(symlink_path)  # Convert Path to str for config dict
+                    temp_files_created.append(str(symlink_path))
                     modified_item = True
+                    logger.debug(f"  ✓ Created symlink: {symlink_path}")
+
+                # Strategy 2: Copy (if symlink failed and enabled)
+                elif try_copy:
+                    temp_path = copy_to_short_path(fn, temp_dir, max_len)
+                    if temp_path:
+                        item = str(temp_path)  # Convert Path to str for config dict
+                        temp_files_created.append(str(temp_path))
+                        modified_item = True
+                        logger.debug(f"  ✓ Copied to short path: {temp_path}")
+                    else:
+                        logger.warning(f"  ✗ Failed to shorten path: {fn.name} ({len(str(fn))} chars)")
+
+                # If both strategies failed
+                else:
+                    logger.warning(f"  ✗ Failed to shorten path: {fn.name} ({len(str(fn))} chars)")
 
                 new_vals.append(item)
 

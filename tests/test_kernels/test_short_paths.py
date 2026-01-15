@@ -2,7 +2,7 @@
 
 This module comprehensively tests the SPICE path shortening functionality
 that automatically handles paths exceeding the 80-character limit through
-multiple strategies: symlink → wrap → relative → copy.
+two strategies: symlink → copy.
 """
 
 import logging
@@ -24,7 +24,7 @@ class TestShortTempDir(unittest.TestCase):
 
     Tests the temporary directory helper that provides short base paths
     for temporary files to avoid SPICE's 80-character limit.
-    Covers platform-specific defaults, custom paths, validation, and security.
+    Covers platform-specific defaults, custom paths, and path length validation.
     """
 
     def setUp(self):
@@ -41,18 +41,30 @@ class TestShortTempDir(unittest.TestCase):
             del os.environ["CURRYER_TEMP_DIR"]
 
     def test_default_temp_dir(self):
-        """Test that default temp directory is short."""
+        """Test that default temp directory uses shortest available path."""
         temp_dir = get_short_temp_dir()
 
-        # Should return /tmp on Unix-like systems
+        # Should prioritize short paths: /tmp on Unix, C:\Temp on Windows
         if os.name != "nt":
-            self.assertEqual(str(temp_dir), "/tmp")
-
-        # Path should be short (< 20 chars)
-        self.assertLess(len(str(temp_dir)), 20, f"Default temp dir should be short: {temp_dir}")
+            # On Unix/macOS, should use /tmp (4 chars) for maximum filename space
+            self.assertEqual(str(temp_dir), "/tmp", "Should use /tmp on Unix for shortest path")
+        else:
+            # On Windows, should try C:\Temp first, or fall back to system temp
+            self.assertTrue(
+                str(temp_dir) in ["C:\\Temp", tempfile.gettempdir()],
+                f"Should use C:\\Temp or system temp on Windows: {temp_dir}",
+            )
 
         # Directory should exist
         self.assertTrue(temp_dir.exists())
+
+        # Directory should be writable
+        self.assertTrue(os.access(str(temp_dir), os.W_OK))
+
+        # On Unix, verify we have maximum space for filenames
+        if os.name != "nt" and str(temp_dir) == "/tmp":
+            # /tmp is 4 chars, leaving 75 chars for filenames (plenty!)
+            self.assertEqual(len(str(temp_dir)), 4, "Unix /tmp should be exactly 4 chars")
 
     def test_custom_temp_dir(self):
         """Test CURRYER_TEMP_DIR environment variable."""
@@ -96,63 +108,13 @@ class TestShortTempDir(unittest.TestCase):
             if "CURRYER_TEMP_DIR" in os.environ:
                 del os.environ["CURRYER_TEMP_DIR"]
 
-    def test_custom_temp_dir_not_writable(self):
-        """Test that CURRYER_TEMP_DIR raises ValueError if path is not writable."""
-        # Use a short path that we can mock to simulate write failure
-        if os.name != "nt":
-            test_path = "/tmp/test_rw"
-            os.environ["CURRYER_TEMP_DIR"] = test_path
-
-            try:
-                # Mock the touch() operation to raise PermissionError
-                with patch("pathlib.Path.touch", side_effect=PermissionError("Permission denied")):
-                    with self.assertRaises(ValueError) as context:
-                        get_short_temp_dir()
-
-                    self.assertIn("not writable", str(context.exception))
-            finally:
-                if "CURRYER_TEMP_DIR" in os.environ:
-                    del os.environ["CURRYER_TEMP_DIR"]
-        else:
-            # On Windows, skip this test as it's hard to find a reliably unwritable path
-            self.skipTest("Not applicable on Windows")
-
-    def test_custom_temp_dir_sensitive_directory(self):
-        """Test that CURRYER_TEMP_DIR raises ValueError if pointing to sensitive directory."""
-        if os.name != "nt":
-            # Try to use /etc which is a sensitive system directory
-            sensitive_path = "/etc/curryer_test"
-            os.environ["CURRYER_TEMP_DIR"] = sensitive_path
-
-            try:
-                with self.assertRaises(ValueError) as context:
-                    get_short_temp_dir()
-
-                self.assertIn("sensitive system directory", str(context.exception))
-            finally:
-                if "CURRYER_TEMP_DIR" in os.environ:
-                    del os.environ["CURRYER_TEMP_DIR"]
-        else:
-            # On Windows, test C:\Windows
-            sensitive_path = "C:\\Windows\\curryer_test"
-            os.environ["CURRYER_TEMP_DIR"] = sensitive_path
-
-            try:
-                with self.assertRaises(ValueError) as context:
-                    get_short_temp_dir()
-
-                self.assertIn("sensitive system directory", str(context.exception))
-            finally:
-                if "CURRYER_TEMP_DIR" in os.environ:
-                    del os.environ["CURRYER_TEMP_DIR"]
-
 
 class TestUpdateInvalidPaths(unittest.TestCase):
     """Test update_invalid_paths() with path shortening strategies.
 
     Tests the core path shortening function that detects paths exceeding
-    the maximum length and applies appropriate strategies. Covers file
-    copying, wrapping, and tracking of temporary files.
+    the maximum length and applies appropriate strategies. Covers symlink
+    creation, file copying, and tracking of temporary files.
     """
 
     def test_short_path_unchanged(self):
@@ -466,8 +428,7 @@ class TestSymlinkStrategy(unittest.TestCase):
 
     Tests the symlink strategy which creates symbolic links in a short
     temp directory. This is the preferred strategy as it has zero storage
-    overhead and zero I/O cost. Covers creation, fallback, cleanup, and
-    environment variable configuration.
+    overhead and zero I/O cost. Covers creation, fallback to copy, and cleanup.
     """
 
     def test_symlink_creation_success(self):
@@ -495,8 +456,8 @@ class TestSymlinkStrategy(unittest.TestCase):
             # Original path should be long
             self.assertGreater(len(str(test_file)), 80)
 
-            # Call update_invalid_paths with try_symlink=True
-            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True)
+            # Call update_invalid_paths - symlink is always tried first
+            result, temp_files = update_invalid_paths(config, max_len=80)
 
             fixed_path = result["properties"]["leapsecond_kernel"]
 
@@ -542,9 +503,7 @@ class TestSymlinkStrategy(unittest.TestCase):
             # Mock os.symlink in curryer.kernels.path_utils to raise OSError (simulate symlink failure)
             with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Should fall back to copy strategy
-                result, temp_files = update_invalid_paths(
-                    config, max_len=80, try_symlink=True, try_copy=True
-                )
+                result, temp_files = update_invalid_paths(config, max_len=80, try_copy=True)
 
                 fixed_path = result["properties"]["leapsecond_kernel"]
 
@@ -581,7 +540,7 @@ class TestSymlinkStrategy(unittest.TestCase):
             config = {"properties": {"leapsecond_kernel": str(test_file)}}
 
             # Create symlink
-            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True)
+            result, temp_files = update_invalid_paths(config, max_len=80)
 
             symlink_path = result["properties"]["leapsecond_kernel"]
 
@@ -597,57 +556,16 @@ class TestSymlinkStrategy(unittest.TestCase):
             # Verify symlink removed after cleanup
             self.assertFalse(Path(symlink_path).exists())
 
-    def test_symlink_disabled_via_env_var(self):
-        """Test CURRYER_DISABLE_SYMLINKS environment variable."""
-        # Skip on Windows if not supported
-        if os.name == "nt":
-            self.skipTest("Symlinks may require admin on Windows")
-
-        os.environ["CURRYER_DISABLE_SYMLINKS"] = "true"
-
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                long_path_dir = (
-                    Path(tmpdir)
-                    / "very_long_directory_name_for_testing"
-                    / "another_long_directory_name"
-                    / "yet_another_long_directory_name"
-                    / "and_one_more_long_directory"
-                )
-                long_path_dir.mkdir(parents=True, exist_ok=True)
-
-                test_file = long_path_dir / "test_kernel.tls"
-                test_file.write_text("CONTENT")
-
-                config = {"properties": {"leapsecond_kernel": str(test_file)}}
-
-                # Symlink strategy should be skipped
-                result, temp_files = update_invalid_paths(
-                    config, max_len=80, try_symlink=True, try_copy=True
-                )
-
-                fixed_path = result["properties"]["leapsecond_kernel"]
-
-                # Verify symlink strategy was skipped (should use copy instead)
-                self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
-                self.assertTrue(Path(fixed_path).exists(), "Should use copy strategy")
-
-                # Clean up
-                if os.path.exists(fixed_path):
-                    os.remove(fixed_path)
-        finally:
-            del os.environ["CURRYER_DISABLE_SYMLINKS"]
-
 
 class TestStrategyPriorityOrder(unittest.TestCase):
     """Test strategies execute in correct priority order.
 
-    Tests the default strategy priority (symlink → copy)
-    and ensures that strategies are tried in order, with the first successful
-    strategy preventing later attempts. Also verifies the complete fallback
-    chain when earlier strategies fail.
+    Tests the fixed strategy priority (symlink → copy) and ensures that
+    strategies are tried in order, with the first successful strategy
+    preventing later attempts. Also verifies the complete fallback chain
+    when earlier strategies fail.
 
-    Strategy Priority (default order):
+    Strategy Priority (fixed order):
     1. Symlink - Zero overhead, preferred when available
     2. Copy - Bulletproof fallback, always works but creates temp files
     """
@@ -684,8 +602,8 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             # Verify path is long enough
             self.assertGreater(len(str(test_file)), 80, f"Path should be >80 chars: {len(str(test_file))}")
 
-            # Enable both strategies (default behavior)
-            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True, try_copy=True)
+            # Enable copy strategy (symlink always tried first by default)
+            result, temp_files = update_invalid_paths(config, max_len=80, try_copy=True)
 
             fixed_path = result["properties"]["clock_kernel"]
 
@@ -717,8 +635,8 @@ class TestStrategyPriorityOrder(unittest.TestCase):
 
             config = {"properties": {"clock_kernel": str(test_file)}}
 
-            # Enable both strategies - symlink should succeed first
-            result, temp_files = update_invalid_paths(config, max_len=80, try_symlink=True, try_copy=True)
+            # Enable copy strategy (symlink always tried first)
+            result, temp_files = update_invalid_paths(config, max_len=80, try_copy=True)
 
             fixed_path = result["properties"]["clock_kernel"]
 
@@ -758,26 +676,23 @@ class TestStrategyPriorityOrder(unittest.TestCase):
             # Mock symlink to fail (simulating Windows/restricted environment)
             with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Operation not permitted")):
                 # Capture log output to verify strategy attempts
-                with self.assertLogs("curryer.kernels.path_utils", level="INFO") as log_context:
+                with self.assertLogs("curryer.kernels.path_utils", level="DEBUG") as log_context:
                     result, temp_files = update_invalid_paths(
                         config,
                         max_len=80,
-                        try_symlink=True,  # Will fail (mocked)
                         try_copy=True,  # Will succeed
                     )
 
                 fixed_path = result["properties"]["clock_kernel"]
 
-                # Verify strategies were attempted in order
+                # Verify strategies were attempted
                 log_output = "\n".join(log_context.output)
 
-                # Strategy 1: Symlink attempted and failed
-                self.assertIn("Attempting symlink strategy", log_output, "Should attempt symlink first")
+                # Strategy 1: Symlink attempted and failed (logged at DEBUG level)
                 self.assertIn("Symlink creation failed", log_output, "Symlink should fail (mocked)")
 
-                # Strategy 2: Copy attempted and succeeded
-                self.assertIn("Attempting file copy strategy", log_output, "Should attempt copy after symlink fails")
-                self.assertIn("Copied to short path", log_output, "Copy should succeed (bulletproof fallback)")
+                # Strategy 2: Copy succeeded (logged at DEBUG level)
+                self.assertIn("Copied to short path", log_output, "Copy should succeed")
 
                 # Verify the file was actually copied (not symlinked)
                 self.assertFalse(Path(fixed_path).is_symlink(), "Should not be a symlink")
@@ -786,10 +701,6 @@ class TestStrategyPriorityOrder(unittest.TestCase):
 
                 # Verify copy strategy was used (temp file tracked)
                 self.assertEqual(len(temp_files), 1, "Should have one temp file from copy")
-
-                # Verify both strategies were attempted by counting "Attempting" messages
-                attempting_count = log_output.count("Attempting")
-                self.assertEqual(attempting_count, 2, f"Both strategies should be attempted (found {attempting_count})")
 
                 # Clean up
                 for f in temp_files:
@@ -800,87 +711,18 @@ class TestStrategyPriorityOrder(unittest.TestCase):
 class TestEnvironmentVariableConfig(unittest.TestCase):
     """Test environment variable configuration.
 
-    Tests configuration via environment variables including:
-    - CURRYER_DISABLE_SYMLINKS: Disable symlink strategy
-    - CURRYER_DISABLE_COPY: Disable file copy strategy
-    - CURRYER_PATH_STRATEGY: Custom strategy priority order
-    - CURRYER_WARN_ON_COPY: Enable warnings for large file copies
-    - CURRYER_WARN_COPY_THRESHOLD: Size threshold for copy warnings
+    Tests configuration via environment variables:
+    - CURRYER_DISABLE_COPY: Disable file copy strategy (for AWS/cloud)
+    - CURRYER_TEMP_DIR: Custom temp directory (tested in TestShortTempDir)
     """
 
-    def test_curryer_disable_symlinks(self):
-        """Test CURRYER_DISABLE_SYMLINKS=true."""
-        os.environ["CURRYER_DISABLE_SYMLINKS"] = "true"
-
-        try:
-            from curryer.kernels.path_utils import get_path_strategy_config
-
-            config = get_path_strategy_config()
-
-            self.assertTrue(config["disable_symlinks"], "Should disable symlinks")
-
-        finally:
-            del os.environ["CURRYER_DISABLE_SYMLINKS"]
-
     def test_curryer_disable_copy(self):
-        """Test CURRYER_DISABLE_COPY=true."""
+        """Test CURRYER_DISABLE_COPY=true prevents file copying."""
         os.environ["CURRYER_DISABLE_COPY"] = "true"
 
         try:
-            from curryer.kernels.path_utils import get_path_strategy_config
-
-            config = get_path_strategy_config()
-
-            self.assertTrue(config["disable_copy"], "Should disable copy")
-
-        finally:
-            del os.environ["CURRYER_DISABLE_COPY"]
-
-    def test_curryer_path_strategy(self):
-        """Test custom strategy priority via CURRYER_PATH_STRATEGY."""
-        os.environ["CURRYER_PATH_STRATEGY"] = "copy,symlink"
-
-        try:
-            from curryer.kernels.path_utils import get_path_strategy_config
-
-            config = get_path_strategy_config()
-
-            self.assertEqual(config["strategy_order"], ["copy", "symlink"])
-
-        finally:
-            del os.environ["CURRYER_PATH_STRATEGY"]
-
-    def test_curryer_warn_on_copy_default(self):
-        """Test CURRYER_WARN_ON_COPY default value."""
-        from curryer.kernels.path_utils import get_path_strategy_config
-
-        config = get_path_strategy_config()
-
-        self.assertTrue(config["warn_on_copy"], "Should warn on copy by default")
-
-    def test_curryer_warn_copy_threshold(self):
-        """Test CURRYER_WARN_COPY_THRESHOLD environment variable."""
-        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "50"
-
-        try:
-            from curryer.kernels.path_utils import get_path_strategy_config
-
-            config = get_path_strategy_config()
-
-            self.assertEqual(config["warn_copy_threshold_mb"], 50, "Should use custom threshold")
-
-        finally:
-            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
-
-    def test_warn_on_large_file_copy(self):
-        """Test that warnings are logged when copying large files."""
-        os.environ["CURRYER_WARN_ON_COPY"] = "true"
-        os.environ["CURRYER_WARN_COPY_THRESHOLD"] = "1"  # 1 MB threshold
-        os.environ["CURRYER_PATH_STRATEGY"] = "copy"  # Force copy strategy
-
-        try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # Create a large file (2 MB)
+                # Create long path that would need copy strategy
                 long_path_dir = (
                     Path(tmpdir)
                     / "very_long_directory_name_for_testing"
@@ -890,36 +732,36 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
                 )
                 long_path_dir.mkdir(parents=True, exist_ok=True)
 
-                test_file = long_path_dir / "large_test.tls"
-                # Write 2 MB of data
-                with open(test_file, "wb") as f:
-                    f.write(b"X" * (2 * 1024 * 1024))
+                test_file = long_path_dir / "test.txt"
+                test_file.write_text("test")
 
-                config = {"properties": {"leapsecond_kernel": str(test_file)}}
+                config = {"properties": {"test_file": str(test_file)}}
 
-                # Capture log output
-                with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
-                    result, temp_files = update_invalid_paths(config, max_len=80)
+                # Mock symlink to fail (force fallback to copy)
+                with patch("curryer.kernels.path_utils.os.symlink", side_effect=OSError("Not supported")):
+                    result, temp_files = update_invalid_paths(config, max_len=50)
 
-                # Verify warning was logged
-                self.assertTrue(
-                    any("Copying large file" in message for message in log_context.output),
-                    "Should log warning about large file copy",
-                )
-
-                # Verify file was copied
-                fixed_path = result["properties"]["leapsecond_kernel"]
-                self.assertLess(len(fixed_path), 80, "Path should be shortened")
-
-                # Clean up
-                for f in temp_files:
-                    if os.path.exists(f):
-                        os.remove(f)
+                    # Path should remain unchanged (no copy fallback)
+                    # Since symlink failed and copy is disabled, path stays long
+                    self.assertEqual(result["properties"]["test_file"], str(test_file))
+                    self.assertEqual(len(temp_files), 0, "No temp files should be created when copy disabled")
 
         finally:
-            del os.environ["CURRYER_WARN_ON_COPY"]
-            del os.environ["CURRYER_WARN_COPY_THRESHOLD"]
-            del os.environ["CURRYER_PATH_STRATEGY"]
+            if "CURRYER_DISABLE_COPY" in os.environ:
+                del os.environ["CURRYER_DISABLE_COPY"]
+
+    def test_curryer_disable_copy_false_by_default(self):
+        """Test that copy strategy is enabled by default."""
+        from curryer.kernels.path_utils import get_path_strategy_config
+
+        # Ensure env var is not set
+        if "CURRYER_DISABLE_COPY" in os.environ:
+            del os.environ["CURRYER_DISABLE_COPY"]
+
+        config = get_path_strategy_config()
+
+        self.assertFalse(config["disable_copy"], "Copy should be enabled by default")
+        self.assertTrue(config["try_copy"], "try_copy should be True by default")
 
 
 if __name__ == "__main__":

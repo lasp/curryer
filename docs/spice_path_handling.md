@@ -1,6 +1,6 @@
 # SPICE Path Length Handling
 
-Curryer provides automatic path shortening to handle SPICE tools' 80-character path limit, using a two-strategy approach that prioritizes zero-overhead symlinks before falling back to file copying.
+Curryer provides automatic path shortening to handle SPICE tools' 80-character path limit, using a simple two-strategy approach that prioritizes zero-overhead symlinks before falling back to file copying.
 
 ## Overview
 
@@ -15,191 +15,189 @@ SPICE tools (MSOPCK, MKSPK) enforce an **80-character per-line limit** for all s
 
 `PATH_SYMBOLS` and `PATH_VALUES` are **only** interpreted by `furnsh_c` in meta-kernels (`.tm` files). MSOPCK and MKSPK setup files are text kernels but **not** meta-kernels—they require literal file paths and do not support symbolic substitution.
 
-## Strategy Chain
+## Automatic Path Shortening
 
-Curryer automatically shortens paths using a **two-strategy approach**. Each strategy is tried in sequence, and the first one that successfully shortens the path is used.
+Curryer automatically shortens paths using a **two-strategy approach**. Strategies are tried in a fixed order, and the first one that successfully shortens the path is used.
 
-### Strategy 1: Symlink (Preferred)
+### Strategy 1: Symlink (Preferred - Always Tried First)
 
-**How it works:** Creates a symbolic link in a short temp directory (e.g., `/tmp/spice/abc123.tls`)
+**How it works:** Creates a symbolic link in a short temp directory with simple naming: `curryer_{filename}`
 
 **Advantages:**
+
 - Zero file copying (no I/O overhead)
 - Zero storage overhead
 - Fastest option
 - No data duplication
+- Idempotent (safe to recreate)
 
-**Limitations:**
-- Platform-dependent
+**Platform Support:**
+
 - ✅ **Works:** Linux, macOS, most containers
 - ⚠️ **May fail:** Windows (requires admin/dev mode), restricted containers (seccomp policies)
 
-**Fallback:** Automatically tries copy strategy if symlink creation fails
+**Automatic Fallback:** If symlink creation fails, automatically tries copy strategy
 
 **Example:**
+
 ```
-Original: /very/long/conda/env/lib/python3.10/site-packages/data/kernels/naif0012.tls (85 chars)
-Symlink:  /tmp/spice/naif0012_a1b2c3d4.tls (33 chars)
+Original: /var/folders/3r/2r3w66hn4zdbtyfcw2d5b_ww00cdsj/T/kernels/naif0012.tls (85 chars)
+Symlink:  /tmp/curryer_naif0012.tls (25 chars)
 ```
 
 ### Strategy 2: File Copy (Bulletproof Fallback)
 
-**How it works:** Copies file to short temp directory
+**How it works:** Copies file to short temp directory using `tempfile.mkstemp()` for unique naming
 
 **Advantages:**
+
 - **Always works** (guaranteed success)
 - No platform dependencies
 - Handles any path length
 
 **Disadvantages:**
-- I/O overhead (kernels can be many MB)
+
+- I/O overhead (must copy entire file)
 - Doubles storage during operation
 - AWS costs if copying from EFS/network storage
-- Warnings logged for files exceeding threshold (default: 10 MB)
 
-**Cleanup:** Temp files automatically deleted after kernel generation
+**Cleanup:** Temp files are **tracked** during creation. The calling code (e.g., `AbstractKernelWriter`) automatically deletes them in a `finally` block after kernel generation completes.
+
+**Important:** Files created by `copy_to_short_path()` are NOT automatically cleaned up by Python's `tempfile` module. They must be manually deleted by the application. Curryer's kernel writers handle this automatically.
 
 **Example:**
+
 ```
-Original: /very/long/path/to/kernel.bsp (127 chars, 125 MB)
-Copy:     /tmp/kernel_abc123.bsp (24 chars)
-Warning:  ⚠ Copying large file: kernel.bsp (125.0 MB) - consider using symlinks
+Original: /very/long/path/to/kernel.bsp (127 chars)
+Copy:     /tmp/curryer_abc12345.bsp (25 chars)
 ```
 
 ## Configuration
 
-Both strategies are enabled by default (symlink first, then copy). Configure behavior through environment variables:
+Both strategies are enabled by default (symlink first, then copy as fallback). Configure behavior through environment variables.
 
 ### Environment Variables
 
-#### Strategy Control
+Only **2 environment variables** are supported for simplicity:
+
+#### `CURRYER_TEMP_DIR` - Custom Temporary Directory
+
+Set a custom short temp directory for maximum filename space:
 
 ```bash
-# Default: Both strategies enabled (symlink → copy)
-# Strategies are tried in order: symlink first, then copy as fallback
+# Use a very short custom path
+export CURRYER_TEMP_DIR="/tmp"
 
-# Disable symlinks (Windows/restricted environments)
-# When disabled, only copy strategy is used
-export CURRYER_DISABLE_SYMLINKS="true"
+# Or any other short path (must be ≤50 chars)
+export CURRYER_TEMP_DIR="/opt/tmp"
+```
 
-# Disable file copying (AWS/cloud environments to avoid storage costs)
-# When disabled, only symlink strategy is used
+**Validation:**
+
+- Path must be ≤50 characters (raises `ValueError` if longer)
+- Path will be created if it doesn't exist
+
+**Default behavior (if not set):**
+
+- **Unix/macOS:** Tries `/tmp` first (4 chars - maximum filename space!)
+- **Windows:** Tries `C:\Temp` first (7 chars)
+- **Fallback:** Uses `tempfile.gettempdir()` (with warning if >20 chars)
+
+#### `CURRYER_DISABLE_COPY` - Disable File Copying (AWS/Cloud)
+
+Disable the file copy fallback to avoid storage costs in cloud environments:
+
+```bash
+# AWS/Cloud: Try symlinks only (avoid copying from EFS/network storage)
 export CURRYER_DISABLE_COPY="true"
-
-# Advanced: Custom strategy order (if you need different priority)
-# Default: "symlink,copy"
-export CURRYER_PATH_STRATEGY="symlink,copy"
 ```
 
-#### AWS/Cloud Configuration
+**When to use:**
 
-For AWS deployments using EFS or network storage, disable expensive file copying:
+- AWS deployments with EFS or network storage
+- Cloud environments with metered storage
+- When you want to ensure zero file copying
 
-```bash
-# AWS: Use symlinks only (avoid copying large files from EFS)
-export CURRYER_DISABLE_COPY="true"
-
-# Alternatively, use strategy list to only enable symlink
-export CURRYER_PATH_STRATEGY="symlink"
-```
-
-If symlinks also fail in your AWS environment, you may need to accept the copying costs or restructure your deployment to use shorter paths.
-
-#### Windows Configuration
-
-For Windows where symlinks may require admin privileges:
-
-```bash
-# Windows: Use copy only (symlinks may not work)
-export CURRYER_DISABLE_SYMLINKS="true"
-
-# Alternatively, use strategy list to only enable copy
-export CURRYER_PATH_STRATEGY="copy"
-```
-
-#### Temporary Directory Location
-
-```bash
-# Custom short temp directory
-# Default: /tmp (Unix), C:\Temp (Windows)
-export CURRYER_TEMP_DIR="/tmp/spice"
-```
-
-#### Copy Warning Configuration
-
-```bash
-# Warn when copying large files
-# Default: true
-export CURRYER_WARN_ON_COPY="true"
-
-# Size threshold in MB to trigger warning
-# Default: 10 MB
-export CURRYER_WARN_COPY_THRESHOLD="10"
-```
+**Important:** If symlinks fail and copy is disabled, paths will remain long and may cause errors.
 
 ### Configuration Examples
 
-#### Default Behavior (No Configuration Needed)
+#### Default Behavior (Recommended for Most Users)
 
 ```bash
-# Both strategies enabled: symlink → copy
-# Works out of the box for most environments
-# No environment variables needed
+# No configuration needed!
+# - Tries /tmp on Unix (4 chars - 75 chars for filename)
+# - Symlink first, copy fallback
+# - Automatic cleanup
 ```
 
-#### AWS/Cloud: Avoid Expensive File Copying
+#### AWS/Cloud: Avoid File Copying Costs
 
 ```bash
-# Option 1: Use disable flag (recommended)
+# Disable copy to prevent EFS transfer costs
 export CURRYER_DISABLE_COPY="true"
 
-# Option 2: Use strategy list
-export CURRYER_PATH_STRATEGY="symlink"
+# Optional: Use short custom temp directory
+export CURRYER_TEMP_DIR="/tmp"
 ```
 
-#### Windows: Disable Symlinks
+#### Custom Short Temp Directory
 
 ```bash
-# Option 1: Use disable flag (recommended)
-export CURRYER_DISABLE_SYMLINKS="true"
-
-# Option 2: Use strategy list
-export CURRYER_PATH_STRATEGY="copy"
+# Use custom short path for all temp files
+export CURRYER_TEMP_DIR="/data/tmp"
 ```
 
-#### Custom Strategy Order (Advanced)
+#### Extremely Long Temp Directory (macOS Users)
+
+If you see warnings about long temp directories:
 
 ```bash
-# Reverse priority: try copy before symlink
-export CURRYER_PATH_STRATEGY="copy,symlink"
-
-# Only use symlinks (fail if symlinks don't work)
-export CURRYER_PATH_STRATEGY="symlink"
-
-# Only use copy (skip symlink attempt)
-export CURRYER_PATH_STRATEGY="copy"
+# Override macOS TMPDIR (which can be ~49 chars)
+export CURRYER_TEMP_DIR="/tmp"
 ```
+
+### What Was Removed (Simplification)
+
+The following environment variables have been **removed** for simplicity:
+
+- ~~`CURRYER_DISABLE_SYMLINKS`~~ - Removed (symlinks fail gracefully, no need to disable)
+- ~~`CURRYER_PATH_STRATEGY`~~ - Removed (fixed order: symlink → copy)
+- ~~`CURRYER_WARN_ON_COPY`~~ - Removed (reduced log noise)
+- ~~`CURRYER_WARN_COPY_THRESHOLD`~~ - Removed (over-engineered)
+
+**Rationale:** These variables added complexity without significant benefit. The simplified implementation:
+
+- Always tries symlink first (zero cost)
+- Falls back to copy automatically
+- Users control cost via `CURRYER_DISABLE_COPY` if needed
 
 ### Logging
 
-Curryer logs every path-shortening attempt with structured output:
+Curryer logs path-shortening operations at appropriate levels:
 
-**Successful symlink:**
+**Successful shortening:**
+
 ```
-INFO: Path exceeds 80 chars (125 chars): kernel.tls
-DEBUG:   Full path: /very/long/conda/env/path/to/kernel.tls
-INFO:   Attempting symlink strategy...
-INFO:   ✓ Created symlink: /tmp/spice/kernel_abc123.tls (30 chars)
+INFO: Path exceeds 80 chars (85 chars): naif0012.tls
+DEBUG: Created symlink: /tmp/curryer_naif0012.tls
 ```
 
-**Strategy chain fallback:**
+**Fallback to copy:**
+
 ```
-INFO: Path exceeds 80 chars (135 chars): large_kernel.bsp
-INFO:   Attempting symlink strategy...
-WARNING:   ✗ Symlink creation failed (OSError: Operation not permitted)
-INFO:   Attempting file copy strategy...
-WARNING:   ⚠ Copying large file: large_kernel.bsp (125.5 MB) - consider using symlinks
-INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
+INFO: Path exceeds 80 chars (127 chars): large_kernel.bsp
+DEBUG: Symlink creation failed: Operation not permitted
+DEBUG: Copied to short path: /tmp/curryer_abc12345.bsp
+```
+
+**Both strategies fail:**
+
+```
+INFO: Path exceeds 80 chars (150 chars): very_long_file.txt
+DEBUG: Symlink creation failed: Operation not permitted
+DEBUG: Copy failed: Permission denied
+WARNING: Failed to shorten path: very_long_file.txt (150 chars)
 ```
 
 ## Platform-Specific Behavior
@@ -208,11 +206,12 @@ INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
 
 - **Both strategies work**
 - Symlinks preferred (fastest, no overhead)
-- Default temp directory: `/tmp`
+- Default temp directory: `/tmp` (4 chars - maximum filename space)
 
 **Recommended configuration:**
+
 ```bash
-# Use defaults (symlinks preferred)
+# Use defaults (symlinks preferred, /tmp for max space)
 # No configuration needed
 ```
 
@@ -220,15 +219,16 @@ INFO:   ✓ Copied to: /tmp/large_kern_xyz789.bsp (32 chars)
 
 - **Symlinks require administrator privileges or Developer Mode**
 - If symlinks fail, automatically falls back to copy
-- Default temp directory: `C:\Temp`
+- Default temp directory: `C:\Temp` (7 chars)
 
 **Recommended configuration:**
+
 ```bash
-# Disable symlinks if not running as admin
-export CURRYER_DISABLE_SYMLINKS="true"
+# No configuration needed - automatic fallback works well
 ```
 
 **Enabling Developer Mode for Symlinks:**
+
 1. Settings → Update & Security → For Developers
 2. Enable "Developer Mode"
 3. Restart terminal/IDE
@@ -240,12 +240,10 @@ export CURRYER_DISABLE_SYMLINKS="true"
 - Curryer automatically falls back to copy if restricted
 
 **Recommended configuration:**
+
 ```bash
 # Use short temp directory inside container
-export CURRYER_TEMP_DIR="/tmp/k"
-
-# If symlinks fail in your container
-export CURRYER_DISABLE_SYMLINKS="true"
+export CURRYER_TEMP_DIR="/tmp"
 ```
 
 ### AWS (EC2, Lambda, ECS)
@@ -255,15 +253,13 @@ export CURRYER_DISABLE_SYMLINKS="true"
 - **Disable copying to avoid network transfer costs**
 
 **Recommended configuration:**
+
 ```bash
 # AWS: Disable file copying to avoid EFS transfer costs
 export CURRYER_DISABLE_COPY="true"
 
 # Use local temp directory (not EFS)
-export CURRYER_TEMP_DIR="/tmp/spice"
-
-# Set high threshold for large files (if you keep copying enabled)
-export CURRYER_WARN_COPY_THRESHOLD="100"  # 100 MB
+export CURRYER_TEMP_DIR="/tmp"
 ```
 
 ## Troubleshooting
@@ -273,8 +269,9 @@ export CURRYER_WARN_COPY_THRESHOLD="100"  # 100 MB
 **Cause:** Temp directory itself is too long
 
 **Solution:**
+
 ```bash
-export CURRYER_TEMP_DIR="/tmp/k"  # Use very short base directory
+export CURRYER_TEMP_DIR="/tmp"  # Use very short base directory
 ```
 
 ### "Symlink creation failed"
@@ -284,91 +281,166 @@ export CURRYER_TEMP_DIR="/tmp/k"  # Use very short base directory
 **Solutions:**
 
 1. **Enable symlinks** (if platform supports):
+
    - Windows: Enable Developer Mode
    - Container: Check seccomp profile
 
-2. **Disable symlinks** (use other strategies):
-   ```bash
-   export CURRYER_DISABLE_SYMLINKS="true"
-   ```
+2. **Let copy fallback work** (automatic - no action needed):
 
-### "Copying large files is slow"
+   - Curryer automatically tries copy if symlink fails
 
-**Cause:** File copy strategy used for large kernels
+3. **Check logs** to see why symlink failed
+
+### "Copying files is slow / high AWS costs"
+
+**Cause:** File copy strategy used for large kernels from network storage
 
 **Solutions:**
 
-1. **Enable symlinks** (if platform supports):
+1. **Enable symlinks** (if platform supports and not already enabled):
+
+   - Symlinks work by default on Linux/macOS
+   - Check logs to see if symlinks are failing
+
+2. **Disable copy fallback** (AWS/cloud environments):
+
    ```bash
-   unset CURRYER_DISABLE_SYMLINKS  # or set to "false"
+   export CURRYER_DISABLE_COPY="true"
    ```
 
-2. **Use faster local storage** for `CURRYER_TEMP_DIR`:
+   Note: This requires symlinks to work
+
+3. **Use local storage** for `CURRYER_TEMP_DIR`:
    ```bash
    export CURRYER_TEMP_DIR="/tmp"  # Local SSD, not network storage
    ```
 
-3. **Check logs** to see why earlier strategies failed:
-   - Look for "✗" markers in log output
-   - Address root cause (e.g., enable symlinks, shorten paths)
+### "System temp directory is long" warning
 
-### "Warnings about large file copies"
+**Cause:** On macOS, `TMPDIR` may be set to `/var/folders/.../T` (~49 chars)
 
-**Cause:** Files exceed `CURRYER_WARN_COPY_THRESHOLD`
+**Solution:**
 
-**Solutions:**
+```bash
+# Override to use /tmp instead (4 chars - much more space)
+export CURRYER_TEMP_DIR="/tmp"
+```
 
-1. **Use symlinks** (zero overhead):
-   ```bash
-   export CURRYER_DISABLE_SYMLINKS="false"
-   export CURRYER_PATH_STRATEGY="symlink,wrap,relative,copy"
-   ```
+**Note:** Curryer automatically prefers `/tmp` when available, but logs a warning if falling back to longer paths.
 
-2. **Increase threshold** (if warnings are not helpful):
-   ```bash
-   export CURRYER_WARN_COPY_THRESHOLD="100"  # 100 MB
-   ```
+## Temporary File Cleanup
 
-3. **Disable warnings** (not recommended):
-   ```bash
-   export CURRYER_WARN_ON_COPY="false"
-   ```
+### Important: Manual Cleanup Required
 
-## Performance Considerations
+Temporary files created by the **copy strategy** are NOT automatically cleaned up by Python's `tempfile` module. This is because:
 
-| Strategy | I/O Overhead | Storage Overhead | Speed | Success Rate |
-|----------|--------------|------------------|-------|--------------|
-| Symlink | None | None | Fastest | High (platform-dependent) |
-| Wrap | None | None | Fast | Medium (limited by segment length) |
-| Relative | None | None | Fast | Low (limited applicability) |
-| Copy | High (2× file size) | 2× file size | Slowest | 100% (always works) |
+1. **We use `tempfile.mkstemp()`** - Creates the file but doesn't auto-delete it
+2. **Files must persist** - They need to exist during SPICE tool execution
+3. **Manual tracking** - The `update_invalid_paths()` function returns a list of temp files
+
+### How Cleanup Works
+
+#### When Using Kernel Writer Classes (Automatic)
+
+If you're using Curryer's kernel writer classes, cleanup is **automatic**:
+
+```python
+from curryer.kernels.ephemeris import EphemerisKernel
+
+# Cleanup happens automatically in finally block
+kernel = EphemerisKernel(properties_dict)
+kernel.write_kernel(output_path)  # Cleanup handled automatically
+```
+
+The `AbstractKernelWriter` class:
+
+- Tracks temp files in `self._temp_kernel_files`
+- Calls `_cleanup_temp_kernel_files()` in a `finally` block
+- Deletes files even if kernel generation fails
+
+#### When Using `update_invalid_paths()` Directly (Manual)
+
+If you call `update_invalid_paths()` directly, **you must clean up manually**:
+
+```python
+from curryer.kernels.path_utils import update_invalid_paths
+import os
+
+temp_files = []
+try:
+    result, temp_files = update_invalid_paths(config, max_len=80)
+
+    # Use the shortened paths...
+
+finally:
+    # REQUIRED: Clean up temp files
+    for temp_file in temp_files:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                print(f"Cleaned up: {temp_file}")
+        except OSError as e:
+            print(f"Warning: Could not clean up {temp_file}: {e}")
+```
+
+### What Gets Cleaned Up
+
+| Strategy | Creates Temp Files?     | Cleanup Required?        |
+| -------- | ----------------------- | ------------------------ |
+| Symlink  | Yes (symlink, not data) | Yes (remove symlink)     |
+| Copy     | Yes (full file copy)    | Yes (remove copied file) |
+
+**Both strategies** create files in `/tmp` that need cleanup:
+
+- **Symlinks** - Remove the symlink file (doesn't delete source)
+- **Copies** - Remove the copied file (source remains)
+
+### Cleanup Best Practices
+
+1. **Always use `finally` blocks** - Ensures cleanup even if errors occur
+2. **Check file exists** - File may already be deleted
+3. **Catch OSError** - Don't let cleanup failures interrupt your program
+4. **Log cleanup failures** - For debugging
+5. **Use kernel writer classes** - They handle cleanup automatically
+
+### What Happens If You Don't Clean Up?
+
+Temp files accumulate in `/tmp` (or `CURRYER_TEMP_DIR`):
+
+- **Disk space usage** - Each copied kernel file remains
+- **System cleanup** - Most systems auto-clean `/tmp` on reboot
+- **Not critical** - But wastes disk space during long-running processes
 
 ### Best Practices for Production Pipelines
 
 1. **Test symlinks in your deployment environment:**
+
    ```bash
    # Quick test
    ln -s /path/to/source /tmp/test_symlink
    ```
 
 2. **Use local storage** for `CURRYER_TEMP_DIR`:
+
    - Avoid network-mounted directories (NFS, EFS, SMB)
    - Use instance-local SSD when available
 
-3. **Monitor logs** for unnecessary copy operations:
+3. **Monitor logs** for copy operations:
+
    - Look for patterns of symlink failures
    - Address root causes (permissions, paths)
 
-4. **Set appropriate warning thresholds:**
+4. **For AWS/cloud deployments:**
+
    ```bash
-   # For large kernel processing
-   export CURRYER_WARN_COPY_THRESHOLD="50"  # 50 MB
+   # Disable copy to avoid potential network transfer costs
+   export CURRYER_DISABLE_COPY="true"
    ```
 
-5. **Use custom strategy order** for specific needs:
+5. **Use shortest possible temp directory:**
    ```bash
-   # Skip symlinks in restrictive environments
-   export CURRYER_PATH_STRATEGY="wrap,relative,copy"
+   # Maximum filename space
+   export CURRYER_TEMP_DIR="/tmp"  # 4 chars on Unix
    ```
 
 ## API Usage
@@ -376,27 +448,69 @@ export CURRYER_TEMP_DIR="/tmp/k"  # Use very short base directory
 For programmatic control, use the `update_invalid_paths()` function:
 
 ```python
-from curryer.kernels.writer import update_invalid_paths
+from curryer.kernels.path_utils import update_invalid_paths
+import os
 
-# Custom configuration
+# Basic usage with defaults
 config = {"properties": {"kernel_path": "/very/long/path/to/kernel.bsp"}}
 
 result, temp_files = update_invalid_paths(
     config,
-    max_len=80,
-    try_symlink=True,   # Enable symlink strategy
-    try_wrap=True,      # Enable wrapping strategy
-    try_relative=True,  # Enable relative path strategy
-    try_copy=True,      # Enable copy strategy (fallback)
+    max_len=80,       # Maximum path length
+    try_copy=True,    # Enable copy fallback (default: True)
+    parent_dir=None,  # Parent directory for relative paths
+    temp_dir=None,    # Custom temp directory (default: auto-detect)
 )
 
 # Use shortened path
 shortened_path = result["properties"]["kernel_path"]
 
-# Clean up temp files when done
+# ... use the shortened path for kernel generation ...
+
+# IMPORTANT: Clean up temp files when done (required!)
 for temp_file in temp_files:
-    os.remove(temp_file)
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
 ```
+
+**Parameters:**
+
+- `config` (dict): Configuration dictionary to update
+- `max_len` (int): Maximum path length (default: 80 for SPICE)
+- `try_copy` (bool): Enable copy strategy fallback (default: True)
+- `parent_dir` (Path): Parent directory for resolving relative paths
+- `temp_dir` (Path): Base directory for temp files (default: auto-detect)
+
+**Returns:**
+
+- `tuple`: (updated_config_dict, list_of_temp_files)
+  - `updated_config_dict`: Config with shortened paths
+  - `list_of_temp_files`: List of temporary file paths that need cleanup
+
+**Cleanup Behavior:**
+
+- Symlink strategy is always tried first (zero cost)
+- The `try_copy` parameter controls whether the copy fallback is used if symlink fails
+- **YOU MUST MANUALLY DELETE** the temp files returned in `list_of_temp_files`
+- Temp files are NOT automatically cleaned by Python's `tempfile` module
+- Use a `finally` block to ensure cleanup even if errors occur:
+
+```python
+temp_files = []
+try:
+    result, temp_files = update_invalid_paths(config, max_len=80)
+    # ... use result ...
+finally:
+    # Always cleanup, even if errors occurred
+    for temp_file in temp_files:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass  # Best effort cleanup
+```
+
+**Note:** When using Curryer's kernel writer classes (e.g., `AbstractKernelWriter`), cleanup is handled automatically via `_cleanup_temp_kernel_files()` in a `finally` block.
 
 ## See Also
 
