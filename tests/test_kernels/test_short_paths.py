@@ -14,7 +14,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from curryer.kernels.classes import AbstractKernelWriter
-from curryer.kernels.path_utils import get_short_temp_dir, update_invalid_paths
+from curryer.kernels.path_utils import (
+    _convert_paths_to_strings,
+    _is_file_property,
+    copy_to_short_path,
+    get_path_strategy_config,
+    get_short_temp_dir,
+    update_invalid_paths,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -751,7 +758,6 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
 
     def test_curryer_disable_copy_false_by_default(self):
         """Test that copy strategy is enabled by default."""
-        from curryer.kernels.path_utils import get_path_strategy_config
 
         # Ensure env var is not set
         if "CURRYER_DISABLE_COPY" in os.environ:
@@ -797,8 +803,6 @@ class TestAdditionalCoverage(unittest.TestCase):
         # Mock /tmp to not exist to force gettempdir() usage
         with patch("pathlib.Path.exists", return_value=False):
             with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
-                from curryer.kernels.path_utils import get_short_temp_dir
-
                 temp_dir = get_short_temp_dir()
                 temp_dir.exists()
 
@@ -812,7 +816,6 @@ class TestAdditionalCoverage(unittest.TestCase):
     def test_windows_c_temp_creation(self):
         """Test Windows C:\\Temp path creation."""
         # This test only runs on Windows
-        from curryer.kernels.path_utils import get_short_temp_dir
 
         if "CURRYER_TEMP_DIR" in os.environ:
             del os.environ["CURRYER_TEMP_DIR"]
@@ -825,7 +828,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_copy_to_short_path_with_long_temp_dir(self):
         """Test copy_to_short_path when resulting path is still too long."""
-        from curryer.kernels.path_utils import copy_to_short_path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a test file
@@ -849,7 +851,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_copy_to_short_path_oserror(self):
         """Test copy_to_short_path handles OSError gracefully."""
-        from curryer.kernels.path_utils import copy_to_short_path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "test.txt"
@@ -869,7 +870,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_with_non_file_properties(self):
         """Test update_invalid_paths skips non-file properties."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         config = {
             "properties": {
@@ -889,7 +889,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_with_path_objects(self):
         """Test update_invalid_paths converts Path objects to strings."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         config = {"properties": {"short_path": Path("/tmp/short.txt"), "another_path": Path("/tmp/another.txt")}}
 
@@ -902,7 +901,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_with_list_of_paths(self):
         """Test update_invalid_paths handles lists of paths."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         config = {
             "properties": {"planet_kernels": [Path("/tmp/kernel1.bsp"), "/tmp/kernel2.bsp", Path("/tmp/kernel3.bsp")]}
@@ -918,7 +916,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_without_properties_key(self):
         """Test update_invalid_paths works on top-level config without 'properties' key."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         config = {"kernel_path": "/tmp/test.txt", "another_key": "value"}
 
@@ -930,7 +927,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_with_relative_paths(self):
         """Test update_invalid_paths resolves relative paths with parent_dir."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a test file
@@ -951,7 +947,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_parent_dir_is_file(self):
         """Test update_invalid_paths handles parent_dir that is a file."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         with tempfile.TemporaryDirectory() as tmpdir:
             parent_file = Path(tmpdir) / "parent.txt"
@@ -971,7 +966,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_update_invalid_paths_all_strategies_fail(self):
         """Test update_invalid_paths when both symlink and copy fail."""
-        from curryer.kernels.path_utils import update_invalid_paths
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a long path that exceeds max_len
@@ -1004,7 +998,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_convert_paths_to_strings(self):
         """Test _convert_paths_to_strings helper function."""
-        from curryer.kernels.path_utils import _convert_paths_to_strings
 
         # Test with nested structure
         data = {
@@ -1026,7 +1019,6 @@ class TestAdditionalCoverage(unittest.TestCase):
 
     def test_is_file_property(self):
         """Test _is_file_property helper function."""
-        from curryer.kernels.path_utils import _is_file_property
 
         # Should match _FILE pattern
         self.assertTrue(_is_file_property("LEAPSECONDS_FILE"))
