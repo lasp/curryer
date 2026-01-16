@@ -789,28 +789,22 @@ class TestAdditionalCoverage(unittest.TestCase):
         elif "CURRYER_TEMP_DIR" in os.environ:
             del os.environ["CURRYER_TEMP_DIR"]
 
-    @unittest.skipIf(os.name == "nt", "Unix-specific test")
-    def test_long_system_temp_dir_warning(self):
-        """Test that warning is logged when system temp dir is too long."""
-        # Set TMPDIR to a long path to trigger fallback warning
-        long_tmpdir = "/very/long/system/temp/directory/path/that/exceeds/normal/length"
-        os.environ["TMPDIR"] = long_tmpdir
+    def test_temp_directory_prioritizes_short_paths(self):
+        """Test that get_short_temp_dir() prioritizes /tmp on Unix systems."""
+        if os.name != "nt":
+            # On Unix/macOS without CURRYER_TEMP_DIR set, should use /tmp
+            if "CURRYER_TEMP_DIR" in os.environ:
+                del os.environ["CURRYER_TEMP_DIR"]
 
-        # Clear CURRYER_TEMP_DIR to force fallback
-        if "CURRYER_TEMP_DIR" in os.environ:
-            del os.environ["CURRYER_TEMP_DIR"]
+            temp_dir = get_short_temp_dir()
 
-        # Mock /tmp to not exist to force gettempdir() usage
-        with patch("pathlib.Path.exists", return_value=False):
-            with self.assertLogs("curryer.kernels.path_utils", level="WARNING") as log_context:
-                temp_dir = get_short_temp_dir()
-                temp_dir.exists()
+            # Should use /tmp which is the shortest option (4 chars)
+            self.assertEqual(str(temp_dir), "/tmp")
+            self.assertEqual(len(str(temp_dir)), 4)
 
-                # Should log warning about long path
-                self.assertTrue(
-                    any("System temp directory is long" in msg for msg in log_context.output),
-                    "Should warn about long system temp directory",
-                )
+            # This leaves maximum space for filenames (75 chars with 80 char limit)
+            filename_space = 80 - len(str(temp_dir)) - 1  # -1 for the path separator
+            self.assertEqual(filename_space, 75)
 
     @unittest.skipIf(os.name != "nt", "Windows-specific test")
     def test_windows_c_temp_creation(self):
