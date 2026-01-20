@@ -829,7 +829,7 @@ class TestAdditionalCoverage(unittest.TestCase):
             test_file.write_text("test content")
 
             # Create a very long temp directory path
-            long_temp = Path(tmpdir) / ("x" * 100)
+            long_temp = Path(tmpdir) / ("x" * 50)
             long_temp.mkdir(parents=True)
 
             # Try to copy with a very short max_len to trigger the warning

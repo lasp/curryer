@@ -119,7 +119,7 @@ class AbstractKernelWriter(metaclass=ABCMeta):
     FILE_EXT = None
 
     def __init__(self, properties: AbstractKernelProperties, bin_dir: str = None, parent_dir: str = None):
-        """Define the kernel data source.
+        """Define the kernel data source. Initialize tracking of temporary files.
 
         Parameters
         ----------
@@ -141,7 +141,7 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         self.input_file = None
         self.setup_file = None
 
-        # Track temporary kernel files created during path shortening for cleanup
+        # Initialize tracking of temporary kernel files created during path shortening for cleanup
         self._temp_kernel_files = []
 
     def __call__(self, input_data: pd.DataFrame, filename, overwrite=False, append=False):
