@@ -33,12 +33,259 @@ import numpy as np
 import pytest
 import xarray as xr
 
+# Import synthetic data generation functions from test_correction.py
+from test_correction import (
+    _generate_nadir_aligned_transforms,
+    _generate_spherical_positions,
+    _generate_synthetic_boresights,
+)
+
 from curryer import utils
 from curryer.correction.correction import CorrectionConfig
 from curryer.correction.verification import VerificationResult, run_verification
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
+
+
+# ==============================================================================
+# Helper Functions - Wrap REAL pairing and image matching implementations
+# REUSE: These functions use actual pairing.py and image_match.py components
+# ==============================================================================
+
+
+def create_real_gcp_pairing_func():
+    """
+    Create a GCP pairing function that uses REAL spatial overlap detection.
+
+    Returns:
+        Callable that takes science_keys and returns list of (sci_name, gcp_name) pairs
+    """
+    from scipy.io import loadmat
+
+    from curryer.correction.data_structures import NamedImageGrid
+    from curryer.correction.pairing import find_l1a_gcp_pairs
+
+    def real_gcp_pairing(science_keys):
+        """Real GCP pairing using actual spatial overlap detection."""
+        logger.info(f"  Pairing: Loading {len(science_keys)} science files")
+
+        # Load all science images using L1A_FILES list
+        L1A_FILES = [
+            ("1/TestCase1a_subimage.mat", "subimage"),
+            ("1/TestCase1b_subimage.mat", "subimage"),
+            ("2/TestCase2a_subimage.mat", "subimage"),
+            ("2/TestCase2b_subimage.mat", "subimage"),
+            ("3/TestCase3a_subimage.mat", "subimage"),
+            ("3/TestCase3b_subimage.mat", "subimage"),
+            ("4/TestCase4a_subimage.mat", "subimage"),
+            ("4/TestCase4b_subimage.mat", "subimage"),
+            ("5/TestCase5a_subimage.mat", "subimage"),
+            ("5/TestCase5b_subimage.mat", "subimage"),
+        ]
+
+        # Get base directory from first science key
+        test_dir = Path(science_keys[0]).parent.parent
+
+        science_images = []
+        for l1a_path, key in L1A_FILES:
+            sci_file = test_dir / l1a_path
+            mat = loadmat(str(sci_file), squeeze_me=True, struct_as_record=False)[key]
+            science_images.append(
+                NamedImageGrid(
+                    data=np.asarray(mat.data),
+                    lat=np.asarray(mat.lat),
+                    lon=np.asarray(mat.lon),
+                    h=np.asarray(mat.h) if hasattr(mat, "h") else None,
+                    name=str(sci_file),
+                )
+            )
+
+        logger.info(f"  Pairing: Loaded {len(science_images)} science images")
+
+        # Load all GCP images using GCP_FILES list
+        # REUSE: GCP file list from test_pairing.py
+        GCP_FILES = [
+            ("1/GCP12055Dili_resampled.mat", "GCP"),
+            ("2/GCP10121Maracaibo_resampled.mat", "GCP"),
+            ("3/GCP10665SantaRosa_resampled.mat", "GCP"),
+            ("4/GCP20484Morocco_resampled.mat", "GCP"),
+            ("5/GCP10087Titicaca_resampled.mat", "GCP"),
+        ]
+
+        # Get base directory from first science key
+        test_dir = Path(science_keys[0]).parent.parent
+
+        gcp_images = []
+        for gcp_path, key in GCP_FILES:
+            gcp_file = test_dir / gcp_path
+            mat = loadmat(str(gcp_file), squeeze_me=True, struct_as_record=False)[key]
+            gcp_images.append(
+                NamedImageGrid(
+                    data=np.asarray(mat.data),
+                    lat=np.asarray(mat.lat),
+                    lon=np.asarray(mat.lon),
+                    h=np.asarray(mat.h) if hasattr(mat, "h") else None,
+                    name=str(gcp_file),
+                )
+            )
+
+        logger.info(f"  Pairing: Loaded {len(gcp_images)} GCP images")
+
+        # REUSE: Call REAL find_l1a_gcp_pairs from pairing.py
+        # Uses max_distance_m=0.0 (any overlap) - same as test_pairing.py
+        pairing_result = find_l1a_gcp_pairs(science_images, gcp_images, max_distance_m=0.0)
+
+        logger.info(f"  Pairing: Found {len(pairing_result.matches)} matches")
+
+        # Extract pairs from PairingResult
+        # REUSE: Pattern from test_pairing.py test_find_l1a_gcp_pairs()
+        pairs = []
+        for match in pairing_result.matches:
+            l1a_name = pairing_result.l1a_images[match.l1a_index].name
+            gcp_name = pairing_result.gcp_images[match.gcp_index].name
+            pairs.append((l1a_name, gcp_name))
+
+        logger.info(f"  Pairing: Returning {len(pairs)} pairs")
+        return pairs
+
+    return real_gcp_pairing
+
+
+def create_real_image_matching_func():
+    """
+    Create an image matching function that uses REAL integrated_image_match.
+
+    Returns:
+        Callable that takes (telemetry_key, science_key, gcp_key, config) and returns xr.Dataset
+    """
+    from scipy.io import loadmat
+
+    from curryer.correction.data_structures import GeolocationConfig as ImGeolocationConfig
+    from curryer.correction.data_structures import ImageGrid, OpticalPSFEntry, SearchConfig
+    from curryer.correction.image_match import integrated_image_match
+
+    # Load shared calibration data once (PSF and LOS vectors)
+    # REUSE: Pattern from test_image_match.py run_image_match()
+    test_dir = Path(__file__).parent.parent / "data" / "clarreo" / "image_match"
+    psf_file = test_dir / "optical_PSF_675nm_upsampled.mat"
+    los_file = test_dir / "b_HS.mat"
+
+    psf_struct = loadmat(str(psf_file), squeeze_me=True, struct_as_record=False)["PSF_struct_675nm"]
+    psf_entries = [
+        OpticalPSFEntry(
+            data=np.asarray(entry.data),
+            x=np.asarray(entry.x).ravel(),
+            field_angle=np.asarray(entry.FA).ravel(),
+        )
+        for entry in np.atleast_1d(psf_struct)
+    ]
+
+    los_vectors = loadmat(str(los_file), squeeze_me=True)["b_HS"]
+
+    def real_image_matching(telemetry_key, science_key, gcp_key, config):
+        """Real image matching using actual test data and integrated_image_match."""
+        import re
+
+        import xarray as xr
+
+        # REUSE: Load subimage pattern from test_image_match.py
+        subimage_mat = loadmat(science_key, squeeze_me=True, struct_as_record=False)["subimage"]
+        subimage = ImageGrid(
+            data=np.asarray(subimage_mat.data),
+            lat=np.asarray(subimage_mat.lat),
+            lon=np.asarray(subimage_mat.lon),
+            h=np.asarray(subimage_mat.h) if hasattr(subimage_mat, "h") else None,
+        )
+
+        # REUSE: Load GCP pattern from test_image_match.py
+        # Use the gcp_key that was found by the pairing function
+        gcp_mat = loadmat(gcp_key, squeeze_me=True, struct_as_record=False)["GCP"]
+        gcp = ImageGrid(
+            data=np.asarray(gcp_mat.data),
+            lat=np.asarray(gcp_mat.lat),
+            lon=np.asarray(gcp_mat.lon),
+            h=np.asarray(gcp_mat.h) if hasattr(gcp_mat, "h") else None,
+        )
+
+        # Load spacecraft position (real data from test files)
+        # REUSE: Pattern from test_image_match.py
+        sci_path = Path(science_key)
+        gcp_dir = sci_path.parent
+        match = re.search(r"TestCase(\d+)", sci_path.name)
+        if match:
+            case_num = match.group(1)
+            r_iss_file = gcp_dir / f"R_ISS_midframe_TestCase{case_num}.mat"
+            if r_iss_file.exists():
+                r_iss = loadmat(str(r_iss_file), squeeze_me=True)["R_ISS_midframe"].ravel()
+            else:
+                r_iss = np.array([7e6, 0, 0])
+        else:
+            r_iss = np.array([7e6, 0, 0])
+
+        # REUSE: Call REAL integrated_image_match from image_match.py
+        # Same usage as test_image_match.py run_image_match()
+        result = integrated_image_match(
+            subimage=subimage,
+            gcp=gcp,
+            r_iss_midframe_m=r_iss,
+            los_vectors_hs=los_vectors,
+            optical_psfs=psf_entries,
+            geolocation_config=ImGeolocationConfig(),
+            search_config=SearchConfig(),
+        )
+
+        # Convert result to xr.Dataset format expected by error stats
+        n_meas = 1
+
+        # REUSE: Synthetic geometry generators from test_correction.py
+        synthetic_boresights = _generate_synthetic_boresights(n_meas, max_off_nadir_rad=0.07)
+
+        # Use real spacecraft position if available
+        if r_iss_file.exists():
+            riss_ctrs = r_iss.reshape(1, 3)
+        else:
+            # REUSE: Generate synthetic position from test_correction.py
+            synthetic_positions = _generate_spherical_positions(n_meas, radius_mean_m=6.8e6, radius_std_m=1e4)
+            riss_ctrs = synthetic_positions
+
+        # REUSE: Generate transformation matrix from test_correction.py
+        t_hs2ctrs = _generate_nadir_aligned_transforms(n_meas, riss_ctrs, synthetic_boresights)
+
+        # Create dataset with REAL image matching errors + synthetic geometry
+        dataset = xr.Dataset(
+            {
+                # REAL errors from integrated_image_match
+                "lat_error_deg": ("measurement", np.array([result.lat_error_km / 111.0])),
+                "lon_error_deg": (
+                    "measurement",
+                    np.array([result.lon_error_km / (111.0 * np.cos(np.deg2rad(gcp.lat.mean())))]),
+                ),
+                # REAL GCP location from test data
+                "gcp_lat_deg": ("measurement", np.array([float(gcp.lat.mean())])),
+                "gcp_lon_deg": ("measurement", np.array([float(gcp.lon.mean())])),
+                "gcp_alt": ("measurement", np.array([float(gcp.h.mean()) if gcp.h is not None else 0.0])),
+                # REAL spacecraft position (when available) or synthetic
+                "riss_ctrs": (("measurement", "xyz"), riss_ctrs),
+                # Synthetic but realistic boresights and transforms
+                "bhat_hs": (("measurement", "xyz"), synthetic_boresights),
+                "t_hs2ctrs": (("measurement", "row", "col"), t_hs2ctrs),
+            },
+            coords={"measurement": np.arange(n_meas), "xyz": [0, 1, 2], "row": [0, 1, 2], "col": [0, 1, 2]},
+        )
+
+        dataset.attrs["lat_error_km"] = result.lat_error_km
+        dataset.attrs["lon_error_km"] = result.lon_error_km
+        dataset.attrs["correlation_ccv"] = result.ccv_final
+
+        return dataset
+
+    return real_image_matching
+
+
+# ==============================================================================
+# Test Classes
+# ==============================================================================
 
 
 class TestWeeklyVerificationCLARREO:
@@ -190,14 +437,11 @@ class TestWeeklyVerificationCLARREO:
 
         NO KERNEL CREATION: Verification does not create or load SPICE kernels.
         It only measures accuracy of existing geolocated data.
+
+        REUSE: Uses real pairing from pairing.py via helper
+        REUSE: Uses real image matching from image_match.py via helper
+        REUSE: Uses synthetic geometry generators from test_correction.py
         """
-        from scipy.io import loadmat
-
-        from curryer.correction.data_structures import GeolocationConfig as ImGeolocationConfig
-        from curryer.correction.data_structures import ImageGrid, NamedImageGrid, OpticalPSFEntry, SearchConfig
-        from curryer.correction.image_match import integrated_image_match
-        from curryer.correction.pairing import find_l1a_gcp_pairs
-
         # Get config
         config = clarreo_config_programmatic
 
@@ -205,165 +449,9 @@ class TestWeeklyVerificationCLARREO:
         config.n_iterations = 1
         config.parameters = []
 
-        # Load shared calibration data (PSF and LOS vectors)
-        test_dir = Path(__file__).parent.parent / "data" / "clarreo" / "image_match"
-        psf_file = test_dir / "optical_PSF_675nm_upsampled.mat"
-        los_file = test_dir / "b_HS.mat"
-
-        psf_struct = loadmat(str(psf_file), squeeze_me=True, struct_as_record=False)["PSF_struct_675nm"]
-        psf_entries = [
-            OpticalPSFEntry(
-                data=np.asarray(entry.data),
-                x=np.asarray(entry.x).ravel(),
-                field_angle=np.asarray(entry.FA).ravel(),
-            )
-            for entry in np.atleast_1d(psf_struct)
-        ]
-
-        los_vectors = loadmat(str(los_file), squeeze_me=True)["b_HS"]
-
-        # Define REAL pairing function
-        def real_gcp_pairing(science_keys):
-            """Real GCP pairing using actual spatial overlap detection."""
-            logger.info(f"  Pairing: Loading {len(science_keys)} science files")
-
-            # Load all science and GCP images
-            science_images = []
-            for sci_key in science_keys:
-                mat = loadmat(sci_key, squeeze_me=True, struct_as_record=False)["subimage"]
-                science_images.append(
-                    NamedImageGrid(
-                        data=np.asarray(mat.data),
-                        lat=np.asarray(mat.lat),
-                        lon=np.asarray(mat.lon),
-                        h=np.asarray(mat.h) if hasattr(mat, "h") else None,
-                        name=sci_key,
-                    )
-                )
-
-            logger.info(f"  Pairing: Loaded {len(science_images)} science images")
-
-            # Load all GCP images (find unique GCP files from all directories)
-            gcp_images = []
-            gcp_files_found = set()
-
-            for sci_key in science_keys:
-                gcp_dir = Path(sci_key).parent
-                gcp_files = list(gcp_dir.glob("GCP*_resampled.mat"))
-                for gcp_file in gcp_files:
-                    if gcp_file not in gcp_files_found:
-                        gcp_files_found.add(gcp_file)
-                        mat = loadmat(str(gcp_file), squeeze_me=True, struct_as_record=False)["GCP"]
-                        gcp_images.append(
-                            NamedImageGrid(
-                                data=np.asarray(mat.data),
-                                lat=np.asarray(mat.lat),
-                                lon=np.asarray(mat.lon),
-                                h=np.asarray(mat.h) if hasattr(mat, "h") else None,
-                                name=str(gcp_file),
-                            )
-                        )
-
-            logger.info(f"  Pairing: Loaded {len(gcp_images)} GCP images")
-
-            # Use real pairing function with max_distance_m=0.0 (any overlap)
-            # This matches the usage in test_pairing.py
-            pairing_result = find_l1a_gcp_pairs(science_images, gcp_images, max_distance_m=0.0)
-
-            logger.info(f"  Pairing: Found {len(pairing_result.matches)} matches")
-
-            # Extract pairs from PairingResult
-            # PairMatch has l1a_index and gcp_index, need to look up names from metadata
-            pairs = []
-            for match in pairing_result.matches:
-                l1a_name = pairing_result.l1a_images[match.l1a_index].name
-                gcp_name = pairing_result.gcp_images[match.gcp_index].name
-                pairs.append((l1a_name, gcp_name))
-
-            logger.info(f"  Pairing: Returning {len(pairs)} pairs")
-            return pairs
-
-        # Define REAL image matching function
-        def real_image_matching(telemetry_key, science_key, gcp_key, config):
-            """Real image matching using actual test data and integrated_image_match."""
-            import xarray as xr
-
-            # Load subimage
-            subimage_mat = loadmat(science_key, squeeze_me=True, struct_as_record=False)["subimage"]
-            subimage = ImageGrid(
-                data=np.asarray(subimage_mat.data),
-                lat=np.asarray(subimage_mat.lat),
-                lon=np.asarray(subimage_mat.lon),
-                h=np.asarray(subimage_mat.h) if hasattr(subimage_mat, "h") else None,
-            )
-
-            # Load GCP (from paired GCP file)
-            sci_path = Path(science_key)
-            gcp_dir = sci_path.parent
-            gcp_files = list(gcp_dir.glob("GCP*_resampled.mat"))
-            if gcp_files:
-                gcp_mat = loadmat(str(gcp_files[0]), squeeze_me=True, struct_as_record=False)["GCP"]
-                gcp = ImageGrid(
-                    data=np.asarray(gcp_mat.data),
-                    lat=np.asarray(gcp_mat.lat),
-                    lon=np.asarray(gcp_mat.lon),
-                    h=np.asarray(gcp_mat.h) if hasattr(gcp_mat, "h") else None,
-                )
-            else:
-                raise FileNotFoundError(f"No GCP file found in {gcp_dir}")
-
-            # Load spacecraft position
-            import re
-
-            match = re.search(r"TestCase(\d+)", sci_path.name)
-            if match:
-                case_num = match.group(1)
-                r_iss_file = gcp_dir / f"R_ISS_midframe_TestCase{case_num}.mat"
-                if r_iss_file.exists():
-                    r_iss = loadmat(str(r_iss_file), squeeze_me=True)["R_ISS_midframe"].ravel()
-                else:
-                    r_iss = np.array([7e6, 0, 0])
-            else:
-                r_iss = np.array([7e6, 0, 0])
-
-            # Run REAL integrated image match
-            result = integrated_image_match(
-                subimage=subimage,
-                gcp=gcp,
-                r_iss_midframe_m=r_iss,
-                los_vectors_hs=los_vectors,
-                optical_psfs=psf_entries,
-                geolocation_config=ImGeolocationConfig(),
-                search_config=SearchConfig(),
-            )
-
-            # Convert result to xr.Dataset format expected by error stats
-            n_meas = 1
-            dataset = xr.Dataset(
-                {
-                    "lat_error_deg": ("measurement", np.array([result.lat_error_km / 111.0])),
-                    "lon_error_deg": (
-                        "measurement",
-                        np.array([result.lon_error_km / (111.0 * np.cos(np.deg2rad(gcp.lat.mean())))]),
-                    ),
-                    "gcp_lat_deg": ("measurement", np.array([float(gcp.lat.mean())])),
-                    "gcp_lon_deg": ("measurement", np.array([float(gcp.lon.mean())])),
-                    "gcp_alt": ("measurement", np.array([float(gcp.h.mean()) if gcp.h is not None else 0.0])),
-                    "riss_ctrs": (("measurement", "xyz"), r_iss.reshape(1, 3)),
-                    "bhat_hs": (("measurement", "xyz"), np.array([[1, 0, 0]])),
-                    "t_hs2ctrs": (("measurement", "row", "col"), np.eye(3).reshape(1, 3, 3)),
-                },
-                coords={"measurement": np.arange(n_meas), "xyz": [0, 1, 2], "row": [0, 1, 2], "col": [0, 1, 2]},
-            )
-
-            dataset.attrs["lat_error_km"] = result.lat_error_km
-            dataset.attrs["lon_error_km"] = result.lon_error_km
-            dataset.attrs["correlation_ccv"] = result.ccv_final
-
-            return dataset
-
-        config.gcp_pairing_func = real_gcp_pairing
-        config.image_matching_func = real_image_matching
+        # Use helper functions that wrap the REAL pairing and matching implementations
+        config.gcp_pairing_func = create_real_gcp_pairing_func()
+        config.image_matching_func = create_real_image_matching_func()
 
         # Run verification (NO kernel creation, NO geolocation)
         result = run_verification(config=config, work_dir=tmp_path, data_sets=test_data_sets)
