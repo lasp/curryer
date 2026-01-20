@@ -2075,10 +2075,16 @@ def _create_parameter_kernels(
             logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
             units = a_param.data.get("units", "")
-            logger.info(f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} {units}")
+            logger.info(
+                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
+                f"(internal units; configured units: {units or 'unspecified'})"
+            )
         elif a_param.ptype == ParameterType.OFFSET_TIME:
             units = a_param.data.get("units", "")
-            logger.info(f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} {units}")
+            logger.info(
+                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
+                f"(internal units; configured units: {units or 'unspecified'})"
+            )
 
         # Create static changing SPICE kernels
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
