@@ -1640,12 +1640,16 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
     if config.ptype == ParameterType.OFFSET_KERNEL:
         # Apply offset to telemetry fields for dynamic kernels (azimuth/elevation angles)
+        # OFFSET_KERNEL is ONLY for angle biases, not time offsets
+        # Valid units: "arcseconds" (converted to radians) or None (radians assumed)
+        # For time offsets, use OFFSET_TIME instead
         field_name = config.data.get("field")
         if not field_name:
             raise ValueError("OFFSET_KERNEL parameter requires 'field' to be specified in config")
 
         if field_name in modified_data.columns:
             # Convert parameter value to appropriate units
+            # OFFSET_KERNEL is for angle biases only (azimuth/elevation angles)
             offset_value = param_data
             original_value = offset_value
             if config.data.get("units") == "arcseconds":
@@ -1653,14 +1657,10 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
                 offset_value = np.deg2rad(param_data / 3600.0)
                 logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
                 logger.info(f"  Offset: {original_value:.6f} arcsec = {offset_value:.9f} rad")
-            elif config.data.get("units") == "milliseconds":
-                # Convert milliseconds to seconds
-                offset_value = param_data / 1000.0
-                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
-                logger.info(f"  Offset: {original_value:.6f} ms = {offset_value:.9f} s")
             else:
+                # No units specified - assume radians (direct application)
                 logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
-                logger.info(f"  Offset: {offset_value:.9f} (no unit conversion)")
+                logger.info(f"  Offset: {offset_value:.9f} rad (no unit conversion)")
 
             # Store original values for logging
             original_mean = modified_data[field_name].mean()
