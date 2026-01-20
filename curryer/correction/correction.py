@@ -1475,7 +1475,53 @@ def load_param_sets(config: CorrectionConfig) -> [ParameterConfig, typing.Any]:
             out_set.append((param, param_vals))
         output.append(out_set)
 
+    # Log summary of generated parameter sets
     logger.info(f"Generated {len(output)} parameter sets with {len(output[0])} parameters each")
+
+    # Log a summary table of parameter values for verification
+    if output:
+        logger.info("\nParameter Set Summary:")
+        logger.info("-" * 100)
+        for param_set_idx, param_set in enumerate(output):
+            logger.info(f"  Set {param_set_idx}:")
+            for param_idx, (param, param_vals) in enumerate(param_set):
+                field_name = param.data.get("field", "unknown")
+                ptype_name = param.ptype.name
+
+                if param.ptype == ParameterType.CONSTANT_KERNEL:
+                    if isinstance(param_vals, pd.DataFrame) and "angle_x" in param_vals.columns:
+                        angles = [
+                            param_vals["angle_x"].iloc[0],
+                            param_vals["angle_y"].iloc[0],
+                            param_vals["angle_z"].iloc[0],
+                        ]
+                        logger.info(
+                            f"    {ptype_name:16s} {field_name:25s}: [{angles[0]:+.6e}, {angles[1]:+.6e}, {angles[2]:+.6e}] rad"
+                        )
+                    else:
+                        logger.info(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
+                elif param.ptype == ParameterType.OFFSET_KERNEL:
+                    units = param.data.get("units", "")
+                    if units == "arcseconds":
+                        # Convert back to arcseconds for display
+                        param_arcsec = np.rad2deg(param_vals) * 3600.0
+                        logger.info(
+                            f"    {ptype_name:16s} {field_name:25s}: {param_arcsec:+10.3f} arcsec ({param_vals:+.9f} rad)"
+                        )
+                    else:
+                        logger.info(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
+                elif param.ptype == ParameterType.OFFSET_TIME:
+                    units = param.data.get("units", "")
+                    if units == "milliseconds":
+                        # param_vals is in seconds, convert to ms for display
+                        param_ms = param_vals * 1000.0
+                        logger.info(
+                            f"    {ptype_name:16s} {field_name:25s}: {param_ms:+10.3f} ms ({param_vals:+.9f} s)"
+                        )
+                    else:
+                        logger.info(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
+        logger.info("-" * 100)
+
     return output
 
 
@@ -1595,37 +1641,77 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     if config.ptype == ParameterType.OFFSET_KERNEL:
         # Apply offset to telemetry fields for dynamic kernels (azimuth/elevation angles)
         field_name = config.data.get("field")
-        if field_name and field_name in modified_data.columns:
+        if not field_name:
+            raise ValueError("OFFSET_KERNEL parameter requires 'field' to be specified in config")
+
+        if field_name in modified_data.columns:
             # Convert parameter value to appropriate units
             offset_value = param_data
+            original_value = offset_value
             if config.data.get("units") == "arcseconds":
                 # Convert arcseconds to radians for application
                 offset_value = np.deg2rad(param_data / 3600.0)
+                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
+                logger.info(f"  Offset: {original_value:.6f} arcsec = {offset_value:.9f} rad")
             elif config.data.get("units") == "milliseconds":
                 # Convert milliseconds to seconds
                 offset_value = param_data / 1000.0
-        field_name = config.data.get("field")
-        if not field_name:
-            raise ValueError("OFFSET_TIME parameter requires 'field' to be specified in config")
+                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
+                logger.info(f"  Offset: {original_value:.6f} ms = {offset_value:.9f} s")
+            else:
+                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
+                logger.info(f"  Offset: {offset_value:.9f} (no unit conversion)")
+
+            # Store original values for logging
+            original_mean = modified_data[field_name].mean()
 
             # Apply additive offset
-            logger.info(f"Applying offset {offset_value} to field {field_name}")
             modified_data[field_name] = modified_data[field_name] + offset_value
 
+            # Log the effect
+            new_mean = modified_data[field_name].mean()
+            logger.info(f"  Original mean: {original_mean:.9f}")
+            logger.info(f"  New mean:      {new_mean:.9f}")
+            logger.info(f"  Delta:         {new_mean - original_mean:.9f}")
         else:
-            logger.warning(f"Field {field_name} not found in telemetry data for offset application")
+            available_cols = list(modified_data.columns) if hasattr(modified_data, "columns") else []
+            logger.warning(f"Field '{field_name}' not found in telemetry data for offset application")
+            logger.warning(f"Available columns: {available_cols}")
 
     elif config.ptype == ParameterType.OFFSET_TIME:
         # Apply time offset to science frame timing
         field_name = config.data.get("field", "corrected_timestamp")
         if hasattr(modified_data, "__getitem__") and field_name in modified_data:
             offset_value = param_data
+            original_value = offset_value
             if config.data.get("units") == "milliseconds":
                 # Convert milliseconds to microseconds (uGPS)
                 offset_value = param_data * 1000.0
+                logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
+                logger.info(f"  Offset: {original_value:.6f} ms = {offset_value:.6f} µs")
+            else:
+                logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
+                logger.info(f"  Offset: {offset_value:.6f} (no unit conversion)")
 
-            logger.info(f"Applying time offset {offset_value} to field {field_name}")
+            # Store original values for logging
+            if hasattr(modified_data[field_name], "mean"):
+                original_mean = modified_data[field_name].mean()
+            else:
+                original_mean = np.mean(modified_data[field_name])
+
+            # Apply additive offset
             modified_data[field_name] = modified_data[field_name] + offset_value
+
+            # Log the effect
+            if hasattr(modified_data[field_name], "mean"):
+                new_mean = modified_data[field_name].mean()
+            else:
+                new_mean = np.mean(modified_data[field_name])
+            logger.info(f"  Original mean: {original_mean:.6f}")
+            logger.info(f"  New mean:      {new_mean:.6f}")
+            logger.info(f"  Delta:         {new_mean - original_mean:.6f}")
+        else:
+            logger.warning(f"Field '{field_name}' not found in science data for time offset application")
 
     elif config.ptype == ParameterType.CONSTANT_KERNEL:
         # For constant kernels, param_data should already be in the correct format
@@ -1983,6 +2069,17 @@ def _create_parameter_kernels(
     # Apply each individual parameter change
     logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
+        # Log parameter details
+        param_name = a_param.data.get("field", "unknown")
+        if a_param.ptype == ParameterType.CONSTANT_KERNEL:
+            logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
+        elif a_param.ptype == ParameterType.OFFSET_KERNEL:
+            units = a_param.data.get("units", "")
+            logger.info(f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} {units}")
+        elif a_param.ptype == ParameterType.OFFSET_TIME:
+            units = a_param.data.get("units", "")
+            logger.info(f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} {units}")
+
         # Create static changing SPICE kernels
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
             # Aka: BASE-CK, YOKE-CK, HYSICS-CK
