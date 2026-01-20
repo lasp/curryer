@@ -1724,6 +1724,221 @@ class CorrectionUnifiedTests(unittest.TestCase):
         logger.info("✓ CHECKPOINT SAVE/LOAD TEST PASSED")
         logger.info("=" * 80)
 
+    def test_apply_offset_function(self):
+        """Test apply_offset function for all parameter types."""
+        logger.info("=" * 80)
+        logger.info("TEST: apply_offset() Function")
+        logger.info("=" * 80)
+
+        # ========== Test 1: OFFSET_KERNEL with arcseconds ==========
+        logger.info("\nTest 1: OFFSET_KERNEL with arcseconds unit conversion")
+
+        # Create realistic telemetry data matching CLARREO structure
+        telemetry_data = pd.DataFrame(
+            {
+                "frame": range(5),
+                "hps.az_ang_nonlin": [1.14252] * 5,
+                "hps.el_ang_nonlin": [-0.55009] * 5,
+                "hps.resolver_tms": [1168477154.0 + i for i in range(5)],
+                "ert": [1431903180.58 + i for i in range(5)],
+            }
+        )
+
+        # Create parameter config for azimuth angle offset
+        az_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_az_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                units="arcseconds",
+            ),
+        )
+
+        # Apply offset of 100 arcseconds
+        offset_arcsec = 100.0
+        original_mean = telemetry_data["hps.az_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(az_param_config, offset_arcsec, telemetry_data)
+
+        # Verify offset was applied correctly
+        expected_offset_rad = np.deg2rad(offset_arcsec / 3600.0)
+        actual_delta = modified_data["hps.az_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_rad, places=9)
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        logger.info(f"✓ OFFSET_KERNEL (arcseconds): {offset_arcsec} arcsec = {expected_offset_rad:.9f} rad")
+
+        # ========== Test 2: OFFSET_KERNEL with elevation angle ==========
+        logger.info("\nTest 2: OFFSET_KERNEL with elevation angle (negative offset)")
+
+        el_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_el_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.el_ang_nonlin",
+                units="arcseconds",
+            ),
+        )
+
+        # Apply negative offset
+        offset_arcsec = -50.0
+        original_mean = telemetry_data["hps.el_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(el_param_config, offset_arcsec, telemetry_data)
+
+        # Verify
+        expected_offset_rad = np.deg2rad(offset_arcsec / 3600.0)
+        actual_delta = modified_data["hps.el_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_rad, places=9)
+        logger.info(f"✓ OFFSET_KERNEL (negative): {offset_arcsec} arcsec = {expected_offset_rad:.9f} rad")
+
+        # ========== Test 3: OFFSET_KERNEL with non-existent field ==========
+        logger.info("\nTest 3: OFFSET_KERNEL with non-existent field (should warn)")
+
+        bad_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("dummy.json"),
+            data=dict(
+                field="nonexistent_field",
+                units="arcseconds",
+            ),
+        )
+
+        # Should return unmodified data when field not found
+        modified_data = correction.apply_offset(bad_param_config, 10.0, telemetry_data)
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        # Data should be unchanged
+        pd.testing.assert_frame_equal(modified_data, telemetry_data)
+        logger.info("✓ OFFSET_KERNEL correctly handles missing field")
+
+        # ========== Test 4: OFFSET_TIME with milliseconds ==========
+        logger.info("\nTest 4: OFFSET_TIME with milliseconds unit conversion")
+
+        science_data = pd.DataFrame(
+            {
+                "corrected_timestamp": [1000000.0, 2000000.0, 3000000.0, 4000000.0, 5000000.0],
+                "measurement": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        time_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+            ),
+        )
+
+        # Apply time offset of 10 milliseconds
+        offset_ms = 10.0
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(time_param_config, offset_ms, science_data)
+
+        # Verify offset was applied (milliseconds -> microseconds)
+        expected_offset_us = offset_ms * 1000.0
+        actual_delta = modified_data["corrected_timestamp"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_us, places=6)
+        logger.info(f"✓ OFFSET_TIME: {offset_ms} ms = {expected_offset_us:.6f} µs")
+
+        # ========== Test 5: OFFSET_TIME with negative offset ==========
+        logger.info("\nTest 5: OFFSET_TIME with negative offset")
+
+        offset_ms = -5.5
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(time_param_config, offset_ms, science_data)
+
+        # Verify
+        expected_offset_us = offset_ms * 1000.0
+        actual_delta = modified_data["corrected_timestamp"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_us, places=6)
+        logger.info(f"✓ OFFSET_TIME (negative): {offset_ms} ms = {expected_offset_us:.6f} µs")
+
+        # ========== Test 6: CONSTANT_KERNEL (pass-through) ==========
+        logger.info("\nTest 6: CONSTANT_KERNEL (pass-through, no modification)")
+
+        constant_kernel_data = pd.DataFrame(
+            {
+                "ugps": [1000000, 2000000],
+                "angle_x": [0.001, 0.001],
+                "angle_y": [0.002, 0.002],
+                "angle_z": [0.003, 0.003],
+            }
+        )
+
+        constant_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
+            config_file=Path("cprs_base_v01.attitude.ck.json"),
+            data=dict(
+                field="cprs_base",
+            ),
+        )
+
+        # For CONSTANT_KERNEL, param_data is already the kernel data
+        modified_data = correction.apply_offset(constant_param_config, constant_kernel_data, pd.DataFrame())
+
+        # Should return the constant kernel data unchanged
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        pd.testing.assert_frame_equal(modified_data, constant_kernel_data)
+        logger.info("✓ CONSTANT_KERNEL returns data unchanged")
+
+        # ========== Test 7: OFFSET_KERNEL without units ==========
+        logger.info("\nTest 7: OFFSET_KERNEL without unit conversion")
+
+        param_no_units = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("test.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                # No units specified
+            ),
+        )
+
+        # Apply offset directly (no conversion)
+        offset_value = 0.001  # radians
+        original_mean = telemetry_data["hps.az_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(param_no_units, offset_value, telemetry_data)
+
+        # Verify offset applied directly without conversion
+        actual_delta = modified_data["hps.az_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, offset_value, places=9)
+        logger.info(f"✓ OFFSET_KERNEL (no units): {offset_value} rad applied directly")
+
+        # ========== Test 8: Data is not modified in place ==========
+        logger.info("\nTest 8: Original data is not modified in place")
+
+        original_telemetry = telemetry_data.copy()
+        modified_data = correction.apply_offset(az_param_config, 100.0, telemetry_data)
+
+        # Verify original data unchanged
+        pd.testing.assert_frame_equal(telemetry_data, original_telemetry)
+        # Verify modified data is different
+        self.assertFalse(modified_data["hps.az_ang_nonlin"].equals(original_telemetry["hps.az_ang_nonlin"]))
+        logger.info("✓ Original data not modified (proper copy made)")
+
+        # ========== Test 9: Multiple columns preserved ==========
+        logger.info("\nTest 9: All DataFrame columns preserved after offset")
+
+        modified_data = correction.apply_offset(az_param_config, 50.0, telemetry_data)
+
+        # Verify all columns still present
+        self.assertEqual(set(modified_data.columns), set(telemetry_data.columns))
+        # Verify only target column modified
+        self.assertTrue(modified_data["frame"].equals(telemetry_data["frame"]))
+        self.assertTrue(modified_data["ert"].equals(telemetry_data["ert"]))
+        self.assertFalse(modified_data["hps.az_ang_nonlin"].equals(telemetry_data["hps.az_ang_nonlin"]))
+        logger.info("✓ All DataFrame columns preserved, only target modified")
+
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ apply_offset() TEST PASSED")
+        logger.info("  - OFFSET_KERNEL with arcseconds conversion ✓")
+        logger.info("  - OFFSET_KERNEL with negative values ✓")
+        logger.info("  - OFFSET_KERNEL missing field handling ✓")
+        logger.info("  - OFFSET_KERNEL without units ✓")
+        logger.info("  - OFFSET_TIME with milliseconds conversion ✓")
+        logger.info("  - OFFSET_TIME with negative values ✓")
+        logger.info("  - CONSTANT_KERNEL pass-through ✓")
+        logger.info("  - Data not modified in place ✓")
+        logger.info("  - All columns preserved ✓")
+        logger.info("=" * 80)
+
 
 # =============================================================================
 # MAIN ENTRY POINT
