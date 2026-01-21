@@ -1939,6 +1939,250 @@ class CorrectionUnifiedTests(unittest.TestCase):
         logger.info("  - All columns preserved ✓")
         logger.info("=" * 80)
 
+    def test_helper_load_param_sets(self):
+        """Test load_param_sets function for parameter set generation."""
+        logger.info("=" * 80)
+        logger.info("TEST: load_param_sets() Function")
+        logger.info("=" * 80)
+
+        # Create minimal config with different parameter types
+        data_dir = self.root_dir / "tests" / "data" / "clarreo" / "gcs"
+        generic_dir = self.root_dir / "data" / "generic"
+
+        # ========== Test 1: OFFSET_KERNEL parameter with arcseconds ==========
+        logger.info("\nTest 1: OFFSET_KERNEL parameter generation with arcseconds")
+
+        offset_kernel_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_az_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                units="arcseconds",
+                current_value=0.0,  # Starting at zero
+                sigma=100.0,  # ±100 arcseconds standard deviation
+                bounds=[-200.0, 200.0],  # ±200 arcseconds limits
+            ),
+        )
+
+        config = correction.CorrectionConfig(
+            seed=42,  # For reproducibility
+            n_iterations=3,
+            parameters=[offset_kernel_param],
+            geo=correction.GeolocationConfig(
+                meta_kernel_file=data_dir / "meta_kernel.tm",
+                generic_kernel_dir=generic_dir,
+                dynamic_kernels=[],
+                instrument_name="CPRS_HYSICS",
+                time_field="corrected_timestamp",
+            ),
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378137.0,
+        )
+
+        param_sets = correction.load_param_sets(config)
+
+        # Validate structure
+        self.assertEqual(len(param_sets), 3, "Should generate 3 parameter sets")
+        self.assertEqual(len(param_sets[0]), 1, "Each set should have 1 parameter")
+
+        # Check each parameter set
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.OFFSET_KERNEL)
+            self.assertIsInstance(param_value, float, "OFFSET_KERNEL should produce float value")
+            # Value should be in radians (converted from arcseconds)
+            self.assertLess(abs(param_value), np.deg2rad(200.0 / 3600.0), "Value should be within bounds")
+            logger.info(f"  Set {i}: {param_value:.9f} rad ({np.rad2deg(param_value) * 3600.0:.3f} arcsec)")
+
+        logger.info("✓ OFFSET_KERNEL parameter generation works correctly")
+
+        # ========== Test 2: OFFSET_TIME parameter with milliseconds ==========
+        logger.info("\nTest 2: OFFSET_TIME parameter generation with milliseconds")
+
+        offset_time_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=0.0,
+                sigma=10.0,  # ±10 ms standard deviation
+                bounds=[-50.0, 50.0],  # ±50 ms limits
+            ),
+        )
+
+        config.parameters = [offset_time_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 3)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.OFFSET_TIME)
+            self.assertIsInstance(param_value, float, "OFFSET_TIME should produce float value")
+            # Value should be in seconds (converted from milliseconds)
+            self.assertLess(abs(param_value), 0.050, "Value should be within bounds (50 ms = 0.050 s)")
+            logger.info(f"  Set {i}: {param_value:.6f} s ({param_value * 1000.0:.3f} ms)")
+
+        logger.info("✓ OFFSET_TIME parameter generation works correctly")
+
+        # ========== Test 3: CONSTANT_KERNEL parameter with 3D angles ==========
+        logger.info("\nTest 3: CONSTANT_KERNEL parameter generation with 3D angles")
+
+        constant_kernel_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
+            config_file=data_dir / "cprs_base_v01.attitude.ck.json",
+            data=dict(
+                field="cprs_base",
+                units="arcseconds",
+                current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw]
+                sigma=50.0,  # ±50 arcseconds for each axis
+                bounds=[-100.0, 100.0],  # ±100 arcseconds limits
+            ),
+        )
+
+        config.parameters = [constant_kernel_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 2)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.CONSTANT_KERNEL)
+            self.assertIsInstance(param_value, pd.DataFrame, "CONSTANT_KERNEL should produce DataFrame")
+            self.assertIn("angle_x", param_value.columns)
+            self.assertIn("angle_y", param_value.columns)
+            self.assertIn("angle_z", param_value.columns)
+            self.assertIn("ugps", param_value.columns)
+
+            # Check each angle is within bounds (in radians)
+            max_bound_rad = np.deg2rad(100.0 / 3600.0)
+            for angle_col in ["angle_x", "angle_y", "angle_z"]:
+                angle_val = param_value[angle_col].iloc[0]
+                self.assertLess(abs(angle_val), max_bound_rad, f"{angle_col} should be within bounds")
+
+            logger.info(
+                f"  Set {i}: roll={param_value['angle_x'].iloc[0]:.9f}, "
+                f"pitch={param_value['angle_y'].iloc[0]:.9f}, "
+                f"yaw={param_value['angle_z'].iloc[0]:.9f} rad"
+            )
+
+        logger.info("✓ CONSTANT_KERNEL parameter generation works correctly")
+
+        # ========== Test 4: Multiple parameters together ==========
+        logger.info("\nTest 4: Multiple parameters in single config")
+
+        config.parameters = [offset_kernel_param, offset_time_param, constant_kernel_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 2, "Should generate 2 parameter sets")
+        self.assertEqual(len(param_sets[0]), 3, "Each set should have 3 parameters")
+
+        # Verify each parameter type is present
+        for i, param_set in enumerate(param_sets):
+            types_found = [p[0].ptype for p in param_set]
+            self.assertIn(correction.ParameterType.OFFSET_KERNEL, types_found)
+            self.assertIn(correction.ParameterType.OFFSET_TIME, types_found)
+            self.assertIn(correction.ParameterType.CONSTANT_KERNEL, types_found)
+            logger.info(f"  Set {i}: Contains all 3 parameter types ✓")
+
+        logger.info("✓ Multiple parameters handled correctly")
+
+        # ========== Test 5: Fixed parameter (sigma=0) ==========
+        logger.info("\nTest 5: Fixed parameter with sigma=0")
+
+        fixed_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("fixed.json"),
+            data=dict(
+                field="fixed_field",
+                units="arcseconds",
+                current_value=25.0,  # Fixed at 25 arcseconds
+                sigma=0.0,  # No variation
+                bounds=[-100.0, 100.0],
+            ),
+        )
+
+        config.parameters = [fixed_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        expected_value_rad = np.deg2rad(25.0 / 3600.0)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertAlmostEqual(param_value, expected_value_rad, places=12, msg="Fixed parameter should not vary")
+            logger.info(f"  Set {i}: {param_value:.9f} rad (constant)")
+
+        logger.info("✓ Fixed parameter (sigma=0) works correctly")
+
+        # ========== Test 6: Seed reproducibility ==========
+        logger.info("\nTest 6: Random seed reproducibility")
+
+        config.parameters = [offset_kernel_param]
+        config.n_iterations = 3
+        config.seed = 123
+
+        param_sets_1 = correction.load_param_sets(config)
+
+        # Reset and generate again with same seed
+        config.seed = 123
+        param_sets_2 = correction.load_param_sets(config)
+
+        # Should produce identical values
+        for i in range(len(param_sets_1)):
+            val_1 = param_sets_1[i][0][1]
+            val_2 = param_sets_2[i][0][1]
+            self.assertAlmostEqual(val_1, val_2, places=12, msg=f"Set {i} should be identical with same seed")
+            logger.info(f"  Set {i}: {val_1:.9f} rad (reproducible)")
+
+        logger.info("✓ Random seed reproducibility verified")
+
+        # ========== Test 7: Parameter without sigma (should use current_value) ==========
+        logger.info("\nTest 7: Parameter without sigma field")
+
+        no_sigma_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("no_sigma.json"),
+            data=dict(
+                field="test_field",
+                units="arcseconds",
+                current_value=15.0,
+                # No sigma specified
+                bounds=[-100.0, 100.0],
+            ),
+        )
+
+        config.parameters = [no_sigma_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        expected_value_rad = np.deg2rad(15.0 / 3600.0)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertAlmostEqual(
+                param_value, expected_value_rad, places=12, msg="Parameter without sigma should use current_value"
+            )
+
+        logger.info("✓ Parameter without sigma uses current_value correctly")
+
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ load_param_sets() TEST PASSED")
+        logger.info("  - OFFSET_KERNEL generation ✓")
+        logger.info("  - OFFSET_TIME generation ✓")
+        logger.info("  - CONSTANT_KERNEL generation ✓")
+        logger.info("  - Multiple parameters ✓")
+        logger.info("  - Fixed parameters (sigma=0) ✓")
+        logger.info("  - Seed reproducibility ✓")
+        logger.info("  - Parameters without sigma ✓")
+        logger.info("=" * 80)
+
 
 # =============================================================================
 # MAIN ENTRY POINT
