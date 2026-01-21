@@ -1,15 +1,18 @@
 """
 Weekly Geolocation Verification Module.
 
-This module provides a verification workflow that checks operational geolocation
+This module provides a SIMPLE verification workflow that checks operational geolocation
 performance against mission thresholds WITHOUT running parameter optimization or
 creating/modifying SPICE kernels.
 
+DESIGN PHILOSOPHY: This module is intentionally simple. It directly uses existing
+pairing and image matching implementations without function injection or abstraction layers.
+
 The verification process:
-1. Takes ALREADY GEOLOCATED data (no geolocation performed)
-2. Performs GCP pairing (find which GCPs correspond to the data)
-3. Runs image matching (measure offsets between geolocated data and GCPs)
-4. Calculates error statistics (nadir-equivalent errors)
+1. Takes ALREADY GEOLOCATED data files (no geolocation performed)
+2. Performs GCP pairing using pair_files() from pairing.py (spatial overlap detection)
+3. Runs image matching using image_matching() from correction.py (measure offsets)
+4. Calculates error statistics using call_error_stats_module() (nadir-equivalent errors)
 5. Checks if performance meets threshold (e.g., 39% within 250m)
 6. Generates warnings if performance degrades
 
@@ -18,25 +21,18 @@ IMPORTANT: This module does NOT:
 - Create or modify SPICE kernels
 - Load meta kernels
 - Create dynamic or parameter-specific kernels
+- Use function injection (unlike correction.py)
 
-It only measures the accuracy of existing geolocated data by comparing to GCPs.
-
-Configuration Strategy:
-----------------------
-The config needs:
-- gcp_pairing_func: Function to find GCP pairs
-- image_matching_func: Function to measure offsets
-- performance_threshold_m: Error threshold (e.g., 250.0)
-- performance_spec_percent: Required percentage (e.g., 39.0)
-
-The n_iterations and parameters fields are NOT used (no kernel creation).
+It only measures the accuracy of existing geolocated data by comparing to GCPs using
+the real implementations from pairing.py, image_match.py, and correction.py.
 
 Quick Start:
 -----------
+    from pathlib import Path
     from curryer.correction.verification import run_verification
     from curryer.correction.correction import CorrectionConfig
 
-    # Configure for verification
+    # Configure for verification (NO function injection needed!)
     config = CorrectionConfig(
         seed=42,
         performance_threshold_m=250.0,
@@ -45,18 +41,24 @@ Quick Start:
         geo=geo_config,
         n_iterations=1,      # Not used
         parameters=[],       # Not used
-        gcp_pairing_func=your_pairing_function,
-        image_matching_func=your_matching_function,
     )
 
-    # Provide already-geolocated data
-    data_sets = [
-        (telemetry_key1, science_key1, gcp_key1),
-        # ... more data
+    # Provide paths to geolocated L1A files and GCP directory
+    l1a_files = [
+        Path("/data/geolocated_001.mat"),
+        Path("/data/geolocated_002.mat"),
     ]
+    gcp_directory = Path("/data/gcps/")
 
-    # Run verification (no kernel creation!)
-    result = run_verification(config, Path("/tmp/work"), data_sets)
+    # Run verification (no kernel creation, no function injection!)
+    result = run_verification(
+        config=config,
+        work_dir=Path("/tmp/work"),
+        l1a_files=l1a_files,
+        gcp_directory=gcp_directory,
+        telemetry=telemetry_df,
+        calibration_dir=Path("/data/calibration"),
+    )
 
     # Check results
     if result.passed:
@@ -67,9 +69,9 @@ Quick Start:
 
 See Also:
 --------
-- curryer.correction.correction.call_error_stats_module() - Error statistics
-- curryer.correction.pairing - GCP pairing functions
-- curryer.correction.image_match - Image matching functions
+- curryer.correction.pairing.pair_files() - GCP pairing (used directly)
+- curryer.correction.correction.image_matching() - Image matching (used directly)
+- curryer.correction.correction.call_error_stats_module() - Error statistics (used directly)
 """
 
 import logging
@@ -79,9 +81,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
-from curryer.correction.correction import CorrectionConfig, call_error_stats_module
+from curryer.correction.correction import CorrectionConfig, call_error_stats_module, image_matching
+from curryer.correction.image_match import load_image_grid_from_mat
+from curryer.correction.pairing import pair_files
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +143,16 @@ class VerificationResult:
 
 
 def run_verification(
-    config: CorrectionConfig, work_dir: Path, data_sets: list[tuple[str, str, str]]
+    config: CorrectionConfig,
+    work_dir: Path,
+    l1a_files: list[Path],
+    gcp_directory: Path,
+    telemetry: pd.DataFrame,
+    calibration_dir: Path,
+    max_distance_m: float = 0.0,
+    l1a_key: str = "subimage",
+    gcp_key: str = "GCP",
+    gcp_pattern: str = "*_resampled.mat",
 ) -> VerificationResult:
     """
     Run weekly verification on already-geolocated data.
@@ -147,28 +161,48 @@ def run_verification(
     or creating/modifying SPICE kernels. It assumes input data is already
     geolocated and measures accuracy by comparing to GCPs.
 
+    This is the SIMPLE approach: directly calls existing modules without
+    function injection or abstraction layers.
+
     Workflow (NO kernel creation):
-    1. GCP Pairing - Find which GCPs correspond to each data set
-    2. Image Matching - Measure offsets between geolocated data and GCPs
-    3. Error Statistics - Calculate nadir-equivalent errors
+    1. GCP Pairing - Use pair_files() from pairing.py to find spatial overlaps
+    2. Image Matching - Use image_matching() from correction.py to measure offsets
+    3. Error Statistics - Use call_error_stats_module() to calculate nadir-equivalent errors
     4. Threshold Check - Determine if performance meets requirements
 
     Parameters
     ----------
     config : CorrectionConfig
         Configuration with verification settings:
-        - gcp_pairing_func: Required - function to find GCP pairs
-        - image_matching_func: Required - function to measure offsets
         - performance_threshold_m: Error threshold (e.g., 250.0)
         - performance_spec_percent: Required percentage (e.g., 39.0)
         - earth_radius_m: Earth radius for error calculations
-        Note: n_iterations and parameters are NOT used
+        - geo: GeolocationConfig with coordinate names
+        Note: n_iterations, parameters, gcp_pairing_func, and image_matching_func are NOT used
     work_dir : Path
-        Working directory for temporary files (if needed by functions)
-    data_sets : list[tuple[str, str, str]]
-        List of (telemetry_key, science_key, gcp_key) tuples
-        Each tuple identifies one already-geolocated observation
-        Keys are passed to pairing and matching functions
+        Working directory for temporary files (if needed)
+    l1a_files : list[Path]
+        List of paths to geolocated L1A files (MATLAB .mat format)
+        These are the already-geolocated science observations to verify
+    gcp_directory : Path
+        Directory containing GCP reference files
+    telemetry : pd.DataFrame
+        Spacecraft telemetry data (position, attitude, etc.)
+        Required for image matching
+    calibration_dir : Path
+        Directory containing calibration files (LOS vectors, optical PSF)
+        Required for image matching
+    max_distance_m : float, optional
+        Minimum margin for valid pairing (default 0.0):
+        - 0.0: GCP center must be inside L1A footprint (strict)
+        - >0: Allows GCP center up to this distance inside footprint
+        - <0: Allows GCP center outside footprint (loose)
+    l1a_key : str, optional
+        MATLAB struct key for L1A data (default: "subimage")
+    gcp_key : str, optional
+        MATLAB struct key for GCP data (default: "GCP")
+    gcp_pattern : str, optional
+        File pattern for GCP discovery (default: "*_resampled.mat")
 
     Returns
     -------
@@ -178,10 +212,11 @@ def run_verification(
     Raises
     ------
     ValueError
-        If required functions not configured or no valid results
+        If no valid GCP pairs found or no valid results
 
     Examples
     --------
+    >>> from pathlib import Path
     >>> config = CorrectionConfig(
     ...     seed=42,
     ...     performance_threshold_m=250.0,
@@ -190,55 +225,75 @@ def run_verification(
     ...     geo=geo_config,
     ...     n_iterations=1,
     ...     parameters=[],
-    ...     gcp_pairing_func=spatial_pairing,
-    ...     image_matching_func=image_matching,
     ... )
-    >>> data_sets = [
-    ...     ("/data/geo_001.nc", "/data/sci_001.nc", "/data/gcp_001.tif"),
-    ... ]
-    >>> result = run_verification(config, Path("/tmp/work"), data_sets)
+    >>> l1a_files = [Path("/data/geo_001.mat"), Path("/data/geo_002.mat")]
+    >>> result = run_verification(
+    ...     config=config,
+    ...     work_dir=Path("/tmp/work"),
+    ...     l1a_files=l1a_files,
+    ...     gcp_directory=Path("/data/gcps/"),
+    ...     telemetry=telemetry_df,
+    ...     calibration_dir=Path("/data/calibration"),
+    ... )
     >>> print(f"Passed: {result.passed}")
     """
     logger.info("=== WEEKLY VERIFICATION ===")
-    logger.info(f"  Data sets: {len(data_sets)}")
+    logger.info(f"  L1A files: {len(l1a_files)}")
+    logger.info(f"  GCP directory: {gcp_directory}")
     logger.info(f"  Threshold: {config.performance_threshold_m}m")
     logger.info(f"  Required: {config.performance_spec_percent}%")
     logger.info(f"  Mode: Verification (NO geolocation, NO kernel creation)")
 
-    # Validate required functions are configured
-    _validate_verification_config(config)
-
-    # Extract functions from config
-    gcp_pairing_func = config.gcp_pairing_func
-    image_matching_func = config.image_matching_func
-
-    # Step 1: GCP Pairing for all data sets
-    logger.info("Step 1/3: GCP Pairing")
-    science_keys = [sci_key for _, sci_key, _ in data_sets]
-    gcp_pairs = gcp_pairing_func(science_keys)
+    # Step 1: GCP Pairing - Use REAL pair_files() from pairing.py
+    logger.info("Step 1/3: GCP Pairing (using pair_files from pairing.py)")
+    gcp_pairs = pair_files(
+        l1a_files=l1a_files,
+        gcp_directory=gcp_directory,
+        max_distance_m=max_distance_m,
+        l1a_key=l1a_key,
+        gcp_key=gcp_key,
+        gcp_pattern=gcp_pattern,
+    )
 
     if not gcp_pairs:
         raise ValueError("No GCP pairs found. Cannot perform verification.")
 
     logger.info(f"  Found {len(gcp_pairs)} GCP pair(s)")
 
-    # Step 2: Image Matching for each pair
-    logger.info("Step 2/3: Image Matching")
+    # Step 2: Image Matching - Use REAL image_matching() from correction.py
+    logger.info("Step 2/3: Image Matching (using image_matching from correction.py)")
     all_image_matching_results = []
     per_pair_metrics = []
 
-    for pair_idx, (telemetry_key, science_key, gcp_key) in enumerate(data_sets):
-        logger.info(f"  Processing pair {pair_idx + 1}/{len(data_sets)}: {science_key}")
+    for pair_idx, (l1a_file, gcp_file) in enumerate(gcp_pairs):
+        logger.info(f"  Processing pair {pair_idx + 1}/{len(gcp_pairs)}: {l1a_file.name}")
 
         try:
-            # Call image matching function (mission-specific implementation)
+            # Load geolocated data from L1A file
+            geolocated_data = load_image_grid_from_mat(l1a_file, key=l1a_key, as_named=False)
+
+            # Convert ImageGrid to xr.Dataset for image_matching
+            # The image_matching function expects an xr.Dataset with lat/lon
+            geolocated_dataset = xr.Dataset(
+                {
+                    "lat": (["pixel"], geolocated_data.lat.flatten()),
+                    "lon": (["pixel"], geolocated_data.lon.flatten()),
+                    "data": (["pixel"], geolocated_data.data.flatten()),
+                }
+            )
+
+            # Call REAL image_matching function from correction.py
             # This measures offset between already-geolocated data and GCP
             # NO geolocation is performed here
-            image_match_result = image_matching_func(
-                telemetry_key=telemetry_key,
-                science_key=science_key,
-                gcp_key=gcp_key,
+            image_match_result = image_matching(
+                geolocated_data=geolocated_dataset,
+                gcp_reference_file=gcp_file,
+                telemetry=telemetry,
+                calibration_dir=calibration_dir,
+                params_info=[],  # No parameter sweep in verification
                 config=config,
+                los_vectors_cached=None,
+                optical_psfs_cached=None,
             )
 
             # Validate result is an xr.Dataset
@@ -252,8 +307,8 @@ def run_verification(
             per_pair_metrics.append(
                 {
                     "pair_index": pair_idx,
-                    "science_key": science_key,
-                    "gcp_key": gcp_key,
+                    "l1a_file": str(l1a_file),
+                    "gcp_file": str(gcp_file),
                     "lat_error_deg": float(image_match_result.attrs.get("lat_error_deg", np.nan)),
                     "lon_error_deg": float(image_match_result.attrs.get("lon_error_deg", np.nan)),
                     "correlation_ccv": float(image_match_result.attrs.get("correlation_ccv", np.nan)),
@@ -273,8 +328,8 @@ def run_verification(
 
     logger.info(f"  Successfully matched {len(all_image_matching_results)} pair(s)")
 
-    # Step 3: Error Statistics
-    logger.info("Step 3/3: Calculating Error Statistics")
+    # Step 3: Error Statistics - Use REAL call_error_stats_module() from correction.py
+    logger.info("Step 3/3: Calculating Error Statistics (using call_error_stats_module)")
 
     # Call error stats module (handles aggregation and nadir-equivalent calculation)
     aggregate_stats = call_error_stats_module(all_image_matching_results, correction_config=config)
@@ -311,35 +366,6 @@ def run_verification(
 
     logger.info("=== VERIFICATION COMPLETE ===")
     return result
-
-
-def _validate_verification_config(config: CorrectionConfig) -> None:
-    """
-    Validate that required functions are configured for verification.
-
-    Parameters
-    ----------
-    config : CorrectionConfig
-        Configuration to validate
-
-    Raises
-    ------
-    ValueError
-        If required functions are not configured
-    """
-    if config.gcp_pairing_func is None:
-        raise ValueError(
-            "config.gcp_pairing_func is required for verification. "
-            "Set this to your mission-specific GCP pairing function."
-        )
-
-    if config.image_matching_func is None:
-        raise ValueError(
-            "config.image_matching_func is required for verification. "
-            "Set this to your mission-specific image matching function."
-        )
-
-    logger.debug("Verification config validated: required functions present")
 
 
 def _enrich_per_pair_metrics(
@@ -473,6 +499,4 @@ def _extract_config_summary(config: CorrectionConfig) -> dict[str, Any]:
         "performance_threshold_m": config.performance_threshold_m,
         "performance_spec_percent": config.performance_spec_percent,
         "earth_radius_m": config.earth_radius_m,
-        "has_gcp_pairing_func": config.gcp_pairing_func is not None,
-        "has_image_matching_func": config.image_matching_func is not None,
     }
