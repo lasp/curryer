@@ -273,7 +273,7 @@ def copy_to_short_path(source_path: Path, temp_dir: Path, max_len: int) -> Path 
         return Path(temp_path)
 
     except OSError as e:
-        logger.debug(f"Copy failed: {e}")
+        logger.warning(f"Copy failed: {e}")
         return None
 
 
