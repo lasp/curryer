@@ -1418,7 +1418,7 @@ def load_param_sets(config: CorrectionConfig) -> [ParameterConfig, typing.Any]:
 
                     # Convert to appropriate units if needed
                     if param.data.get("units") == "arcseconds":
-                        current_val_rad = np.deg2rad(current_value / 3600.0) if current_val != 0 else current_val
+                        current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                     else:
                         current_val_rad = current_value
                     param_vals = current_val_rad
