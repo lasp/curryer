@@ -1,12 +1,14 @@
 """
 Unit tests for verification.py module.
 
-This module tests the weekly verification functionality with mocked components:
-- run_verification() orchestration
-- Config validation (verification mode detection)
+This module tests the weekly verification functionality:
+- run_verification() orchestration with real function calls
 - Threshold checking logic
 - Warning message generation
 - Per-pair metric extraction
+
+The tests use mocking at the module level (pair_files, image_matching)
+to isolate verification logic while still testing the real flow.
 
 Running Tests:
 -------------
@@ -21,9 +23,11 @@ python -m pytest tests/test_correction/test_verification.py
 
 Requirements:
 -----------------
-These tests use mocking to isolate verification logic from correction.loop().
-They validate that verification.py correctly processes results and applies
-threshold logic.
+These tests validate that verification.py correctly:
+1. Calls pair_files() from pairing.py
+2. Calls image_matching() from correction.py
+3. Calls call_error_stats_module() from correction.py
+4. Applies threshold logic correctly
 """
 
 import logging
@@ -31,6 +35,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -40,7 +45,6 @@ from curryer.correction.verification import (
     VerificationResult,
     _check_threshold,
     _generate_warnings,
-    _validate_verification_config,
     run_verification,
 )
 
@@ -51,56 +55,91 @@ utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
 class TestVerification:
     """Unit tests for verification module.
 
-    REUSES patterns from test_correction.py and test_image_match.py
+    Tests the simplified verification module that directly calls
+    pair_files() and image_matching() without function injection.
     """
 
     def test_run_verification_with_valid_config(self, tmp_path):
-        """Test successful verification run.
+        """Test successful verification run with mocked real functions.
 
-        REUSE: Mock pattern but now mock pairing and matching functions
+        Mocks pair_files() and image_matching() at module level.
         """
         config = self._create_verification_config()
-
-        # Mock GCP pairing to return empty list (simple case)
-        config.gcp_pairing_func = Mock(return_value=[("sci_key", "gcp_key")])
-
-        # Mock image matching to return xr.Dataset with error measurements
+        
+        # Create mock file paths
+        l1a_files = [tmp_path / "geo_001.mat", tmp_path / "geo_002.mat"]
+        gcp_directory = tmp_path / "gcps"
+        telemetry = pd.DataFrame({"time": [0.0], "position": [[0, 0, 0]]})
+        calibration_dir = tmp_path / "calibration"
+        
+        # Create mock image match result
         mock_image_match_result = self._create_mock_image_match_result()
-        config.image_matching_func = Mock(return_value=mock_image_match_result)
-
-        # Mock call_error_stats_module
-        with patch("curryer.correction.verification.call_error_stats_module") as mock_error_stats:
+        
+        # Mock pair_files from pairing.py
+        with patch("curryer.correction.verification.pair_files") as mock_pair_files, \
+             patch("curryer.correction.verification.load_image_grid_from_mat") as mock_load, \
+             patch("curryer.correction.verification.image_matching") as mock_image_matching, \
+             patch("curryer.correction.verification.call_error_stats_module") as mock_error_stats:
+            
+            # Setup mocks
+            mock_pair_files.return_value = [(l1a_files[0], tmp_path / "gcp_001.mat")]
+            mock_load.return_value = Mock(lat=np.array([0.0]), lon=np.array([0.0]), data=np.array([0.0]))
+            mock_image_matching.return_value = mock_image_match_result
             mock_error_stats.return_value = self._create_mock_aggregate_stats(pass_rate=0.42)
-
-            result = run_verification(config, tmp_path, [("tel_key", "sci_key", "gcp_key")])
-
+            
+            result = run_verification(
+                config=config,
+                work_dir=tmp_path,
+                l1a_files=l1a_files,
+                gcp_directory=gcp_directory,
+                telemetry=telemetry,
+                calibration_dir=calibration_dir,
+            )
+            
             assert isinstance(result, VerificationResult)
             assert result.passed  # Should pass
             assert result.percent_within_threshold > 39.0
             assert len(result.warnings) == 0
             assert result.threshold_m == 250.0
             assert result.required_percent == 39.0
-
-            # Verify functions were called
-            config.gcp_pairing_func.assert_called_once()
-            config.image_matching_func.assert_called_once()
+            
+            # Verify real functions were called
+            mock_pair_files.assert_called_once()
+            mock_image_matching.assert_called()
             mock_error_stats.assert_called_once()
 
     def test_run_verification_with_failing_performance(self, tmp_path):
         """Test verification failure when performance is below threshold."""
         config = self._create_verification_config()
-
-        # Mock functions
-        config.gcp_pairing_func = Mock(return_value=[("sci_key", "gcp_key")])
+        
+        # Create mock file paths
+        l1a_files = [tmp_path / "geo_001.mat"]
+        gcp_directory = tmp_path / "gcps"
+        telemetry = pd.DataFrame({"time": [0.0], "position": [[0, 0, 0]]})
+        calibration_dir = tmp_path / "calibration"
+        
         mock_image_match_result = self._create_mock_image_match_result()
-        config.image_matching_func = Mock(return_value=mock_image_match_result)
-
-        # Mock error stats with only 35% passing (below 39% requirement)
-        with patch("curryer.correction.verification.call_error_stats_module") as mock_error_stats:
+        
+        # Mock real functions with error stats showing only 35% passing
+        with patch("curryer.correction.verification.pair_files") as mock_pair_files, \
+             patch("curryer.correction.verification.load_image_grid_from_mat") as mock_load, \
+             patch("curryer.correction.verification.image_matching") as mock_image_matching, \
+             patch("curryer.correction.verification.call_error_stats_module") as mock_error_stats:
+            
+            mock_pair_files.return_value = [(l1a_files[0], tmp_path / "gcp_001.mat")]
+            mock_load.return_value = Mock(lat=np.array([0.0]), lon=np.array([0.0]), data=np.array([0.0]))
+            mock_image_matching.return_value = mock_image_match_result
             mock_error_stats.return_value = self._create_mock_aggregate_stats(pass_rate=0.35)
-
-            result = run_verification(config, tmp_path, [("tel_key", "sci_key", "gcp_key")])
-
+            
+            result = run_verification(
+                config=config,
+                work_dir=tmp_path,
+                l1a_files=l1a_files,
+                gcp_directory=gcp_directory,
+                telemetry=telemetry,
+                calibration_dir=calibration_dir,
+            )
+            
             assert isinstance(result, VerificationResult)
             assert not result.passed  # Should fail
             assert result.percent_within_threshold < 39.0
@@ -108,26 +147,28 @@ class TestVerification:
             assert "VERIFICATION FAILED" in result.warnings[0]
             assert "35.0%" in result.warnings[0]
 
-    def test_run_verification_rejects_missing_gcp_pairing_func(self, tmp_path):
-        """Test that missing gcp_pairing_func is rejected."""
+    def test_run_verification_no_gcp_pairs_found(self, tmp_path):
+        """Test that verification fails gracefully when no GCP pairs found."""
         config = self._create_verification_config()
-        config.gcp_pairing_func = None  # Missing required function
-
-        with pytest.raises(ValueError, match="gcp_pairing_func is required"):
-            run_verification(config, tmp_path, [])
-
-    def test_validate_config_missing_image_matching_func(self):
-        """Test that validation rejects missing image_matching_func."""
-        config = self._create_verification_config()
-        config.image_matching_func = None
-
-        with pytest.raises(ValueError, match="image_matching_func is required"):
-            _validate_verification_config(config)
-
-    def test_validate_config_accepts_valid_config(self):
-        """Test that validation accepts config with required functions."""
-        config = self._create_verification_config()
-        _validate_verification_config(config)
+        
+        l1a_files = [tmp_path / "geo_001.mat"]
+        gcp_directory = tmp_path / "gcps"
+        telemetry = pd.DataFrame({"time": [0.0], "position": [[0, 0, 0]]})
+        calibration_dir = tmp_path / "calibration"
+        
+        # Mock pair_files to return empty list
+        with patch("curryer.correction.verification.pair_files") as mock_pair_files:
+            mock_pair_files.return_value = []  # No pairs found
+            
+            with pytest.raises(ValueError, match="No GCP pairs found"):
+                run_verification(
+                    config=config,
+                    work_dir=tmp_path,
+                    l1a_files=l1a_files,
+                    gcp_directory=gcp_directory,
+                    telemetry=telemetry,
+                    calibration_dir=calibration_dir,
+                )
 
     def test_check_threshold_exactly_at_requirement(self):
         """Test threshold logic when exactly at 39%."""
@@ -239,7 +280,7 @@ class TestVerification:
     def _create_verification_config(self) -> CorrectionConfig:
         """Create valid verification mode config.
 
-        REUSE: Pattern from test_correction.py conftest fixtures
+        No function injection needed - verification uses real functions directly.
         """
         geo_config = GeolocationConfig(
             meta_kernel_file=Path("dummy.json"),
@@ -258,35 +299,6 @@ class TestVerification:
             geo=geo_config,
             n_iterations=1,  # Verification mode
             parameters=[],  # No parameter sweep
-            telemetry_loader=Mock(),
-            science_loader=Mock(),
-            gcp_pairing_func=Mock(),
-            image_matching_func=Mock(),
-        )
-
-    def _create_correction_config(self) -> CorrectionConfig:
-        """Create correction mode config (for negative test)."""
-        geo_config = GeolocationConfig(
-            meta_kernel_file=Path("dummy.json"),
-            generic_kernel_dir=Path("data/generic"),
-            dynamic_kernels=[],
-            instrument_name="test_instrument",
-            time_field="time",
-            minimum_correlation=None,
-        )
-
-        return CorrectionConfig(
-            seed=42,  # Required parameter
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
-            earth_radius_m=6378137.0,
-            geo=geo_config,
-            n_iterations=100,  # Correction mode (> 1)
-            parameters=[Mock()],  # Has parameters
-            telemetry_loader=Mock(),
-            science_loader=Mock(),
-            gcp_pairing_func=Mock(),
-            image_matching_func=Mock(),
         )
 
     def _create_mock_aggregate_stats(self, pass_rate: float) -> xr.Dataset:
