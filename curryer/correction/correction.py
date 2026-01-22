@@ -1475,11 +1475,9 @@ def load_param_sets(config: CorrectionConfig) -> [ParameterConfig, typing.Any]:
             out_set.append((param, param_vals))
         output.append(out_set)
 
-    # Log summary of generated parameter sets
-    logger.info(f"Generated {len(output)} parameter sets with {len(output[0])} parameters each")
-
-    # Log a summary table of parameter values for verification
+    # Log summary of generated parameter sets & a table of parameter values for verification
     if output:
+        logger.info(f"Generated {len(output)} parameter sets with {len(output[0])} parameters each")
         logger.info("\nParameter Set Summary:")
         logger.info("-" * 100)
         for param_set_idx, param_set in enumerate(output):
