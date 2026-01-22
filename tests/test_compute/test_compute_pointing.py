@@ -118,7 +118,7 @@ class PointingTestCase(unittest.TestCase):
                 ref_frame="J2000",
                 allow_nans=False,
                 velocity=False,
-            ).values
+            ).values.copy()  # Make writable copy to avoid read-only error
             earth_state = spicierpy.ext.query_ephemeris(
                 ugps_times=ugps_times,
                 target="EARTH",
@@ -126,7 +126,7 @@ class PointingTestCase(unittest.TestCase):
                 ref_frame="J2000",
                 allow_nans=False,
                 velocity=False,
-            ).values
+            ).values.copy()  # Make writable copy to avoid read-only error
 
             sun_state /= np.linalg.norm(sun_state, axis=1)[..., None]
             earth_state /= np.linalg.norm(earth_state, axis=1)[..., None]

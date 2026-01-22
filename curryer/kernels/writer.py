@@ -8,9 +8,10 @@ import os
 import re
 from datetime import datetime, timezone
 from io import StringIO
-from pathlib import Path
 
 import jinja2
+
+from .path_utils import _convert_paths_to_strings, update_invalid_paths
 
 logger = logging.getLogger(__name__)
 
@@ -26,97 +27,6 @@ env = jinja2.Environment(
     trim_blocks=True,
     lstrip_blocks=True,
 )
-
-
-# pylint: disable=too-many-branches,too-many-nested-blocks
-def update_invalid_paths(
-    configs, max_len=80, try_relative=False, try_wrap=True, wrap_char="+", relative_dir=None, parent_dir=None
-):
-    """Update invalid paths (too long) by relativizing or wrapping.
-    See: https://naif.jpl.nasa.gov/pub/naif/toolkit_docs/C/req/kernel.html
-    """
-    # TODO: Do this for all strings, not just filenames?
-    # TODO: Only works in meta-kernels!
-
-    relative_dir = Path.cwd() if relative_dir is None else Path(relative_dir)
-    if parent_dir is not None:
-        parent_dir = Path(parent_dir)
-        if parent_dir.is_file():
-            parent_dir = parent_dir.parent
-
-    wrap_configs = configs.copy()
-    for key, value in configs.items():
-        if re.search(r"_FILE(?:_NAME|)$", key) is None:
-            continue
-        if isinstance(value, str | Path):
-            value = [value]
-
-        new_vals = []
-        modified_value = False
-        for item in value:
-            if not isinstance(item, str | Path):
-                new_vals.append(item)
-                continue
-
-            modified_item = False
-            fn_section = None
-
-            # Contains a path that needs to be wrapped.
-            fn = Path(item)
-
-            if parent_dir and not (fn.is_file() or fn.is_dir()) and not fn.is_absolute():
-                abs_fn = parent_dir / fn
-                if abs_fn.is_file() or abs_fn.is_dir():
-                    fn = abs_fn.absolute().resolve()
-                    item = fn
-                    modified_item = True
-
-            if (fn.is_file() or fn.is_dir()) and len(str(item)) > max_len:
-                # Check if a relative path would be shorter.
-                #   Note: Requires that the CWD doesn't change!!!
-                if try_relative:
-                    rel_fn = os.path.relpath(fn, start=relative_dir)
-                    if len(rel_fn) <= max_len:
-                        logger.debug("Updated path [%s] to be relative to [%s]", rel_fn, relative_dir)
-                        modified_item = True
-                        fn_section = rel_fn
-
-                # Build strings up to the limit.
-                if try_wrap and not modified_item:
-                    logger.debug("Wrapping path [%s]", fn)
-                    modified_item = True
-
-                    for fn_part in fn.parts:
-                        if len(fn_part) > (max_len - len(wrap_char)):
-                            raise ValueError(
-                                f"File part [{fn_part}] is too long! Each part must be < {max_len - len(wrap_char)} char!"
-                            )
-                        if fn_section is None:
-                            fn_section = fn_part
-                            continue
-
-                        next_section = str(Path(fn_section) / fn_part)
-                        if len(next_section) >= max_len:
-                            fn_section += wrap_char
-                            new_vals.append(fn_section)
-                            fn_section = os.path.sep + fn_part
-                        else:
-                            fn_section = next_section
-
-                item = fn if fn_section is None else fn_section
-
-            if isinstance(item, Path):
-                item = str(item)
-                modified_item = True
-
-            new_vals.append(item)
-
-            modified_value |= modified_item
-
-        if modified_value:
-            wrap_configs[key] = new_vals
-
-    return wrap_configs
 
 
 def write_setup(setup_file, template, configs, mappings=None, overwrite=False, validate=True, parent_dir=None):
@@ -160,10 +70,12 @@ def write_setup(setup_file, template, configs, mappings=None, overwrite=False, v
     if mappings is None:
         mappings = {}
 
-    # TODO: Only works in meta-kernels?
-    #   Nope, just not supported by mkspk (etc). They don't respect the rules!
-    # Wrap paths that are too long.
-    configs = update_invalid_paths(configs, try_relative=True, try_wrap=False, parent_dir=parent_dir)
+    # Try to shorten paths, but don't use copy strategy since we don't want temp files that need cleanup tracking
+    # Only symlinks are attempted here - if that fails, paths remain unchanged
+    configs, _ = update_invalid_paths(configs, try_copy=False, parent_dir=parent_dir)
+
+    # Ensure all Path objects are converted to strings before template rendering
+    configs = _convert_paths_to_strings(configs)
 
     # Generate the text.
     logger.debug("Using template: %s", template)
