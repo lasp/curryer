@@ -2186,6 +2186,235 @@ class CorrectionUnifiedTests(unittest.TestCase):
         logger.info("  - Parameters without sigma ✓")
         logger.info("=" * 80)
 
+    def test_offset_time_unit_conversion_integration(self):
+        """Test the full integration of load_param_sets -> apply_offset for OFFSET_TIME with all unit types.
+
+        This test verifies that:
+        1. load_param_sets correctly converts milliseconds/microseconds -> seconds
+        2. apply_offset correctly converts seconds -> microseconds for the timestamp field
+        3. The end-to-end pipeline produces correct results
+        4. All unit conversion paths are exercised (including uncovered lines)
+        """
+        logger.info("=" * 80)
+        logger.info("TEST: OFFSET_TIME Unit Conversion Integration (load_param_sets -> apply_offset)")
+        logger.info("=" * 80)
+
+        data_dir = self.root_dir / "tests" / "data" / "clarreo" / "gcs"
+        generic_dir = self.root_dir / "data" / "generic"
+
+        # Test data with timestamps in microseconds (typical format)
+        science_data = pd.DataFrame(
+            {
+                "corrected_timestamp": [1000000.0, 2000000.0, 3000000.0, 4000000.0, 5000000.0],
+                "measurement": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        # ========== Test 1: Milliseconds with sigma ==========
+        logger.info("\nTest 1: OFFSET_TIME with milliseconds unit (with sigma)")
+
+        offset_time_ms_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=10.0,  # 10 milliseconds
+                sigma=2.0,  # ±2 ms variation
+                bounds=[-50.0, 50.0],  # ±50 ms limits
+            ),
+        )
+
+        config = correction.CorrectionConfig(
+            seed=42,
+            n_iterations=1,
+            parameters=[offset_time_ms_param],
+            geo=correction.GeolocationConfig(
+                meta_kernel_file=data_dir / "meta_kernel.tm",
+                generic_kernel_dir=generic_dir,
+                dynamic_kernels=[],
+                instrument_name="CPRS_HYSICS",
+                time_field="corrected_timestamp",
+            ),
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378137.0,
+        )
+
+        # Step 1: load_param_sets converts milliseconds -> seconds
+        param_sets = correction.load_param_sets(config)
+        self.assertEqual(len(param_sets), 1)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        # Verify conversion to seconds
+        self.assertLess(abs(param_value_seconds), 0.050, "Value should be in seconds, within 50ms bound")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s = {param_value_seconds * 1000.0:.3f} ms")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0  # seconds -> microseconds
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Milliseconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 2: Microseconds with sigma (covers lines 1442-1446) ==========
+        logger.info("\nTest 2: OFFSET_TIME with microseconds unit (with sigma)")
+
+        offset_time_us_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="microseconds",
+                current_value=5000.0,  # 5000 microseconds = 5 ms
+                sigma=1000.0,  # ±1000 µs variation
+                bounds=[-10000.0, 10000.0],  # ±10000 µs limits
+            ),
+        )
+
+        config.parameters = [offset_time_us_param]
+
+        # Step 1: load_param_sets converts microseconds -> seconds
+        param_sets = correction.load_param_sets(config)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        # Verify conversion to seconds
+        self.assertLess(abs(param_value_seconds), 0.010, "Value should be in seconds, within 10ms bound")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s = {param_value_seconds * 1000000.0:.1f} µs")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Microseconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 3: Seconds unit (baseline) ==========
+        logger.info("\nTest 3: OFFSET_TIME with seconds unit (baseline)")
+
+        offset_time_s_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="seconds",
+                current_value=0.008,  # 8 milliseconds
+                sigma=0.002,  # ±2 ms variation
+                bounds=[-0.050, 0.050],  # ±50 ms limits
+            ),
+        )
+
+        config.parameters = [offset_time_s_param]
+
+        # Step 1: load_param_sets (no conversion needed, already in seconds)
+        param_sets = correction.load_param_sets(config)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        self.assertLess(abs(param_value_seconds), 0.050, "Value should be in seconds")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Seconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 4: Fixed offset (sigma=0) with milliseconds ==========
+        logger.info("\nTest 4: OFFSET_TIME fixed offset (sigma=0) with milliseconds")
+
+        fixed_time_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=15.0,  # Fixed 15 ms
+                sigma=0.0,  # No variation
+                bounds=[-50.0, 50.0],
+            ),
+        )
+
+        config.parameters = [fixed_time_param]
+        config.n_iterations = 3
+
+        # Generate multiple sets - all should be identical
+        param_sets = correction.load_param_sets(config)
+        self.assertEqual(len(param_sets), 3)
+
+        expected_seconds = 15.0 / 1000.0  # 15 ms = 0.015 s
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value_seconds = param_set[0]
+            self.assertAlmostEqual(param_value_seconds, expected_seconds, places=9)
+            logger.info(f"  Set {i}: {param_value_seconds:.6f} s (constant)")
+
+        # Apply to data and verify
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, expected_seconds, science_data)
+
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = 15000.0  # 15 ms = 15000 µs
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Applied offset: {actual_delta_us:.3f} µs (expected {expected_delta_us:.3f} µs)")
+        logger.info("✓ Fixed offset with milliseconds works correctly")
+
+        # ========== Test 5: Fixed offset (sigma=0) with microseconds ==========
+        logger.info("\nTest 5: OFFSET_TIME fixed offset (sigma=0) with microseconds")
+
+        fixed_time_us_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="microseconds",
+                current_value=7500.0,  # Fixed 7500 µs = 7.5 ms
+                sigma=0.0,  # No variation
+                bounds=[-50000.0, 50000.0],
+            ),
+        )
+
+        config.parameters = [fixed_time_us_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+        expected_seconds = 7500.0 / 1000000.0  # 7500 µs = 0.0075 s
+
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value_seconds = param_set[0]
+            self.assertAlmostEqual(param_value_seconds, expected_seconds, places=9)
+            logger.info(f"  Set {i}: {param_value_seconds:.6f} s (constant)")
+
+        # Apply and verify
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, expected_seconds, science_data)
+
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = 7500.0  # 7500 µs
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Applied offset: {actual_delta_us:.3f} µs (expected {expected_delta_us:.3f} µs)")
+        logger.info("✓ Fixed offset with microseconds works correctly")
+
+        # ========== Summary ==========
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ OFFSET_TIME UNIT CONVERSION INTEGRATION TEST PASSED")
+        logger.info("  - Integration: load_param_sets -> apply_offset ✓")
+        logger.info("=" * 80)
+
 
 # =============================================================================
 # MAIN ENTRY POINT
