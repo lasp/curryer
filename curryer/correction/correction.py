@@ -1680,18 +1680,24 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
     elif config.ptype == ParameterType.OFFSET_TIME:
         # Apply time offset to science frame timing
+        # NOTE: param_data is in seconds while target field (e.g., corrected_timestamp) is typically in microseconds
         field_name = config.data.get("field", "corrected_timestamp")
         if hasattr(modified_data, "__getitem__") and field_name in modified_data:
-            offset_value = param_data
-            original_value = offset_value
-            if config.data.get("units") == "milliseconds":
-                # Convert milliseconds to microseconds (uGPS)
-                offset_value = param_data * 1000.0
-                logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
-                logger.info(f"  Offset: {original_value:.6f} ms = {offset_value:.6f} µs")
+            # param_data is already in seconds (converted by load_param_sets)
+            # Convert seconds to microseconds for the timestamp field
+            offset_value_seconds = param_data
+            offset_value_us = param_data * 1000000.0  # seconds to microseconds
+
+            logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
+            units = config.data.get("units", "seconds")
+            if units == "milliseconds":
+                logger.info(f"  Offset: {offset_value_seconds * 1000.0:.6f} ms (configured) = {offset_value_us:.6f} µs")
+            elif units == "microseconds":
+                logger.info(
+                    f"  Offset: {offset_value_seconds * 1000000.0:.6f} µs (configured) = {offset_value_us:.6f} µs"
+                )
             else:
-                logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
-                logger.info(f"  Offset: {offset_value:.6f} (no unit conversion)")
+                logger.info(f"  Offset: {offset_value_seconds:.6f} s = {offset_value_us:.6f} µs")
 
             # Store original values for logging
             if hasattr(modified_data[field_name], "mean"):
@@ -1699,8 +1705,8 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             else:
                 original_mean = np.mean(modified_data[field_name])
 
-            # Apply additive offset
-            modified_data[field_name] = modified_data[field_name] + offset_value
+            # Apply additive offset in microseconds
+            modified_data[field_name] = modified_data[field_name] + offset_value_us
 
             # Log the effect
             if hasattr(modified_data[field_name], "mean"):

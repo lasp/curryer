@@ -1827,13 +1827,15 @@ class CorrectionUnifiedTests(unittest.TestCase):
             ),
         )
 
-        # Apply time offset of 10 milliseconds
+        # Apply time offset - value must be in seconds
+        # This simulates the production flow where load_param_sets converts to seconds
         offset_ms = 10.0
+        offset_seconds = offset_ms / 1000.0  # Convert to internal units (seconds)
         original_mean = science_data["corrected_timestamp"].mean()
-        modified_data = correction.apply_offset(time_param_config, offset_ms, science_data)
+        modified_data = correction.apply_offset(time_param_config, offset_seconds, science_data)
 
-        # Verify offset was applied (milliseconds -> microseconds)
-        expected_offset_us = offset_ms * 1000.0
+        # Verify offset was applied correctly (seconds -> microseconds)
+        expected_offset_us = offset_ms * 1000.0  # 10 ms = 10000 µs
         actual_delta = modified_data["corrected_timestamp"].mean() - original_mean
         self.assertAlmostEqual(actual_delta, expected_offset_us, places=6)
         logger.info(f"✓ OFFSET_TIME: {offset_ms} ms = {expected_offset_us:.6f} µs")
@@ -1842,8 +1844,9 @@ class CorrectionUnifiedTests(unittest.TestCase):
         logger.info("\nTest 5: OFFSET_TIME with negative offset")
 
         offset_ms = -5.5
+        offset_seconds = offset_ms / 1000.0  # Convert to internal units (seconds)
         original_mean = science_data["corrected_timestamp"].mean()
-        modified_data = correction.apply_offset(time_param_config, offset_ms, science_data)
+        modified_data = correction.apply_offset(time_param_config, offset_seconds, science_data)
 
         # Verify
         expected_offset_us = offset_ms * 1000.0
