@@ -35,6 +35,10 @@ def calc_cosine(target_state, boresight_vector):
         Cosine values. Return is a scalar if `target_state` was a 1D array.
 
     """
+    # Make copies to avoid modifying read-only input arrays
+    target_state = np.array(target_state, copy=True)
+    boresight_vector = np.array(boresight_vector, copy=True)
+
     if target_state.ndim == 1:
         target_state = np.expand_dims(target_state, axis=0)
         as_array = False

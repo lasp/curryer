@@ -184,3 +184,42 @@ with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels])
 
 _Assumes dynamic kernels have been created and their file names defined within
 the metakernel JSON file._
+
+---
+
+## SPICE Path Length Handling
+
+Curryer automatically handles SPICE's 80-character path limit using a simple two-strategy approach:
+
+1. **Symlink** (always tried first—zero overhead, no copying)
+2. **File copy** to temp directory (bulletproof fallback if symlink fails)
+
+No configuration needed for most users. Temp files are automatically cleaned up after kernel generation.
+
+### Configuration Options
+
+```bash
+# Custom temp directory (default: /tmp on Unix, auto-detected on Windows)
+export CURRYER_TEMP_DIR="/tmp"
+
+# AWS/Cloud: Disable file copying to avoid storage costs
+export CURRYER_DISABLE_COPY="true"
+```
+
+### How It Works
+
+When kernel paths exceed 80 characters:
+
+```
+INFO: Path exceeds 80 chars (102 chars): /very/long/path.../naif0012.tls
+INFO:   → Using symlink: /tmp/curryer_naif0012.tls
+```
+
+Or if symlinks fail:
+
+```
+INFO: Path exceeds 80 chars (102 chars): naif0012.tls
+INFO:   → Using copy: /tmp/curryer_abc12345.tls
+```
+
+See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for more details.
