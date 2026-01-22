@@ -87,13 +87,17 @@ from curryer.correction.dataio import (
     validate_telemetry_output,
 )
 
+# Import image I/O functions
+from curryer.correction.image_io import (
+    load_image_grid_from_mat,
+    load_los_vectors_from_mat,
+    load_optical_psf_from_mat,
+)
+
 # Import image matching modules
 from curryer.correction.image_match import (
     ImageMatchingFunc,
     integrated_image_match,
-    load_image_grid_from_mat,
-    load_los_vectors_from_mat,
-    load_optical_psf_from_mat,
     validate_image_matching_output,
 )
 

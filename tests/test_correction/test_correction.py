@@ -66,12 +66,12 @@ from curryer.correction.data_structures import (
     ImageGrid,
     SearchConfig,
 )
-from curryer.correction.image_match import (
-    integrated_image_match,
+from curryer.correction.image_io import (
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
     load_optical_psf_from_mat,
 )
+from curryer.correction.image_match import integrated_image_match
 from curryer.correction.pairing import find_l1a_gcp_pairs
 from curryer.kernels import create
 

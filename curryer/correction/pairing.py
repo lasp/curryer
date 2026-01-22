@@ -529,7 +529,7 @@ def pair_files(
         >>> for l1a, gcp in pairs:
         ...     print(f"  {l1a.name} → {gcp.name}")
     """
-    from .image_match import load_image_grid_from_mat
+    from .image_io import load_image_grid_from_mat
 
     gcp_dir = Path(gcp_directory)
     if not gcp_dir.is_dir():
