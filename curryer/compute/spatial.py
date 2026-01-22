@@ -1605,6 +1605,10 @@ def spice_angles(ugps_times, surface_positions, target_obj, degrees=False):
     azimuth_ang = []
     elevation_ang = []
     for ith in range(et_times.size):
+        # specify contiguous array to avoid "strided arrays not supported" error with ctypes
+        # this can happen when surface_positions[ith] is a view/slice of a larger array
+        obspos = np.ascontiguousarray(surface_positions[ith])
+
         # ( r, az, el, dr/dt, daz/dt, del/dt )
         output, lt = spicierpy.azlcpo(
             et=et_times[ith],
@@ -1613,7 +1617,7 @@ def spice_angles(ugps_times, surface_positions, target_obj, degrees=False):
             target=target_obj,
             azccw=False,
             elplsz=True,
-            obspos=surface_positions[ith],
+            obspos=obspos,
             obsref=EARTH_FRAME,
             obsctr="EARTH",
         )
