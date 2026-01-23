@@ -1,12 +1,12 @@
 # Changelog
 
-# Version 0.3.0
+## Version 0.3.0
 
 - Add automatic SPICE file path shortening tools
 - Corrected a bug within the apply_offsets function of Correction loop
-- BREAKING CHANGE: Renamed MonteCaro function to more generic "Correction"
+- BREAKING CHANGE: Renamed MonteCarlo function to more generic "Correction"
 
-# Version 0.2.1 (2025-12)
+## Version 0.2.1 (2025-12)
 
 - Added support for custom pointing vectors in `compute.spatial.compute_ellipsoid_intersection`
 - Clarified function and parameter naming and improved testing for associated functions
