@@ -1,8 +1,10 @@
 # Changelog
 
-## Version 1.0.0 (unreleased)
+# Version 0.3.0
 
-- Add documentation building framework with Sphinx
+- Add automatic SPICE file path shortening tools
+- Corrected a bug within the apply_offsets function of Correction loop
+- BREAKING CHANGE: Renamed MonteCaro function to more generic "Correction"
 
 # Version 0.2.1 (2025-12)
 
@@ -11,3 +13,7 @@
 - Left deprecated spatial compute functions in place for backward compatibility with warnings
   - Both `pixel_vectors` and `instrument_intersect_ellipsoid` were deprecated
 - Bug fix for montecarlo testing using pytest tmp_path
+
+## Version 1.0.0 (unreleased)
+
+- Add documentation building framework with Sphinx
