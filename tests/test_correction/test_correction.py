@@ -1724,6 +1724,697 @@ class CorrectionUnifiedTests(unittest.TestCase):
         logger.info("✓ CHECKPOINT SAVE/LOAD TEST PASSED")
         logger.info("=" * 80)
 
+    def test_apply_offset_function(self):
+        """Test apply_offset function for all parameter types."""
+        logger.info("=" * 80)
+        logger.info("TEST: apply_offset() Function")
+        logger.info("=" * 80)
+
+        # ========== Test 1: OFFSET_KERNEL with arcseconds ==========
+        logger.info("\nTest 1: OFFSET_KERNEL with arcseconds unit conversion")
+
+        # Create realistic telemetry data matching CLARREO structure
+        telemetry_data = pd.DataFrame(
+            {
+                "frame": range(5),
+                "hps.az_ang_nonlin": [1.14252] * 5,
+                "hps.el_ang_nonlin": [-0.55009] * 5,
+                "hps.resolver_tms": [1168477154.0 + i for i in range(5)],
+                "ert": [1431903180.58 + i for i in range(5)],
+            }
+        )
+
+        # Create parameter config for azimuth angle offset
+        az_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_az_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                units="arcseconds",
+            ),
+        )
+
+        # Apply offset of 100 arcseconds
+        offset_arcsec = 100.0
+        original_mean = telemetry_data["hps.az_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(az_param_config, offset_arcsec, telemetry_data)
+
+        # Verify offset was applied correctly
+        expected_offset_rad = np.deg2rad(offset_arcsec / 3600.0)
+        actual_delta = modified_data["hps.az_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_rad, places=9)
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        logger.info(f"✓ OFFSET_KERNEL (arcseconds): {offset_arcsec} arcsec = {expected_offset_rad:.9f} rad")
+
+        # ========== Test 2: OFFSET_KERNEL with elevation angle ==========
+        logger.info("\nTest 2: OFFSET_KERNEL with elevation angle (negative offset)")
+
+        el_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_el_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.el_ang_nonlin",
+                units="arcseconds",
+            ),
+        )
+
+        # Apply negative offset
+        offset_arcsec = -50.0
+        original_mean = telemetry_data["hps.el_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(el_param_config, offset_arcsec, telemetry_data)
+
+        # Verify
+        expected_offset_rad = np.deg2rad(offset_arcsec / 3600.0)
+        actual_delta = modified_data["hps.el_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_rad, places=9)
+        logger.info(f"✓ OFFSET_KERNEL (negative): {offset_arcsec} arcsec = {expected_offset_rad:.9f} rad")
+
+        # ========== Test 3: OFFSET_KERNEL with non-existent field ==========
+        logger.info("\nTest 3: OFFSET_KERNEL with non-existent field (should warn)")
+
+        bad_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("dummy.json"),
+            data=dict(
+                field="nonexistent_field",
+                units="arcseconds",
+            ),
+        )
+
+        # Should return unmodified data when field not found
+        modified_data = correction.apply_offset(bad_param_config, 10.0, telemetry_data)
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        # Data should be unchanged
+        pd.testing.assert_frame_equal(modified_data, telemetry_data)
+        logger.info("✓ OFFSET_KERNEL correctly handles missing field")
+
+        # ========== Test 4: OFFSET_TIME with milliseconds ==========
+        logger.info("\nTest 4: OFFSET_TIME with milliseconds unit conversion")
+
+        science_data = pd.DataFrame(
+            {
+                "corrected_timestamp": [1000000.0, 2000000.0, 3000000.0, 4000000.0, 5000000.0],
+                "measurement": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        time_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+            ),
+        )
+
+        # Apply time offset - value must be in seconds
+        # This simulates the production flow where load_param_sets converts to seconds
+        offset_ms = 10.0
+        offset_seconds = offset_ms / 1000.0  # Convert to internal units (seconds)
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(time_param_config, offset_seconds, science_data)
+
+        # Verify offset was applied correctly (seconds -> microseconds)
+        expected_offset_us = offset_ms * 1000.0  # 10 ms = 10000 µs
+        actual_delta = modified_data["corrected_timestamp"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_us, places=6)
+        logger.info(f"✓ OFFSET_TIME: {offset_ms} ms = {expected_offset_us:.6f} µs")
+
+        # ========== Test 5: OFFSET_TIME with negative offset ==========
+        logger.info("\nTest 5: OFFSET_TIME with negative offset")
+
+        offset_ms = -5.5
+        offset_seconds = offset_ms / 1000.0  # Convert to internal units (seconds)
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(time_param_config, offset_seconds, science_data)
+
+        # Verify
+        expected_offset_us = offset_ms * 1000.0
+        actual_delta = modified_data["corrected_timestamp"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, expected_offset_us, places=6)
+        logger.info(f"✓ OFFSET_TIME (negative): {offset_ms} ms = {expected_offset_us:.6f} µs")
+
+        # ========== Test 6: CONSTANT_KERNEL (pass-through) ==========
+        logger.info("\nTest 6: CONSTANT_KERNEL (pass-through, no modification)")
+
+        constant_kernel_data = pd.DataFrame(
+            {
+                "ugps": [1000000, 2000000],
+                "angle_x": [0.001, 0.001],
+                "angle_y": [0.002, 0.002],
+                "angle_z": [0.003, 0.003],
+            }
+        )
+
+        constant_param_config = correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
+            config_file=Path("cprs_base_v01.attitude.ck.json"),
+            data=dict(
+                field="cprs_base",
+            ),
+        )
+
+        # For CONSTANT_KERNEL, param_data is already the kernel data
+        modified_data = correction.apply_offset(constant_param_config, constant_kernel_data, pd.DataFrame())
+
+        # Should return the constant kernel data unchanged
+        self.assertIsInstance(modified_data, pd.DataFrame)
+        pd.testing.assert_frame_equal(modified_data, constant_kernel_data)
+        logger.info("✓ CONSTANT_KERNEL returns data unchanged")
+
+        # ========== Test 7: OFFSET_KERNEL without units ==========
+        logger.info("\nTest 7: OFFSET_KERNEL without unit conversion")
+
+        param_no_units = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("test.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                # No units specified
+            ),
+        )
+
+        # Apply offset directly (no conversion)
+        offset_value = 0.001  # radians
+        original_mean = telemetry_data["hps.az_ang_nonlin"].mean()
+        modified_data = correction.apply_offset(param_no_units, offset_value, telemetry_data)
+
+        # Verify offset applied directly without conversion
+        actual_delta = modified_data["hps.az_ang_nonlin"].mean() - original_mean
+        self.assertAlmostEqual(actual_delta, offset_value, places=9)
+        logger.info(f"✓ OFFSET_KERNEL (no units): {offset_value} rad applied directly")
+
+        # ========== Test 8: Data is not modified in place ==========
+        logger.info("\nTest 8: Original data is not modified in place")
+
+        original_telemetry = telemetry_data.copy()
+        modified_data = correction.apply_offset(az_param_config, 100.0, telemetry_data)
+
+        # Verify original data unchanged
+        pd.testing.assert_frame_equal(telemetry_data, original_telemetry)
+        # Verify modified data is different
+        self.assertFalse(modified_data["hps.az_ang_nonlin"].equals(original_telemetry["hps.az_ang_nonlin"]))
+        logger.info("✓ Original data not modified (proper copy made)")
+
+        # ========== Test 9: Multiple columns preserved ==========
+        logger.info("\nTest 9: All DataFrame columns preserved after offset")
+
+        modified_data = correction.apply_offset(az_param_config, 50.0, telemetry_data)
+
+        # Verify all columns still present
+        self.assertEqual(set(modified_data.columns), set(telemetry_data.columns))
+        # Verify only target column modified
+        self.assertTrue(modified_data["frame"].equals(telemetry_data["frame"]))
+        self.assertTrue(modified_data["ert"].equals(telemetry_data["ert"]))
+        self.assertFalse(modified_data["hps.az_ang_nonlin"].equals(telemetry_data["hps.az_ang_nonlin"]))
+        logger.info("✓ All DataFrame columns preserved, only target modified")
+
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ apply_offset() TEST PASSED")
+        logger.info("  - OFFSET_KERNEL with arcseconds conversion ✓")
+        logger.info("  - OFFSET_KERNEL with negative values ✓")
+        logger.info("  - OFFSET_KERNEL missing field handling ✓")
+        logger.info("  - OFFSET_KERNEL without units ✓")
+        logger.info("  - OFFSET_TIME with milliseconds conversion ✓")
+        logger.info("  - OFFSET_TIME with negative values ✓")
+        logger.info("  - CONSTANT_KERNEL pass-through ✓")
+        logger.info("  - Data not modified in place ✓")
+        logger.info("  - All columns preserved ✓")
+        logger.info("=" * 80)
+
+    def test_helper_load_param_sets(self):
+        """Test load_param_sets function for parameter set generation."""
+        logger.info("=" * 80)
+        logger.info("TEST: load_param_sets() Function")
+        logger.info("=" * 80)
+
+        # Create minimal config with different parameter types
+        data_dir = self.root_dir / "tests" / "data" / "clarreo" / "gcs"
+        generic_dir = self.root_dir / "data" / "generic"
+
+        # ========== Test 1: OFFSET_KERNEL parameter with arcseconds ==========
+        logger.info("\nTest 1: OFFSET_KERNEL parameter generation with arcseconds")
+
+        offset_kernel_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("cprs_az_v01.attitude.ck.json"),
+            data=dict(
+                field="hps.az_ang_nonlin",
+                units="arcseconds",
+                current_value=0.0,  # Starting at zero
+                sigma=100.0,  # ±100 arcseconds standard deviation
+                bounds=[-200.0, 200.0],  # ±200 arcseconds limits
+            ),
+        )
+
+        config = correction.CorrectionConfig(
+            seed=42,  # For reproducibility
+            n_iterations=3,
+            parameters=[offset_kernel_param],
+            geo=correction.GeolocationConfig(
+                meta_kernel_file=data_dir / "meta_kernel.tm",
+                generic_kernel_dir=generic_dir,
+                dynamic_kernels=[],
+                instrument_name="CPRS_HYSICS",
+                time_field="corrected_timestamp",
+            ),
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378137.0,
+        )
+
+        param_sets = correction.load_param_sets(config)
+
+        # Validate structure
+        self.assertEqual(len(param_sets), 3, "Should generate 3 parameter sets")
+        self.assertEqual(len(param_sets[0]), 1, "Each set should have 1 parameter")
+
+        # Check each parameter set
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.OFFSET_KERNEL)
+            self.assertIsInstance(param_value, float, "OFFSET_KERNEL should produce float value")
+            # Value should be in radians (converted from arcseconds)
+            self.assertLess(abs(param_value), np.deg2rad(200.0 / 3600.0), "Value should be within bounds")
+            logger.info(f"  Set {i}: {param_value:.9f} rad ({np.rad2deg(param_value) * 3600.0:.3f} arcsec)")
+
+        logger.info("✓ OFFSET_KERNEL parameter generation works correctly")
+
+        # ========== Test 2: OFFSET_TIME parameter with milliseconds ==========
+        logger.info("\nTest 2: OFFSET_TIME parameter generation with milliseconds")
+
+        offset_time_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=0.0,
+                sigma=10.0,  # ±10 ms standard deviation
+                bounds=[-50.0, 50.0],  # ±50 ms limits
+            ),
+        )
+
+        config.parameters = [offset_time_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 3)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.OFFSET_TIME)
+            self.assertIsInstance(param_value, float, "OFFSET_TIME should produce float value")
+            # Value should be in seconds (converted from milliseconds)
+            self.assertLess(abs(param_value), 0.050, "Value should be within bounds (50 ms = 0.050 s)")
+            logger.info(f"  Set {i}: {param_value:.6f} s ({param_value * 1000.0:.3f} ms)")
+
+        logger.info("✓ OFFSET_TIME parameter generation works correctly")
+
+        # ========== Test 3: CONSTANT_KERNEL parameter with 3D angles ==========
+        logger.info("\nTest 3: CONSTANT_KERNEL parameter generation with 3D angles")
+
+        constant_kernel_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.CONSTANT_KERNEL,
+            config_file=data_dir / "cprs_base_v01.attitude.ck.json",
+            data=dict(
+                field="cprs_base",
+                units="arcseconds",
+                current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw]
+                sigma=50.0,  # ±50 arcseconds for each axis
+                bounds=[-100.0, 100.0],  # ±100 arcseconds limits
+            ),
+        )
+
+        config.parameters = [constant_kernel_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 2)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertEqual(param_config.ptype, correction.ParameterType.CONSTANT_KERNEL)
+            self.assertIsInstance(param_value, pd.DataFrame, "CONSTANT_KERNEL should produce DataFrame")
+            self.assertIn("angle_x", param_value.columns)
+            self.assertIn("angle_y", param_value.columns)
+            self.assertIn("angle_z", param_value.columns)
+            self.assertIn("ugps", param_value.columns)
+
+            # Check each angle is within bounds (in radians)
+            max_bound_rad = np.deg2rad(100.0 / 3600.0)
+            for angle_col in ["angle_x", "angle_y", "angle_z"]:
+                angle_val = param_value[angle_col].iloc[0]
+                self.assertLess(abs(angle_val), max_bound_rad, f"{angle_col} should be within bounds")
+
+            logger.info(
+                f"  Set {i}: roll={param_value['angle_x'].iloc[0]:.9f}, "
+                f"pitch={param_value['angle_y'].iloc[0]:.9f}, "
+                f"yaw={param_value['angle_z'].iloc[0]:.9f} rad"
+            )
+
+        logger.info("✓ CONSTANT_KERNEL parameter generation works correctly")
+
+        # ========== Test 4: Multiple parameters together ==========
+        logger.info("\nTest 4: Multiple parameters in single config")
+
+        config.parameters = [offset_kernel_param, offset_time_param, constant_kernel_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+
+        self.assertEqual(len(param_sets), 2, "Should generate 2 parameter sets")
+        self.assertEqual(len(param_sets[0]), 3, "Each set should have 3 parameters")
+
+        # Verify each parameter type is present
+        for i, param_set in enumerate(param_sets):
+            types_found = [p[0].ptype for p in param_set]
+            self.assertIn(correction.ParameterType.OFFSET_KERNEL, types_found)
+            self.assertIn(correction.ParameterType.OFFSET_TIME, types_found)
+            self.assertIn(correction.ParameterType.CONSTANT_KERNEL, types_found)
+            logger.info(f"  Set {i}: Contains all 3 parameter types ✓")
+
+        logger.info("✓ Multiple parameters handled correctly")
+
+        # ========== Test 5: Fixed parameter (sigma=0) ==========
+        logger.info("\nTest 5: Fixed parameter with sigma=0")
+
+        fixed_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("fixed.json"),
+            data=dict(
+                field="fixed_field",
+                units="arcseconds",
+                current_value=25.0,  # Fixed at 25 arcseconds
+                sigma=0.0,  # No variation
+                bounds=[-100.0, 100.0],
+            ),
+        )
+
+        config.parameters = [fixed_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        expected_value_rad = np.deg2rad(25.0 / 3600.0)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertAlmostEqual(param_value, expected_value_rad, places=12, msg="Fixed parameter should not vary")
+            logger.info(f"  Set {i}: {param_value:.9f} rad (constant)")
+
+        logger.info("✓ Fixed parameter (sigma=0) works correctly")
+
+        # ========== Test 6: Seed reproducibility ==========
+        logger.info("\nTest 6: Random seed reproducibility")
+
+        config.parameters = [offset_kernel_param]
+        config.n_iterations = 3
+        config.seed = 123
+
+        param_sets_1 = correction.load_param_sets(config)
+
+        # Reset and generate again with same seed
+        config.seed = 123
+        param_sets_2 = correction.load_param_sets(config)
+
+        # Should produce identical values
+        for i in range(len(param_sets_1)):
+            val_1 = param_sets_1[i][0][1]
+            val_2 = param_sets_2[i][0][1]
+            self.assertAlmostEqual(val_1, val_2, places=12, msg=f"Set {i} should be identical with same seed")
+            logger.info(f"  Set {i}: {val_1:.9f} rad (reproducible)")
+
+        logger.info("✓ Random seed reproducibility verified")
+
+        # ========== Test 7: Parameter without sigma (should use current_value) ==========
+        logger.info("\nTest 7: Parameter without sigma field")
+
+        no_sigma_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_KERNEL,
+            config_file=Path("no_sigma.json"),
+            data=dict(
+                field="test_field",
+                units="arcseconds",
+                current_value=15.0,
+                # No sigma specified
+                bounds=[-100.0, 100.0],
+            ),
+        )
+
+        config.parameters = [no_sigma_param]
+        config.n_iterations = 3
+
+        param_sets = correction.load_param_sets(config)
+
+        expected_value_rad = np.deg2rad(15.0 / 3600.0)
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value = param_set[0]
+            self.assertAlmostEqual(
+                param_value, expected_value_rad, places=12, msg="Parameter without sigma should use current_value"
+            )
+
+        logger.info("✓ Parameter without sigma uses current_value correctly")
+
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ load_param_sets() TEST PASSED")
+        logger.info("  - OFFSET_KERNEL generation ✓")
+        logger.info("  - OFFSET_TIME generation ✓")
+        logger.info("  - CONSTANT_KERNEL generation ✓")
+        logger.info("  - Multiple parameters ✓")
+        logger.info("  - Fixed parameters (sigma=0) ✓")
+        logger.info("  - Seed reproducibility ✓")
+        logger.info("  - Parameters without sigma ✓")
+        logger.info("=" * 80)
+
+    def test_offset_time_unit_conversion_integration(self):
+        """Test the full integration of load_param_sets -> apply_offset for OFFSET_TIME with all unit types.
+
+        This test verifies that:
+        1. load_param_sets correctly converts milliseconds/microseconds -> seconds
+        2. apply_offset correctly converts seconds -> microseconds for the timestamp field
+        3. The end-to-end pipeline produces correct results
+        4. All unit conversion paths are exercised (including uncovered lines)
+        """
+        logger.info("=" * 80)
+        logger.info("TEST: OFFSET_TIME Unit Conversion Integration (load_param_sets -> apply_offset)")
+        logger.info("=" * 80)
+
+        data_dir = self.root_dir / "tests" / "data" / "clarreo" / "gcs"
+        generic_dir = self.root_dir / "data" / "generic"
+
+        # Test data with timestamps in microseconds (typical format)
+        science_data = pd.DataFrame(
+            {
+                "corrected_timestamp": [1000000.0, 2000000.0, 3000000.0, 4000000.0, 5000000.0],
+                "measurement": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        # ========== Test 1: Milliseconds with sigma ==========
+        logger.info("\nTest 1: OFFSET_TIME with milliseconds unit (with sigma)")
+
+        offset_time_ms_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=10.0,  # 10 milliseconds
+                sigma=2.0,  # ±2 ms variation
+                bounds=[-50.0, 50.0],  # ±50 ms limits
+            ),
+        )
+
+        config = correction.CorrectionConfig(
+            seed=42,
+            n_iterations=1,
+            parameters=[offset_time_ms_param],
+            geo=correction.GeolocationConfig(
+                meta_kernel_file=data_dir / "meta_kernel.tm",
+                generic_kernel_dir=generic_dir,
+                dynamic_kernels=[],
+                instrument_name="CPRS_HYSICS",
+                time_field="corrected_timestamp",
+            ),
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6378137.0,
+        )
+
+        # Step 1: load_param_sets converts milliseconds -> seconds
+        param_sets = correction.load_param_sets(config)
+        self.assertEqual(len(param_sets), 1)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        # Verify conversion to seconds
+        self.assertLess(abs(param_value_seconds), 0.050, "Value should be in seconds, within 50ms bound")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s = {param_value_seconds * 1000.0:.3f} ms")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0  # seconds -> microseconds
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Milliseconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 2: Microseconds with sigma (covers lines 1442-1446) ==========
+        logger.info("\nTest 2: OFFSET_TIME with microseconds unit (with sigma)")
+
+        offset_time_us_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="microseconds",
+                current_value=5000.0,  # 5000 microseconds = 5 ms
+                sigma=1000.0,  # ±1000 µs variation
+                bounds=[-10000.0, 10000.0],  # ±10000 µs limits
+            ),
+        )
+
+        config.parameters = [offset_time_us_param]
+
+        # Step 1: load_param_sets converts microseconds -> seconds
+        param_sets = correction.load_param_sets(config)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        # Verify conversion to seconds
+        self.assertLess(abs(param_value_seconds), 0.010, "Value should be in seconds, within 10ms bound")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s = {param_value_seconds * 1000000.0:.1f} µs")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Microseconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 3: Seconds unit (baseline) ==========
+        logger.info("\nTest 3: OFFSET_TIME with seconds unit (baseline)")
+
+        offset_time_s_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="seconds",
+                current_value=0.008,  # 8 milliseconds
+                sigma=0.002,  # ±2 ms variation
+                bounds=[-0.050, 0.050],  # ±50 ms limits
+            ),
+        )
+
+        config.parameters = [offset_time_s_param]
+
+        # Step 1: load_param_sets (no conversion needed, already in seconds)
+        param_sets = correction.load_param_sets(config)
+        param_config, param_value_seconds = param_sets[0][0]
+
+        self.assertLess(abs(param_value_seconds), 0.050, "Value should be in seconds")
+        logger.info(f"  load_param_sets output: {param_value_seconds:.6f} s")
+
+        # Step 2: apply_offset converts seconds -> microseconds
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, param_value_seconds, science_data)
+
+        # Verify the offset was applied correctly
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = param_value_seconds * 1000000.0
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Expected delta: {expected_delta_us:.3f} µs")
+        logger.info(f"  Actual delta:   {actual_delta_us:.3f} µs")
+        logger.info("✓ Seconds path works correctly (load_param_sets -> apply_offset)")
+
+        # ========== Test 4: Fixed offset (sigma=0) with milliseconds ==========
+        logger.info("\nTest 4: OFFSET_TIME fixed offset (sigma=0) with milliseconds")
+
+        fixed_time_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="milliseconds",
+                current_value=15.0,  # Fixed 15 ms
+                sigma=0.0,  # No variation
+                bounds=[-50.0, 50.0],
+            ),
+        )
+
+        config.parameters = [fixed_time_param]
+        config.n_iterations = 3
+
+        # Generate multiple sets - all should be identical
+        param_sets = correction.load_param_sets(config)
+        self.assertEqual(len(param_sets), 3)
+
+        expected_seconds = 15.0 / 1000.0  # 15 ms = 0.015 s
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value_seconds = param_set[0]
+            self.assertAlmostEqual(param_value_seconds, expected_seconds, places=9)
+            logger.info(f"  Set {i}: {param_value_seconds:.6f} s (constant)")
+
+        # Apply to data and verify
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, expected_seconds, science_data)
+
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = 15000.0  # 15 ms = 15000 µs
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Applied offset: {actual_delta_us:.3f} µs (expected {expected_delta_us:.3f} µs)")
+        logger.info("✓ Fixed offset with milliseconds works correctly")
+
+        # ========== Test 5: Fixed offset (sigma=0) with microseconds ==========
+        logger.info("\nTest 5: OFFSET_TIME fixed offset (sigma=0) with microseconds")
+
+        fixed_time_us_param = correction.ParameterConfig(
+            ptype=correction.ParameterType.OFFSET_TIME,
+            config_file=None,
+            data=dict(
+                field="corrected_timestamp",
+                units="microseconds",
+                current_value=7500.0,  # Fixed 7500 µs = 7.5 ms
+                sigma=0.0,  # No variation
+                bounds=[-50000.0, 50000.0],
+            ),
+        )
+
+        config.parameters = [fixed_time_us_param]
+        config.n_iterations = 2
+
+        param_sets = correction.load_param_sets(config)
+        expected_seconds = 7500.0 / 1000000.0  # 7500 µs = 0.0075 s
+
+        for i, param_set in enumerate(param_sets):
+            param_config, param_value_seconds = param_set[0]
+            self.assertAlmostEqual(param_value_seconds, expected_seconds, places=9)
+            logger.info(f"  Set {i}: {param_value_seconds:.6f} s (constant)")
+
+        # Apply and verify
+        original_mean = science_data["corrected_timestamp"].mean()
+        modified_data = correction.apply_offset(param_config, expected_seconds, science_data)
+
+        actual_delta_us = modified_data["corrected_timestamp"].mean() - original_mean
+        expected_delta_us = 7500.0  # 7500 µs
+        self.assertAlmostEqual(actual_delta_us, expected_delta_us, places=3)
+        logger.info(f"  Applied offset: {actual_delta_us:.3f} µs (expected {expected_delta_us:.3f} µs)")
+        logger.info("✓ Fixed offset with microseconds works correctly")
+
+        # ========== Summary ==========
+        logger.info("\n" + "=" * 80)
+        logger.info("✓ OFFSET_TIME UNIT CONVERSION INTEGRATION TEST PASSED")
+        logger.info("  - Integration: load_param_sets -> apply_offset ✓")
+        logger.info("=" * 80)
+
 
 # =============================================================================
 # MAIN ENTRY POINT
