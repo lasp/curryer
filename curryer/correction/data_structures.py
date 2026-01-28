@@ -117,3 +117,107 @@ class SearchConfig:
     grid_span_km: float = 11.0
     reduction_factor: float = 0.8
     spacing_limit_m: float = 10.0
+
+
+@dataclass
+class RegridConfig:
+    """Configuration for GCP chip regridding.
+
+    Specifies output grid parameters for transforming irregular geodetic grids
+    to regular latitude/longitude grids. Exactly one of the grid specification
+    methods should be provided.
+
+    Parameters
+    ----------
+    output_grid_size : tuple[int, int], optional
+        Output dimensions (nrows, ncols). If provided, resolution is calculated
+        automatically from input bounds.
+    output_resolution_deg : tuple[float, float], optional
+        Output resolution (dlat, dlon) in degrees. If provided, grid size is
+        calculated automatically from input bounds. Recommended for mission-specific
+        configuration (e.g., match detector pixel size).
+    output_bounds : tuple[float, float, float, float], optional
+        Explicit output bounds (minlon, maxlon, minlat, maxlat) in degrees.
+        Must be combined with output_resolution_deg.
+    conservative_bounds : bool, default=True
+        If True, shrink output bounds to ensure all points lie within input grid
+        (no extrapolation). If False, use full extent of input (may require filling).
+    interpolation_method : str, default="bilinear"
+        Interpolation method: "bilinear", "nearest", or "cubic".
+    fill_value : float, default=np.nan
+        Value for output points that fall outside input grid.
+    ellipsoid : str, default="WGS84"
+        Geodetic reference ellipsoid for coordinate conversions.
+
+    Examples
+    --------
+    Resolution-based (recommended for missions):
+
+    >>> config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))  # ~100m
+
+    Size-based (fixed dimensions):
+
+    >>> config = RegridConfig(output_grid_size=(500, 500))
+
+    Bounds + resolution (advanced):
+
+    >>> config = RegridConfig(
+    ...     output_bounds=(-116.0, -115.0, 38.0, 39.0),
+    ...     output_resolution_deg=(0.001, 0.001)
+    ... )
+    """
+
+    output_grid_size: tuple[int, int] | None = None
+    output_resolution_deg: tuple[float, float] | None = None
+    output_bounds: tuple[float, float, float, float] | None = None
+    conservative_bounds: bool = True
+    interpolation_method: str = "bilinear"
+    fill_value: float = float("nan")
+    ellipsoid: str = "WGS84"
+
+    def __post_init__(self) -> None:
+        """Validate configuration parameters."""
+        # Count how many grid specification methods are provided
+        has_size = self.output_grid_size is not None
+        has_resolution = self.output_resolution_deg is not None
+        has_bounds = self.output_bounds is not None
+
+        # Validate mutual exclusivity
+        if has_bounds and not has_resolution:
+            raise ValueError("output_bounds requires output_resolution_deg to be specified")
+
+        if has_bounds and has_size:
+            raise ValueError(
+                "Cannot specify both output_bounds and output_grid_size. "
+                "Use output_bounds + output_resolution_deg instead."
+            )
+
+        if has_size and has_resolution:
+            raise ValueError("Cannot specify both output_grid_size and output_resolution_deg. Choose one method.")
+
+        # Validate interpolation method
+        valid_methods = {"bilinear", "nearest", "cubic"}
+        if self.interpolation_method not in valid_methods:
+            raise ValueError(f"interpolation_method must be one of {valid_methods}, got '{self.interpolation_method}'")
+
+        # Validate grid size if provided
+        if has_size:
+            nrows, ncols = self.output_grid_size
+            if nrows < 2 or ncols < 2:
+                raise ValueError(
+                    f"output_grid_size must have at least 2 rows and 2 columns, got {self.output_grid_size}"
+                )
+
+        # Validate resolution if provided
+        if has_resolution:
+            dlat, dlon = self.output_resolution_deg
+            if dlat <= 0 or dlon <= 0:
+                raise ValueError(f"output_resolution_deg must be positive, got {self.output_resolution_deg}")
+
+        # Validate bounds if provided
+        if has_bounds:
+            minlon, maxlon, minlat, maxlat = self.output_bounds
+            if minlon >= maxlon:
+                raise ValueError(f"minlon must be < maxlon, got {minlon} >= {maxlon}")
+            if minlat >= maxlat:
+                raise ValueError(f"minlat must be < maxlat, got {minlat} >= {maxlat}")
