@@ -250,6 +250,48 @@ def bilinear_interpolate_quad(
     return float(value)
 
 
+def _check_point_in_cell(
+    point_lon: float,
+    point_lat: float,
+    lon_grid: np.ndarray,
+    lat_grid: np.ndarray,
+    i: int,
+    j: int,
+) -> bool:
+    """Fast check if point is in cell [i,j]. Returns True/False."""
+    tol = 1e-10
+
+    # Get corner coordinates
+    lon_tl, lat_tl = lon_grid[i, j], lat_grid[i, j]
+    lon_tr, lat_tr = lon_grid[i, j + 1], lat_grid[i, j + 1]
+    lon_br, lat_br = lon_grid[i + 1, j + 1], lat_grid[i + 1, j + 1]
+    lon_bl, lat_bl = lon_grid[i + 1, j], lat_grid[i + 1, j]
+
+    # Test upper-left triangle (TL, TR, BL)
+    d_ul = (lon_tl - lon_bl) * (lat_tr - lat_bl) - (lat_tl - lat_bl) * (lon_tr - lon_bl)
+
+    if abs(d_ul) > 1e-14:
+        wA = ((point_lon - lon_bl) * (lat_tr - lat_bl) - (point_lat - lat_bl) * (lon_tr - lon_bl)) / d_ul
+        wB = ((lon_tl - lon_bl) * (point_lat - lat_bl) - (lat_tl - lat_bl) * (point_lon - lon_bl)) / d_ul
+        wC = 1.0 - wA - wB
+
+        if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
+            return True
+
+    # Test lower-right triangle (TR, BR, BL)
+    d_lr = (lon_tr - lon_bl) * (lat_br - lat_bl) - (lat_tr - lat_bl) * (lon_br - lon_bl)
+
+    if abs(d_lr) > 1e-14:
+        wA = ((point_lon - lon_bl) * (lat_br - lat_bl) - (point_lat - lat_bl) * (lon_br - lon_bl)) / d_lr
+        wB = ((lon_tr - lon_bl) * (point_lat - lat_bl) - (lat_tr - lat_bl) * (point_lon - lon_bl)) / d_lr
+        wC = 1.0 - wA - wB
+
+        if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
+            return True
+
+    return False
+
+
 def find_containing_cell(
     point: np.ndarray,
     lon_grid: np.ndarray,
@@ -283,34 +325,47 @@ def find_containing_cell(
     - Start from hint if provided
     - Check cells near last found cell (spatial locality)
     - If not found, search all cells
+
+    Optimization: Inline triangle test to avoid array allocations.
     """
     nrows, ncols = lon_grid.shape
     max_i, max_j = nrows - 1, ncols - 1
 
+    point_lon, point_lat = point[0], point[1]
+    tol = 1e-10
+
     def check_cell(i: int, j: int) -> bool:
-        """Check if point is in cell [i,j]."""
-        # Get cell corners (clockwise from top-left)
-        corners = np.array(
-            [
-                [lon_grid[i, j], lat_grid[i, j]],  # Top-left
-                [lon_grid[i, j + 1], lat_grid[i, j + 1]],  # Top-right
-                [lon_grid[i + 1, j + 1], lat_grid[i + 1, j + 1]],  # Bottom-right
-                [lon_grid[i + 1, j], lat_grid[i + 1, j]],  # Bottom-left
-            ]
-        )
+        """Check if point is in cell [i,j]. Optimized inline version."""
+        # Get corner coordinates (avoid array allocation)
+        lon_tl, lat_tl = lon_grid[i, j], lat_grid[i, j]
+        lon_tr, lat_tr = lon_grid[i, j + 1], lat_grid[i, j + 1]
+        lon_br, lat_br = lon_grid[i + 1, j + 1], lat_grid[i + 1, j + 1]
+        lon_bl, lat_bl = lon_grid[i + 1, j], lat_grid[i + 1, j]
 
-        # Test upper-left triangle (vertices 0, 1, 3)
-        triangle_ul = corners[[0, 1, 3]]
-        inside_ul, _ = point_in_triangle(point, triangle_ul)
+        # Test upper-left triangle (TL, TR, BL)
+        # Inline barycentric coordinate calculation
+        d_ul = (lon_tl - lon_bl) * (lat_tr - lat_bl) - (lat_tl - lat_bl) * (lon_tr - lon_bl)
 
-        if inside_ul:
-            return True
+        if abs(d_ul) > 1e-14:
+            wA = ((point_lon - lon_bl) * (lat_tr - lat_bl) - (point_lat - lat_bl) * (lon_tr - lon_bl)) / d_ul
+            wB = ((lon_tl - lon_bl) * (point_lat - lat_bl) - (lat_tl - lat_bl) * (point_lon - lon_bl)) / d_ul
+            wC = 1.0 - wA - wB
 
-        # Test lower-right triangle (vertices 1, 2, 3)
-        triangle_lr = corners[[1, 2, 3]]
-        inside_lr, _ = point_in_triangle(point, triangle_lr)
+            if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
+                return True
 
-        return inside_lr
+        # Test lower-right triangle (TR, BR, BL)
+        d_lr = (lon_tr - lon_bl) * (lat_br - lat_bl) - (lat_tr - lat_bl) * (lon_br - lon_bl)
+
+        if abs(d_lr) > 1e-14:
+            wA = ((point_lon - lon_bl) * (lat_br - lat_bl) - (point_lat - lat_bl) * (lon_br - lon_bl)) / d_lr
+            wB = ((lon_tr - lon_bl) * (point_lat - lat_bl) - (lat_tr - lat_bl) * (point_lon - lon_bl)) / d_lr
+            wC = 1.0 - wA - wB
+
+            if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
+                return True
+
+        return False
 
     # Determine search start
     if start_cell is not None:
@@ -327,11 +382,15 @@ def find_containing_cell(
                     if check_cell(i, j):
                         return (i, j)
 
-    # Full search if not found in window
-    for i in range(max_i):
-        for j in range(max_j):
-            if check_cell(i, j):
-                return (i, j)
+        # Not found in window - return None (caller will use spatial index or expand search)
+        return None
+    else:
+        # No hint provided - do full search (only happens for very first point or edge cases)
+        # This is expensive but necessary for correctness when no hint is available
+        for i in range(max_i):
+            for j in range(max_j):
+                if check_cell(i, j):
+                    return (i, j)
 
     # Not found
     return None
@@ -345,6 +404,7 @@ def regrid_irregular_to_regular(
     lat_regular: np.ndarray,
     method: str = "bilinear",
     fill_value: float = np.nan,
+    use_spatial_index: bool = True,
 ) -> np.ndarray:
     """
     Regrid data from irregular geodetic grid to regular lat/lon grid.
@@ -365,6 +425,9 @@ def regrid_irregular_to_regular(
         Interpolation method: "bilinear" or "nearest".
     fill_value : float, default=np.nan
         Value for output points that fall outside input grid.
+    use_spatial_index : bool, default=True
+        If True, build a spatial index (KD-tree) for faster cell finding.
+        Recommended for large grids (>100×100). Adds ~0.1s overhead.
 
     Returns
     -------
@@ -381,9 +444,54 @@ def regrid_irregular_to_regular(
     3. Points outside irregular grid are filled with fill_value
 
     Performance: O(n²) worst case, O(n²/k) typical with spatial locality.
+
+    Optimizations applied:
+    - Minimize array allocations in inner loop
+    - Extract corner data once per cell
+    - Use scalar operations where possible
+    - Optional spatial index for O(log n) nearest neighbor queries
     """
     nrows_out, ncols_out = lon_regular.shape
     data_regular = np.full((nrows_out, ncols_out), fill_value)
+
+    # Build spatial index if enabled (speeds up cell finding for large grids)
+    kdtree = None
+    cell_centers = None
+    if use_spatial_index and lon_irregular.shape[0] > 50:
+        try:
+            from scipy.spatial import cKDTree
+
+            # Compute cell centers for spatial index
+            nrows_in, ncols_in = lon_irregular.shape
+            cell_centers_list = []
+            cell_indices_list = []
+
+            for i in range(nrows_in - 1):
+                for j in range(ncols_in - 1):
+                    # Cell center (approximate)
+                    center_lon = 0.25 * (
+                        lon_irregular[i, j]
+                        + lon_irregular[i, j + 1]
+                        + lon_irregular[i + 1, j]
+                        + lon_irregular[i + 1, j + 1]
+                    )
+                    center_lat = 0.25 * (
+                        lat_irregular[i, j]
+                        + lat_irregular[i, j + 1]
+                        + lat_irregular[i + 1, j]
+                        + lat_irregular[i + 1, j + 1]
+                    )
+                    cell_centers_list.append([center_lon, center_lat])
+                    cell_indices_list.append((i, j))
+
+            cell_centers = np.array(cell_centers_list)
+            cell_indices_map = cell_indices_list
+            kdtree = cKDTree(cell_centers)
+            logger.debug(f"Built spatial index with {len(cell_indices_map)} cells")
+
+        except ImportError:
+            logger.debug("scipy.spatial.cKDTree not available, using sequential search")
+            kdtree = None
 
     # Track last found cell for optimization (spatial locality)
     last_cell = None
@@ -401,10 +509,38 @@ def regrid_irregular_to_regular(
             last_cell = first_cell_of_row
 
         for jj in range(ncols_out):
-            point = np.array([lon_regular[ii, jj], lat_regular[ii, jj]])
+            point_lon = lon_regular[ii, jj]
+            point_lat = lat_regular[ii, jj]
+            point = np.array([point_lon, point_lat])
 
-            # Find containing cell
-            cell = find_containing_cell(point, lon_irregular, lat_irregular, last_cell)
+            cell = None
+
+            # Strategy:
+            # 1. If we have a hint from previous point, use windowed search
+            # 2. If windowed search fails or no hint, use spatial index
+            # 3. If no spatial index, do full search (slow, but correct)
+
+            if last_cell is not None:
+                # Try windowed search around last cell
+                cell = find_containing_cell(point, lon_irregular, lat_irregular, last_cell)
+
+            # If windowed search failed or no hint, use spatial index
+            if cell is None and kdtree is not None:
+                # Query k nearest neighbors to find containing cell
+                distances, indices = kdtree.query(point, k=min(9, len(cell_centers)))
+
+                for idx in indices:
+                    candidate_i, candidate_j = cell_indices_map[idx]
+                    # Direct check if point is in this candidate cell (fast)
+                    if _check_point_in_cell(
+                        point_lon, point_lat, lon_irregular, lat_irregular, candidate_i, candidate_j
+                    ):
+                        cell = (candidate_i, candidate_j)
+                        break
+
+            # Last resort: full search (only if no spatial index available)
+            if cell is None and kdtree is None:
+                cell = find_containing_cell(point, lon_irregular, lat_irregular, None)
 
             if cell is None:
                 # Point outside irregular grid, leave as fill_value
@@ -412,25 +548,58 @@ def regrid_irregular_to_regular(
 
             i, j = cell
 
-            # Get corner coordinates and values
-            corners_lon = np.array(
-                [lon_irregular[i, j], lon_irregular[i, j + 1], lon_irregular[i + 1, j + 1], lon_irregular[i + 1, j]]
-            )
-            corners_lat = np.array(
-                [lat_irregular[i, j], lat_irregular[i, j + 1], lat_irregular[i + 1, j + 1], lat_irregular[i + 1, j]]
-            )
-            corner_values = np.array(
-                [data_irregular[i, j], data_irregular[i, j + 1], data_irregular[i + 1, j + 1], data_irregular[i + 1, j]]
-            )
+            # Get corner coordinates and values (extract once)
+            # Clockwise from top-left: TL, TR, BR, BL
+            lon_tl, lat_tl = lon_irregular[i, j], lat_irregular[i, j]
+            lon_tr, lat_tr = lon_irregular[i, j + 1], lat_irregular[i, j + 1]
+            lon_br, lat_br = lon_irregular[i + 1, j + 1], lat_irregular[i + 1, j + 1]
+            lon_bl, lat_bl = lon_irregular[i + 1, j], lat_irregular[i + 1, j]
+
+            val_tl = data_irregular[i, j]
+            val_tr = data_irregular[i, j + 1]
+            val_br = data_irregular[i + 1, j + 1]
+            val_bl = data_irregular[i + 1, j]
 
             # Interpolate
             if method == "bilinear":
-                data_regular[ii, jj] = bilinear_interpolate_quad(point, corners_lon, corners_lat, corner_values)
+                # Inline bilinear interpolation (avoid function call overhead)
+                # Build interpolation matrix (4x4) and solve
+                M = np.array(
+                    [
+                        [1.0, 1.0, 1.0, 1.0],
+                        [lon_tl, lon_tr, lon_br, lon_bl],
+                        [lat_tl, lat_tr, lat_br, lat_bl],
+                        [lon_tl * lat_tl, lon_tr * lat_tr, lon_br * lat_br, lon_bl * lat_bl],
+                    ]
+                )
+
+                E = np.array([1.0, point_lon, point_lat, point_lon * point_lat])
+
+                try:
+                    weights = np.linalg.solve(M, E)
+                    data_regular[ii, jj] = (
+                        weights[0] * val_tl + weights[1] * val_tr + weights[2] * val_br + weights[3] * val_bl
+                    )
+                except np.linalg.LinAlgError:
+                    # Singular matrix - use simple average
+                    data_regular[ii, jj] = 0.25 * (val_tl + val_tr + val_br + val_bl)
+
             elif method == "nearest":
-                # Use nearest corner
-                distances = np.sqrt((corners_lon - point[0]) ** 2 + (corners_lat - point[1]) ** 2)
-                nearest_idx = np.argmin(distances)
-                data_regular[ii, jj] = corner_values[nearest_idx]
+                # Use nearest corner (avoid extra array allocations)
+                dist_tl = (lon_tl - point_lon) ** 2 + (lat_tl - point_lat) ** 2
+                dist_tr = (lon_tr - point_lon) ** 2 + (lat_tr - point_lat) ** 2
+                dist_br = (lon_br - point_lon) ** 2 + (lat_br - point_lat) ** 2
+                dist_bl = (lon_bl - point_lon) ** 2 + (lat_bl - point_lat) ** 2
+
+                min_dist = min(dist_tl, dist_tr, dist_br, dist_bl)
+                if min_dist == dist_tl:
+                    data_regular[ii, jj] = val_tl
+                elif min_dist == dist_tr:
+                    data_regular[ii, jj] = val_tr
+                elif min_dist == dist_br:
+                    data_regular[ii, jj] = val_br
+                else:
+                    data_regular[ii, jj] = val_bl
 
             # Update search hint
             last_cell = cell
