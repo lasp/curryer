@@ -615,6 +615,8 @@ def regrid_gcp_chip(
     band_data: np.ndarray,
     ecef_coords: tuple[np.ndarray, np.ndarray, np.ndarray],
     config: RegridConfig,
+    output_file: str | None = None,
+    output_metadata: dict[str, str] | None = None,
 ) -> ImageGrid:
     """
     High-level function: Regrid GCP chip from ECEF to regular lat/lon grid.
@@ -630,6 +632,12 @@ def regrid_gcp_chip(
         (X, Y, Z) ECEF coordinate arrays (meters), each shape (nrows, ncols).
     config : RegridConfig
         Regridding configuration.
+    output_file : str, optional
+        If provided, save the regridded chip to this NetCDF file path.
+        File will be created with CF-compliant metadata.
+    output_metadata : dict[str, str], optional
+        Additional metadata to include in the NetCDF file (only used if output_file
+        is specified). Common keys: 'source_file', 'mission', 'sensor', 'band'.
 
     Returns
     -------
@@ -643,14 +651,29 @@ def regrid_gcp_chip(
     3. Create regular output grid (from resolution or size)
     4. Regrid data using bilinear interpolation
     5. Return ImageGrid with (data, lat, lon, h)
+    6. Optionally save to NetCDF file
 
     Examples
     --------
+    Basic usage (return in-memory):
+
     >>> from curryer.correction.image_io import load_gcp_chip_from_hdf
     >>> from curryer.correction.regrid import regrid_gcp_chip, RegridConfig
     >>> band, x, y, z = load_gcp_chip_from_hdf("chip.hdf")
     >>> config = RegridConfig(output_resolution_deg=(0.001, 0.001))
     >>> regridded = regrid_gcp_chip(band, (x, y, z), config)
+
+    With NetCDF output:
+
+    >>> regridded = regrid_gcp_chip(
+    ...     band, (x, y, z), config,
+    ...     output_file="regridded_chip.nc",
+    ...     output_metadata={
+    ...         'source_file': 'LT08CHP.20140803.p002r071.c01.v001.hdf',
+    ...         'mission': 'CLARREO Pathfinder',
+    ...         'band': 'red',
+    ...     }
+    ... )
     """
     ecef_x, ecef_y, ecef_z = ecef_coords
 
@@ -720,5 +743,9 @@ def regrid_gcp_chip(
     )
 
     logger.info(f"Regridding complete: output shape {data_regular.shape}")
+
+    # Step 6: Optionally save to NetCDF
+    if output_file is not None:
+        regridded_chip.save_to_netcdf(output_file, metadata=output_metadata)
 
     return regridded_chip
