@@ -746,6 +746,8 @@ def regrid_gcp_chip(
 
     # Step 6: Optionally save to NetCDF
     if output_file is not None:
-        regridded_chip.save_to_netcdf(output_file, metadata=output_metadata)
+        from .image_io import save_image_grid_to_netcdf
+
+        save_image_grid_to_netcdf(output_file, regridded_chip, metadata=output_metadata)
 
     return regridded_chip

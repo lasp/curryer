@@ -8,8 +8,6 @@ used in the correction pipeline, including:
 
 All functions work with ImageGrid and related data structures.
 No dependencies on image matching or other correction algorithms.
-
-@author: Brandon Stone, NASA Langley Research Center
 """
 
 from __future__ import annotations
@@ -208,6 +206,259 @@ def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
 
     available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
     raise KeyError(f"No LOS vectors found in {mat_file.name}. Available keys: {available_keys}")
+
+
+# ============================================================================
+# NetCDF File I/O (for regridded chips and general image grids)
+# ============================================================================
+
+
+def save_image_grid_to_netcdf(
+    filepath: Path,
+    image_grid: ImageGrid,
+    metadata: dict[str, str] | None = None,
+    compression: bool = True,
+) -> None:
+    """
+    Save ImageGrid to NetCDF file (CF-1.8 compliant).
+
+    This function can be used for any ImageGrid, including regridded GCP chips,
+    L1A subimages, or other gridded data.
+
+    Parameters
+    ----------
+    filepath : Path
+        Output NetCDF file path.
+    image_grid : ImageGrid
+        Image data with lat/lon coordinates to save.
+    metadata : dict[str, str], optional
+        Additional global attributes to include in the NetCDF file.
+        Common keys: 'source_file', 'mission', 'sensor', 'processing_date', 'band'.
+    compression : bool, default=True
+        Enable zlib compression for data variables (~50% size reduction).
+
+    Raises
+    ------
+    ImportError
+        If netCDF4 is not installed.
+    OSError
+        If file cannot be written.
+
+    Notes
+    -----
+    The NetCDF file follows CF-1.8 conventions and contains:
+    - Variables: 'data', 'latitude', 'longitude', 'height' (if available)
+    - Dimensions: 'y' (rows), 'x' (columns)
+    - Coordinates: latitude(y, x) or (y,), longitude(y, x) or (x,)
+    - Attributes: grid info, CRS metadata, processing information
+
+    For regular grids (1D coordinates), variables are stored efficiently as:
+    - latitude(y): Single column
+    - longitude(x): Single row
+
+    For irregular grids (2D coordinates), full arrays are stored:
+    - latitude(y, x): Full grid
+    - longitude(y, x): Full grid
+
+    Examples
+    --------
+    Save regridded GCP chip:
+
+    >>> save_image_grid_to_netcdf(
+    ...     Path("regridded.nc"),
+    ...     regridded_chip,
+    ...     metadata={
+    ...         'source_file': 'LT08CHP.20140803.p002r071.c01.v001.hdf',
+    ...         'mission': 'CLARREO Pathfinder',
+    ...         'sensor': 'Landsat-8',
+    ...         'band': 'red',
+    ...         'processing_date': '2026-02-02'
+    ...     }
+    ... )
+
+    Save L1A subimage:
+
+    >>> save_image_grid_to_netcdf(
+    ...     Path("l1a_subimage.nc"),
+    ...     l1a_grid,
+    ...     metadata={'mission': 'CLARREO', 'level': 'L1A'}
+    ... )
+    """
+    try:
+        from datetime import datetime
+
+        from netCDF4 import Dataset
+    except ImportError as e:
+        raise ImportError("netCDF4 is required to save NetCDF files. Install with: pip install netCDF4") from e
+
+    filepath = Path(filepath)
+    logger.info(f"Saving ImageGrid to NetCDF: {filepath}")
+
+    # Create NetCDF file
+    with Dataset(filepath, "w", format="NETCDF4") as nc:
+        # Global attributes
+        nc.setncattr("title", "Regridded GCP Chip")
+        nc.setncattr("institution", "NASA Langley Research Center")
+        nc.setncattr("source", "Curryer GCP Regridding Module")
+        nc.setncattr("history", f"Created {datetime.utcnow().isoformat()}Z")
+        nc.setncattr("Conventions", "CF-1.8")
+        nc.setncattr("grid_type", "regular_lat_lon")
+
+        # Add user-provided metadata
+        if metadata:
+            for key, value in metadata.items():
+                nc.setncattr(key, str(value))
+
+        # Create dimensions
+        nrows, ncols = image_grid.data.shape
+        nc.createDimension("y", nrows)
+        nc.createDimension("x", ncols)
+
+        # Compression settings
+        comp_kwargs = {"zlib": True, "complevel": 4} if compression else {}
+
+        # Determine if coordinates are 1D or 2D
+        lat_is_1d = image_grid.lat.ndim == 1 or (
+            image_grid.lat.ndim == 2 and np.allclose(image_grid.lat, image_grid.lat[:, 0:1])
+        )
+        lon_is_1d = image_grid.lon.ndim == 1 or (
+            image_grid.lon.ndim == 2 and np.allclose(image_grid.lon, image_grid.lon[0:1, :])
+        )
+
+        # Create coordinate variables
+        if lat_is_1d:
+            # 1D latitude (varies with y only)
+            lat_var = nc.createVariable("latitude", "f8", ("y",), **comp_kwargs)
+            lat_var[:] = image_grid.lat[:, 0] if image_grid.lat.ndim == 2 else image_grid.lat
+        else:
+            # 2D latitude
+            lat_var = nc.createVariable("latitude", "f8", ("y", "x"), **comp_kwargs)
+            lat_var[:] = image_grid.lat
+
+        lat_var.units = "degrees_north"
+        lat_var.long_name = "latitude"
+        lat_var.standard_name = "latitude"
+
+        if lon_is_1d:
+            # 1D longitude (varies with x only)
+            lon_var = nc.createVariable("longitude", "f8", ("x",), **comp_kwargs)
+            lon_var[:] = image_grid.lon[0, :] if image_grid.lon.ndim == 2 else image_grid.lon
+        else:
+            # 2D longitude
+            lon_var = nc.createVariable("longitude", "f8", ("y", "x"), **comp_kwargs)
+            lon_var[:] = image_grid.lon
+
+        lon_var.units = "degrees_east"
+        lon_var.long_name = "longitude"
+        lon_var.standard_name = "longitude"
+
+        # Create data variable
+        data_var = nc.createVariable("data", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
+        data_var[:] = image_grid.data
+        data_var.long_name = "regridded_radiance"
+        data_var.units = "DN"
+        data_var.coordinates = "latitude longitude"
+        data_var.grid_mapping = "crs"
+
+        # Add grid statistics as attributes
+        data_var.setncattr("valid_min", float(np.nanmin(image_grid.data)))
+        data_var.setncattr("valid_max", float(np.nanmax(image_grid.data)))
+        data_var.setncattr("valid_pixels", int(np.sum(~np.isnan(image_grid.data))))
+
+        # Add height if available
+        if image_grid.h is not None:
+            h_var = nc.createVariable("height", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
+            h_var[:] = image_grid.h
+            h_var.units = "meters"
+            h_var.long_name = "height_above_reference_ellipsoid"
+            h_var.standard_name = "height_above_reference_ellipsoid"
+            h_var.coordinates = "latitude longitude"
+
+        # Add CRS information (WGS84)
+        crs = nc.createVariable("crs", "i4")
+        crs.grid_mapping_name = "latitude_longitude"
+        crs.semi_major_axis = 6378137.0
+        crs.inverse_flattening = 298.257223563
+        crs.long_name = "WGS84"
+        crs.crs_wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
+
+    logger.info(f"NetCDF file saved successfully: {filepath} ({filepath.stat().st_size / 1024:.1f} KB)")
+
+
+def load_image_grid_from_netcdf(filepath: Path) -> ImageGrid:
+    """
+    Load ImageGrid from NetCDF file.
+
+    Loads regridded GCP chips or other gridded data saved in NetCDF format.
+    Automatically handles both 1D and 2D coordinate arrays.
+
+    Parameters
+    ----------
+    filepath : Path
+        Input NetCDF file path.
+
+    Returns
+    -------
+    ImageGrid
+        Loaded image grid with data, lat, lon, and h (if available).
+
+    Raises
+    ------
+    ImportError
+        If netCDF4 is not installed.
+    FileNotFoundError
+        If filepath doesn't exist.
+    KeyError
+        If required variables not found in file.
+
+    Examples
+    --------
+    >>> regridded = load_image_grid_from_netcdf(Path("regridded.nc"))
+    >>> regridded.data.shape
+    (421, 433)
+    """
+    try:
+        from netCDF4 import Dataset
+    except ImportError as e:
+        raise ImportError("netCDF4 is required to load NetCDF files. Install with: pip install netCDF4") from e
+
+    filepath = Path(filepath)
+
+    if not filepath.exists():
+        raise FileNotFoundError(f"NetCDF file not found: {filepath}")
+
+    logger.info(f"Loading ImageGrid from NetCDF: {filepath}")
+
+    with Dataset(filepath, "r") as nc:
+        # Load data
+        if "data" not in nc.variables:
+            raise KeyError(f"Required variable 'data' not found in {filepath.name}")
+        data = nc.variables["data"][:]
+
+        # Load coordinates
+        if "latitude" not in nc.variables:
+            raise KeyError(f"Required variable 'latitude' not found in {filepath.name}")
+        if "longitude" not in nc.variables:
+            raise KeyError(f"Required variable 'longitude' not found in {filepath.name}")
+
+        lat_var = nc.variables["latitude"]
+        lon_var = nc.variables["longitude"]
+
+        # Handle 1D or 2D coordinates
+        if lat_var.ndim == 1:
+            # Expand 1D to 2D
+            lat_1d = lat_var[:]
+            lon_1d = lon_var[:]
+            lon, lat = np.meshgrid(lon_1d, lat_1d)
+        else:
+            lat = lat_var[:]
+            lon = lon_var[:]
+
+        # Load height if available
+        h = nc.variables["height"][:] if "height" in nc.variables else None
+
+    logger.info(f"Loaded ImageGrid from NetCDF: shape {data.shape}")
+    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
 
 
 # ============================================================================
