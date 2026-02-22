@@ -37,6 +37,4 @@ When you are interacting with this repository, we ask that you follow the [LASP 
 
 ## Citations
 
-If you use `sammi` in your work, we kindly ask you to [acknowledge sammi](https://lasp-curryer.readthedocs.io/en/latest/acknowledgement.html) in your publications and presentations.
-
-The continued growth and development of `sammi` is dependent on the community being aware of `sammi`.
+If you use Curryer in your work, we kindly ask you to [acknowledge Curryer](https://lasp-curryer.readthedocs.io/en/latest/acknowledgement.html) in your publications and presentations.

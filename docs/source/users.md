@@ -45,7 +45,7 @@ or pass the path to routines which require data files.
 Download Third-party Files:
 
 - SPICE Utilities: https://naif.jpl.nasa.gov/naif/utilities.html
-  - At minimum: `mkspk`, `msopck`, `brief`, `ckbreif`
+  - At minimum: `mkspk`, `msopck`, `brief`, `ckbrief`
 - SPICE Generic Kernels (large):
   - [de430.bsp](https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de430.bsp),
     place in `data/generic`.
