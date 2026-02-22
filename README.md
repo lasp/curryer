@@ -2,9 +2,7 @@
 
 [![readthedocs](https://readthedocs.org/projects/lasp-curryer/badge/?version=latest)](https://lasp-curryer.readthedocs.io/en/latest/)
 [![tests](https://github.com/lasp/curryer/actions/workflows/tests.yml/badge.svg)](https://github.com/lasp/curryer/actions/workflows/tests.yml)
-
-<!-- Uncomment me when Zenodo is set up
-[![DOI](https://zenodo.org/badge/<>.svg)](https://zenodo.org/badge/latestdoi/<>) -->
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18734310.svg)](https://zenodo.org/records/18734310)
 
 A library for SPICE extensions and geospatial data product generation.
 
