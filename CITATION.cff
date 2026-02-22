@@ -1,0 +1,47 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: Curryer
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - name: Laboratory of Atmospheric and Space Physics
+    address: 1234 Innovation Drive
+    city: Boulder
+    country: US
+    post-code: '80303'
+    website: 'https://lasp.colorado.edu/'
+  - given-names: Brandon
+    family-names: Stone
+    email: brandon.stone@lasp.colorado.edu
+    affiliation: LASP
+  - given-names: Matthew
+    family-names: Maclay
+    email: matthew.maclay@lasp.colorado.edu
+    affiliation: LASP
+    orcid: 'https://orcid.org/0000-0001-7860-0055'
+  - given-names: Gavin
+    family-names: Medley
+    email: gavin.medley@lasp.colorado.edu
+    affiliation: LASP
+    orcid: 'https://orcid.org/0000-0002-3520-9715'
+  - given-names: Matthew
+    family-names: Watwood
+    email: matthew.watwood@lasp.colorado.edu
+    affiliation: LASP
+    orcid: 'https://orcid.org/0009-0004-5451-5058'
+  - given-names: Maxine
+    family-names: Hartnett
+    email: maxine.hartnett@lasp.colorado.edu
+    affiliation: LASP
+    orcid: 'https://orcid.org/0009-0002-1495-5652'
+repository-code: 'https://github.com/lasp/curryer'
+url: 'https://lasp-curryer.readthedocs.io/en/latest/'
+repository-artifact: 'https://pypi.org/project/lasp-curryer/'
+abstract: >
+  A library for SPICE extensions and geospatial data product
+  generation.
+license: MIT
