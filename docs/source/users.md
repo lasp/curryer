@@ -231,4 +231,4 @@ INFO: Path exceeds 80 chars (102 chars): naif0012.tls
 INFO:   → Using copy: /tmp/curryer_abc12345.tls
 ```
 
-See [SPICE Path Handling Documentation](docs/spice_path_handling.md) for more details.
+See [SPICE Path Handling Documentation](../spice_path_handling.md) for more details.
