@@ -12,8 +12,8 @@ authors:
     address: 1234 Innovation Drive
     city: Boulder
     country: US
-    post-code: '80303'
-    website: 'https://lasp.colorado.edu/'
+    post-code: "80303"
+    website: "https://lasp.colorado.edu/"
   - given-names: Brandon
     family-names: Stone
     email: brandon.stone@lasp.colorado.edu
@@ -22,25 +22,29 @@ authors:
     family-names: Maclay
     email: matthew.maclay@lasp.colorado.edu
     affiliation: LASP
-    orcid: 'https://orcid.org/0000-0001-7860-0055'
+    orcid: "https://orcid.org/0000-0001-7860-0055"
   - given-names: Gavin
     family-names: Medley
     email: gavin.medley@lasp.colorado.edu
     affiliation: LASP
-    orcid: 'https://orcid.org/0000-0002-3520-9715'
+    orcid: "https://orcid.org/0000-0002-3520-9715"
   - given-names: Matthew
     family-names: Watwood
     email: matthew.watwood@lasp.colorado.edu
     affiliation: LASP
-    orcid: 'https://orcid.org/0009-0004-5451-5058'
+    orcid: "https://orcid.org/0009-0004-5451-5058"
   - given-names: Maxine
     family-names: Hartnett
     email: maxine.hartnett@lasp.colorado.edu
     affiliation: LASP
-    orcid: 'https://orcid.org/0009-0002-1495-5652'
-repository-code: 'https://github.com/lasp/curryer'
-url: 'https://lasp-curryer.readthedocs.io/en/latest/'
-repository-artifact: 'https://pypi.org/project/lasp-curryer/'
+    orcid: "https://orcid.org/0009-0002-1495-5652"
+identifiers:
+  - type: doi
+    value: https://doi.org/10.5281/zenodo.18734309
+    description: Zenodo DOI
+repository-code: "https://github.com/lasp/curryer"
+url: "https://lasp-curryer.readthedocs.io/en/latest/"
+repository-artifact: "https://pypi.org/project/lasp-curryer/"
 abstract: >
   A library for SPICE extensions and geospatial data product
   generation.
