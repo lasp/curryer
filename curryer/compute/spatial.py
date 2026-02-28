@@ -1584,8 +1584,13 @@ class Geolocate:
 
         # Dev note: Important to do this check last, since above logic requires
         # direct assignment instead of OR'ing.
+        logger.info(f"solar_angles_df={solar_angles_df}")
+        logger.info(f"view_angles_df={view_angles_df}")
+
         angles_invalid = solar_angles_df.isna().any(axis=1) | view_angles_df.isna().any(axis=1)
-        ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
+        mask = angles_invalid.to_numpy()
+        ancil_qf_ds["ancil_qf"].data[:, mask] |= SQF.CALC_ANCIL_NOT_FINITE.value
+        # ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
 
         return pnt_xyz_df, solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
 
