@@ -10,8 +10,6 @@ The main workflow is:
 3. Determine output grid bounds and spacing
 4. Interpolate data onto regular grid using bilinear interpolation
 5. Return ImageGrid with regular lat/lon coordinates
-
-@author: Brandon Stone, NASA Langley Research Center
 """
 
 from __future__ import annotations
