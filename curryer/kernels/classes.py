@@ -499,6 +499,18 @@ class AbstractKernelWriter(metaclass=ABCMeta):
                             logger.info("Processing input for kernel segment [%d/%d]", ith, n_segments)
                         with self._safe_write_input_data(accessor) as input_file:
                             cmd = self._write_kernel(setup_file, input_file, filename, append=append or ith > 1)
+                            import subprocess
+                            result = subprocess.run(
+                                ['/tmp/mkspk', '-setup', '/tmp/tmpi0kj0e18',
+                                 '-input', '/tmp/tmp7os2jwnt',
+                                 '-output', '/tmp/iss_sc_v01.ephemeris.spk.bsp'],
+                                capture_output=True,
+                                text=True
+                            )
+                            print("STDOUT:", result.stdout)
+                            print("STDERR:", result.stderr)
+                            print("Return code:", result.returncode)
+
                             utils.capture_subprocess(cmd)
 
             return filename, None
