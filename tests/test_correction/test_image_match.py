@@ -37,9 +37,9 @@ from scipy.io import loadmat
 from curryer import utils
 from curryer.compute import constants
 from curryer.correction.data_structures import (
-    GeolocationConfig,
     ImageGrid,
     OpticalPSFEntry,
+    PSFSamplingConfig,
     SearchConfig,
 )
 from curryer.correction.image_match import integrated_image_match
@@ -122,7 +122,7 @@ class ImageMatchTestCase(unittest.TestCase):
             optical_psfs=psf_entries,
             # lat_error_km=lat_lon_err[0],
             # lon_error_km=lat_lon_err[1],
-            geolocation_config=GeolocationConfig(),
+            geolocation_config=PSFSamplingConfig(),
             search_config=SearchConfig(),
         )
 
