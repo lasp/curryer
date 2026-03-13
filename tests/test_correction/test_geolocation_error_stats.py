@@ -42,8 +42,8 @@ import xarray as xr
 
 from curryer import utils
 from curryer.correction.error_stats import (
-    ErrorStatsProcessor,
     ErrorStatsConfig,
+    ErrorStatsProcessor,
 )
 
 logger = logging.getLogger(__name__)

@@ -60,8 +60,8 @@ from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction import correction
 from curryer.correction.data_structures import (
-    PSFSamplingConfig,
     ImageGrid,
+    PSFSamplingConfig,
     SearchConfig,
 )
 from curryer.correction.image_match import (

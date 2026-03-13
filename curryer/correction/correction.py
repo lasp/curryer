@@ -75,8 +75,7 @@ from curryer import meta
 from curryer import spicierpy as sp
 from curryer.compute import spatial
 from curryer.correction import correction_config
-from curryer.correction.data_structures import PSFSamplingConfig
-from curryer.correction.data_structures import SearchConfig
+from curryer.correction.data_structures import PSFSamplingConfig, SearchConfig
 
 # Import data loader protocols and validation
 from curryer.correction.dataio import (
@@ -702,8 +701,7 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
         image_matching_results = [image_matching_results]
 
     try:
-        from curryer.correction.error_stats import ErrorStatsProcessor
-        from curryer.correction.error_stats import ErrorStatsConfig
+        from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 

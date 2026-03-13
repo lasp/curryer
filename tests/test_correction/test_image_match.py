@@ -37,9 +37,9 @@ from scipy.io import loadmat
 from curryer import utils
 from curryer.compute import constants
 from curryer.correction.data_structures import (
-    PSFSamplingConfig,
     ImageGrid,
     OpticalPSFEntry,
+    PSFSamplingConfig,
     SearchConfig,
 )
 from curryer.correction.image_match import integrated_image_match

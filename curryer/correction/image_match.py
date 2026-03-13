@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from .data_structures import (
-    PSFSamplingConfig,
     ImageGrid,
     NamedImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
     PSFGrid,
+    PSFSamplingConfig,
     SearchConfig,
 )
 from .psf import (

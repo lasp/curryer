@@ -14,11 +14,11 @@ from scipy.signal import convolve2d, fftconvolve
 from ..compute import constants
 from ..compute.spatial import ecef_to_geodetic, geodetic_to_ecef
 from .data_structures import (
-    PSFSamplingConfig,
     ImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
     PSFGrid,
+    PSFSamplingConfig,
 )
 
 logger = logging.getLogger(__name__)
