@@ -1,5 +1,5 @@
 """
-Unit tests for geolocation_error_stats.py
+Unit tests for error_stats.py
 
 This module contains comprehensive unit tests for the ErrorStatsProcessor class
 and related functionality, including edge cases, validation, and numerical accuracy.
@@ -41,9 +41,9 @@ import pytest
 import xarray as xr
 
 from curryer import utils
-from curryer.correction.geolocation_error_stats import (
+from curryer.correction.error_stats import (
     ErrorStatsProcessor,
-    GeolocationConfig,
+    ErrorStatsConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ def _sample_from_validated_test_cases(n_measurements: int, seed: int | None = No
 
 def _create_test_config(**overrides):
     """
-    Create GeolocationConfig for testing with CLARREO defaults.
+    Create ErrorStatsConfig for testing with CLARREO defaults.
 
     These values come from the CLARREO mission configuration and are appropriate
     for testing CLARREO-specific scenarios. Tests can override individual values
@@ -104,7 +104,7 @@ def _create_test_config(**overrides):
         **overrides: Override any default values
 
     Returns:
-        GeolocationConfig with CLARREO test values
+        ErrorStatsConfig with CLARREO test values
     """
     # CLARREO mission defaults (from clarreo_correction_config.json)
     # These values should match the canonical CLARREO configuration
@@ -119,7 +119,7 @@ def _create_test_config(**overrides):
         },
     }
     defaults.update(overrides)
-    return GeolocationConfig(**defaults)
+    return ErrorStatsConfig(**defaults)
 
 
 def create_test_dataset_13_cases() -> xr.Dataset:
@@ -788,7 +788,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         """Test processor initialization with default config."""
         config = _create_test_config()
         processor = ErrorStatsProcessor(config=config)
-        self.assertIsInstance(processor.config, GeolocationConfig)
+        self.assertIsInstance(processor.config, ErrorStatsConfig)
         self.assertEqual(processor.config.earth_radius_m, 6378140.0)
 
     def test_processor_initialization_custom(self):

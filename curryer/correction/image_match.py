@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from .data_structures import (
-    GeolocationConfig,
+    PSFSamplingConfig,
     ImageGrid,
     NamedImageGrid,
     OpticalPSFEntry,
@@ -156,7 +156,7 @@ def integrated_image_match(
     r_iss_midframe_m: np.ndarray,
     los_vectors_hs: np.ndarray,
     optical_psfs: Iterable[OpticalPSFEntry],
-    geolocation_config: GeolocationConfig | None = None,
+    geolocation_config: PSFSamplingConfig | None = None,
     search_config: SearchConfig | None = None,
 ) -> IntegratedImageMatchResult:
     """
@@ -177,7 +177,7 @@ def integrated_image_match(
         Line-of-sight vectors in instrument frame, shape (n_pixels, 3).
     optical_psfs : Iterable[OpticalPSFEntry]
         Optical PSF samples at different field angles.
-    geolocation_config : GeolocationConfig, optional
+    geolocation_config : PSFSamplingConfig, optional
         PSF geolocation parameters. Defaults to standard config.
     search_config : SearchConfig, optional
         Image search parameters. Defaults to standard config.
@@ -188,7 +188,7 @@ def integrated_image_match(
         Geolocation errors, correlation value, and intermediate products.
     """
 
-    geo_config = geolocation_config or GeolocationConfig()
+    geo_config = geolocation_config or PSFSamplingConfig()
     search_cfg = search_config or SearchConfig()
 
     logger.debug("Projecting the PSF...")

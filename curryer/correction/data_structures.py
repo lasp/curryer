@@ -100,8 +100,23 @@ class OpticalPSFEntry:
 
 
 @dataclass
-class GeolocationConfig:
-    """Configuration parameters for PSF geolocation modelling."""
+class PSFSamplingConfig:
+    """Configuration parameters for PSF sampling during image matching.
+
+    Parameters
+    ----------
+    gcp_step_m : float, optional
+        Ground control point step size in meters. Default is 30.0.
+    motion_convolution_step_m : float, optional
+        Step size for spacecraft motion convolution in meters.
+        Default is ``gcp_step_m / 20.0``.
+    psf_lat_sample_dist_deg : float, optional
+        PSF sample distance in the latitude direction in degrees.
+        Default is 2.4397105613972e-05.
+    psf_lon_sample_dist_deg : float, optional
+        PSF sample distance in the longitude direction in degrees.
+        Default is 2.8737038710207e-05.
+    """
 
     gcp_step_m: float = 30.0
     motion_convolution_step_m: float = gcp_step_m / 20.0

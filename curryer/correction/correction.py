@@ -75,7 +75,7 @@ from curryer import meta
 from curryer import spicierpy as sp
 from curryer.compute import spatial
 from curryer.correction import correction_config
-from curryer.correction.data_structures import GeolocationConfig as ImageMatchGeolocationConfig
+from curryer.correction.data_structures import PSFSamplingConfig
 from curryer.correction.data_structures import SearchConfig
 
 # Import data loader protocols and validation
@@ -594,7 +594,7 @@ def image_matching(
 
     # Run real image matching
     logger.info("  Running integrated_image_match()...")
-    geolocation_config = ImageMatchGeolocationConfig()
+    geolocation_config = PSFSamplingConfig()
     search_config = SearchConfig()
 
     result = integrated_image_match(
@@ -627,7 +627,7 @@ def image_matching(
     # - boresight: Extract from spicierpy.getfov(instrument) and transform via geo_dataset['attitude']
     # - t_matrix: Extract from geo_dataset['attitude'] (transformation from instrument to CTRS)
     #
-    # See: geolocation_error_stats.py _transform_boresight_vectors() for usage
+    # See: error_stats.py _transform_boresight_vectors() for usage
     # See: BORESIGHT_TRANSFORM_ANALYSIS.md for detailed analysis and future enhancement plan
 
     t_matrix = np.eye(3)  # Simplified: Identity matrix (no rotation)
@@ -702,13 +702,13 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
         image_matching_results = [image_matching_results]
 
     try:
-        from curryer.correction.geolocation_error_stats import ErrorStatsProcessor
-        from curryer.correction.geolocation_error_stats import GeolocationConfig as ErrorStatsGeolocationConfig
+        from curryer.correction.error_stats import ErrorStatsProcessor
+        from curryer.correction.error_stats import ErrorStatsConfig
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
         # Create error stats config directly from Correction config (single source of truth)
-        error_config = ErrorStatsGeolocationConfig.from_correction_config(correction_config)
+        error_config = ErrorStatsConfig.from_correction_config(correction_config)
 
         processor = ErrorStatsProcessor(config=error_config)
 

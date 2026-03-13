@@ -24,25 +24,39 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class GeolocationConfig:
-    """Configuration parameters for geolocation processing.
+class ErrorStatsConfig:
+    """Configuration parameters for geolocation error statistics processing.
 
     All values should be provided from CorrectionConfig - no hardcoded defaults.
+
+    Parameters
+    ----------
+    earth_radius_m : float
+        Earth radius in meters (e.g., WGS84: 6378140.0).
+    performance_threshold_m : float
+        Accuracy threshold in meters (e.g., 250.0).
+    performance_spec_percent : float
+        Performance requirement percentage (e.g., 39.0).
+    minimum_correlation : float or None, optional
+        Minimum correlation filter threshold (0.0-1.0). Default is None.
+    variable_names : dict of str to str or None, optional
+        Mission-agnostic variable name mappings from semantic names to actual
+        dataset variable names. If None, CLARREO defaults are expected.
     """
 
-    earth_radius_m: float  # Earth radius in meters (e.g., WGS84: 6378140.0)
-    performance_threshold_m: float  # Accuracy threshold (e.g., 250.0)
-    performance_spec_percent: float  # Performance requirement percentage (e.g., 39.0)
-    minimum_correlation: float | None = None  # Filter threshold (0.0-1.0)
+    earth_radius_m: float
+    performance_threshold_m: float
+    performance_spec_percent: float
+    minimum_correlation: float | None = None
 
     # Mission-agnostic variable name mappings
     # Maps semantic names to actual variable names in the dataset
     variable_names: dict[str, str] | None = None  # If None, uses CLARREO defaults
 
     @classmethod
-    def from_correction_config(cls, correction_config) -> "GeolocationConfig":
+    def from_correction_config(cls, correction_config) -> "ErrorStatsConfig":
         """
-        Create GeolocationConfig from CorrectionConfig.
+        Create ErrorStatsConfig from CorrectionConfig.
 
         This is the preferred way to create this config - extracts all settings
         from the single source of truth (CorrectionConfig).
@@ -51,7 +65,7 @@ class GeolocationConfig:
             correction_config: CorrectionConfig instance
 
         Returns:
-            GeolocationConfig with settings from CorrectionConfig
+            ErrorStatsConfig with settings from CorrectionConfig
         """
         # Create variable name mapping
         variable_names = {
@@ -83,8 +97,8 @@ class GeolocationConfig:
         """
         if self.variable_names is None:
             raise ValueError(
-                f"GeolocationConfig.variable_names is None. "
-                f"Use GeolocationConfig.from_correction_config() to create config with proper variable names."
+                f"ErrorStatsConfig.variable_names is None. "
+                f"Use ErrorStatsConfig.from_correction_config() to create config with proper variable names."
             )
 
         if semantic_name not in self.variable_names:
@@ -99,17 +113,17 @@ class GeolocationConfig:
 class ErrorStatsProcessor:
     """Production-ready processor for geolocation error statistics."""
 
-    def __init__(self, config: GeolocationConfig):
+    def __init__(self, config: ErrorStatsConfig):
         """
         Initialize processor with configuration.
 
         Args:
-            config: GeolocationConfig (required) - use GeolocationConfig.from_correction_config()
+            config: ErrorStatsConfig (required) - use ErrorStatsConfig.from_correction_config()
                    to create from CorrectionConfig
         """
         if config is None:
             raise ValueError(
-                "GeolocationConfig is required. Use GeolocationConfig.from_correction_config(correction_config) to create."
+                "ErrorStatsConfig is required. Use ErrorStatsConfig.from_correction_config(correction_config) to create."
             )
         self.config = config
 

@@ -14,7 +14,7 @@ from scipy.signal import convolve2d, fftconvolve
 from ..compute import constants
 from ..compute.spatial import ecef_to_geodetic, geodetic_to_ecef
 from .data_structures import (
-    GeolocationConfig,
+    PSFSamplingConfig,
     ImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
@@ -234,7 +234,7 @@ def convolve_gcp_with_psf(gcp: ImageGrid, psf: PSFGrid) -> ImageGrid:
 def convolve_psf_with_spacecraft_motion(
     psf: ProjectedPSF,
     composite_img: ImageGrid,
-    config: GeolocationConfig,
+    config: PSFSamplingConfig,
 ) -> PSFGrid:
     """
     Apply spacecraft motion blur to projected PSF.
@@ -245,7 +245,7 @@ def convolve_psf_with_spacecraft_motion(
         Projected PSF on Earth's surface.
     composite_img : ImageGrid
         Composite image defining spacecraft motion direction.
-    config : GeolocationConfig
+    config : PSFSamplingConfig
         Configuration with PSF sampling parameters.
 
     Returns

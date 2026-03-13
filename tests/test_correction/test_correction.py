@@ -60,9 +60,7 @@ from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction import correction
 from curryer.correction.data_structures import (
-    GeolocationConfig as ImageMatchGeolocationConfig,
-)
-from curryer.correction.data_structures import (
+    PSFSamplingConfig,
     ImageGrid,
     SearchConfig,
 )
@@ -585,7 +583,7 @@ def run_image_matching_with_applied_errors(
         r_iss_midframe_m=r_iss_midframe,
         los_vectors_hs=los_vectors,
         optical_psfs=optical_psfs,
-        geolocation_config=ImageMatchGeolocationConfig(),
+        geolocation_config=PSFSamplingConfig(),
         search_config=SearchConfig(),
     )
 
