@@ -61,11 +61,15 @@ class ErrorStatsConfig:
         This is the preferred way to create this config - extracts all settings
         from the single source of truth (CorrectionConfig).
 
-        Args:
-            correction_config: CorrectionConfig instance
+        Parameters
+        ----------
+        correction_config : CorrectionConfig
+            CorrectionConfig instance to extract settings from.
 
-        Returns:
-            ErrorStatsConfig with settings from CorrectionConfig
+        Returns
+        -------
+        ErrorStatsConfig
+            ErrorStatsConfig with settings from CorrectionConfig.
         """
         # Create variable name mapping
         variable_names = {
@@ -86,14 +90,20 @@ class ErrorStatsConfig:
         """
         Get actual variable name for a semantic concept.
 
-        Args:
-            semantic_name: Semantic name like 'spacecraft_position', 'boresight', etc.
+        Parameters
+        ----------
+        semantic_name : str
+            Semantic name like 'spacecraft_position', 'boresight', etc.
 
-        Returns:
-            Actual variable name in the dataset
+        Returns
+        -------
+        str
+            Actual variable name in the dataset.
 
-        Raises:
-            ValueError: If variable_names not provided and semantic_name not found
+        Raises
+        ------
+        ValueError
+            If variable_names is None or semantic_name is not found.
         """
         if self.variable_names is None:
             raise ValueError(
@@ -117,9 +127,12 @@ class ErrorStatsProcessor:
         """
         Initialize processor with configuration.
 
-        Args:
-            config: ErrorStatsConfig (required) - use ErrorStatsConfig.from_correction_config()
-                   to create from CorrectionConfig
+        Parameters
+        ----------
+        config : ErrorStatsConfig
+            Configuration for error statistics processing. Use
+            ``ErrorStatsConfig.from_correction_config()`` to create from
+            CorrectionConfig.
         """
         if config is None:
             raise ValueError(
