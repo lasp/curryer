@@ -1592,7 +1592,10 @@ class Geolocate:
         logger.info(f"view_angles_df={view_angles_df}")
 
         angles_invalid = solar_angles_df.isna().any(axis=1) | view_angles_df.isna().any(axis=1)
-        logger.info(f"angles_invalid={angles_invalid}")
+        logger.info(f"ancil_qf_ds.index={ancil_qf_ds.index}")
+        logger.info(f"angles_invalid.index={angles_invalid.index}")
+        logger.info(f"ancil_qf_ds.dtype={ancil_qf_ds.dtype}")
+        ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
         ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
 
         return pnt_xyz_df, solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
