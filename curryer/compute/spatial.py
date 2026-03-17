@@ -1583,6 +1583,9 @@ class Geolocate:
             ugps_times, self.instrument, pointing_frame=self.sc_state_frame.name
         )
 
+        # Expand ancil_qf_ds from ugps-only → (ugps × pixel) to match terrain index
+        ancil_qf_ds = ancil_qf_ds.reindex(terrain_lla_df.index, level=0).fillna(0).astype(int)
+
         # Dev note: Important to do this check last, since above logic requires
         # direct assignment instead of OR'ing.
         logger.info(f"solar_angles_df={solar_angles_df}")
@@ -1590,8 +1593,6 @@ class Geolocate:
 
         angles_invalid = solar_angles_df.isna().any(axis=1) | view_angles_df.isna().any(axis=1)
         logger.info(f"angles_invalid={angles_invalid}")
-        # mask = angles_invalid.to_numpy()
-        # ancil_qf_ds["ancil_qf"].data[:, mask] |= SQF.CALC_ANCIL_NOT_FINITE.value
         ancil_qf_ds.loc[angles_invalid] |= SQF.CALC_ANCIL_NOT_FINITE.value
 
         return pnt_xyz_df, solar_angles_df, view_angles_df, sc_state_df, ancil_qf_ds
