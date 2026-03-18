@@ -834,7 +834,7 @@ def _geolocate_and_match(
 
 
 def loop(
-    config: CorrectionConfig, work_dir: Path, tlm_sci_gcp_sets: [(str, str, str)], resume_from_checkpoint: bool = False
+    config: CorrectionConfig, work_dir: Path, tlm_sci_gcp_sets: list[tuple[str, str, str]], resume_from_checkpoint: bool = False
 ):
     """
     Correction loop for parameter sensitivity analysis.
