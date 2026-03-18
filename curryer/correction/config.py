@@ -167,7 +167,7 @@ class ParameterConfig:
 class GeolocationConfig:
     meta_kernel_file: Path
     generic_kernel_dir: Path
-    dynamic_kernels: [Path]  # Kernels that are dynamic but *not* altered by param!
+    dynamic_kernels: list[Path]  # Kernels that are dynamic but *not* altered by param!
     instrument_name: str
     time_field: str
     minimum_correlation: float | None = None  # Filter threshold for image matching quality (0.0-1.0)
