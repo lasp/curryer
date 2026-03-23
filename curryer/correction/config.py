@@ -1,9 +1,10 @@
-"""Configuration dataclasses and enumerations for the geolocation correction pipeline.
+"""Configuration models and enumerations for the geolocation correction pipeline.
 
 This module defines the data structures that represent the complete configuration
 for a correction analysis run, including:
 
 - ``ParameterType`` – enum of the three parameter variation strategies
+- ``ParameterData`` – typed container for a parameter's sampling spec
 - ``ParameterConfig`` – a single parameter to vary (kernel or time offset)
 - ``GeolocationConfig`` – SPICE kernel paths and instrument settings
 - ``NetCDFParameterMetadata`` / ``NetCDFConfig`` – NetCDF output metadata
@@ -15,32 +16,29 @@ for a correction analysis run, including:
 All mission-specific values (kernel filenames, parameter ranges, instrument names)
 live in mission configuration modules (e.g. ``tests/test_correction/clarreo_config.py``)
 and are injected via ``CorrectionConfig``.
+
+All config objects are ``pydantic.BaseModel`` subclasses which provide:
+- Automatic type validation and clear ``ValidationError`` messages on construction
+- Free JSON serialization via ``model_dump_json()`` / ``model_validate_json()``
+- IDE autocomplete on every field
 """
 
 import json
 import logging
-import typing
-from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     from curryer import meta
-
-from curryer.correction.dataio import GCPLoader, ScienceLoader, TelemetryLoader
-from curryer.correction.image_match import ImageMatchingFunc
-from curryer.correction.pairing import GCPPairingFunc
 
 # ============================================================================
 # Standard NetCDF Variable Attributes (Mission-Agnostic)
 # ============================================================================
 
-# Standard metric attributes for NetCDF output.
-# These are generic geolocation/error metrics that apply to most missions.
-# Missions can override these in their NetCDFConfig if needed.
 STANDARD_NETCDF_ATTRIBUTES = {
     # Geolocation error metrics (per GCP pair)
     "rms_error_m": {"units": "meters", "long_name": "RMS geolocation error"},
@@ -82,22 +80,12 @@ STANDARD_VAR_NAMES = {
 
 
 # ============================================================================
-# Pipeline Helper NamedTuples
+# Pipeline Helper NamedTuples (not config – pass-through state only)
 # ============================================================================
 
 
 class KernelContext(NamedTuple):
-    """Context for SPICE kernel loading during geolocation.
-
-    Attributes
-    ----------
-    mkrn : meta.MetaKernel
-        MetaKernel instance with SDS and mission kernels
-    dynamic_kernels : list[Path]
-        List of dynamic kernel file paths (SC-SPK, SC-CK)
-    param_kernels : list[Path]
-        List of parameter-specific kernel file paths
-    """
+    """Context for SPICE kernel loading during geolocation."""
 
     mkrn: "meta.MetaKernel"
     dynamic_kernels: list[Path]
@@ -105,34 +93,14 @@ class KernelContext(NamedTuple):
 
 
 class CalibrationData(NamedTuple):
-    """Pre-loaded calibration data for image matching.
-
-    Attributes
-    ----------
-    los_vectors : Optional[np.ndarray]
-        Line-of-sight vectors array, or None if not using calibration
-    optical_psfs : Optional[list]
-        List of optical PSF entries, or None if not using calibration
-    """
+    """Pre-loaded calibration data for image matching."""
 
     los_vectors: np.ndarray | None
     optical_psfs: list | None
 
 
 class ImageMatchingContext(NamedTuple):
-    """Context data needed for image matching operations.
-
-    Attributes
-    ----------
-    gcp_pairs : list[tuple]
-        List of GCP pairing tuples from pairing function
-    params : list[tuple]
-        List of (ParameterConfig, parameter_value) tuples for this iteration
-    pair_idx : int
-        Index of current GCP pair being processed
-    sci_key : str
-        Science dataset identifier for this pair
-    """
+    """Context data needed for image matching operations."""
 
     gcp_pairs: list[tuple]
     params: list[tuple]
@@ -151,11 +119,124 @@ class ParameterType(Enum):
     OFFSET_TIME = auto()  # Modify input timetags by an offset
 
 
-@dataclass
-class ParameterConfig:
+class ParameterData(BaseModel):
+    """Typed sampling specification for a single correction parameter.
+
+    Supports dict-style access (``get``, ``__getitem__``, ``__contains__``)
+    for backward compatibility with code written against the old ``dict``-based
+    ``ParameterConfig.data`` API.
+
+    Attributes
+    ----------
+    current_value
+        Baseline parameter value(s).  A scalar for OFFSET_KERNEL/OFFSET_TIME
+        and a 3-element list ``[roll, pitch, yaw]`` for CONSTANT_KERNEL.
+    bounds
+        ``[min, max]`` offset limits (same units as ``sigma``).
+    sigma
+        Standard deviation for normal-distribution sampling.  ``None`` means
+        the parameter is held fixed at ``current_value``.
+    units
+        Physical units string, e.g. ``"arcseconds"`` or ``"milliseconds"``.
+    distribution
+        Sampling distribution name (currently only ``"normal"`` is used).
+    field
+        Telemetry / science DataFrame column that this parameter modifies
+        (required for ``OFFSET_KERNEL`` and ``OFFSET_TIME``).
+    transformation_type
+        Optional hint consumed by kernel-creation routines (e.g.
+        ``"dcm_rotation"`` or ``"angle_bias"``).
+    coordinate_frames
+        Optional list of SPICE frame names affected by this parameter.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    current_value: float | list[float] = 0.0
+    bounds: list[float] = Field(default_factory=lambda: [-1.0, 1.0])
+    sigma: float | None = None
+    units: str | None = None
+    distribution: str = "normal"
+    field: str | None = None
+    transformation_type: str | None = None
+    coordinate_frames: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_legacy_aliases(cls, data: Any) -> Any:
+        """Remap legacy dict keys (``center`` → ``current_value``, ``arange`` → ``bounds``)."""
+        if isinstance(data, dict):
+            data = dict(data)  # defensive copy
+            if "center" in data and "current_value" not in data:
+                data["current_value"] = data.pop("center")
+            if "arange" in data and "bounds" not in data:
+                data["bounds"] = data.pop("arange")
+        return data
+
+    # ------------------------------------------------------------------
+    # Backward-compatible dict-style access
+    # ------------------------------------------------------------------
+
+    def _get_raw(self, key: str) -> Any:
+        """Return the raw value for *key* from declared fields or extra fields."""
+        if key in type(self).model_fields:
+            return getattr(self, key, None)
+        extra = self.__pydantic_extra__ or {}
+        return extra.get(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """``dict.get()`` shim for backward compatibility.
+
+        Returns *default* when the value is ``None`` (i.e. field was not
+        explicitly set), mirroring ``dict.get`` on a mapping that only
+        contains keys with non-``None`` values.
+        """
+        val = self._get_raw(key)
+        return default if val is None else val
+
+    def __contains__(self, key: str) -> bool:
+        """``key in data`` shim – ``True`` when the value is not ``None``."""
+        return self._get_raw(key) is not None
+
+    def __getitem__(self, key: str) -> Any:
+        """``data[key]`` shim for backward compatibility."""
+        if key in type(self).model_fields:
+            return getattr(self, key)
+        extra = self.__pydantic_extra__ or {}
+        if key in extra:
+            return extra[key]
+        raise KeyError(key)
+
+
+class ParameterConfig(BaseModel):
+    """A single parameter to vary during correction analysis.
+
+    Attributes
+    ----------
+    ptype
+        How this parameter is applied (constant kernel, offset kernel, or
+        time offset).
+    config_file
+        Path to the SPICE kernel JSON template, or ``None`` for time
+        offsets that require no kernel file.
+    data
+        Sampling specification.  Accepts a plain ``dict`` or ``None`` on
+        construction (Pydantic coerces both to :class:`ParameterData`
+        automatically; ``None`` becomes an empty ``ParameterData()``).
+    """
+
     ptype: ParameterType
-    config_file: Path | None
-    data: typing.Any
+    config_file: Path | None = None
+    data: ParameterData = Field(default_factory=ParameterData)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_none_data(cls, values: Any) -> Any:
+        """Convert ``data=None`` to an empty ``ParameterData`` (backward compat)."""
+        if isinstance(values, dict) and values.get("data") is None:
+            values = dict(values)
+            values["data"] = {}
+        return values
 
 
 # ============================================================================
@@ -163,14 +244,32 @@ class ParameterConfig:
 # ============================================================================
 
 
-@dataclass
-class GeolocationConfig:
+class GeolocationConfig(BaseModel):
+    """SPICE kernel paths and instrument settings for geolocation.
+
+    Attributes
+    ----------
+    meta_kernel_file
+        Path to the mission meta-kernel JSON file.
+    generic_kernel_dir
+        Directory containing generic/shared SPICE kernels.
+    dynamic_kernels
+        Kernels regenerated from telemetry each run (SC-SPK, SC-CK, etc.)
+        but *not* altered by parameter variations.
+    instrument_name
+        SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
+    time_field
+        Column name in the science DataFrame that holds uGPS timestamps.
+    minimum_correlation
+        Optional image-matching quality filter threshold (0.0–1.0).
+    """
+
     meta_kernel_file: Path
     generic_kernel_dir: Path
-    dynamic_kernels: list[Path]  # Kernels that are dynamic but *not* altered by param!
+    dynamic_kernels: list[Path] = Field(default_factory=list)
     instrument_name: str
     time_field: str
-    minimum_correlation: float | None = None  # Filter threshold for image matching quality (0.0-1.0)
+    minimum_correlation: float | None = None
 
 
 # ============================================================================
@@ -178,38 +277,38 @@ class GeolocationConfig:
 # ============================================================================
 
 
-@dataclass
-class NetCDFParameterMetadata:
-    """Metadata for a single parameter in NetCDF output."""
+class NetCDFParameterMetadata(BaseModel):
+    """NetCDF metadata for a single output parameter variable."""
 
-    variable_name: str  # NetCDF variable name (e.g., 'param_hysics_roll')
-    units: str  # Units (e.g., 'arcseconds', 'milliseconds')
-    long_name: str  # Human-readable description
+    variable_name: str
+    units: str
+    long_name: str
 
 
-@dataclass
-class NetCDFConfig:
+class NetCDFConfig(BaseModel):
     """Configuration for NetCDF output structure and metadata.
 
-    This class defines the structure and metadata for NetCDF output files.
-    All mission-specific information should be provided here rather than
-    hardcoded in the correction module.
-
-    The performance_threshold_m is required and should match the value in
-    CorrectionConfig. It's used to generate threshold-specific variable names
-    in the NetCDF output (e.g., "percent_under_250m").
+    Attributes
+    ----------
+    performance_threshold_m
+        Accuracy threshold in metres used to derive threshold-specific
+        variable names (e.g. ``"percent_under_250m"``).
+    title
+        Global title attribute for the output NetCDF file.
+    description
+        Global description attribute for the output NetCDF file.
+    parameter_metadata
+        Optional mapping of parameter key → :class:`NetCDFParameterMetadata`.
+        Auto-generated from ``CorrectionConfig.parameters`` when ``None``.
+    standard_attributes
+        Optional mission-specific attribute overrides.  Falls back to the
+        module-level :data:`STANDARD_NETCDF_ATTRIBUTES` when ``None``.
     """
 
-    performance_threshold_m: float  # Required: accuracy threshold in meters
+    performance_threshold_m: float
     title: str = "Correction Geolocation Analysis Results"
     description: str = "Parameter sensitivity analysis"
-
-    # Parameter metadata - maps parameter config to NetCDF metadata
-    # If None, will be auto-generated from config.parameters
     parameter_metadata: dict[str, NetCDFParameterMetadata] | None = None
-
-    # Standard variable attributes - allows mission-specific overrides
-    # If None, uses STANDARD_NETCDF_ATTRIBUTES module constant
     standard_attributes: dict[str, dict[str, str]] | None = None
 
     def get_threshold_metric_name(self) -> str:
@@ -218,81 +317,51 @@ class NetCDFConfig:
         return f"percent_under_{threshold_m}m"
 
     def get_standard_attributes(self) -> dict[str, dict[str, str]]:
-        """
-        Get standard variable attributes, using mission overrides if provided.
-
-        Returns:
-            Dictionary mapping variable names to their attributes (units, long_name)
-        """
+        """Get standard variable attributes, using mission overrides if provided."""
         if self.standard_attributes is not None:
-            # Use mission-specific overrides
             return self.standard_attributes
-        else:
-            # Use module-level defaults
-            return STANDARD_NETCDF_ATTRIBUTES.copy()
+        return STANDARD_NETCDF_ATTRIBUTES.copy()
 
     def get_parameter_netcdf_metadata(
         self, param_config: "ParameterConfig", angle_type: str | None = None
-    ) -> NetCDFParameterMetadata:
-        """
-        Get NetCDF metadata for a parameter.
-
-        Args:
-            param_config: Parameter configuration
-            angle_type: For CONSTANT_KERNEL parameters: 'roll', 'pitch', or 'yaw'
-
-        Returns:
-            NetCDFParameterMetadata with variable name, units, and description
-        """
-        # Generate key for lookup
+    ) -> "NetCDFParameterMetadata":
+        """Get NetCDF metadata for a parameter."""
         if param_config.config_file:
             param_stem = param_config.config_file.stem
-            if angle_type:
-                lookup_key = f"{param_stem}_{angle_type}"
-            else:
-                lookup_key = param_stem
+            lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
         else:
             lookup_key = f"param_{param_config.ptype.name.lower()}"
 
-        # Try to find in provided metadata
         if self.parameter_metadata and lookup_key in self.parameter_metadata:
             return self.parameter_metadata[lookup_key]
 
-        # Auto-generate if not provided
         return self._auto_generate_metadata(param_config, angle_type, lookup_key)
 
     def _auto_generate_metadata(
         self, param_config: "ParameterConfig", angle_type: str | None, base_key: str
-    ) -> NetCDFParameterMetadata:
+    ) -> "NetCDFParameterMetadata":
         """Auto-generate NetCDF metadata from parameter configuration."""
-
-        # Determine units based on parameter type
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
             units = "arcseconds"
         elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            units = "arcseconds"  # Typical for angle offsets
+            units = "arcseconds"
         elif param_config.ptype == ParameterType.OFFSET_TIME:
             units = "milliseconds"
         else:
             units = "unknown"
 
-        # Check if units specified in parameter data
-        if isinstance(param_config.data, dict) and "units" in param_config.data:
-            units = param_config.data["units"]
+        # Use declared units field (replaces old isinstance(data, dict) check)
+        if param_config.data.units is not None:
+            units = param_config.data.units
 
-        # Generate variable name (ensure it starts with 'param_')
         var_name = base_key.replace(".", "_").replace("-", "_")
         if not var_name.startswith("param_"):
             var_name = f"param_{var_name}"
 
-        # Generate human-readable description
         if param_config.config_file:
-            # Extract frame names from config file path
             file_stem = param_config.config_file.stem
-            # Remove version numbers and file extensions
             clean_name = file_stem.replace("_v01", "").replace("_v02", "").replace(".attitude.ck", "")
             clean_name = clean_name.replace("_", " ").title()
-
             if angle_type:
                 long_name = f"{clean_name} {angle_type} correction"
             else:
@@ -308,8 +377,7 @@ class NetCDFConfig:
 # ============================================================================
 
 
-@dataclass
-class CorrectionConfig:
+class CorrectionConfig(BaseModel):
     """The configuration object for geolocation correction analysis.
 
     This config contains everything needed for a Correction run:
@@ -323,67 +391,51 @@ class CorrectionConfig:
 
     Create one CorrectionConfig object and pass it to pipeline.loop() to run.
 
+    Serialisation
+    -------------
+    ``model_dump_json()`` / ``model_validate_json()`` provide lossless
+    JSON round-trips for all typed fields.  Callable fields (loaders,
+    pairing/matching functions) are **excluded** from serialisation because
+    they cannot be represented as JSON; re-attach them after deserialising.
+
     Parameters
     ----------
-    CORE CORRECTION SETTINGS (Required - define what the analysis does):
-        seed : Optional[int]
+    CORE CORRECTION SETTINGS:
+        seed : int | None
             Random seed for reproducibility, or None for non-reproducible runs.
         n_iterations : int
-            Number of parameter set iterations (e.g., 5, 100, 1000).
+            Number of parameter set iterations.
         parameters : list[ParameterConfig]
-            List of parameters to vary (defines sensitivity analysis).
+            Parameters to vary (defines sensitivity analysis).
 
-    GEOLOCATION & PERFORMANCE REQUIREMENTS (Required - mission-specific settings):
+    GEOLOCATION & PERFORMANCE REQUIREMENTS:
         geo : GeolocationConfig
-            SPICE kernels and instrument configuration.
         performance_threshold_m : float
-            Nadir-equivalent accuracy threshold in meters (e.g., 250.0 for CLARREO).
         performance_spec_percent : float
-            Required percentage of observations meeting threshold (e.g., 39.0 for CLARREO).
         earth_radius_m : float
-            Earth radius for geodetic calculations (e.g., 6378137.0 for WGS84).
-        geo : GeolocationConfig
-            SPICE kernels and instrument configuration.
 
-    DATA LOADERS (Required for pipeline execution - mission-specific implementations):
-        telemetry_loader : Optional[TelemetryLoader], default=None
-            Load spacecraft telemetry. Must be set before calling pipeline.loop().
-        science_loader : Optional[ScienceLoader], default=None
-            Load science frame timing. Must be set before calling pipeline.loop().
-        gcp_loader : Optional[GCPLoader], default=None
-            Load GCP reference data (optional).
+    DATA LOADERS (excluded from JSON serialisation):
+        telemetry_loader, science_loader, gcp_loader
 
-    PROCESSING FUNCTIONS (Optional - will use defaults/stubs if not provided):
-        gcp_pairing_func : Optional[GCPPairingFunc], default=None
-            Spatial pairing of science data to GCP.
-        image_matching_func : Optional[ImageMatchingFunc], default=None
-            Image correlation for errors.
+    PROCESSING FUNCTIONS (excluded from JSON serialisation):
+        gcp_pairing_func, image_matching_func
 
-    OUTPUT CONFIGURATION (Optional - sensible defaults provided):
-        netcdf : Optional[NetCDFConfig], default=None
-            NetCDF metadata (auto-generated if None).
-        output_filename : Optional[str], default=None
-            Output filename (auto-generates with timestamp if None).
+    OUTPUT CONFIGURATION:
+        netcdf : NetCDFConfig | None
+        output_filename : str | None
 
-    CALIBRATION CONFIGURATION (Optional - only needed when image_matching_func uses calibration):
-        calibration_dir : Optional[Path], default=None
-            Directory with LOS vectors, optical PSF, GCP files.
-            Set when using image_matching_func that requires calibration files.
-        calibration_file_names : Optional[dict[str, str]], default=None
-            Mission-specific calibration filenames.
-            Example: {'los_vectors': 'b_HS.mat', 'optical_psf': 'optical_PSF_675nm_upsampled.mat'}
+    CALIBRATION CONFIGURATION:
+        calibration_dir : Path | None
+        calibration_file_names : dict[str, str] | None
 
-    MISSION-SPECIFIC NAMING (Optional - override generic defaults):
-        spacecraft_position_name : str, default="sc_position"
-            Variable name for spacecraft position in output NetCDF.
-        boresight_name : str, default="boresight"
-            Variable name for boresight in output NetCDF.
-        transformation_matrix_name : str, default="t_inst2ref"
-            Variable name for transformation matrix in output NetCDF.
+    MISSION-SPECIFIC NAMING:
+        spacecraft_position_name, boresight_name, transformation_matrix_name
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # CORE CORRECTION SETTINGS
-    seed: int | None
+    seed: int | None = None
     n_iterations: int
     parameters: list[ParameterConfig]
 
@@ -393,14 +445,14 @@ class CorrectionConfig:
     performance_spec_percent: float
     earth_radius_m: float
 
-    # DATA LOADERS
-    telemetry_loader: TelemetryLoader | None = None
-    science_loader: ScienceLoader | None = None
-    gcp_loader: GCPLoader | None = None
+    # DATA LOADERS – excluded from JSON (not serialisable)
+    telemetry_loader: Any = Field(default=None, exclude=True)
+    science_loader: Any = Field(default=None, exclude=True)
+    gcp_loader: Any = Field(default=None, exclude=True)
 
-    # PROCESSING FUNCTIONS
-    gcp_pairing_func: GCPPairingFunc | None = None
-    image_matching_func: ImageMatchingFunc | None = None
+    # PROCESSING FUNCTIONS – excluded from JSON (not serialisable)
+    gcp_pairing_func: Any = Field(default=None, exclude=True)
+    image_matching_func: Any = Field(default=None, exclude=True)
 
     # OUTPUT CONFIGURATION
     netcdf: NetCDFConfig | None = None
@@ -439,7 +491,6 @@ class CorrectionConfig:
         logger = logging.getLogger(__name__)
         errors = []
 
-        # Check required fields
         if self.n_iterations is None or self.n_iterations <= 0:
             errors.append("n_iterations must be a positive integer")
 
@@ -458,7 +509,6 @@ class CorrectionConfig:
         if self.performance_spec_percent is None or not (0 <= self.performance_spec_percent <= 100):
             errors.append("performance_spec_percent must be between 0 and 100 (e.g., 39.0)")
 
-        # Check required data loaders (Config-Centric Design) - only if requested
         if check_loaders:
             if self.telemetry_loader is None:
                 errors.append(
@@ -482,7 +532,6 @@ class CorrectionConfig:
             error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
             raise ValueError(error_msg)
 
-        # Check optional processing functions (warnings only) - only if checking loaders
         if check_loaders:
             if self.gcp_pairing_func is None:
                 logger.warning(
@@ -507,40 +556,14 @@ class CorrectionConfig:
             self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
 
     def get_output_filename(self, default: str = "correction_results.nc") -> str:
-        """
-        Get output filename with optional auto-generation.
-
-        Args:
-            default: Default filename if output_filename is None
-
-        Returns:
-            Filename string (can include timestamp/parameters if configured)
-        """
+        """Get output filename with optional auto-generation."""
         if self.output_filename:
             return self.output_filename
         return default
 
     @staticmethod
     def generate_timestamped_filename(prefix: str = "correction", suffix: str = "") -> str:
-        """
-        Generate a timestamped output filename for production use.
-
-        This prevents overwriting previous results and provides unique identifiers.
-
-        Args:
-            prefix: Filename prefix (e.g., 'correction', 'clarreo_gcs')
-            suffix: Optional suffix before extension (e.g., 'upstream', 'test')
-
-        Returns:
-            Filename with format: {prefix}_YYYYMMDD_HHMMSS[_{suffix}].nc
-
-        Examples:
-            >>> CorrectionConfig.generate_timestamped_filename()
-            'correction_20251029_143022.nc'
-
-            >>> CorrectionConfig.generate_timestamped_filename('clarreo_gcs', 'production')
-            'clarreo_gcs_20251029_143022_production.nc'
-        """
+        """Generate a timestamped output filename for production use."""
         import datetime
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -672,8 +695,8 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
             angles = group_data["angles"]
             center_values = [angles.get("roll", 0.0), angles.get("pitch", 0.0), angles.get("yaw", 0.0)]
             param_data = {
-                "center": center_values,
-                "arange": template.get("bounds", [-100, 100]),
+                "current_value": center_values,
+                "bounds": template.get("bounds", [-100, 100]),
                 "sigma": template.get("sigma"),
                 "units": template.get("units", "arcseconds"),
                 "distribution": template.get("distribution_type", "normal"),
@@ -682,8 +705,8 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         else:
             param_dict = group_data["param_dict"]
             param_data = {
-                "center": param_dict.get("initial_value", 0.0),
-                "arange": param_dict.get("bounds", [-100, 100]),
+                "current_value": param_dict.get("initial_value", 0.0),
+                "bounds": param_dict.get("bounds", [-100, 100]),
                 "sigma": param_dict.get("sigma"),
                 "units": param_dict.get("units", "radians"),
                 "distribution": param_dict.get("distribution_type", "normal"),
