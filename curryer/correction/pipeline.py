@@ -1,0 +1,1232 @@
+"""Main correction pipeline orchestration.
+
+This module contains the public-facing :func:`loop` function that drives
+the Monte Carlo parameter sensitivity analysis, plus all of the helper
+functions it calls:
+
+- Adapter functions that bridge between the geolocation/image-matching
+  sub-modules and the correction loop.
+- :func:`load_config_from_json` -- build a :class:`CorrectionConfig` from
+  a JSON file.
+- :func:`load_telemetry` / :func:`load_science` / :func:`load_gcp` --
+  thin wrappers that delegate to mission-specific loader callables.
+- :func:`_load_image_pair_data`, :func:`_load_calibration_data`,
+  :func:`_geolocate_and_match` -- per-iteration computation helpers.
+- :func:`loop` -- outer GCP-pair loop, inner parameter-set loop.
+"""
+
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from curryer import meta
+from curryer import spicierpy as sp
+from curryer.compute import spatial
+from curryer.correction.config import (
+    CalibrationData,
+    CorrectionConfig,
+    ImageMatchingContext,
+    KernelContext,
+    ParameterType,
+)
+from curryer.correction.data_structures import (
+    ImageGrid,
+    PSFSamplingConfig,
+    SearchConfig,
+)
+from curryer.correction.dataio import (
+    ScienceLoader,
+    TelemetryLoader,
+    validate_science_output,
+    validate_telemetry_output,
+)
+from curryer.correction.image_match import (
+    ImageMatchingFunc,
+    integrated_image_match,
+    load_image_grid_from_mat,
+    load_los_vectors_from_mat,
+    load_optical_psf_from_mat,
+    validate_image_matching_output,
+)
+from curryer.correction.kernel_ops import (
+    _create_dynamic_kernels,
+    _create_parameter_kernels,
+)
+from curryer.correction.pairing import (
+    validate_pairing_output as validate_gcp_pairing_output,
+)
+from curryer.correction.parameters import load_param_sets
+from curryer.correction.results_io import (
+    _build_netcdf_structure,
+    _cleanup_checkpoint,
+    _load_checkpoint,
+    _save_netcdf_checkpoint,
+    _save_netcdf_results,
+)
+from curryer.kernels import create
+
+logger = logging.getLogger(__name__)
+
+
+def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
+    """
+    Convert Correction geolocation output to ImageGrid for image matching.
+
+    Internal adapter function: converts xarray.Dataset from geolocation step
+    to ImageGrid format expected by image_match module.
+
+    Args:
+        geo_dataset: xarray.Dataset with latitude, longitude, altitude/height
+
+    Returns:
+        ImageGrid suitable for integrated_image_match()
+    """
+
+    lat = geo_dataset["latitude"].values
+    lon = geo_dataset["longitude"].values
+
+    # Try different field names for altitude/height
+    if "altitude" in geo_dataset:
+        h = geo_dataset["altitude"].values
+    elif "height" in geo_dataset:
+        h = geo_dataset["height"].values
+    else:
+        h = np.zeros_like(lat)
+
+    # Get actual radiance/reflectance data when available
+    if "radiance" in geo_dataset:
+        data = geo_dataset["radiance"].values
+    elif "reflectance" in geo_dataset:
+        data = geo_dataset["reflectance"].values
+    else:
+        data = np.ones_like(lat)
+
+    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
+
+
+def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray:
+    """
+    Extract spacecraft position at mid-frame from telemetry.
+
+    Internal adapter function: extracts position from telemetry DataFrame
+    with fallback logic for different column naming conventions.
+
+    Args:
+        telemetry: Telemetry DataFrame with spacecraft position columns
+
+    Returns:
+        np.ndarray, shape (3,) - [x, y, z] position in meters (J2000 frame)
+
+    Raises:
+        ValueError: If position columns cannot be found
+    """
+    mid_idx = len(telemetry) // 2
+
+    # Try common column name patterns
+    position_patterns = [
+        ["sc_pos_x", "sc_pos_y", "sc_pos_z"],
+        ["position_x", "position_y", "position_z"],
+        ["r_x", "r_y", "r_z"],
+        ["pos_x", "pos_y", "pos_z"],
+    ]
+
+    for cols in position_patterns:
+        if all(c in telemetry.columns for c in cols):
+            position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+            logger.debug(f"Extracted spacecraft position from columns {cols}: {position}")
+            return position
+
+    # If patterns don't match, try to find any column containing 'pos' or 'r_'
+    pos_cols = [c for c in telemetry.columns if "pos" in c.lower() or c.startswith("r_")]
+    if len(pos_cols) >= 3:
+        logger.warning(f"Using first 3 position-like columns: {pos_cols[:3]}")
+        return telemetry[pos_cols[:3]].iloc[mid_idx].values.astype(np.float64)
+
+    raise ValueError(f"Cannot find position columns in telemetry. Available columns: {telemetry.columns.tolist()}")
+
+
+# ============================================================================
+# ADAPTER FUNCTIONS
+# ============================================================================
+
+
+def image_matching(
+    geolocated_data: xr.Dataset,
+    gcp_reference_file: Path,
+    telemetry: pd.DataFrame,
+    calibration_dir: Path,
+    params_info: list,
+    config: "CorrectionConfig",
+    los_vectors_cached: np.ndarray | None = None,
+    optical_psfs_cached: list | None = None,
+) -> xr.Dataset:
+    """
+    Image matching using integrated_image_match() module.
+
+    This function performs actual image correlation between geolocated
+    pixels and Landsat GCP reference imagery.
+
+    Args:
+        geolocated_data: xarray.Dataset with latitude, longitude from geolocation
+        gcp_reference_file: Path to GCP reference image (MATLAB .mat file)
+        telemetry: Telemetry DataFrame with spacecraft state
+        calibration_dir: Directory containing calibration files (LOS vectors, PSF)
+        params_info: Current parameter values for error tracking
+        config: CorrectionConfig with coordinate name mappings
+        los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
+        optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
+
+    Returns:
+        xarray.Dataset with error measurements in format expected by error_stats:
+            - lat_error_deg, lon_error_deg: Spatial errors in degrees
+            - Additional metadata for error statistics processing
+
+    Raises:
+        FileNotFoundError: If calibration files are missing
+        ValueError: If geolocation data is invalid
+    """
+    logger.info(f"Image Matching: correlation with {gcp_reference_file.name}")
+    start_time = time.time()
+
+    # Convert geolocation output to ImageGrid
+    logger.info("  Converting geolocation data to ImageGrid format...")
+    subimage = _geolocated_to_image_grid(geolocated_data)
+    logger.info(f"    Subimage shape: {subimage.data.shape}")
+
+    # Load GCP reference image
+    logger.info(f"  Loading GCP reference from {gcp_reference_file}...")
+    gcp = load_image_grid_from_mat(gcp_reference_file, key="GCP")
+    # Get GCP center location (center pixel)
+    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    logger.info(f"    GCP shape: {gcp.data.shape}, center: ({gcp_center_lat:.4f}, {gcp_center_lon:.4f})")
+
+    # Use cached calibration data if available, otherwise load
+    logger.info("  Loading calibration data...")
+
+    if los_vectors_cached is not None and optical_psfs_cached is not None:
+        # Use cached data (fast path)
+        los_vectors = los_vectors_cached
+        optical_psfs = optical_psfs_cached
+        logger.info("    Using cached calibration data")
+    else:
+        # Load from files
+        # Use configurable calibration file names
+        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+        los_file = calibration_dir / los_filename
+        los_vectors = load_los_vectors_from_mat(los_file)
+        logger.info(f"    LOS vectors: {los_vectors.shape}")
+
+        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+        psf_file = calibration_dir / psf_filename
+        optical_psfs = load_optical_psf_from_mat(psf_file)
+        logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
+
+    # Extract spacecraft position from telemetry
+    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
+    logger.info(f"    Spacecraft position: {r_iss_midframe}")
+
+    # Run real image matching
+    logger.info("  Running integrated_image_match()...")
+    geolocation_config = PSFSamplingConfig()
+    search_config = SearchConfig()
+
+    result = integrated_image_match(
+        subimage=subimage,
+        gcp=gcp,
+        r_iss_midframe_m=r_iss_midframe,
+        los_vectors_hs=los_vectors,
+        optical_psfs=optical_psfs,
+        geolocation_config=geolocation_config,
+        search_config=search_config,
+    )
+
+    # Convert IntegratedImageMatchResult to xarray.Dataset format
+    logger.info("  Converting results to error_stats format...")
+
+    # Create single measurement result (image matching produces one correlation per GCP)
+
+    # NOTE: Boresight and transformation matrix for error_stats module
+    # ----------------------------------------------------------------
+    # These values are NOT used by image_matching() itself - the image correlation
+    # is complete and accurate without them. They are needed by call_error_stats_module()
+    # for converting off-nadir errors to nadir-equivalent errors.
+    #
+    # Currently using simplified nadir assumptions which are acceptable for:
+    # - Near-nadir observations (< ~5 degrees off-nadir)
+    # - Testing image matching correlation accuracy (doesn't affect matching)
+    #
+    # For accurate nadir-equivalent error conversion with off-nadir pointing, these
+    # should be extracted from SPICE/geolocation data:
+    # - boresight: Extract from spicierpy.getfov(instrument) and transform via geo_dataset['attitude']
+    # - t_matrix: Extract from geo_dataset['attitude'] (transformation from instrument to CTRS)
+    #
+    # See: error_stats.py _transform_boresight_vectors() for usage
+    # See: BORESIGHT_TRANSFORM_ANALYSIS.md for detailed analysis and future enhancement plan
+
+    t_matrix = np.eye(3)  # Simplified: Identity matrix (no rotation)
+    boresight = np.array([0.0, 0.0, 1.0])  # Simplified: Nadir pointing assumption
+
+    # Convert errors from km to degrees
+    lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
+    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+    processing_time = time.time() - start_time
+
+    logger.info(f"  Image matching complete in {processing_time:.2f}s:")
+    logger.info(f"    Lat error: {result.lat_error_km:.3f} km ({lat_error_deg:.6f}°)")
+    logger.info(f"    Lon error: {result.lon_error_km:.3f} km ({lon_error_deg:.6f}°)")
+    logger.info(f"    Correlation: {result.ccv_final:.4f}")
+    logger.info(f"    Grid step: {result.final_grid_step_m:.1f} m")
+
+    # Get coordinate names from config
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
+
+    # Create output dataset in error_stats format (use config names)
+    output = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], [lat_error_deg]),
+            "lon_error_deg": (["measurement"], [lon_error_deg]),
+            sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
+            boresight_name: (["measurement", "xyz"], [boresight]),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
+            "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
+            "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
+            "gcp_alt": (["measurement"], [0.0]),  # GCP at ground level
+        },
+        coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
+    )
+
+    # Add detailed metadata (Fix #3 Part B: Add km errors to attrs)
+    output.attrs.update(
+        {
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation_ccv": result.ccv_final,
+            "final_grid_step_m": result.final_grid_step_m,
+            "final_index_row": result.final_index_row,
+            "final_index_col": result.final_index_col,
+            "processing_time_s": processing_time,
+            "gcp_file": str(gcp_reference_file.name),
+            "gcp_center_lat": gcp_center_lat,
+            "gcp_center_lon": gcp_center_lon,
+        }
+    )
+
+    return output
+
+
+def call_error_stats_module(image_matching_results, correction_config: "CorrectionConfig"):
+    """
+    Call the error_stats module with image matching output.
+
+    Args:
+        image_matching_results: Either a single image matching result (xarray.Dataset)
+                              or a list of image matching results from multiple GCP pairs
+        correction_config: CorrectionConfig with all configuration (REQUIRED)
+
+    Returns:
+        Aggregate error statistics dataset
+    """
+    # Handle both single result and list of results
+    if not isinstance(image_matching_results, list):
+        image_matching_results = [image_matching_results]
+
+    try:
+        from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
+
+        logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
+
+        # Create error stats config directly from Correction config (single source of truth)
+        error_config = ErrorStatsConfig.from_correction_config(correction_config)
+
+        processor = ErrorStatsProcessor(config=error_config)
+
+        if len(image_matching_results) == 1:
+            # Single GCP pair case
+            error_results = processor.process_geolocation_errors(image_matching_results[0])
+        else:
+            # Multiple GCP pairs - aggregate the data first
+            aggregated_data = _aggregate_image_matching_results(image_matching_results, correction_config)
+            error_results = processor.process_geolocation_errors(aggregated_data)
+
+        return error_results
+
+    except ImportError as e:
+        logger.warning(f"Error stats module not available: {e}")
+        logger.info(f"Error Statistics: Using placeholder calculations for {len(image_matching_results)} GCP pairs")
+
+        # Fallback: compute basic statistics across all GCP pairs
+        all_lat_errors = []
+        all_lon_errors = []
+        total_measurements = 0
+
+        for result in image_matching_results:
+            lat_errors = result["lat_error_deg"].values
+            lon_errors = result["lon_error_deg"].values
+            all_lat_errors.extend(lat_errors)
+            all_lon_errors.extend(lon_errors)
+            total_measurements += len(lat_errors)
+
+        all_lat_errors = np.array(all_lat_errors)
+        all_lon_errors = np.array(all_lon_errors)
+
+        # Convert to meters (approximate)
+        lat_error_m = all_lat_errors * 111000
+        lon_error_m = all_lon_errors * 111000
+        total_error_m = np.sqrt(lat_error_m**2 + lon_error_m**2)
+
+        mean_error = float(np.mean(total_error_m))
+        rms_error = float(np.sqrt(np.mean(total_error_m**2)))
+        std_error = float(np.std(total_error_m))
+
+        return xr.Dataset(
+            {
+                "mean_error": mean_error,
+                "rms_error": rms_error,
+                "std_error": std_error,
+                "max_error": float(np.max(total_error_m)),
+                "min_error": float(np.min(total_error_m)),
+            }
+        )
+
+
+def _aggregate_image_matching_results(image_matching_results, config: "CorrectionConfig"):
+    """
+    Aggregate multiple image matching results into a single dataset for error stats processing.
+
+    Args:
+        image_matching_results: List of xarray.Dataset objects from image matching
+        config: CorrectionConfig with coordinate name mappings
+
+    Returns:
+        Single aggregated xarray.Dataset with all measurements combined
+    """
+    logger.info(f"Aggregating {len(image_matching_results)} image matching results")
+
+    # Get coordinate names from config
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
+
+    # Combine all measurements into single arrays
+    all_lat_errors = []
+    all_lon_errors = []
+    all_sc_positions = []
+    all_boresights = []
+    all_transforms = []
+    all_gcp_lats = []
+    all_gcp_lons = []
+    all_gcp_alts = []
+
+    for i, result in enumerate(image_matching_results):
+        # Add GCP pair identifier to track source
+        n_measurements = len(result["lat_error_deg"])
+
+        all_lat_errors.extend(result["lat_error_deg"].values)
+        all_lon_errors.extend(result["lon_error_deg"].values)
+
+        # Handle coordinate transformation data (use config names)
+        # NOTE: Individual results have shape (1, 3) for vectors and (1, 3, 3) for matrices
+        if sc_pos_name in result:
+            # Shape: (1, 3) -> extract as (3,) for each measurement
+            for j in range(n_measurements):
+                all_sc_positions.append(result[sc_pos_name].values[j])
+        if boresight_name in result:
+            # Shape: (1, 3) -> extract as (3,) for each measurement
+            for j in range(n_measurements):
+                all_boresights.append(result[boresight_name].values[j])
+        if transform_name in result:
+            # Shape: (1, 3, 3) -> extract as (3, 3) for each measurement
+            for j in range(n_measurements):
+                all_transforms.append(result[transform_name].values[j, :, :])
+        if "gcp_lat_deg" in result:
+            all_gcp_lats.extend(result["gcp_lat_deg"].values)
+        if "gcp_lon_deg" in result:
+            all_gcp_lons.extend(result["gcp_lon_deg"].values)
+        if "gcp_alt" in result:
+            all_gcp_alts.extend(result["gcp_alt"].values)
+
+    n_total = len(all_lat_errors)
+
+    # Create aggregated dataset with correct dimension names for error_stats
+    aggregated = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], np.array(all_lat_errors)),
+            "lon_error_deg": (["measurement"], np.array(all_lon_errors)),
+        },
+        coords={"measurement": np.arange(n_total)},
+    )
+
+    # Add optional coordinate transformation data if available (use config names)
+    # Use dimension names that match error_stats expectations
+    if all_sc_positions:
+        # Stack into (n_measurements, 3)
+        aggregated[sc_pos_name] = (["measurement", "xyz"], np.array(all_sc_positions))
+        aggregated = aggregated.assign_coords({"xyz": ["x", "y", "z"]})
+
+    if all_boresights:
+        # Stack into (n_measurements, 3)
+        aggregated[boresight_name] = (["measurement", "xyz"], np.array(all_boresights))
+
+    if all_transforms:
+        # Stack into (n_measurements, 3, 3) to match error_stats format
+        t_stacked = np.stack(all_transforms, axis=0)
+        aggregated[transform_name] = (["measurement", "xyz_from", "xyz_to"], t_stacked)
+        aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
+
+    if all_gcp_lats:
+        aggregated["gcp_lat_deg"] = (["measurement"], np.array(all_gcp_lats))
+    if all_gcp_lons:
+        aggregated["gcp_lon_deg"] = (["measurement"], np.array(all_gcp_lons))
+    if all_gcp_alts:
+        aggregated["gcp_alt"] = (["measurement"], np.array(all_gcp_alts))
+
+    aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
+    aggregated.attrs["total_measurements"] = n_total
+
+    logger.info(f"  Aggregated dataset: {n_total} measurements from {len(image_matching_results)} GCP pairs")
+    logger.info(f"  Dimensions: {dict(aggregated.sizes)}")
+
+    return aggregated
+
+
+def load_telemetry(tlm_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
+    """
+    Load telemetry data using provided mission-specific loader function.
+
+    This is a generic interface. The actual telemetry loading logic should be
+    provided by the mission-specific loader function.
+
+    Args:
+        tlm_key: Identifier for telemetry data (path, key, etc.)
+        config: Correction configuration
+        loader_func: Mission-specific loader function(tlm_key, config) -> DataFrame
+
+    Returns:
+        DataFrame with telemetry data
+
+    Raises:
+        ValueError: If no loader function provided
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_telemetry
+        tlm_data = load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)
+    """
+    if loader_func is None:
+        raise ValueError(
+            "No telemetry loader function provided. "
+            "Pass loader_func parameter with mission-specific loader.\n"
+            "Example: load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)"
+        )
+
+    return loader_func(tlm_key, config)
+
+
+def load_science(sci_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
+    """
+    Load science data using provided mission-specific loader function.
+
+    This is a generic interface. The actual science data loading logic should be
+    provided by the mission-specific loader function.
+
+    Args:
+        sci_key: Identifier for science data (path, key, etc.)
+        config: Correction configuration
+        loader_func: Mission-specific loader function(sci_key, config) -> DataFrame
+
+    Returns:
+        DataFrame with science data
+
+    Raises:
+        ValueError: If no loader function provided
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_science
+        sci_data = load_science(sci_key, config, loader_func=load_clarreo_science)
+    """
+    if loader_func is None:
+        raise ValueError(
+            "No science loader function provided. "
+            "Pass loader_func parameter with mission-specific loader.\n"
+            "Example: load_science(sci_key, config, loader_func=load_clarreo_science)"
+        )
+
+    return loader_func(sci_key, config)
+
+
+def load_gcp(gcp_key: str, config: CorrectionConfig, loader_func=None):
+    """
+    Load Ground Control Point (GCP) reference data using mission-specific loader.
+
+    This is a generic interface. The actual GCP loading logic should be
+    provided by the mission-specific loader function.
+
+    Args:
+        gcp_key: Identifier for GCP data (path, key, etc.)
+        config: Correction configuration
+        loader_func: Mission-specific loader function(gcp_key, config) -> GCP data
+
+    Returns:
+        GCP reference data (format defined by mission)
+
+    Note:
+        If loader_func is None, returns None (allows placeholder behavior)
+
+    Example:
+        from clarreo_data_loaders import load_clarreo_gcp
+        gcp_data = load_gcp(gcp_key, config, loader_func=load_clarreo_gcp)
+    """
+    if loader_func is None:
+        logger.info(f"No GCP loader provided for: {gcp_key} (returning None)")
+        return None
+
+    return loader_func(gcp_key, config)
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+# These functions extract reusable logic from the main loop to simplify the structure
+
+
+def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
+    """Load LOS vectors and optical PSF if calibration_dir is configured.
+
+    This function centralizes calibration data loading, which is now called once
+    per GCP pair in the optimized implementation (previously called once per parameter set).
+
+    Parameters
+    ----------
+    config : CorrectionConfig
+        Configuration with calibration_dir and calibration settings
+
+    Returns
+    -------
+    CalibrationData
+        NamedTuple containing (los_vectors, optical_psfs), or (None, None) if
+        no calibration directory configured
+
+    Raises
+    ------
+    FileNotFoundError
+        If calibration directory is configured but files don't exist
+    ValueError
+        If calibration files exist but fail to load properly
+
+    Examples
+    --------
+    >>> calib_data = _load_calibration_data(config)
+    >>> if calib_data.los_vectors is not None:
+    ...     # Use calibration data in image matching
+    ...     pass
+    """
+    if not config.calibration_dir:
+        return CalibrationData(los_vectors=None, optical_psfs=None)
+
+    logger.info("Loading calibration data...")
+
+    # Use configurable calibration file names
+    los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+    los_file = config.calibration_dir / los_filename
+
+    if not los_file.exists():
+        raise FileNotFoundError(
+            f"LOS vectors calibration file not found: {los_file}\nExpected in calibration_dir: {config.calibration_dir}"
+        )
+
+    los_vectors_cached = load_los_vectors_from_mat(los_file)
+
+    if los_vectors_cached is None:
+        raise ValueError(
+            f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors_from_mat() returned None."
+        )
+
+    psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+    psf_file = config.calibration_dir / psf_filename
+
+    if not psf_file.exists():
+        raise FileNotFoundError(
+            f"Optical PSF calibration file not found: {psf_file}\nExpected in calibration_dir: {config.calibration_dir}"
+        )
+
+    optical_psfs_cached = load_optical_psf_from_mat(psf_file)
+
+    if optical_psfs_cached is None:
+        raise ValueError(
+            f"Failed to load optical PSF from {psf_file}. File exists but load_optical_psf_from_mat() returned None."
+        )
+
+    logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")
+    logger.info(f"  Cached optical PSF: {len(optical_psfs_cached)} entries")
+
+    return CalibrationData(los_vectors=los_vectors_cached, optical_psfs=optical_psfs_cached)
+
+
+def _load_image_pair_data(
+    tlm_key: str,
+    sci_key: str,
+    config: "CorrectionConfig",
+    telemetry_loader: TelemetryLoader,
+    science_loader: ScienceLoader,
+) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
+    """Load telemetry and science data for an image pair.
+
+    Parameters
+    ----------
+    tlm_key : str
+        Identifier for telemetry data.
+    sci_key : str
+        Identifier for science data.
+    config : CorrectionConfig
+        Configuration containing geolocation settings and field names.
+    telemetry_loader : callable
+        Function with signature ``telemetry_loader(tlm_key, config) -> pandas.DataFrame`` that
+        loads telemetry (L1) data for the given key.
+    science_loader : callable
+        Function with signature ``science_loader(sci_key, config) -> pandas.DataFrame`` that
+        loads science frame timing (L1A) data for the given key.
+
+    Returns
+    -------
+    tlm_dataset : pandas.DataFrame
+        DataFrame containing spacecraft state / telemetry records (position, velocity, attitude, time).
+    sci_dataset : pandas.DataFrame
+        DataFrame containing science frame timing information.
+    ugps_times : array_like
+        Time array extracted from the science dataset (e.g., uGPS times).
+
+    Raises
+    ------
+    ValueError
+        If required loader functions are not provided or returned data are invalid.
+    FileNotFoundError
+        If underlying loader raises when expected files are missing.
+
+    Notes
+    -----
+    This function loads and validates both telemetry and science datasets for a
+    single GCP pair. In the current implementation it is called once per image pair.
+
+    Examples
+    --------
+    >>> tlm, sci, times = _load_image_pair_data(
+    ...     "tlm_001", "sci_001", config, load_clarreo_telemetry, load_clarreo_science
+    ... )
+    """
+    # Load telemetry (L1) data using mission-specific loader
+    tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
+    validate_telemetry_output(tlm_dataset, config)
+
+    # Load science (L1A) data using mission-specific loader
+    sci_dataset = load_science(sci_key, config, loader_func=science_loader)
+    validate_science_output(sci_dataset, config)
+    ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps
+
+    return tlm_dataset, sci_dataset, ugps_times
+
+
+def _geolocate_and_match(
+    config: "CorrectionConfig",
+    kernel_ctx: KernelContext,
+    ugps_times_modified: Any,
+    tlm_dataset: pd.DataFrame,
+    calibration: CalibrationData,
+    image_matching_func: ImageMatchingFunc,
+    match_ctx: ImageMatchingContext,
+) -> tuple[xr.Dataset, xr.Dataset]:
+    """Perform geolocation and image matching for a parameter set.
+
+    This function loads SPICE kernels, performs geolocation, and runs image
+    matching against GCP reference data. It's the core computation step that
+    combines all previous setup (kernels, data loading) into results.
+
+    Parameters
+    ----------
+    config : CorrectionConfig
+        Configuration with geo and image matching settings
+    kernel_ctx : KernelContext
+        NamedTuple containing:
+        - mkrn: MetaKernel instance with SDS and mission kernels
+        - dynamic_kernels: List of dynamic kernel file paths
+        - param_kernels: List of parameter-specific kernel file paths
+    ugps_times_modified : array-like
+        Time array (possibly modified by OFFSET_TIME parameter)
+    tlm_dataset : pd.DataFrame
+        Spacecraft state telemetry data
+    calibration : CalibrationData
+        NamedTuple containing:
+        - los_vectors: Pre-loaded LOS vectors (or None)
+        - optical_psfs: Pre-loaded optical PSF (or None)
+    image_matching_func : ImageMatchingFunc
+        Function to perform image matching (e.g., integrated_image_match)
+    match_ctx : ImageMatchingContext
+        NamedTuple containing:
+        - gcp_pairs: List of GCP pairing tuples
+        - params: List of (ParameterConfig, parameter_value) tuples
+        - pair_idx: Index of current GCP pair
+        - sci_key: Science dataset identifier for this pair
+
+    Returns
+    -------
+    geo_dataset : xr.Dataset
+        Geolocated points with latitude, longitude, altitude
+    image_matching_output : xr.Dataset
+        Matching results with error measurements and metadata
+
+    Examples
+    --------
+    >>> kernel_ctx = KernelContext(mkrn, dynamic_kernels, param_kernels)
+    >>> calibration = CalibrationData(los_vectors, optical_psfs)
+    >>> match_ctx = ImageMatchingContext(gcp_pairs, params, 0, "sci_001")
+    >>> geo, matching = _geolocate_and_match(
+    ...     config, kernel_ctx, times, tlm_dataset,
+    ...     calibration, integrated_image_match, match_ctx
+    ... )
+    """
+    logger.info("    Performing geolocation...")
+    with sp.ext.load_kernel(
+        [
+            kernel_ctx.mkrn.sds_kernels,
+            kernel_ctx.mkrn.mission_kernels,
+            kernel_ctx.dynamic_kernels,
+            kernel_ctx.param_kernels,
+        ]
+    ):
+        geoloc_inst = spatial.Geolocate(config.geo.instrument_name)
+        geo_dataset = geoloc_inst(ugps_times_modified)
+
+        # === IMAGE MATCHING MODULE ===
+        logger.info("    === IMAGE MATCHING MODULE ===")
+
+        # Use injected image matching function
+        gcp_file = Path(match_ctx.gcp_pairs[0][1]) if match_ctx.gcp_pairs else Path("synthetic_gcp.tif")
+
+        # All image matching functions use the same signature
+        image_matching_output = image_matching_func(
+            geolocated_data=geo_dataset,
+            gcp_reference_file=gcp_file,
+            telemetry=tlm_dataset,
+            calibration_dir=config.calibration_dir,
+            params_info=match_ctx.params,
+            config=config,
+            los_vectors_cached=calibration.los_vectors,
+            optical_psfs_cached=calibration.optical_psfs,
+        )
+        validate_image_matching_output(image_matching_output)
+        logger.info("    Image matching complete")
+
+        logger.info(f"    Generated error measurements for {len(image_matching_output.measurement)} points")
+
+        # Store metadata for tracking
+        image_matching_output.attrs["gcp_pair_index"] = match_ctx.pair_idx
+        image_matching_output.attrs["gcp_pair_id"] = f"{match_ctx.sci_key}_pair_{match_ctx.pair_idx}"
+
+    return geo_dataset, image_matching_output
+
+
+def loop(
+    config: CorrectionConfig,
+    work_dir: Path,
+    tlm_sci_gcp_sets: list[tuple[str, str, str]],
+    resume_from_checkpoint: bool = False,
+):
+    """
+    Correction loop for parameter sensitivity analysis.
+
+    Parameters
+    ----------
+    config : CorrectionConfig
+        The single configuration containing all settings:
+        - Required: parameters, iterations, thresholds, geo config
+        - Required loaders: telemetry_loader, science_loader
+        - Optional processing: gcp_pairing_func, image_matching_func
+        - Calibration: `calibration_dir` (if image_matching_func uses calibration)
+        - Output: netcdf, output_filename
+    work_dir : Path
+        Working directory for temporary files.
+    tlm_sci_gcp_sets : list of (str, str, str)
+        List of (`telemetry_key`, `science_key`, `gcp_key`) tuples.
+    resume_from_checkpoint : bool, optional
+        If True, resume from an existing checkpoint.
+
+    Returns
+    -------
+    results : list
+        List of iteration results (order: `pair_idx * N + param_idx`).
+    netcdf_data : dict
+        Dictionary of NetCDF variables indexed as `[param_idx, pair_idx]`.
+
+    Notes
+    -----
+    This implementation uses a pair-outer, parameter-inner loop order:
+    - Outer loop: GCP pairs (load data once per image)
+    - Inner loop: Parameter sets (reuse loaded data)
+    This reduces file I/O and centralizes mission-specific behavior through the
+    `config` object.
+
+    Examples
+    --------
+    Correction mode (parameter optimization):
+
+        >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
+        >>> from clarreo_config import create_clarreo_correction_config
+        >>>
+        >>> # Create base config with required parameters
+        >>> config = create_clarreo_correction_config(data_dir, generic_dir)
+        >>>
+        >>> # Add required loaders
+        >>> config.telemetry_loader = load_clarreo_telemetry
+        >>> config.science_loader = load_clarreo_science
+        >>> config.gcp_pairing_func = spatial_pairing
+        >>> config.image_matching_func = image_matching
+        >>>
+        >>> # Run correction analysis
+        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+
+    Verification mode (performance checking only):
+
+        >>> # Create config with minimal iterations for verification
+        >>> config = CorrectionConfig(
+        ...     seed=42,
+        ...     n_iterations=1,  # Verification mode
+        ...     parameters=[],   # No parameter variation
+        ...     geo=geo_config,
+        ...     performance_threshold_m=250.0,
+        ...     performance_spec_percent=39.0,
+        ...     earth_radius_m=6378137.0,
+        ... )
+        >>> config.telemetry_loader = load_clarreo_telemetry
+        >>> config.science_loader = load_clarreo_science
+        >>> config.gcp_pairing_func = spatial_pairing
+        >>> config.image_matching_func = image_matching
+        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+    """
+    logger.info("=== CORRECTION PIPELINE ===")
+    logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
+
+    # Extract injected functions
+    telemetry_loader = config.telemetry_loader
+    science_loader = config.science_loader
+    image_matching_func = config.image_matching_func
+    gcp_pairing_func = config.gcp_pairing_func
+
+    # Validate required loaders
+    if telemetry_loader is None:
+        raise ValueError("config.telemetry_loader is required but was None.")
+    if science_loader is None:
+        raise ValueError("config.science_loader is required but was None.")
+
+    # Validate required processing functions
+    if gcp_pairing_func is None:
+        raise ValueError("config.gcp_pairing_func is required but was None.")
+    if image_matching_func is None:
+        raise ValueError("config.image_matching_func is required but was None.")
+
+    # Initialize parameter sets
+    params_set = load_param_sets(config)
+    logger.info(f"  Parameter sets: {len(params_set)} (inner loop)")
+
+    # Build NetCDF data structure
+    n_param_sets = len(params_set)
+    n_gcp_pairs = len(tlm_sci_gcp_sets)
+
+    # Try to load checkpoint if resuming
+    output_file = work_dir / config.get_output_filename()
+    start_pair_idx = 0
+    # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
+    # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
+    if resume_from_checkpoint:
+        checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
+        if checkpoint_data is not None:
+            netcdf_data = checkpoint_data
+            start_pair_idx = completed_pairs
+            logger.info(f"Resuming from checkpoint: starting at GCP pair {start_pair_idx + 1}/{n_gcp_pairs}")
+        else:
+            netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+            logger.info("No valid checkpoint found, starting from beginning")
+    else:
+        netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+
+    # Initialize results dict with (param_idx, pair_idx) keys
+    # This avoids nested search complexity when aggregating statistics
+    results_dict = {}
+
+    # Prepare SPICE environment
+    mkrn = meta.MetaKernel.from_json(
+        config.geo.meta_kernel_file,
+        relative=True,
+        sds_dir=config.geo.generic_kernel_dir,
+    )
+    creator = create.KernelCreator(overwrite=True, append=False)
+
+    # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
+    calibration_data = _load_calibration_data(config)
+
+    # Store parameter values once (before loops)
+    for param_idx, params in enumerate(params_set):
+        param_values = _extract_parameter_values(params)
+        _store_parameter_values(netcdf_data, param_idx, param_values)
+
+    # OUTER LOOP: Iterate through GCP pairs
+    for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
+        # Skip already-completed pairs if resuming
+        if pair_idx < start_pair_idx:
+            logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} === (SKIPPED - already completed)")
+            continue
+
+        logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
+
+        # Load image pair data once
+        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(
+            tlm_key, sci_key, config, telemetry_loader, science_loader
+        )
+
+        # Create dynamic kernels once (these don't change with parameters)
+        dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+
+        # Get GCP pairing ONCE
+        gcp_pairs = gcp_pairing_func([sci_key])
+        validate_gcp_pairing_output(gcp_pairs)
+        logger.info(f"  Found {len(gcp_pairs)} GCP pairs for processing")
+
+        # INNER LOOP: Iterate through parameter sets
+        for param_idx, params in enumerate(params_set):
+            logger.info(f"  Parameter Set {param_idx + 1}/{n_param_sets}")
+
+            # Create parameter-specific kernels (these change with parameters)
+            param_kernels, ugps_times_modified = _create_parameter_kernels(
+                params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+            )
+
+            # Prepare context objects for cleaner function call
+            kernel_ctx = KernelContext(mkrn=mkrn, dynamic_kernels=dynamic_kernels, param_kernels=param_kernels)
+            match_ctx = ImageMatchingContext(gcp_pairs=gcp_pairs, params=params, pair_idx=pair_idx, sci_key=sci_key)
+
+            # Geolocate and perform image matching
+            geo_dataset, image_matching_output = _geolocate_and_match(
+                config,
+                kernel_ctx,
+                ugps_times_modified,
+                tlm_dataset,
+                calibration_data,
+                image_matching_func,
+                match_ctx,
+            )
+
+            # Process individual pair error statistics
+            individual_stats = call_error_stats_module(image_matching_output, correction_config=config)
+            individual_metrics = _extract_error_metrics(individual_stats)
+
+            # Store results in NetCDF (maintain [param_idx, pair_idx] ordering)
+            _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
+            netcdf_data["im_lat_error_km"][param_idx, pair_idx] = image_matching_output.attrs.get(
+                "lat_error_km", np.nan
+            )
+            netcdf_data["im_lon_error_km"][param_idx, pair_idx] = image_matching_output.attrs.get(
+                "lon_error_km", np.nan
+            )
+            netcdf_data["im_ccv"][param_idx, pair_idx] = image_matching_output.attrs.get("correlation_ccv", np.nan)
+            netcdf_data["im_grid_step_m"][param_idx, pair_idx] = image_matching_output.attrs.get(
+                "final_grid_step_m", np.nan
+            )
+
+            # Store results in dict with (param_idx, pair_idx) key
+            # Note: iteration index reflects reversed order (pair_idx * n_params + param_idx)
+            param_values = _extract_parameter_values(params)
+            iteration_result = {
+                "iteration": pair_idx * n_param_sets + param_idx,
+                "pair_index": pair_idx,
+                "param_index": param_idx,
+                "parameters": param_values,
+                "geolocation": geo_dataset,
+                "gcp_pairs": gcp_pairs,
+                "image_matching": image_matching_output,
+                "error_stats": individual_stats,
+                "rms_error_m": individual_metrics["rms_error_m"],
+                "aggregate_rms_error_m": None,
+            }
+            results_dict[(param_idx, pair_idx)] = iteration_result
+
+            logger.info(
+                f"    RMS error: {individual_metrics['rms_error_m']:.2f}m "
+                f"({individual_metrics['n_measurements']} measurements)"
+            )
+
+        logger.info(f"  GCP pair {pair_idx + 1} complete (processed {n_param_sets} parameter sets)")
+
+        # Save checkpoint after each pair completes
+        if resume_from_checkpoint:
+            _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx)
+
+    # Compute aggregate statistics for each parameter set (after all pairs complete)
+    logger.info("=== Computing aggregate statistics for all parameter sets ===")
+    for param_idx in range(n_param_sets):
+        # Collect all image matching results for this parameter set
+        param_image_matching_results = []
+        for pair_idx in range(n_gcp_pairs):
+            result = results_dict.get((param_idx, pair_idx))
+            if result:
+                param_image_matching_results.append(result["image_matching"])
+
+        # Compute aggregate statistics
+        aggregate_stats = call_error_stats_module(param_image_matching_results, correction_config=config)
+        aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
+
+        # Extract pair errors for threshold calculation
+        pair_errors = [netcdf_data["rms_error_m"][param_idx, pair_idx] for pair_idx in range(n_gcp_pairs)]
+        _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=config.performance_threshold_m)
+
+        logger.info(f"  Parameter set {param_idx + 1}: Aggregate RMS = {aggregate_error_metrics['rms_error_m']:.2f}m")
+
+        # Add aggregate stats to all results for this parameter set
+        for pair_idx in range(n_gcp_pairs):
+            key = (param_idx, pair_idx)
+            if key in results_dict:
+                results_dict[key]["aggregate_error_stats"] = aggregate_stats
+                results_dict[key]["aggregate_rms_error_m"] = aggregate_error_metrics["rms_error_m"]
+    # Convert results_dict back to list for backward compatibility
+    # Sort by iteration index to maintain consistent ordering
+    results = [results_dict[key] for key in sorted(results_dict.keys(), key=lambda k: results_dict[k]["iteration"])]
+
+    # Save final NetCDF results
+    _save_netcdf_results(netcdf_data, output_file, config)
+
+    # Clean up checkpoint file after successful completion
+    if resume_from_checkpoint:
+        _cleanup_checkpoint(output_file)
+
+    logger.info(f"=== Loop Complete: Processed {n_gcp_pairs} GCP pairs × {n_param_sets} parameter sets ===")
+    logger.info(f"  Total iterations: {len(results)}")
+    logger.info(f"  NetCDF output: {output_file}")
+
+    return results, netcdf_data
+
+
+def _extract_parameter_values(params):
+    """Extract parameter values from a parameter set into a dictionary."""
+    param_values = {}
+
+    for param_config, param_data in params:
+        if param_config.config_file:
+            param_name = param_config.config_file.stem
+
+            if param_config.ptype == ParameterType.CONSTANT_KERNEL:
+                # Extract roll, pitch, yaw from DataFrame
+                if isinstance(param_data, pd.DataFrame) and "angle_x" in param_data.columns:
+                    # Convert back to arcseconds for storage
+                    param_values[f"{param_name}_roll"] = np.degrees(param_data["angle_x"].iloc[0]) * 3600
+                    param_values[f"{param_name}_pitch"] = np.degrees(param_data["angle_y"].iloc[0]) * 3600
+                    param_values[f"{param_name}_yaw"] = np.degrees(param_data["angle_z"].iloc[0]) * 3600
+
+            elif param_config.ptype == ParameterType.OFFSET_KERNEL:
+                # Single bias value (keep in original units)
+                param_values[param_name] = param_data
+
+            elif param_config.ptype == ParameterType.OFFSET_TIME:
+                # Time correction (keep in original units)
+                param_values[param_name] = param_data
+
+    return param_values
+
+
+def _store_parameter_values(netcdf_data, param_idx, param_values):
+    """Store parameter values in the NetCDF data structure.
+
+    This function maps parameter names to NetCDF variable names for storage.
+    It handles the naming convention used by _build_netcdf_structure.
+    """
+
+    for param_name, value in param_values.items():
+        # Generate NetCDF variable name using same logic as _build_netcdf_structure
+        # Replace dots and dashes with underscores, ensure param_ prefix
+        netcdf_var = param_name.replace(".", "_").replace("-", "_")
+        if not netcdf_var.startswith("param_"):
+            netcdf_var = f"param_{netcdf_var}"
+
+        if netcdf_var in netcdf_data:
+            netcdf_data[netcdf_var][param_idx] = value
+            logger.debug(f"  Stored {netcdf_var}[{param_idx}] = {value}")
+        else:
+            # Try to find a matching variable with debug info
+            logger.warning(
+                f"  Parameter variable '{netcdf_var}' not found in netcdf_data. Available keys: {[k for k in netcdf_data.keys() if k.startswith('param_')]}"
+            )
+
+
+def _extract_error_metrics(stats_dataset):
+    """Extract error metrics from error statistics dataset."""
+    if hasattr(stats_dataset, "attrs"):
+        # Real error stats module
+        return {
+            "rms_error_m": stats_dataset.attrs.get("rms_error_m", np.nan),
+            "mean_error_m": stats_dataset.attrs.get("mean_error_m", np.nan),
+            "max_error_m": stats_dataset.attrs.get("max_error_m", np.nan),
+            "std_error_m": stats_dataset.attrs.get("std_error_m", np.nan),
+            "n_measurements": stats_dataset.attrs.get("total_measurements", 0),
+        }
+    else:
+        # Fallback for placeholder
+        return {
+            "rms_error_m": float(stats_dataset.get("rms_error", np.nan)),
+            "mean_error_m": float(stats_dataset.get("mean_error", np.nan)),
+            "max_error_m": float(stats_dataset.get("max_error", np.nan)),
+            "std_error_m": float(stats_dataset.get("std_error", np.nan)),
+            "n_measurements": int(stats_dataset.get("n_measurements", 0)),
+        }
+
+
+def _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics):
+    """Store GCP pair results in the NetCDF data structure."""
+    netcdf_data["rms_error_m"][param_idx, pair_idx] = error_metrics["rms_error_m"]
+    netcdf_data["mean_error_m"][param_idx, pair_idx] = error_metrics["mean_error_m"]
+    netcdf_data["max_error_m"][param_idx, pair_idx] = error_metrics["max_error_m"]
+    netcdf_data["std_error_m"][param_idx, pair_idx] = error_metrics["std_error_m"]
+    netcdf_data["n_measurements"][param_idx, pair_idx] = error_metrics["n_measurements"]
+
+
+def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=250.0):
+    """
+    Compute overall performance metrics for a parameter set.
+
+    Args:
+        netcdf_data: NetCDF data dictionary
+        param_idx: Parameter set index
+        pair_errors: Array of RMS errors for each GCP pair
+        threshold_m: Performance threshold in meters
+    """
+    pair_errors = np.array(pair_errors)
+    valid_errors = pair_errors[~np.isnan(pair_errors)]
+
+    if len(valid_errors) > 0:
+        # Percentage of pairs with error < threshold
+        # Find the threshold metric key dynamically
+        threshold_metric = None
+        for key in netcdf_data.keys():
+            if key.startswith("percent_under_") and key.endswith("m"):
+                threshold_metric = key
+                break
+
+        if threshold_metric:
+            percent_under_threshold = (valid_errors < threshold_m).sum() / len(valid_errors) * 100
+            netcdf_data[threshold_metric][param_idx] = percent_under_threshold
+
+        # Mean RMS across all pairs
+        netcdf_data["mean_rms_all_pairs"][param_idx] = np.mean(valid_errors)
+
+        # Best and worst pair performance
+        netcdf_data["best_pair_rms"][param_idx] = np.min(valid_errors)
+        netcdf_data["worst_pair_rms"][param_idx] = np.max(valid_errors)
+
+
+# =============================================================================
+# Incremental NetCDF Saving (Checkpoint/Resume)
+# =============================================================================
