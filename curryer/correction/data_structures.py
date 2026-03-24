@@ -177,7 +177,7 @@ class RegridConfig(BaseModel):
     @classmethod
     def validate_method(cls, v: str) -> str:
         """Validate interpolation method name."""
-        valid = {"bilinear", "nearest", "cubic"}
+        valid = {"bilinear", "nearest"}
         if v not in valid:
             raise ValueError(f"interpolation_method must be one of {valid}, got '{v}'")
         return v
