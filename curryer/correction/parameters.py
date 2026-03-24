@@ -149,7 +149,11 @@ def _get_nominal_value(param: ParameterConfig) -> typing.Any:
     if param.ptype == ParameterType.OFFSET_TIME:
         return _val_to_seconds(_scalar_current_value(param), units)
 
-    return 0.0  # unreachable for known types
+    param_name = getattr(param, "name", "<unknown>")
+    raise NotImplementedError(
+        f"Unsupported ParameterType '{getattr(param.ptype, 'name', param.ptype)}' "
+        f"for nominal value of parameter '{param_name}'."
+    )
 
 
 # ============================================================================
