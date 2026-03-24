@@ -145,9 +145,10 @@ class TestGridOperations:
         lon_base = np.linspace(-116.0, -115.0, ncols)
         lon_grid, lat_grid = np.meshgrid(lon_base, lat_base)
 
-        # Add small distortion
-        lon_grid += 0.01 * np.random.randn(nrows, ncols)
-        lat_grid += 0.01 * np.random.randn(nrows, ncols)
+        # Add small, deterministic distortion using a fixed RNG seed
+        rng = np.random.default_rng(0)
+        lon_grid += 0.01 * rng.standard_normal(size=(nrows, ncols))
+        lat_grid += 0.01 * rng.standard_normal(size=(nrows, ncols))
 
         minlon, maxlon, minlat, maxlat = compute_regular_grid_bounds(lon_grid, lat_grid, conservative=True)
 
