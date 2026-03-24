@@ -157,8 +157,7 @@ class RegridConfig(BaseModel):
         If True, shrink bounds to ensure all output points lie within the
         input irregular grid (avoids edge extrapolation).
     interpolation_method : str, default="bilinear"
-        Interpolation method; one of ``"bilinear"``, ``"nearest"``,
-        or ``"cubic"``.
+        Interpolation method; one of ``"bilinear"`` or ``"nearest"``.
     fill_value : float, default=NaN
         Value assigned to output points that fall outside the input grid.
     ellipsoid : str, default="WGS84"
