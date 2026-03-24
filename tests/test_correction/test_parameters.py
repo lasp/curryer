@@ -276,8 +276,10 @@ class TestRandomStrategy:
         config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.RANDOM, n_iterations=5, seed=42)
         sets_a = load_param_sets(config)
         sets_b = load_param_sets(config)
-        for (_, a), (_, b) in zip(sets_a[0], sets_b[0]):
-            assert a == pytest.approx(b)
+        assert len(sets_a) == len(sets_b)
+        for param_set_a, param_set_b in zip(sets_a, sets_b):
+            for (_, a), (_, b) in zip(param_set_a, param_set_b):
+                assert a == pytest.approx(b)
 
     def test_random_values_within_bounds(self, geo, param_offset_time):
         """All sampled time offsets lie within [bounds_low, bounds_high] in seconds."""
@@ -303,7 +305,7 @@ class TestRandomStrategy:
         sets = load_param_sets(config)
         for param_set in sets:
             _, val = param_set[0]
-            assert isinstance(val, float | np.floating)
+            assert isinstance(val, (float, np.floating))
 
     def test_no_sigma_returns_fixed_value(self, geo, param_constant_zero):
         """Parameter with sigma=None stays fixed at nominal across all iterations."""
@@ -384,8 +386,10 @@ class TestGridSearchStrategy:
         )
         sets_a = load_param_sets(config_a)
         sets_b = load_param_sets(config_b)
-        for (_, a), (_, b) in zip(sets_a[0], sets_b[0]):
-            assert a == pytest.approx(b)
+        assert len(sets_a) == len(sets_b)
+        for param_set_a, param_set_b in zip(sets_a, sets_b):
+            for (_, a), (_, b) in zip(param_set_a, param_set_b):
+                assert a == pytest.approx(b)
 
     def test_constant_kernel_in_grid(self, geo, param_constant_zero):
         """GRID_SEARCH on CONSTANT_KERNEL yields DataFrames with monotone angles."""
@@ -484,8 +488,10 @@ class TestSingleOffsetStrategy:
         )
         sets_a = load_param_sets(config)
         sets_b = load_param_sets(config)
-        for (_, a), (_, b) in zip(sets_a[0], sets_b[0]):
-            assert a == pytest.approx(b)
+        assert len(sets_a) == len(sets_b)
+        for param_set_a, param_set_b in zip(sets_a, sets_b):
+            for (_, a), (_, b) in zip(param_set_a, param_set_b):
+                assert a == pytest.approx(b)
 
     def test_constant_kernel_sweep(self, geo, param_constant_zero):
         """SINGLE_OFFSET on CONSTANT_KERNEL sweeps angle magnitudes monotonically."""
@@ -587,7 +593,7 @@ class TestOutputTypeConsistency:
         sets = load_param_sets(config)
         for param_set in sets:
             _, val = param_set[0]
-            assert isinstance(val, float | np.floating), f"Expected float for {strategy}, got {type(val)}"
+            assert isinstance(val, (float, np.floating)), f"Expected float for {strategy}, got {type(val)}"
 
     @pytest.mark.parametrize(
         "strategy",
@@ -598,4 +604,4 @@ class TestOutputTypeConsistency:
         sets = load_param_sets(config)
         for param_set in sets:
             _, val = param_set[0]
-            assert isinstance(val, float | np.floating), f"Expected float for {strategy}, got {type(val)}"
+            assert isinstance(val, (float, np.floating)), f"Expected float for {strategy}, got {type(val)}"
