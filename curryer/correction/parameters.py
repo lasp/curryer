@@ -208,7 +208,7 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
         offsets = np.linspace(bounds_s[0], bounds_s[1], n_points)
         return list(cv_s + offsets)
 
-    return [0.0] * n_points  # unreachable for known types
+    raise ValueError(f"Unsupported parameter type for grid generation: {param.ptype!r}")
 
 
 # ============================================================================
