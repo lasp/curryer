@@ -64,6 +64,7 @@ from .config import (
     NetCDFParameterMetadata,
     ParameterConfig,
     ParameterType,
+    SearchStrategy,
     load_config_from_json,
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, SearchConfig
@@ -94,6 +95,7 @@ __all__ = [
     "NetCDFParameterMetadata",
     "ParameterConfig",
     "ParameterType",
+    "SearchStrategy",
     "load_config_from_json",
     # Pipeline entry point
     "loop",
