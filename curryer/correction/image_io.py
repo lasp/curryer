@@ -300,7 +300,9 @@ def save_image_grid_to_netcdf(
         nc.setncattr("title", "Regridded GCP Chip")
         nc.setncattr("institution", "NASA Langley Research Center")
         nc.setncattr("source", "Curryer GCP Regridding Module")
-        nc.setncattr("history", f"Created {datetime.datetime.now(datetime.UTC).isoformat()}Z")
+        nc.setncattr(
+            "history", f"Created {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        )
         nc.setncattr("Conventions", "CF-1.8")
         nc.setncattr("grid_type", "regular_lat_lon")
 
