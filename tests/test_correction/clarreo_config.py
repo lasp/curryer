@@ -55,22 +55,15 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         CorrectionConfig: THE single config object containing all CLARREO settings.
 
     IMPORTANT - Config-Centric Design:
-        This function creates the base CorrectionConfig (THE one config) with all
-        CLARREO-specific parameters and settings. After creation, you MUST add
-        data loaders and processing functions before using:
+        This function creates the base CorrectionConfig with all CLARREO-specific
+        parameters and settings.
+
+        After creation, attach a :class:`~curryer.correction.config.DataConfig`
+        and (optionally) an ``image_matching_func`` override before running::
 
             config = create_clarreo_correction_config(data_dir, generic_dir)
-
-            # Add required loaders
-            config.telemetry_loader = load_clarreo_telemetry
-            config.science_loader = load_clarreo_science
-
-            # Add optional processing functions (test or production)
-            config.gcp_pairing_func = your_pairing_function
-            config.image_matching_func = your_matching_function
-
-            # Validate and use
-            config.validate(check_loaders=True)
+            config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+            config.image_matching_func = your_matching_func  # optional
             results = correction.loop(config, work_dir, data_sets)
 
     Args:
@@ -84,12 +77,11 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
     Example:
         config = create_clarreo_correction_config(data_dir, generic_dir)
 
-        # Add required loaders
-        config.telemetry_loader = load_clarreo_telemetry
-        config.science_loader = load_clarreo_science
+        # Attach data loading config
+        from curryer.correction.config import DataConfig
+        config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
 
-        # Add optional processing functions
-        config.gcp_pairing_func = synthetic_gcp_pairing
+        # Optionally override image matching
         config.image_matching_func = synthetic_image_matching
 
         # Now ready to use
@@ -242,9 +234,9 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         param_name = param.config_file.name if param.config_file else "time_correction"
         logger.info(f"  {i + 1}. {param_name} ({param.ptype.name})")
 
-    # Validate configuration (without checking loaders - those are added later)
-    config.validate(check_loaders=False)
-    logger.info("✓ Configuration validation passed (loaders must be added before use)")
+    # Validate configuration
+    config.validate()
+    logger.info("✓ Configuration validation passed")
 
     # Save configuration to file if path is provided
     if config_output_path is not None:
