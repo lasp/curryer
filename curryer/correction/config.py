@@ -139,7 +139,8 @@ class ParameterData(BaseModel):
     units
         Physical units string, e.g. ``"arcseconds"`` or ``"milliseconds"``.
     distribution
-        Sampling distribution name (currently only ``"normal"`` is used).
+        Sampling distribution name.  Stored for documentation purposes;
+        the current implementation always uses a normal distribution.
     field
         Telemetry / science DataFrame column that this parameter modifies
         (required for ``OFFSET_KERNEL`` and ``OFFSET_TIME``).
@@ -160,18 +161,6 @@ class ParameterData(BaseModel):
     field: str | None = None
     transformation_type: str | None = None
     coordinate_frames: list[str] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_legacy_aliases(cls, data: Any) -> Any:
-        """Remap legacy dict keys (``center`` → ``current_value``, ``arange`` → ``bounds``)."""
-        if isinstance(data, dict):
-            data = dict(data)  # defensive copy
-            if "center" in data and "current_value" not in data:
-                data["current_value"] = data.pop("center")
-            if "arange" in data and "bounds" not in data:
-                data["bounds"] = data.pop("arange")
-        return data
 
     # ------------------------------------------------------------------
     # Backward-compatible dict-style access

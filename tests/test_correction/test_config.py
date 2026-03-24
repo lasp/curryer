@@ -159,20 +159,6 @@ class TestParameterData:
         assert pd.units is None
         assert pd.distribution == "normal"
 
-    # -- legacy alias handling --------------------------------------------------
-
-    def test_legacy_center_alias(self):
-        pd = ParameterData(center=5.0)
-        assert pd.current_value == 5.0
-
-    def test_legacy_arange_alias(self):
-        pd = ParameterData(arange=[-50.0, 50.0])
-        assert pd.bounds == [-50.0, 50.0]
-
-    def test_legacy_aliases_do_not_overwrite_explicit(self):
-        pd = ParameterData(center=5.0, current_value=7.0)
-        assert pd.current_value == 7.0  # explicit wins
-
     # -- dict-style backward compat -------------------------------------------
 
     def test_get_returns_value(self):

@@ -51,8 +51,8 @@ def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig
     logger.info(f"Generating {config.n_iterations} parameter sets for {len(config.parameters)} parameters:")
     for i, param in enumerate(config.parameters):
         param_name = param.config_file.name if param.config_file else f"param_{i}"
-        current_value = param.data.get("current_value", param.data.get("center", 0.0))
-        bounds = param.data.get("bounds", param.data.get("arange", [-1.0, 1.0]))
+        current_value = param.data.current_value
+        bounds = param.data.bounds
         logger.info(
             f"  {i + 1}. {param_name} ({param.ptype.name}): "
             f"current_value={current_value}, sigma={param.data.get('sigma', 'N/A')}, "
@@ -64,8 +64,8 @@ def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig
         logger.debug(f"Generating parameter set {ith + 1}/{config.n_iterations}")
 
         for param_idx, param in enumerate(config.parameters):
-            current_value = param.data.get("current_value", param.data.get("center", 0.0))
-            bounds = param.data.get("bounds", param.data.get("arange", [-1.0, 1.0]))
+            current_value = param.data.current_value
+            bounds = param.data.bounds
 
             if param.ptype == ParameterType.CONSTANT_KERNEL:
                 if isinstance(current_value, list) and len(current_value) == 3:
