@@ -559,7 +559,9 @@ def regrid_irregular_to_regular(
             val_bl = data_irregular[i + 1, j]
 
             # Interpolate
-            if method == "bilinear":
+            if method not in ("bilinear", "nearest"):
+                raise ValueError(f"Unsupported interpolation method: {method!r}")
+            elif method == "bilinear":
                 # Inline bilinear interpolation (avoid function call overhead)
                 # Build interpolation matrix (4x4) and solve
                 M = np.array(
