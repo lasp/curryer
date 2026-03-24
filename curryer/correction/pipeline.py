@@ -493,6 +493,51 @@ def _aggregate_image_matching_results(image_matching_results, config: "Correctio
     return aggregated
 
 
+def _resolve_gcp_pairs(
+    sci_key: str,
+    gcp_key: str,
+    config: "CorrectionConfig",
+) -> list[tuple[str, str]]:
+    """Return the ``[(sci_key, gcp_key)]`` pair, validating that ``gcp_key`` is set.
+
+    Parameters
+    ----------
+    sci_key : str
+        Science file path for this outer-loop iteration.
+    gcp_key : str
+        GCP ``.mat`` file path supplied as the third element of the
+        ``tlm_sci_gcp_sets`` tuple.  Must be non-empty.
+    config : CorrectionConfig
+        Unused directly; reserved for future extension.
+
+    Returns
+    -------
+    list of (sci_key, gcp_path) tuples — always length 1.
+
+    Raises
+    ------
+    ValueError
+        If ``gcp_key`` is empty or whitespace-only.
+
+    Notes
+    -----
+    For spatial-overlap-based pairing (many L1A images × many GCP chips) call
+    :func:`~curryer.correction.pairing.pair_files` *before* :func:`loop` to
+    build ``tlm_sci_gcp_sets`` from the ``(l1a_file, gcp_file)`` results.
+    """
+    if not gcp_key or not gcp_key.strip():
+        raise ValueError(
+            "gcp_key must be a non-empty file path to a GCP .mat file.\n"
+            "Pass the GCP file path as the third element of each tlm_sci_gcp_sets tuple:\n"
+            "    tlm_sci_gcp_sets = [(tlm_path, sci_path, gcp_path), ...]\n"
+            "\n"
+            "To compute which GCP chips overlap a given L1A footprint use:\n"
+            "    from curryer.correction.pairing import pair_files\n"
+            "    pairs = pair_files(l1a_files, gcp_directory, max_distance_m=0.0)"
+        )
+    return [(sci_key, gcp_key)]
+
+
 def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     """Load a telemetry or science data file into a pandas DataFrame.
 
@@ -741,7 +786,7 @@ def _geolocate_and_match(
         logger.info("    === IMAGE MATCHING MODULE ===")
 
         # Use injected image matching function
-        gcp_file = Path(match_ctx.gcp_pairs[0][1]) if match_ctx.gcp_pairs else Path("synthetic_gcp.mat")
+        gcp_file = Path(match_ctx.gcp_pairs[0][1])
 
         # All image matching functions use the same signature
         image_matching_output = image_matching_func(
