@@ -510,13 +510,18 @@ class TestSingleOffsetStrategy:
 class TestConfigValidation:
     def test_grid_points_per_param_minimum(self, geo, param_offset_time):
         """grid_points_per_param must be >= 2."""
-        with pytest.raises(ValidationError, match="greater than or equal to 2"):
+        with pytest.raises(ValidationError) as exc_info:
             _make_config(
                 geo,
                 [param_offset_time],
                 strategy=SearchStrategy.GRID_SEARCH,
                 grid_points_per_param=1,
             )
+        errors = exc_info.value.errors()
+        assert any(
+            "grid_points_per_param" in err.get("loc", ())
+            for err in errors
+        )
 
     def test_search_strategy_default_is_random(self, geo, param_offset_time):
         config = CorrectionConfig(
