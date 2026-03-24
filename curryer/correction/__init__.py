@@ -35,6 +35,8 @@ psf
     Point-spread-function modelling.
 search
     Image-search / correlation routines.
+verification
+    Standalone geolocation compliance check (:func:`verify`).
 """
 
 # Sub-modules (ensure `curryer.correction.psf` etc. work as attributes)
@@ -53,6 +55,7 @@ from . import (
     psf,
     results_io,
     search,
+    verification,
 )
 
 # Key public names lifted to package level
@@ -70,6 +73,7 @@ from .config import (
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from .pipeline import loop
+from .verification import GCPError, RequirementsConfig, VerificationResult, verify
 
 __all__ = [
     # Sub-modules
@@ -87,6 +91,7 @@ __all__ = [
     "psf",
     "results_io",
     "search",
+    "verification",
     # Config
     "CorrectionConfig",
     "DataConfig",
@@ -107,4 +112,9 @@ __all__ = [
     # Error stats
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
+    # Verification
+    "GCPError",
+    "RequirementsConfig",
+    "VerificationResult",
+    "verify",
 ]
