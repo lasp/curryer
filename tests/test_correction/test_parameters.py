@@ -12,7 +12,6 @@ For every strategy the three parameter types are exercised:
 
 Config validation:
 - ``grid_points_per_param < 2`` rejected for GRID_SEARCH
-- ``SINGLE_OFFSET`` with zero parameters rejected
 - JSON round-trip preserves strategy fields
 """
 
