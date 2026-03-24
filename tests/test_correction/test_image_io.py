@@ -24,7 +24,8 @@ class TestImageGridSaveLoad:
     def test_netcdf_round_trip(self):
         """Test save and load ImageGrid from NetCDF."""
         # Create test data
-        data = np.random.rand(50, 50)
+        rng = np.random.default_rng(0)
+        data = rng.random((50, 50))
         lat = np.linspace(38.0, 39.0, 50)
         lon = np.linspace(-116.0, -115.0, 50)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
@@ -52,7 +53,8 @@ class TestImageGridSaveLoad:
     def test_mat_round_trip(self):
         """Test save and load ImageGrid from MATLAB .mat file."""
         # Create test data
-        data = np.random.rand(50, 50)
+        rng = np.random.default_rng(0)
+        data = rng.random((50, 50))
         lat = np.linspace(38.0, 39.0, 50)
         lon = np.linspace(-116.0, -115.0, 50)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
@@ -80,7 +82,8 @@ class TestImageGridSaveLoad:
     def test_save_with_metadata(self):
         """Test saving ImageGrid with custom metadata."""
         # Create test data
-        data = np.random.rand(10, 10)
+        rng = np.random.default_rng(0)
+        data = rng.random((10, 10))
         lat = np.linspace(38.0, 39.0, 10)
         lon = np.linspace(-116.0, -115.0, 10)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
@@ -113,7 +116,8 @@ class TestImageGridSaveLoad:
 
     def test_invalid_format(self):
         """Test that invalid format raises ValueError."""
-        data = np.random.rand(10, 10)
+        rng = np.random.default_rng(0)
+        data = rng.random((10, 10))
         lat = np.linspace(38.0, 39.0, 10)
         lon = np.linspace(-116.0, -115.0, 10)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
