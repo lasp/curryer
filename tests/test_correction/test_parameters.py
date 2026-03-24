@@ -411,6 +411,33 @@ class TestGridSearchStrategy:
         sets = load_param_sets(config)
         assert len(sets) == 5
 
+    def test_guardrail_raises_when_total_exceeds_limit(self, geo, param_offset_kernel, param_offset_time):
+        """GRID_SEARCH raises ValueError when cartesian product would exceed max_grid_sets."""
+        # 10 points × 2 params = 100 sets → set limit to 99 to trigger the guard
+        config = _make_config(
+            geo,
+            [param_offset_kernel, param_offset_time],
+            strategy=SearchStrategy.GRID_SEARCH,
+            grid_points_per_param=10,
+        )
+        # Override the limit below what the sweep would produce (100 sets)
+        config = config.model_copy(update={"max_grid_sets": 99})
+        with pytest.raises(ValueError, match="exceeds the safety limit"):
+            load_param_sets(config)
+
+    def test_guardrail_passes_when_limit_raised(self, geo, param_offset_time):
+        """Explicitly raising max_grid_sets allows larger sweeps through."""
+        # 5 points × 1 param = 5 sets; set limit to 5 exactly — should succeed
+        config = _make_config(
+            geo,
+            [param_offset_time],
+            strategy=SearchStrategy.GRID_SEARCH,
+            grid_points_per_param=5,
+        )
+        config = config.model_copy(update={"max_grid_sets": 5})
+        sets = load_param_sets(config)
+        assert len(sets) == 5
+
 
 # ===========================================================================
 # SearchStrategy.SINGLE_OFFSET
@@ -517,10 +544,7 @@ class TestConfigValidation:
                 grid_points_per_param=1,
             )
         errors = exc_info.value.errors()
-        assert any(
-            "grid_points_per_param" in err.get("loc", ())
-            for err in errors
-        )
+        assert any("grid_points_per_param" in err.get("loc", ()) for err in errors)
 
     def test_search_strategy_default_is_random(self, geo, param_offset_time):
         config = CorrectionConfig(
@@ -560,6 +584,7 @@ class TestConfigValidation:
         restored = CorrectionConfig.model_validate_json(config.model_dump_json())
         assert restored.search_strategy == SearchStrategy.GRID_SEARCH
         assert restored.grid_points_per_param == 7
+        assert restored.max_grid_sets == config.max_grid_sets
 
     def test_json_round_trip_single_offset(self, geo, param_offset_time):
         config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.SINGLE_OFFSET, n_iterations=12)
@@ -609,3 +634,37 @@ class TestOutputTypeConsistency:
         for param_set in sets:
             _, val = param_set[0]
             assert isinstance(val, (float, np.floating)), f"Expected float for {strategy}, got {type(val)}"
+
+
+# ===========================================================================
+# Logging behaviour
+# ===========================================================================
+
+
+class TestLogging:
+    """Verify _log_param_set_summary emits per-set detail only at DEBUG."""
+
+    def test_per_set_detail_suppressed_at_info(self, geo, param_offset_time, caplog):
+        """With log level INFO, per-set lines must NOT appear in the log output."""
+        import logging
+
+        config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=4)
+        with caplog.at_level(logging.INFO, logger="curryer.correction.parameters"):
+            load_param_sets(config)
+
+        # The high-level count line should be present
+        assert any("Generated 4 parameter sets" in r.message for r in caplog.records)
+        # Individual "Set N:" detail lines must NOT appear at INFO
+        assert not any(r.message.startswith("  Set ") for r in caplog.records)
+
+    def test_per_set_detail_present_at_debug(self, geo, param_offset_time, caplog):
+        """With log level DEBUG, per-set detail lines DO appear."""
+        import logging
+
+        config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=3)
+        with caplog.at_level(logging.DEBUG, logger="curryer.correction.parameters"):
+            load_param_sets(config)
+
+        # Expect exactly 3 "Set N:" lines (one per grid point)
+        set_lines = [r for r in caplog.records if r.message.strip().startswith("Set ")]
+        assert len(set_lines) == 3
