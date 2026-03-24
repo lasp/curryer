@@ -361,9 +361,12 @@ def save_image_grid_to_netcdf(
         data_var.grid_mapping = "crs"
 
         # Add grid statistics as attributes
-        data_var.setncattr("valid_min", float(np.nanmin(image_grid.data)))
-        data_var.setncattr("valid_max", float(np.nanmax(image_grid.data)))
-        data_var.setncattr("valid_pixels", int(np.sum(~np.isnan(image_grid.data))))
+        valid_mask = ~np.isnan(image_grid.data)
+        valid_pixels = int(np.sum(valid_mask))
+        data_var.setncattr("valid_pixels", valid_pixels)
+        if valid_pixels > 0:
+            data_var.setncattr("valid_min", float(np.nanmin(image_grid.data)))
+            data_var.setncattr("valid_max", float(np.nanmax(image_grid.data)))
 
         # Add height if available
         if image_grid.h is not None:
