@@ -521,9 +521,7 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     if file_format == "csv":
         return pd.read_csv(file_path, index_col=0)
     elif file_format == "netcdf":
-        import xarray as xr
-
-        return xr.open_dataset(file_path).to_dataframe().reset_index()
+        return xr.load_dataset(file_path).to_dataframe().reset_index()
     elif file_format == "hdf5":
         return pd.read_hdf(file_path)
     else:
