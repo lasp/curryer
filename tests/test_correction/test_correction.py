@@ -835,7 +835,6 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
     # Point the pipeline at the clean files via DataConfig
     config.data = DataConfig(
         file_format="csv",
-        time_field="corrected_timestamp",
         time_scale_factor=1e6,  # GPS sec → uGPS
     )
     # Use synthetic image matching for this upstream-only test
@@ -1075,7 +1074,6 @@ def run_downstream_pipeline(
     # Add DataConfig for file-based loading (loaders no longer needed)
     config.data = DataConfig(
         file_format="csv",
-        time_field="corrected_timestamp",
         time_scale_factor=1e6,
     )
 
@@ -1236,7 +1234,6 @@ class CorrectionUnifiedTests(unittest.TestCase):
         # Attach DataConfig so the pipeline knows how to load files
         config.data = DataConfig(
             file_format="csv",
-            time_field="corrected_timestamp",
             time_scale_factor=1e6,
         )
 
@@ -1417,7 +1414,6 @@ class CorrectionUnifiedTests(unittest.TestCase):
         # Attach DataConfig and synthetic image matching override
         config.data = DataConfig(
             file_format="csv",
-            time_field="corrected_timestamp",
             time_scale_factor=1e6,
         )
         config.image_matching_func = synthetic_image_matching
@@ -1641,7 +1637,6 @@ class CorrectionUnifiedTests(unittest.TestCase):
 
         config.data = DataConfig(
             file_format="csv",
-            time_field="corrected_timestamp",
             time_scale_factor=1e6,
         )
 
@@ -1719,7 +1714,6 @@ class CorrectionUnifiedTests(unittest.TestCase):
         config.output_filename = "test_checkpoint.nc"
 
         # Use DataConfig (loaders no longer needed on config)
-        config.data = DataConfig(file_format="csv", time_field="corrected_timestamp", time_scale_factor=1e6)
         config.image_matching_func = synthetic_image_matching
 
         work_dir = self.work_dir / "test_checkpoint"
