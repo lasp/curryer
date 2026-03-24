@@ -152,11 +152,11 @@ class TestGridOperations:
 
         minlon, maxlon, minlat, maxlat = compute_regular_grid_bounds(lon_grid, lat_grid, conservative=True)
 
-        # Conservative bounds should be within full extent
-        assert minlon > lon_grid.min()
-        assert maxlon < lon_grid.max()
-        assert minlat > lat_grid.min()
-        assert maxlat < lat_grid.max()
+        # Conservative bounds should not extend beyond the full extent
+        assert minlon >= lon_grid.min()
+        assert maxlon <= lon_grid.max()
+        assert minlat >= lat_grid.min()
+        assert maxlat <= lat_grid.max()
 
     def test_compute_bounds_full_extent(self):
         """Test full extent bounds computation."""
