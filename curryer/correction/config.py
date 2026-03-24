@@ -27,7 +27,7 @@ import json
 import logging
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -106,6 +106,37 @@ class ImageMatchingContext(NamedTuple):
     params: list[tuple]
     pair_idx: int
     sci_key: str
+
+
+# ============================================================================
+# Data Loading Configuration
+# ============================================================================
+
+
+class DataConfig(BaseModel):
+    """Configuration for config-driven internal data loading.
+
+    Replaces mission-specific loader callables with a declarative specification
+    of how files should be read.  The pipeline reads telemetry and science data
+    directly from the provided file paths using pandas/xarray, applying the
+    ``time_scale_factor`` to convert the science time column to uGPS.
+
+    Attributes
+    ----------
+    file_format
+        File format for both telemetry and science data files.
+        ``"csv"`` uses :func:`pandas.read_csv`; ``"netcdf"`` converts via
+        :func:`xarray.open_dataset`; ``"hdf5"`` uses :func:`pandas.read_hdf`.
+    time_scale_factor
+        Multiply science timestamps by this factor to obtain uGPS
+        (microseconds since GPS epoch).  For example, ``1e6`` converts GPS
+        seconds to uGPS; ``1.0`` means the file already contains uGPS.
+        The time column name is taken from :attr:`GeolocationConfig.time_field`
+        (single source of truth).
+    """
+
+    file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
+    time_scale_factor: float = 1.0
 
 
 # ============================================================================
@@ -403,11 +434,17 @@ class CorrectionConfig(BaseModel):
         performance_spec_percent : float
         earth_radius_m : float
 
-    DATA LOADERS (excluded from JSON serialisation):
-        telemetry_loader, science_loader, gcp_loader
+    DATA LOADING CONFIGURATION:
+        data : DataConfig | None
+            Specifies file format, time field, scale factor, and optional GCP
+            discovery settings.  When provided, telemetry and science files are
+            read internally by the pipeline from the paths supplied in
+            ``tlm_sci_gcp_sets``.
 
-    PROCESSING FUNCTIONS (excluded from JSON serialisation):
-        gcp_pairing_func, image_matching_func
+    PROCESSING FUNCTION (optional override):
+        image_matching_func
+            Defaults to the built-in ``pipeline.image_matching`` when ``None``.
+            Override only for missions with fundamentally different matching.
 
     OUTPUT CONFIGURATION:
         netcdf : NetCDFConfig | None
@@ -434,13 +471,11 @@ class CorrectionConfig(BaseModel):
     performance_spec_percent: float
     earth_radius_m: float
 
-    # DATA LOADERS – excluded from JSON (not serialisable)
-    telemetry_loader: Any = Field(default=None, exclude=True)
-    science_loader: Any = Field(default=None, exclude=True)
-    gcp_loader: Any = Field(default=None, exclude=True)
+    # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
+    data: DataConfig | None = None
 
-    # PROCESSING FUNCTIONS – excluded from JSON (not serialisable)
-    gcp_pairing_func: Any = Field(default=None, exclude=True)
+    # PROCESSING FUNCTION – optional override; excluded from JSON (not serialisable).
+    # Defaults to the built-in ``pipeline.image_matching`` when ``None``.
     image_matching_func: Any = Field(default=None, exclude=True)
 
     # OUTPUT CONFIGURATION
@@ -468,9 +503,10 @@ class CorrectionConfig(BaseModel):
         """Validate that all required configuration values are present.
 
         Args:
-            check_loaders: If True, validate that loaders are present.
-                          Set to False when validating configs during creation,
-                          before loaders have been added.
+            check_loaders: Deprecated – accepted for backward compatibility but
+                           has no effect.  Loader callables no longer exist on
+                           this config; data loading is driven by the ``data``
+                           field (:class:`DataConfig`).
 
         Raises:
             ValueError: If any required fields are missing or invalid
@@ -498,44 +534,11 @@ class CorrectionConfig(BaseModel):
         if self.performance_spec_percent is None or not (0 <= self.performance_spec_percent <= 100):
             errors.append("performance_spec_percent must be between 0 and 100 (e.g., 39.0)")
 
-        if check_loaders:
-            if self.telemetry_loader is None:
-                errors.append(
-                    "telemetry_loader is required.\n"
-                    "    Add to config: config.telemetry_loader = load_your_telemetry\n"
-                    "    Example: from your_loaders import load_mission_telemetry\n"
-                    "             config.telemetry_loader = load_mission_telemetry"
-                )
-
-            if self.science_loader is None:
-                errors.append(
-                    "science_loader is required.\n"
-                    "    Add to config: config.science_loader = load_your_science\n"
-                    "    Example: from your_loaders import load_mission_science\n"
-                    "             config.science_loader = load_mission_science"
-                )
-
         if errors:
             error_msg = "CorrectionConfig validation failed:\n  - " + "\n  - ".join(errors)
             error_msg += "\n\nThese values must be provided in your mission configuration."
             error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
             raise ValueError(error_msg)
-
-        if check_loaders:
-            if self.gcp_pairing_func is None:
-                logger.warning(
-                    "gcp_pairing_func not provided - GCP pairing will return empty results.\n"
-                    "    For testing: config.gcp_pairing_func = synthetic_gcp_pairing\n"
-                    "    For production: config.gcp_pairing_func = real_spatial_pairing"
-                )
-
-            if self.image_matching_func is None:
-                logger.warning(
-                    "image_matching_func not provided - will use empty stub.\n"
-                    "    For testing: config.image_matching_func = synthetic_image_matching\n"
-                    "    For production: config.image_matching_func = real_image_matching\n"
-                    "                   and set config.calibration_dir if needed"
-                )
 
         logger.debug("CorrectionConfig validation passed")
 
