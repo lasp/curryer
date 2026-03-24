@@ -118,6 +118,8 @@ def _scalar_current_value(param: ParameterConfig) -> float:
         f"has non-scalar current_value of type {type(cv).__name__}; expected a scalar "
         "numeric value (int, float, or NumPy scalar)."
     )
+
+
 # ============================================================================
 # Nominal value (no offset applied) – used by SINGLE_OFFSET for held params
 # ============================================================================
