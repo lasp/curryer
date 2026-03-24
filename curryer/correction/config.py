@@ -531,17 +531,11 @@ class CorrectionConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_search_strategy(self) -> "CorrectionConfig":
         """Ensure strategy-specific settings are consistent."""
-        strategy = self.search_strategy
-        if strategy == SearchStrategy.GRID_SEARCH and self.grid_points_per_param < 2:
-            raise ValueError(
-                "grid_points_per_param must be >= 2 when using SearchStrategy.GRID_SEARCH. "
-                f"Got {self.grid_points_per_param}."
-            )
-        if strategy == SearchStrategy.SINGLE_OFFSET and len(self.parameters) == 0:
-            raise ValueError("SearchStrategy.SINGLE_OFFSET requires at least one parameter.")
-        if strategy in (SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET):
+        if self.search_strategy in (SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET):
             if not self.parameters:
-                raise ValueError(f"SearchStrategy.{strategy.name} requires at least one parameter in `parameters`.")
+                raise ValueError(
+                    f"SearchStrategy.{self.search_strategy.name} requires at least one parameter in `parameters`."
+                )
         return self
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
