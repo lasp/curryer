@@ -501,6 +501,16 @@ class CorrectionConfig(BaseModel):
         ge=2,
         description="Number of evenly-spaced grid points per parameter for GRID_SEARCH strategy.",
     )
+    max_grid_sets: int = Field(
+        default=100_000,
+        ge=1,
+        description=(
+            "Hard upper bound on the total number of parameter sets that GRID_SEARCH may materialise. "
+            "Prevents accidental out-of-memory runs caused by large cartesian products "
+            "(e.g. 10 points × 6 params = 1,000,000 sets). "
+            "Raise this value deliberately, or switch to SINGLE_OFFSET for high-dimensional sweeps."
+        ),
+    )
 
     # GEOLOCATION & PERFORMANCE REQUIREMENTS
     geo: GeolocationConfig
