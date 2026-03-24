@@ -330,7 +330,6 @@ def find_containing_cell(
     max_i, max_j = nrows - 1, ncols - 1
 
     point_lon, point_lat = point[0], point[1]
-    tol = 1e-10
 
     def check_cell(i: int, j: int) -> bool:
         """Check if point is in cell [i,j] by delegating to the shared helper."""
@@ -341,7 +340,6 @@ def find_containing_cell(
             point_lat=point_lat,
             i=i,
             j=j,
-            tol=tol,
         )
 
     # Determine search start
