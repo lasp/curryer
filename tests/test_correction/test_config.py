@@ -5,7 +5,6 @@ Covers:
 - ``ParameterData`` backward-compatible dict-style access
 - JSON round-trip: ``config == CorrectionConfig.model_validate_json(config.model_dump_json())``
 - ``ValidationError`` raised with field-level messages for invalid inputs
-- Legacy alias handling (``center``/``arange`` → ``current_value``/``bounds``)
 - Callable / loader fields excluded from JSON serialisation
 """
 
