@@ -432,38 +432,48 @@ def regrid_irregular_to_regular(
     # Build spatial index if enabled (speeds up cell finding for large grids)
     kdtree = None
     cell_centers = None
-    if use_spatial_index and lon_irregular.shape[0] > 50:
+    # Use total grid size rather than only row count to gate KD-tree construction.
+    # The threshold of 2500 corresponds to a 50x50 grid.
+    if use_spatial_index and lon_irregular.size > 2500:
         try:
             from scipy.spatial import cKDTree
 
-            # Compute cell centers for spatial index
+            # Compute cell centers for spatial index using vectorized operations
             nrows_in, ncols_in = lon_irregular.shape
-            cell_centers_list = []
-            cell_indices_list = []
+            if nrows_in > 1 and ncols_in > 1:
+                # Four corners of each input cell for longitude
+                lon00 = lon_irregular[:-1, :-1]
+                lon01 = lon_irregular[:-1, 1:]
+                lon10 = lon_irregular[1:, :-1]
+                lon11 = lon_irregular[1:, 1:]
+                # Four corners of each input cell for latitude
+                lat00 = lat_irregular[:-1, :-1]
+                lat01 = lat_irregular[:-1, 1:]
+                lat10 = lat_irregular[1:, :-1]
+                lat11 = lat_irregular[1:, 1:]
 
-            for i in range(nrows_in - 1):
-                for j in range(ncols_in - 1):
-                    # Cell center (approximate)
-                    center_lon = 0.25 * (
-                        lon_irregular[i, j]
-                        + lon_irregular[i, j + 1]
-                        + lon_irregular[i + 1, j]
-                        + lon_irregular[i + 1, j + 1]
-                    )
-                    center_lat = 0.25 * (
-                        lat_irregular[i, j]
-                        + lat_irregular[i, j + 1]
-                        + lat_irregular[i + 1, j]
-                        + lat_irregular[i + 1, j + 1]
-                    )
-                    cell_centers_list.append([center_lon, center_lat])
-                    cell_indices_list.append((i, j))
+                # Cell center (approximate) for all cells at once
+                center_lon = 0.25 * (lon00 + lon01 + lon10 + lon11)
+                center_lat = 0.25 * (lat00 + lat01 + lat10 + lat11)
 
-            cell_centers = np.array(cell_centers_list)
-            cell_indices_map = cell_indices_list
-            kdtree = cKDTree(cell_centers)
-            logger.debug(f"Built spatial index with {len(cell_indices_map)} cells")
+                # (n_cells, 2) array of [lon, lat] centers
+                cell_centers = np.stack(
+                    [center_lon.ravel(), center_lat.ravel()], axis=-1
+                )
 
+                # Corresponding (row, col) indices for each cell
+                row_idx, col_idx = np.indices((nrows_in - 1, ncols_in - 1))
+                cell_indices_map = list(
+                    zip(row_idx.ravel(), col_idx.ravel())
+                )
+
+                kdtree = cKDTree(cell_centers)
+                logger.debug(
+                    f"Built spatial index with {len(cell_indices_map)} cells"
+                )
+            else:
+                # Grid too small to form any cells
+                kdtree = None
         except ImportError:
             logger.debug("scipy.spatial.cKDTree not available, using sequential search")
             kdtree = None
