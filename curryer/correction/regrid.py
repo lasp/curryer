@@ -457,20 +457,14 @@ def regrid_irregular_to_regular(
                 center_lat = 0.25 * (lat00 + lat01 + lat10 + lat11)
 
                 # (n_cells, 2) array of [lon, lat] centers
-                cell_centers = np.stack(
-                    [center_lon.ravel(), center_lat.ravel()], axis=-1
-                )
+                cell_centers = np.stack([center_lon.ravel(), center_lat.ravel()], axis=-1)
 
                 # Corresponding (row, col) indices for each cell
                 row_idx, col_idx = np.indices((nrows_in - 1, ncols_in - 1))
-                cell_indices_map = list(
-                    zip(row_idx.ravel(), col_idx.ravel())
-                )
+                cell_indices_map = list(zip(row_idx.ravel(), col_idx.ravel()))
 
                 kdtree = cKDTree(cell_centers)
-                logger.debug(
-                    f"Built spatial index with {len(cell_indices_map)} cells"
-                )
+                logger.debug(f"Built spatial index with {len(cell_indices_map)} cells")
             else:
                 # Grid too small to form any cells
                 kdtree = None

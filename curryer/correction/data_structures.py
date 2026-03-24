@@ -139,7 +139,9 @@ class RegridConfig(BaseModel):
     """Configuration for GCP chip regridding.
 
     Specifies output grid parameters for transforming irregular geodetic grids
-    to regular latitude/longitude grids.
+    to regular latitude/longitude grids. ECEF → geodetic conversion always
+    uses the WGS84 ellipsoid, which is the only ellipsoid supported by
+    ``curryer.compute.spatial.ecef_to_geodetic``.
 
     Parameters
     ----------
@@ -160,8 +162,6 @@ class RegridConfig(BaseModel):
         Interpolation method; one of ``"bilinear"`` or ``"nearest"``.
     fill_value : float, default=NaN
         Value assigned to output points that fall outside the input grid.
-    ellipsoid : str, default="WGS84"
-        Reference ellipsoid used for ECEF ↔ geodetic conversions.
     """
 
     output_grid_size: tuple[int, int] | None = None
@@ -170,7 +170,6 @@ class RegridConfig(BaseModel):
     conservative_bounds: bool = True
     interpolation_method: str = "bilinear"
     fill_value: float = float("nan")
-    ellipsoid: str = "WGS84"
 
     @field_validator("interpolation_method")
     @classmethod
