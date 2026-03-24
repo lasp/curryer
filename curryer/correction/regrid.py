@@ -333,38 +333,16 @@ def find_containing_cell(
     tol = 1e-10
 
     def check_cell(i: int, j: int) -> bool:
-        """Check if point is in cell [i,j]. Optimized inline version."""
-        # Get corner coordinates (avoid array allocation)
-        lon_tl, lat_tl = lon_grid[i, j], lat_grid[i, j]
-        lon_tr, lat_tr = lon_grid[i, j + 1], lat_grid[i, j + 1]
-        lon_br, lat_br = lon_grid[i + 1, j + 1], lat_grid[i + 1, j + 1]
-        lon_bl, lat_bl = lon_grid[i + 1, j], lat_grid[i + 1, j]
-
-        # Test upper-left triangle (TL, TR, BL)
-        # Inline barycentric coordinate calculation
-        d_ul = (lon_tl - lon_bl) * (lat_tr - lat_bl) - (lat_tl - lat_bl) * (lon_tr - lon_bl)
-
-        if abs(d_ul) > 1e-14:
-            wA = ((point_lon - lon_bl) * (lat_tr - lat_bl) - (point_lat - lat_bl) * (lon_tr - lon_bl)) / d_ul
-            wB = ((lon_tl - lon_bl) * (point_lat - lat_bl) - (lat_tl - lat_bl) * (point_lon - lon_bl)) / d_ul
-            wC = 1.0 - wA - wB
-
-            if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
-                return True
-
-        # Test lower-right triangle (TR, BR, BL)
-        d_lr = (lon_tr - lon_bl) * (lat_br - lat_bl) - (lat_tr - lat_bl) * (lon_br - lon_bl)
-
-        if abs(d_lr) > 1e-14:
-            wA = ((point_lon - lon_bl) * (lat_br - lat_bl) - (point_lat - lat_bl) * (lon_br - lon_bl)) / d_lr
-            wB = ((lon_tr - lon_bl) * (point_lat - lat_bl) - (lat_tr - lat_bl) * (point_lon - lon_bl)) / d_lr
-            wC = 1.0 - wA - wB
-
-            if (-tol <= wA <= 1 + tol) and (-tol <= wB <= 1 + tol) and (-tol <= wC <= 1 + tol):
-                return True
-
-        return False
-
+        """Check if point is in cell [i,j] by delegating to the shared helper."""
+        return _check_point_in_cell(
+            lon_grid=lon_grid,
+            lat_grid=lat_grid,
+            point_lon=point_lon,
+            point_lat=point_lat,
+            i=i,
+            j=j,
+            tol=tol,
+        )
     # Determine search start
     if start_cell is not None:
         start_i = max(0, min(start_cell[0] - 1, max_i - 1))
