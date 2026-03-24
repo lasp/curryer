@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -28,58 +28,14 @@ from .psf import (
 from .search import im_search
 
 if TYPE_CHECKING:
-    import pandas as pd
     import xarray as xr
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Image Matching Interface Protocol
+# Output Validation
 # ============================================================================
-
-
-class ImageMatchingFunc(Protocol):
-    """
-    Protocol for image matching functions in Correction pipeline.
-
-    Image matching functions perform spatial correlation between geolocated
-    observations and GCP reference imagery to measure geolocation errors.
-
-    Standard Signature:
-        def image_matching(
-            geolocated_data: xr.Dataset,
-            gcp_reference_file: Path,
-            telemetry: pd.DataFrame,
-            calibration_dir: Path,
-            params_info: list,
-            config,
-            los_vectors_cached: Optional[np.ndarray] = None,
-            optical_psfs_cached: Optional[list] = None,
-        ) -> xr.Dataset
-
-    Required Output Fields:
-        - lat_error_deg: (measurement,) Latitude errors in degrees
-        - lon_error_deg: (measurement,) Longitude errors in degrees
-        - gcp_lat_deg, gcp_lon_deg, gcp_alt: GCP location
-        - Spacecraft state: position, boresight, transformation matrix
-
-    See correction.image_matching() for reference implementation.
-    """
-
-    def __call__(
-        self,
-        geolocated_data: xr.Dataset,
-        gcp_reference_file: Path,
-        telemetry: pd.DataFrame,
-        calibration_dir: Path,
-        params_info: list,
-        config,
-        los_vectors_cached: np.ndarray | None = None,
-        optical_psfs_cached: list | None = None,
-    ) -> xr.Dataset:
-        """Perform image matching and return error measurements."""
-        ...
 
 
 def validate_image_matching_output(output: xr.Dataset) -> None:
