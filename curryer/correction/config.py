@@ -150,6 +150,35 @@ class ParameterType(Enum):
     OFFSET_TIME = auto()  # Modify input timetags by an offset
 
 
+class SearchStrategy(str, Enum):
+    """Strategy used to generate parameter sets during correction analysis.
+
+    Attributes
+    ----------
+    RANDOM
+        Monte Carlo random walk (current default).  Each iteration draws an
+        independent sample from a normal distribution centred on the
+        parameter's ``current_value`` with the specified ``sigma``, clipped
+        to ``bounds``.  Requires ``seed`` and ``n_iterations`` on
+        :class:`CorrectionConfig`.
+    GRID_SEARCH
+        Deterministic cartesian-product sweep.  For every parameter,
+        ``grid_points_per_param`` evenly-spaced values are generated across
+        the full ``bounds`` offset range and the cartesian product of all
+        per-parameter grids is enumerated.  ``n_iterations`` is ignored.
+    SINGLE_OFFSET
+        Deterministic single-parameter sweep.  Each parameter is varied
+        independently across ``n_iterations`` evenly-spaced values (spanning
+        its ``bounds`` offset range) while all other parameters are held at
+        their nominal ``current_value``.  Total parameter sets produced:
+        ``len(parameters) × n_iterations``.
+    """
+
+    RANDOM = "random"
+    GRID_SEARCH = "grid"
+    SINGLE_OFFSET = "single"
+
+
 class ParameterData(BaseModel):
     """Typed sampling specification for a single correction parameter.
 
@@ -465,6 +494,24 @@ class CorrectionConfig(BaseModel):
     n_iterations: int
     parameters: list[ParameterConfig]
 
+    # SEARCH STRATEGY
+    search_strategy: SearchStrategy = SearchStrategy.RANDOM
+    grid_points_per_param: int = Field(
+        default=10,
+        ge=2,
+        description="Number of evenly-spaced grid points per parameter for GRID_SEARCH strategy.",
+    )
+    max_grid_sets: int = Field(
+        default=100_000,
+        ge=1,
+        description=(
+            "Hard upper bound on the total number of parameter sets that GRID_SEARCH may materialise. "
+            "Prevents accidental out-of-memory runs caused by large cartesian products "
+            "(e.g. 10 points × 6 params = 1,000,000 sets). "
+            "Raise this value deliberately, or switch to SINGLE_OFFSET for high-dimensional sweeps."
+        ),
+    )
+
     # GEOLOCATION & PERFORMANCE REQUIREMENTS
     geo: GeolocationConfig
     performance_threshold_m: float
@@ -490,6 +537,16 @@ class CorrectionConfig(BaseModel):
     spacecraft_position_name: str = "sc_position"
     boresight_name: str = "boresight"
     transformation_matrix_name: str = "t_inst2ref"
+
+    @model_validator(mode="after")
+    def _validate_search_strategy(self) -> "CorrectionConfig":
+        """Ensure strategy-specific settings are consistent."""
+        if self.search_strategy in (SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET):
+            if not self.parameters:
+                raise ValueError(
+                    f"SearchStrategy.{self.search_strategy.name} requires at least one parameter in `parameters`."
+                )
+        return self
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
         """Get calibration filename for given type with fallback to default."""
