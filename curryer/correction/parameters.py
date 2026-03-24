@@ -100,11 +100,24 @@ def _make_ck_dataframe(angle_vals: list[float]) -> pd.DataFrame:
 
 
 def _scalar_current_value(param: ParameterConfig) -> float:
-    """Return ``param.data.current_value`` as a scalar float (0.0 if not numeric)."""
+    """Return ``param.data.current_value`` as a scalar float.
+
+    Raises
+    ------
+    TypeError
+        If ``current_value`` is not a scalar numeric type. This helps surface
+        misconfigured parameters early instead of silently coercing them to 0.0.
+    """
     cv = param.data.current_value
-    return float(cv) if isinstance(cv, (int, float)) else 0.0
+    if isinstance(cv, (int, float, np.number)):
+        return float(cv)
 
-
+    param_name = getattr(param, "name", "<unknown>")
+    raise TypeError(
+        f"Parameter '{param_name}' (type {getattr(param.ptype, 'name', param.ptype)}) "
+        f"has non-scalar current_value of type {type(cv).__name__}; expected a scalar "
+        "numeric value (int, float, or NumPy scalar)."
+    )
 # ============================================================================
 # Nominal value (no offset applied) – used by SINGLE_OFFSET for held params
 # ============================================================================
