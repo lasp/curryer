@@ -127,30 +127,16 @@ class DataConfig(BaseModel):
         File format for both telemetry and science data files.
         ``"csv"`` uses :func:`pandas.read_csv`; ``"netcdf"`` converts via
         :func:`xarray.open_dataset`; ``"hdf5"`` uses :func:`pandas.read_hdf`.
-    time_field
-        Column name in the science DataFrame holding timestamps.  Must match
-        :attr:`GeolocationConfig.time_field`.
     time_scale_factor
         Multiply science timestamps by this factor to obtain uGPS
         (microseconds since GPS epoch).  For example, ``1e6`` converts GPS
         seconds to uGPS; ``1.0`` means the file already contains uGPS.
-    gcp_directory
-        Optional directory to search for GCP ``.mat`` reference files when
-        the ``gcp_key`` supplied to :func:`pipeline.loop` is empty or ``None``.
-    gcp_pattern
-        Glob pattern used when auto-discovering GCPs inside ``gcp_directory``.
-    max_pair_distance_m
-        Minimum spatial margin (metres) required for a valid L1A/GCP pair
-        when using auto-discovery (0.0 means GCP centre must be inside the
-        L1A footprint).
+        The time column name is taken from :attr:`GeolocationConfig.time_field`
+        (single source of truth).
     """
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
-    time_field: str = "corrected_timestamp"
     time_scale_factor: float = 1.0
-    gcp_directory: Path | None = None
-    gcp_pattern: str = "*_resampled.mat"
-    max_pair_distance_m: float = 0.0
 
 
 # ============================================================================
