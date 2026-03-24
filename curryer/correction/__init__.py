@@ -24,7 +24,7 @@ correction_config
 data_structures
     Shared data-container dataclasses (``ImageGrid``, ``PSFGrid``, ...).
 dataio
-    Data-loader Protocol types and validation helpers.
+    Validation helpers and S3 data-access utilities.
 error_stats
     Error statistics computation (``ErrorStatsProcessor``).
 image_match
@@ -58,6 +58,7 @@ from . import (
 # Key public names lifted to package level
 from .config import (
     CorrectionConfig,
+    DataConfig,
     GeolocationConfig,
     NetCDFConfig,
     NetCDFParameterMetadata,
@@ -87,6 +88,7 @@ __all__ = [
     "search",
     # Config
     "CorrectionConfig",
+    "DataConfig",
     "GeolocationConfig",
     "NetCDFConfig",
     "NetCDFParameterMetadata",
