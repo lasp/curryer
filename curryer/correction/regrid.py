@@ -343,6 +343,7 @@ def find_containing_cell(
             j=j,
             tol=tol,
         )
+
     # Determine search start
     if start_cell is not None:
         start_i = max(0, min(start_cell[0] - 1, max_i - 1))
