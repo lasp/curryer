@@ -141,40 +141,22 @@ class TestDataConfig:
     def test_defaults(self):
         dc = DataConfig()
         assert dc.file_format == "csv"
-        assert dc.time_field == "corrected_timestamp"
         assert dc.time_scale_factor == 1.0
-        assert dc.gcp_directory is None
-        assert dc.gcp_pattern == "*_resampled.mat"
-        assert dc.max_pair_distance_m == 0.0
 
     def test_custom_values(self):
-        dc = DataConfig(
-            file_format="netcdf",
-            time_field="gps_time",
-            time_scale_factor=1e6,
-            gcp_directory=Path("tests/data/gcp"),
-            gcp_pattern="*_gcp.mat",
-            max_pair_distance_m=500.0,
-        )
+        dc = DataConfig(file_format="netcdf", time_scale_factor=1e6)
         assert dc.file_format == "netcdf"
         assert dc.time_scale_factor == 1e6
-        assert dc.gcp_directory == Path("tests/data/gcp")
 
     def test_invalid_file_format(self):
         with pytest.raises(ValidationError):
             DataConfig(file_format="xml")
 
     def test_json_round_trip(self):
-        dc = DataConfig(
-            file_format="hdf5",
-            time_field="ugps",
-            time_scale_factor=1.0,
-            gcp_directory=Path("gcp/chips"),
-        )
+        dc = DataConfig(file_format="hdf5", time_scale_factor=1.0)
         restored = DataConfig.model_validate_json(dc.model_dump_json())
         assert restored.file_format == "hdf5"
-        assert restored.time_field == "ugps"
-        assert restored.gcp_directory == Path("gcp/chips")
+        assert restored.time_scale_factor == 1.0
 
     def test_embedded_in_correction_config(self, geo, param_constant):
         """DataConfig round-trips through CorrectionConfig serialisation."""
