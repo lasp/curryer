@@ -59,6 +59,7 @@ from curryer import meta, utils
 from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction import correction
+from curryer.correction.config import DataConfig
 from curryer.correction.data_structures import (
     ImageGrid,
     PSFSamplingConfig,
@@ -76,7 +77,7 @@ from curryer.kernels import create
 # Import CLARREO config and data loaders
 sys.path.insert(0, str(Path(__file__).parent))
 from clarreo_config import create_clarreo_correction_config
-from clarreo_data_loaders import load_clarreo_gcp, load_clarreo_science, load_clarreo_telemetry
+from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
@@ -818,28 +819,43 @@ def run_upstream_pipeline(n_iterations: int = 5, work_dir: Path | None = None) -
     # Set output filename for test (consistent name for version control)
     config.output_filename = "upstream_results.nc"
 
-    # Add loaders and processing functions to config (Config-Centric Design)
-    config.telemetry_loader = load_clarreo_telemetry
-    config.science_loader = load_clarreo_science
-    config.gcp_loader = load_clarreo_gcp
-    config.gcp_pairing_func = synthetic_gcp_pairing  # Test helper from this file
-    config.image_matching_func = synthetic_image_matching  # Test helper from this file
+    # Preprocess CLARREO raw CSVs into clean files the pipeline can load directly.
+    # This replaces the old telemetry_loader / science_loader callables.
+    logger.info("Preprocessing CLARREO telemetry and science data...")
+    tlm_df = load_clarreo_telemetry(data_dir)
+    sci_df_gps = load_clarreo_science(data_dir)  # GPS seconds; pipeline scales to uGPS
+
+    tlm_csv = work_dir / "clarreo_telemetry.csv"
+    sci_csv = work_dir / "clarreo_science.csv"
+    tlm_df.to_csv(tlm_csv)
+    sci_df_gps.to_csv(sci_csv)
+    logger.info(f"  Telemetry → {tlm_csv}")
+    logger.info(f"  Science   → {sci_csv}")
+
+    # Point the pipeline at the clean files via DataConfig
+    config.data = DataConfig(
+        file_format="csv",
+        time_field="corrected_timestamp",
+        time_scale_factor=1e6,  # GPS sec → uGPS
+    )
+    # Use synthetic image matching for this upstream-only test
+    config.image_matching_func = synthetic_image_matching
 
     logger.info(f"Configuration loaded:")
     logger.info(f"  Mission: CLARREO Pathfinder")
     logger.info(f"  Instrument: {config.geo.instrument_name}")
     logger.info(f"  Parameters: {len(config.parameters)}")
     logger.info(f"  Iterations: {n_iterations}")
-    logger.info(f"  Data loaders: telemetry, science, gcp")
-    logger.info(f"  Processing: synthetic pairing and image matching")
+    logger.info(f"  Data loading: config-driven (DataConfig)")
+    logger.info(f"  Image matching: synthetic (upstream test)")
 
-    # Prepare data sets (synthetic GCP pairs since we don't have real data)
-    # For upstream testing, we just need telemetry and science keys
+    # Each tuple is (telemetry_csv_path, science_csv_path, gcp_file_path).
+    # The gcp_file path is passed straight to image_matching_func; synthetic_image_matching ignores it.
     tlm_sci_gcp_sets = [
-        ("telemetry_5a", "science_5a", "synthetic_gcp_1"),
+        (str(tlm_csv), str(sci_csv), "synthetic_gcp.mat"),
     ]
 
-    logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (synthetic for upstream testing)")
+    logger.info(f"Data sets: {len(tlm_sci_gcp_sets)} (preprocessed CSVs, synthetic GCP)")
 
     # Execute the Correction loop - all config comes from config object!
     # This will test parameter generation, kernel creation, and geolocation
@@ -1056,13 +1072,15 @@ def run_downstream_pipeline(
         transformation_matrix_name=base_config.transformation_matrix_name,
     )
 
-    # Add loaders to config (Config-Centric Design)
-    config.telemetry_loader = load_clarreo_telemetry
-    config.science_loader = load_clarreo_science
-    config.gcp_loader = load_clarreo_gcp
+    # Add DataConfig for file-based loading (loaders no longer needed)
+    config.data = DataConfig(
+        file_format="csv",
+        time_field="corrected_timestamp",
+        time_scale_factor=1e6,
+    )
 
     # Validate complete config
-    config.validate(check_loaders=True)
+    config.validate()
 
     logger.info(f"Configuration created:")
     logger.info(f"  Mission: CLARREO (from clarreo_config)")
@@ -1215,18 +1233,20 @@ class CorrectionUnifiedTests(unittest.TestCase):
 
         config = create_clarreo_correction_config(data_dir, generic_dir)
 
-        # Add required loaders (Config-Centric Design)
-        config.telemetry_loader = load_clarreo_telemetry
-        config.science_loader = load_clarreo_science
+        # Attach DataConfig so the pipeline knows how to load files
+        config.data = DataConfig(
+            file_format="csv",
+            time_field="corrected_timestamp",
+            time_scale_factor=1e6,
+        )
 
-        # Validate config is complete
-        config.validate(check_loaders=True)
+        # Validate config is complete (no loader args needed any more)
+        config.validate()
 
         self.assertEqual(config.geo.instrument_name, "CPRS_HYSICS")
         self.assertGreater(len(config.parameters), 0)
         self.assertEqual(config.seed, 42)
-        self.assertIsNotNone(config.telemetry_loader)
-        self.assertIsNotNone(config.science_loader)
+        self.assertIsNotNone(config.data)
 
         logger.info(f"✓ Configuration valid: {len(config.parameters)} parameters")
 
@@ -1383,20 +1403,30 @@ class CorrectionUnifiedTests(unittest.TestCase):
         config.n_iterations = 2  # Small for fast testing
         config.output_filename = "test_loop_optimized.nc"
 
-        # Add loaders and processing functions
-        config.telemetry_loader = load_clarreo_telemetry
-        config.science_loader = load_clarreo_science
-        config.gcp_loader = load_clarreo_gcp
-        config.gcp_pairing_func = synthetic_gcp_pairing
-        config.image_matching_func = synthetic_image_matching
-
-        # Prepare data sets
-        tlm_sci_gcp_sets = [
-            ("telemetry_5a", "science_5a", "synthetic_gcp_1"),
-        ]
-
         work_dir = self.work_dir / "test_loop_optimized"
         work_dir.mkdir(exist_ok=True)
+
+        # Preprocess raw CSVs into clean files
+        tlm_df = load_clarreo_telemetry(data_dir)
+        sci_df = load_clarreo_science(data_dir)
+        tlm_csv = work_dir / "tlm.csv"
+        sci_csv = work_dir / "sci.csv"
+        tlm_df.to_csv(tlm_csv)
+        sci_df.to_csv(sci_csv)
+
+        # Attach DataConfig and synthetic image matching override
+        config.data = DataConfig(
+            file_format="csv",
+            time_field="corrected_timestamp",
+            time_scale_factor=1e6,
+        )
+        config.image_matching_func = synthetic_image_matching
+
+        # Each tuple: (telemetry_csv, science_csv, gcp_path)
+        # synthetic_image_matching ignores gcp_path
+        tlm_sci_gcp_sets = [
+            (str(tlm_csv), str(sci_csv), "synthetic_gcp.mat"),
+        ]
 
         # Run loop()
         logger.info("Running loop()...")
@@ -1603,9 +1633,19 @@ class CorrectionUnifiedTests(unittest.TestCase):
         data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
         config = create_clarreo_correction_config(data_dir, generic_dir)
 
-        tlm_dataset, sci_dataset, ugps_times = correction._load_image_pair_data(
-            "telemetry_5a", "science_5a", config, load_clarreo_telemetry, load_clarreo_science
+        # Preprocess raw CLARREO data → clean CSVs
+        tlm_csv = self.work_dir / "tlm_pair.csv"
+        sci_csv = self.work_dir / "sci_pair.csv"
+        load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
+        load_clarreo_science(data_dir).to_csv(sci_csv)
+
+        config.data = DataConfig(
+            file_format="csv",
+            time_field="corrected_timestamp",
+            time_scale_factor=1e6,
         )
+
+        tlm_dataset, sci_dataset, ugps_times = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), config)
 
         # Validate return types
         self.assertIsInstance(tlm_dataset, pd.DataFrame)
@@ -1626,8 +1666,8 @@ class CorrectionUnifiedTests(unittest.TestCase):
         work_dir = self.work_dir / "test_dynamic_kernels"
         work_dir.mkdir(exist_ok=True)
 
-        # Load data
-        tlm_dataset = load_clarreo_telemetry("telemetry_5a", config)
+        # Load data (preprocess CLARREO raw CSVs)
+        tlm_dataset = load_clarreo_telemetry(data_dir)
         creator = create.KernelCreator(overwrite=True, append=False)
 
         # Load SPICE kernels needed for kernel creation
@@ -1678,11 +1718,8 @@ class CorrectionUnifiedTests(unittest.TestCase):
         config.n_iterations = 2
         config.output_filename = "test_checkpoint.nc"
 
-        # Add loaders
-        config.telemetry_loader = load_clarreo_telemetry
-        config.science_loader = load_clarreo_science
-        config.gcp_loader = load_clarreo_gcp
-        config.gcp_pairing_func = synthetic_gcp_pairing
+        # Use DataConfig (loaders no longer needed on config)
+        config.data = DataConfig(file_format="csv", time_field="corrected_timestamp", time_scale_factor=1e6)
         config.image_matching_func = synthetic_image_matching
 
         work_dir = self.work_dir / "test_checkpoint"
