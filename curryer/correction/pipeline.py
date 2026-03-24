@@ -8,8 +8,8 @@ functions it calls:
   sub-modules and the correction loop.
 - :func:`load_config_from_json` -- build a :class:`CorrectionConfig` from
   a JSON file.
-- :func:`load_telemetry` / :func:`load_science` / :func:`load_gcp` --
-  thin wrappers that delegate to mission-specific loader callables.
+- :func:`_load_file` -- internal helper that reads CSV/NetCDF/HDF5 files
+  into DataFrames, replacing the old mission-specific loader callables.
 - :func:`_load_image_pair_data`, :func:`_load_calibration_data`,
   :func:`_geolocate_and_match` -- per-iteration computation helpers.
 - :func:`loop` -- outer GCP-pair loop, inner parameter-set loop.
@@ -40,13 +40,10 @@ from curryer.correction.data_structures import (
     SearchConfig,
 )
 from curryer.correction.dataio import (
-    ScienceLoader,
-    TelemetryLoader,
     validate_science_output,
     validate_telemetry_output,
 )
 from curryer.correction.image_match import (
-    ImageMatchingFunc,
     integrated_image_match,
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
@@ -56,9 +53,6 @@ from curryer.correction.image_match import (
 from curryer.correction.kernel_ops import (
     _create_dynamic_kernels,
     _create_parameter_kernels,
-)
-from curryer.correction.pairing import (
-    validate_pairing_output as validate_gcp_pairing_output,
 )
 from curryer.correction.parameters import load_param_sets
 from curryer.correction.results_io import (
@@ -499,97 +493,41 @@ def _aggregate_image_matching_results(image_matching_results, config: "Correctio
     return aggregated
 
 
-def load_telemetry(tlm_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
+def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
+    """Load a telemetry or science data file into a pandas DataFrame.
+
+    Parameters
+    ----------
+    file_path : str | Path
+        Path to the data file.
+    file_format : str
+        One of ``"csv"``, ``"netcdf"``, or ``"hdf5"``.
+
+    Returns
+    -------
+    pd.DataFrame
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    ValueError
+        If ``file_format`` is not recognised.
     """
-    Load telemetry data using provided mission-specific loader function.
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"Data file not found: {file_path}")
 
-    This is a generic interface. The actual telemetry loading logic should be
-    provided by the mission-specific loader function.
+    if file_format == "csv":
+        return pd.read_csv(file_path, index_col=0)
+    elif file_format == "netcdf":
+        import xarray as xr
 
-    Args:
-        tlm_key: Identifier for telemetry data (path, key, etc.)
-        config: Correction configuration
-        loader_func: Mission-specific loader function(tlm_key, config) -> DataFrame
-
-    Returns:
-        DataFrame with telemetry data
-
-    Raises:
-        ValueError: If no loader function provided
-
-    Example:
-        from clarreo_data_loaders import load_clarreo_telemetry
-        tlm_data = load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)
-    """
-    if loader_func is None:
-        raise ValueError(
-            "No telemetry loader function provided. "
-            "Pass loader_func parameter with mission-specific loader.\n"
-            "Example: load_telemetry(tlm_key, config, loader_func=load_clarreo_telemetry)"
-        )
-
-    return loader_func(tlm_key, config)
-
-
-def load_science(sci_key: str, config: CorrectionConfig, loader_func=None) -> pd.DataFrame:
-    """
-    Load science data using provided mission-specific loader function.
-
-    This is a generic interface. The actual science data loading logic should be
-    provided by the mission-specific loader function.
-
-    Args:
-        sci_key: Identifier for science data (path, key, etc.)
-        config: Correction configuration
-        loader_func: Mission-specific loader function(sci_key, config) -> DataFrame
-
-    Returns:
-        DataFrame with science data
-
-    Raises:
-        ValueError: If no loader function provided
-
-    Example:
-        from clarreo_data_loaders import load_clarreo_science
-        sci_data = load_science(sci_key, config, loader_func=load_clarreo_science)
-    """
-    if loader_func is None:
-        raise ValueError(
-            "No science loader function provided. "
-            "Pass loader_func parameter with mission-specific loader.\n"
-            "Example: load_science(sci_key, config, loader_func=load_clarreo_science)"
-        )
-
-    return loader_func(sci_key, config)
-
-
-def load_gcp(gcp_key: str, config: CorrectionConfig, loader_func=None):
-    """
-    Load Ground Control Point (GCP) reference data using mission-specific loader.
-
-    This is a generic interface. The actual GCP loading logic should be
-    provided by the mission-specific loader function.
-
-    Args:
-        gcp_key: Identifier for GCP data (path, key, etc.)
-        config: Correction configuration
-        loader_func: Mission-specific loader function(gcp_key, config) -> GCP data
-
-    Returns:
-        GCP reference data (format defined by mission)
-
-    Note:
-        If loader_func is None, returns None (allows placeholder behavior)
-
-    Example:
-        from clarreo_data_loaders import load_clarreo_gcp
-        gcp_data = load_gcp(gcp_key, config, loader_func=load_clarreo_gcp)
-    """
-    if loader_func is None:
-        logger.info(f"No GCP loader provided for: {gcp_key} (returning None)")
-        return None
-
-    return loader_func(gcp_key, config)
+        return xr.open_dataset(file_path).to_dataframe().reset_index()
+    elif file_format == "hdf5":
+        return pd.read_hdf(file_path)
+    else:
+        raise ValueError(f"Unsupported file_format '{file_format}'. Must be 'csv', 'netcdf', or 'hdf5'.")
 
 
 # =============================================================================
@@ -675,61 +613,57 @@ def _load_image_pair_data(
     tlm_key: str,
     sci_key: str,
     config: "CorrectionConfig",
-    telemetry_loader: TelemetryLoader,
-    science_loader: ScienceLoader,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
-    """Load telemetry and science data for an image pair.
+    """Load telemetry and science data for an image pair from files.
 
     Parameters
     ----------
     tlm_key : str
-        Identifier for telemetry data.
+        Path to the telemetry data file.
     sci_key : str
-        Identifier for science data.
+        Path to the science frame timing file.
     config : CorrectionConfig
-        Configuration containing geolocation settings and field names.
-    telemetry_loader : callable
-        Function with signature ``telemetry_loader(tlm_key, config) -> pandas.DataFrame`` that
-        loads telemetry (L1) data for the given key.
-    science_loader : callable
-        Function with signature ``science_loader(sci_key, config) -> pandas.DataFrame`` that
-        loads science frame timing (L1A) data for the given key.
+        Configuration containing geolocation settings, file format, and
+        time-scaling options (via ``config.data``).
 
     Returns
     -------
     tlm_dataset : pandas.DataFrame
-        DataFrame containing spacecraft state / telemetry records (position, velocity, attitude, time).
+        DataFrame containing spacecraft state / telemetry records.
     sci_dataset : pandas.DataFrame
         DataFrame containing science frame timing information.
     ugps_times : array_like
-        Time array extracted from the science dataset (e.g., uGPS times).
+        Time array extracted from the science dataset (uGPS values).
 
     Raises
     ------
-    ValueError
-        If required loader functions are not provided or returned data are invalid.
     FileNotFoundError
-        If underlying loader raises when expected files are missing.
-
-    Notes
-    -----
-    This function loads and validates both telemetry and science datasets for a
-    single GCP pair. In the current implementation it is called once per image pair.
-
-    Examples
-    --------
-    >>> tlm, sci, times = _load_image_pair_data(
-    ...     "tlm_001", "sci_001", config, load_clarreo_telemetry, load_clarreo_science
-    ... )
+        If the telemetry or science file does not exist.
+    ValueError
+        If the science file is missing the required time field.
     """
-    # Load telemetry (L1) data using mission-specific loader
-    tlm_dataset = load_telemetry(tlm_key, config, loader_func=telemetry_loader)
+    file_format = "csv"
+    time_scale_factor = 1.0
+
+    if config.data is not None:
+        file_format = config.data.file_format
+        time_scale_factor = config.data.time_scale_factor
+
+    # Load telemetry from file
+    tlm_dataset = _load_file(tlm_key, file_format)
     validate_telemetry_output(tlm_dataset, config)
 
-    # Load science (L1A) data using mission-specific loader
-    sci_dataset = load_science(sci_key, config, loader_func=science_loader)
+    # Load science from file
+    sci_dataset = _load_file(sci_key, file_format)
+
+    # Apply time scale factor to convert to uGPS if needed
+    time_field = config.geo.time_field
+    if time_field in sci_dataset.columns and time_scale_factor != 1.0:
+        sci_dataset = sci_dataset.copy()
+        sci_dataset[time_field] = sci_dataset[time_field] * time_scale_factor
+
     validate_science_output(sci_dataset, config)
-    ugps_times = sci_dataset[config.geo.time_field]  # Can be altered by later steps
+    ugps_times = sci_dataset[time_field]
 
     return tlm_dataset, sci_dataset, ugps_times
 
@@ -740,7 +674,7 @@ def _geolocate_and_match(
     ugps_times_modified: Any,
     tlm_dataset: pd.DataFrame,
     calibration: CalibrationData,
-    image_matching_func: ImageMatchingFunc,
+    image_matching_func: Any,
     match_ctx: ImageMatchingContext,
 ) -> tuple[xr.Dataset, xr.Dataset]:
     """Perform geolocation and image matching for a parameter set.
@@ -766,8 +700,9 @@ def _geolocate_and_match(
         NamedTuple containing:
         - los_vectors: Pre-loaded LOS vectors (or None)
         - optical_psfs: Pre-loaded optical PSF (or None)
-    image_matching_func : ImageMatchingFunc
-        Function to perform image matching (e.g., integrated_image_match)
+    image_matching_func : callable
+        Function to perform image matching; defaults to the built-in
+        ``image_matching`` function when not overridden in config.
     match_ctx : ImageMatchingContext
         NamedTuple containing:
         - gcp_pairs: List of GCP pairing tuples
@@ -808,7 +743,7 @@ def _geolocate_and_match(
         logger.info("    === IMAGE MATCHING MODULE ===")
 
         # Use injected image matching function
-        gcp_file = Path(match_ctx.gcp_pairs[0][1]) if match_ctx.gcp_pairs else Path("synthetic_gcp.tif")
+        gcp_file = Path(match_ctx.gcp_pairs[0][1]) if match_ctx.gcp_pairs else Path("synthetic_gcp.mat")
 
         # All image matching functions use the same signature
         image_matching_output = image_matching_func(
@@ -875,61 +810,33 @@ def loop(
 
     Examples
     --------
-    Correction mode (parameter optimization):
+    Correction mode (parameter optimization)::
 
-        >>> from clarreo_data_loaders import load_clarreo_telemetry, load_clarreo_science
-        >>> from clarreo_config import create_clarreo_correction_config
-        >>>
-        >>> # Create base config with required parameters
-        >>> config = create_clarreo_correction_config(data_dir, generic_dir)
-        >>>
-        >>> # Add required loaders
-        >>> config.telemetry_loader = load_clarreo_telemetry
-        >>> config.science_loader = load_clarreo_science
-        >>> config.gcp_pairing_func = spatial_pairing
-        >>> config.image_matching_func = image_matching
-        >>>
-        >>> # Run correction analysis
-        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+        from curryer.correction.config import CorrectionConfig, DataConfig
 
-    Verification mode (performance checking only):
+        config = CorrectionConfig(
+            seed=42,
+            n_iterations=100,
+            parameters=parameters,
+            geo=geo_config,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6_378_140.0,
+            data=DataConfig(file_format="csv", time_scale_factor=1e6),
+        )
+        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
 
-        >>> # Create config with minimal iterations for verification
-        >>> config = CorrectionConfig(
-        ...     seed=42,
-        ...     n_iterations=1,  # Verification mode
-        ...     parameters=[],   # No parameter variation
-        ...     geo=geo_config,
-        ...     performance_threshold_m=250.0,
-        ...     performance_spec_percent=39.0,
-        ...     earth_radius_m=6378137.0,
-        ... )
-        >>> config.telemetry_loader = load_clarreo_telemetry
-        >>> config.science_loader = load_clarreo_science
-        >>> config.gcp_pairing_func = spatial_pairing
-        >>> config.image_matching_func = image_matching
-        >>> results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+    Where each element of ``tlm_sci_gcp_sets`` is a tuple of file paths::
+
+        tlm_sci_gcp_sets = [
+            ("telemetry.csv", "science.csv", "landsat_chip_001.mat"),
+        ]
     """
     logger.info("=== CORRECTION PIPELINE ===")
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
-    # Extract injected functions
-    telemetry_loader = config.telemetry_loader
-    science_loader = config.science_loader
-    image_matching_func = config.image_matching_func
-    gcp_pairing_func = config.gcp_pairing_func
-
-    # Validate required loaders
-    if telemetry_loader is None:
-        raise ValueError("config.telemetry_loader is required but was None.")
-    if science_loader is None:
-        raise ValueError("config.science_loader is required but was None.")
-
-    # Validate required processing functions
-    if gcp_pairing_func is None:
-        raise ValueError("config.gcp_pairing_func is required but was None.")
-    if image_matching_func is None:
-        raise ValueError("config.image_matching_func is required but was None.")
+    # Use injected image matching function override, or fall back to built-in implementation
+    image_matching_func = config.image_matching_func if config.image_matching_func is not None else image_matching
 
     # Initialize parameter sets
     params_set = load_param_sets(config)
@@ -985,18 +892,17 @@ def loop(
 
         logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
 
-        # Load image pair data once
-        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(
-            tlm_key, sci_key, config, telemetry_loader, science_loader
-        )
+        # Load image pair data once (internal file-based loading)
+        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(tlm_key, sci_key, config)
 
         # Create dynamic kernels once (these don't change with parameters)
         dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
 
-        # Get GCP pairing ONCE
-        gcp_pairs = gcp_pairing_func([sci_key])
-        validate_gcp_pairing_output(gcp_pairs)
-        logger.info(f"  Found {len(gcp_pairs)} GCP pairs for processing")
+        # Use gcp_key directly as the GCP file path — no pairing function needed.
+        # Users specify exactly which GCP file pairs with each science file in
+        # tlm_sci_gcp_sets.  An empty string disables image matching for that pair.
+        gcp_pairs = [(sci_key, gcp_key)]
+        logger.info(f"  GCP file: {gcp_key or '(none)'}")
 
         # INNER LOOP: Iterate through parameter sets
         for param_idx, params in enumerate(params_set):
