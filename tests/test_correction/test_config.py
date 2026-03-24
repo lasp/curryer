@@ -2,6 +2,7 @@
 
 Covers:
 - Construction and field validation for all BaseModel subclasses
+- ``DataConfig`` config-driven data loading configuration
 - ``ParameterData`` backward-compatible dict-style access
 - JSON round-trip: ``config == CorrectionConfig.model_validate_json(config.model_dump_json())``
 - ``ValidationError`` raised with field-level messages for invalid inputs
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from curryer.correction.config import (
     CorrectionConfig,
+    DataConfig,
     GeolocationConfig,
     NetCDFConfig,
     NetCDFParameterMetadata,
@@ -128,6 +130,80 @@ def full_config(geo, param_constant, param_offset_kernel, param_offset_time, net
         boresight_name="bhat_hs",
         transformation_matrix_name="t_hs2ctrs",
     )
+
+
+# ===========================================================================
+# DataConfig – construction and typed fields
+# ===========================================================================
+
+
+class TestDataConfig:
+    def test_defaults(self):
+        dc = DataConfig()
+        assert dc.file_format == "csv"
+        assert dc.time_field == "corrected_timestamp"
+        assert dc.time_scale_factor == 1.0
+        assert dc.gcp_directory is None
+        assert dc.gcp_pattern == "*_resampled.mat"
+        assert dc.max_pair_distance_m == 0.0
+
+    def test_custom_values(self):
+        dc = DataConfig(
+            file_format="netcdf",
+            time_field="gps_time",
+            time_scale_factor=1e6,
+            gcp_directory=Path("tests/data/gcp"),
+            gcp_pattern="*_gcp.mat",
+            max_pair_distance_m=500.0,
+        )
+        assert dc.file_format == "netcdf"
+        assert dc.time_scale_factor == 1e6
+        assert dc.gcp_directory == Path("tests/data/gcp")
+
+    def test_invalid_file_format(self):
+        with pytest.raises(ValidationError):
+            DataConfig(file_format="xml")
+
+    def test_json_round_trip(self):
+        dc = DataConfig(
+            file_format="hdf5",
+            time_field="ugps",
+            time_scale_factor=1.0,
+            gcp_directory=Path("gcp/chips"),
+        )
+        restored = DataConfig.model_validate_json(dc.model_dump_json())
+        assert restored.file_format == "hdf5"
+        assert restored.time_field == "ugps"
+        assert restored.gcp_directory == Path("gcp/chips")
+
+    def test_embedded_in_correction_config(self, geo, param_constant):
+        """DataConfig round-trips through CorrectionConfig serialisation."""
+        cfg = CorrectionConfig(
+            n_iterations=1,
+            parameters=[param_constant],
+            geo=geo,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6_378_140.0,
+            data=DataConfig(file_format="csv", time_scale_factor=1e6),
+        )
+        json_str = cfg.model_dump_json()
+        restored = CorrectionConfig.model_validate_json(json_str)
+        assert restored.data is not None
+        assert restored.data.file_format == "csv"
+        assert restored.data.time_scale_factor == 1e6
+
+    def test_none_data_field_is_valid(self, geo, param_constant):
+        """CorrectionConfig.data may be None (backward compat)."""
+        cfg = CorrectionConfig(
+            n_iterations=1,
+            parameters=[param_constant],
+            geo=geo,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+            earth_radius_m=6_378_140.0,
+        )
+        assert cfg.data is None
 
 
 # ===========================================================================
@@ -366,19 +442,16 @@ class TestCorrectionConfig:
         assert len(minimal_config.parameters) == 1
 
     def test_callable_fields_default_none(self, minimal_config):
-        assert minimal_config.telemetry_loader is None
-        assert minimal_config.science_loader is None
-        assert minimal_config.gcp_loader is None
-        assert minimal_config.gcp_pairing_func is None
+        """Only image_matching_func remains as an optional callable override."""
         assert minimal_config.image_matching_func is None
 
-    def test_callable_fields_can_be_set(self, minimal_config):
-        def my_loader():
+    def test_image_matching_func_can_be_set(self, minimal_config):
+        def my_func(*args, **kwargs):
             return None
 
-        minimal_config.telemetry_loader = my_loader
-        assert minimal_config.telemetry_loader is my_loader
-        minimal_config.telemetry_loader = None
+        minimal_config.image_matching_func = my_func
+        assert minimal_config.image_matching_func is my_func
+        minimal_config.image_matching_func = None
 
     def test_mutable_fields(self, minimal_config):
         minimal_config.n_iterations = 99
@@ -410,17 +483,18 @@ class TestCorrectionConfig:
         assert "n_iterations" in str(exc_info.value)
 
     def test_validate_method_passes_for_valid_config(self, minimal_config):
+        minimal_config.validate()  # must not raise
+
+    def test_validate_method_accepts_legacy_check_loaders_kwarg(self, minimal_config):
+        """check_loaders is accepted for backward compat but has no effect."""
         minimal_config.validate(check_loaders=False)  # must not raise
+        minimal_config.validate(check_loaders=True)  # must also not raise
 
     def test_validate_method_raises_for_bad_n_iterations(self, minimal_config):
         minimal_config.n_iterations = -1
         with pytest.raises(ValueError, match="n_iterations"):
             minimal_config.validate()
         minimal_config.n_iterations = 5
-
-    def test_validate_method_raises_for_missing_loaders(self, minimal_config):
-        with pytest.raises(ValueError, match="telemetry_loader"):
-            minimal_config.validate(check_loaders=True)
 
     def test_ensure_netcdf_config_creates_default(self, minimal_config):
         assert minimal_config.netcdf is None
@@ -472,17 +546,12 @@ class TestJsonRoundTrip:
         assert full_config == reloaded
 
     def test_callable_fields_excluded_from_json(self, minimal_config):
-        minimal_config.telemetry_loader = lambda: None
-        minimal_config.science_loader = lambda: None
-        minimal_config.gcp_pairing_func = lambda x: x
+        """image_matching_func is excluded from JSON serialisation."""
+        minimal_config.image_matching_func = lambda: None
         json_str = minimal_config.model_dump_json()
-        assert "telemetry_loader" not in json_str
-        assert "science_loader" not in json_str
-        assert "gcp_pairing_func" not in json_str
+        assert "image_matching_func" not in json_str
         # clean up
-        minimal_config.telemetry_loader = None
-        minimal_config.science_loader = None
-        minimal_config.gcp_pairing_func = None
+        minimal_config.image_matching_func = None
 
     def test_json_contains_expected_keys(self, minimal_config):
         import json
