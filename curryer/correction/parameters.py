@@ -55,12 +55,6 @@ def _bounds_to_rad(bounds: list[float], units: str | None) -> list[float]:
     return list(bounds)
 
 
-def _sigma_to_rad(sigma: float, units: str | None) -> float:
-    if units == "arcseconds":
-        return np.deg2rad(sigma / 3600.0)
-    return sigma
-
-
 def _val_to_rad(value: float, units: str | None) -> float:
     if units == "arcseconds":
         return _arcsec_to_rad(value)
@@ -81,14 +75,6 @@ def _bounds_to_seconds(bounds: list[float], units: str | None) -> list[float]:
     if units == "microseconds":
         return [bounds[0] / 1_000_000.0, bounds[1] / 1_000_000.0]
     return list(bounds)
-
-
-def _sigma_to_seconds(sigma: float, units: str | None) -> float:
-    if units == "milliseconds":
-        return sigma / 1_000.0
-    if units == "microseconds":
-        return sigma / 1_000_000.0
-    return sigma
 
 
 # ============================================================================
