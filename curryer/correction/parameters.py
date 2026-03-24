@@ -371,11 +371,29 @@ def _generate_grid_search(config: CorrectionConfig) -> list[list[tuple[Parameter
 
     Produces ``grid_points_per_param ^ len(parameters)`` parameter sets.
     ``n_iterations`` is not used for this strategy.
+
+    Raises
+    ------
+    ValueError
+        If the total number of parameter sets would exceed ``config.max_grid_sets``.
+        Increase ``max_grid_sets`` deliberately, reduce ``grid_points_per_param`` or
+        the number of parameters, or use ``SearchStrategy.SINGLE_OFFSET`` instead.
     """
     n = config.grid_points_per_param
     n_params = len(config.parameters)
     total = n**n_params
     logger.info(f"GRID_SEARCH: {n} points × {n_params} parameter(s) = {total} total parameter sets")
+
+    if total > config.max_grid_sets:
+        raise ValueError(
+            f"GRID_SEARCH would produce {total:,} parameter sets "
+            f"({n} points ^ {n_params} parameters), which exceeds the safety limit of "
+            f"{config.max_grid_sets:,}. "
+            f"To proceed, either:\n"
+            f"  • reduce grid_points_per_param (currently {n}) or the number of parameters,\n"
+            f"  • increase max_grid_sets on CorrectionConfig (set deliberately), or\n"
+            f"  • use SearchStrategy.SINGLE_OFFSET for high-dimensional sweeps."
+        )
 
     per_param_values = [_get_grid_values(param, n) for param in config.parameters]
 
@@ -425,15 +443,24 @@ def _generate_single_offset(config: CorrectionConfig) -> list[list[tuple[Paramet
 
 
 def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]]) -> None:
-    """Log a structured summary of all generated parameter sets."""
+    """Log a structured summary of the generated parameter sets.
+
+    High-level counts are always emitted at INFO.  The full per-set detail
+    (angles / offsets for every set) is emitted at DEBUG only, so large
+    GRID_SEARCH / SINGLE_OFFSET sweeps do not flood the INFO log.
+    """
     if not output:
         return
 
     logger.info(f"Generated {len(output)} parameter sets with {len(output[0])} parameters each")
-    logger.info("\nParameter Set Summary:")
-    logger.info("-" * 100)
+
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    logger.debug("\nParameter Set Summary:")
+    logger.debug("-" * 100)
     for param_set_idx, param_set in enumerate(output):
-        logger.info(f"  Set {param_set_idx}:")
+        logger.debug(f"  Set {param_set_idx}:")
         for param_idx, (param, param_vals) in enumerate(param_set):
             field_name = param.data.get("field", "unknown")
             ptype_name = param.ptype.name
@@ -445,29 +472,29 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
                         param_vals["angle_y"].iloc[0],
                         param_vals["angle_z"].iloc[0],
                     ]
-                    logger.info(
+                    logger.debug(
                         f"    {ptype_name:16s} {field_name:25s}: "
                         f"[{angles[0]:+.6e}, {angles[1]:+.6e}, {angles[2]:+.6e}] rad"
                     )
                 else:
-                    logger.info(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
+                    logger.debug(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
             elif param.ptype == ParameterType.OFFSET_KERNEL:
                 units = param.data.get("units", "")
                 if units == "arcseconds":
                     param_arcsec = np.rad2deg(param_vals) * 3600.0
-                    logger.info(
+                    logger.debug(
                         f"    {ptype_name:16s} {field_name:25s}: {param_arcsec:+10.3f} arcsec ({param_vals:+.9f} rad)"
                     )
                 else:
-                    logger.info(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
+                    logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
             elif param.ptype == ParameterType.OFFSET_TIME:
                 units = param.data.get("units", "")
                 if units == "milliseconds":
                     param_ms = param_vals * 1000.0
-                    logger.info(f"    {ptype_name:16s} {field_name:25s}: {param_ms:+10.3f} ms ({param_vals:+.9f} s)")
+                    logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_ms:+10.3f} ms ({param_vals:+.9f} s)")
                 else:
-                    logger.info(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
-    logger.info("-" * 100)
+                    logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
+    logger.debug("-" * 100)
 
 
 # ============================================================================
