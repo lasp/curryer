@@ -45,12 +45,14 @@ from . import (
     data_structures,
     dataio,
     error_stats,
+    image_io,
     image_match,
     kernel_ops,
     pairing,
     parameters,
     pipeline,
     psf,
+    regrid,
     results_io,
     search,
 )
@@ -67,7 +69,7 @@ from .config import (
     SearchStrategy,
     load_config_from_json,
 )
-from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, SearchConfig
+from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from .pipeline import loop
 
@@ -79,12 +81,14 @@ __all__ = [
     "data_structures",
     "dataio",
     "error_stats",
+    "image_io",
     "image_match",
     "kernel_ops",
     "pairing",
     "parameters",
     "pipeline",
     "psf",
+    "regrid",
     "results_io",
     "search",
     # Config
@@ -103,6 +107,7 @@ __all__ = [
     "ImageGrid",
     "PSFGrid",
     "PSFSamplingConfig",
+    "RegridConfig",
     "SearchConfig",
     # Error stats
     "ErrorStatsConfig",

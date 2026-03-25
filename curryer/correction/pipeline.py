@@ -43,11 +43,13 @@ from curryer.correction.dataio import (
     validate_science_output,
     validate_telemetry_output,
 )
-from curryer.correction.image_match import (
-    integrated_image_match,
+from curryer.correction.image_io import (
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
     load_optical_psf_from_mat,
+)
+from curryer.correction.image_match import (
+    integrated_image_match,
     validate_image_matching_output,
 )
 from curryer.correction.kernel_ops import (
