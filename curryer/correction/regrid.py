@@ -115,14 +115,16 @@ def create_regular_grid(
         dlon = (maxlon - minlon) / (ncols - 1)
     else:
         dlat, dlon = resolution
-        nrows = int((maxlat - minlat) / dlat) + 1
-        ncols = int((maxlon - minlon) / dlon) + 1
+        nrows = round((maxlat - minlat) / dlat) + 1
+        ncols = round((maxlon - minlon) / dlon) + 1
 
-    # Create 1D coordinate arrays
-    # Latitude: starts at maxlat (north) and decreases
-    lat_1d = maxlat - np.arange(nrows) * dlat
-    # Longitude: starts at minlon (west) and increases
-    lon_1d = minlon + np.arange(ncols) * dlon
+    # Create 1D coordinate arrays using linspace so that the endpoints are
+    # exact regardless of floating-point accumulation in step arithmetic.
+    # (Using arange-based approach risks the last element overshooting the
+    # bound by a tiny amount, placing output points just outside the input
+    # grid and producing spurious NaN fill values at the edges.)
+    lat_1d = np.linspace(maxlat, minlat, nrows)  # north → south
+    lon_1d = np.linspace(minlon, maxlon, ncols)  # west  → east
 
     # Create 2D meshgrid
     lon_regular, lat_regular = np.meshgrid(lon_1d, lat_1d)
@@ -504,11 +506,12 @@ def regrid_irregular_to_regular(
                 cell = find_containing_cell(point, lon_irregular, lat_irregular, last_cell)
 
             # If windowed search failed or no hint, use spatial index
+            nearest_fallback_cell = None  # track for boundary-snap fallback
             if cell is None and kdtree is not None:
                 # Query k nearest neighbors to find containing cell
                 distances, indices = kdtree.query(point, k=min(9, len(cell_centers)))
 
-                for idx in indices:
+                for rank, idx in enumerate(indices):
                     candidate_i, candidate_j = cell_indices_map[idx]
                     # Direct check if point is in this candidate cell (fast)
                     if _check_point_in_cell(
@@ -516,14 +519,29 @@ def regrid_irregular_to_regular(
                     ):
                         cell = (candidate_i, candidate_j)
                         break
+                    # Remember the geometrically nearest cell in case all strict
+                    # tests fail (boundary-snap fallback, see below).
+                    if rank == 0:
+                        nearest_fallback_cell = (candidate_i, candidate_j)
 
             # Last resort: full search (only if no spatial index available)
             if cell is None and kdtree is None:
                 cell = find_containing_cell(point, lon_irregular, lat_irregular, None)
 
             if cell is None:
-                # Point outside irregular grid, leave as fill_value
-                continue
+                # Boundary-snap fallback: the point may be marginally outside the
+                # input grid due to floating-point differences between the output
+                # bounds (e.g. from MATLAB) and Python's ECEF-to-geodetic results.
+                # Use the nearest cell (slight extrapolation) rather than NaN so
+                # that sub-pixel boundary mismatches don't create artefacts.
+                if nearest_fallback_cell is not None:
+                    cell = nearest_fallback_cell
+                    logger.debug(
+                        f"Boundary snap at [{ii},{jj}] (lon={point_lon:.7f}, lat={point_lat:.7f}) → cell {cell}"
+                    )
+                else:
+                    # Genuinely outside the grid – leave as fill_value
+                    continue
 
             i, j = cell
 
