@@ -528,6 +528,7 @@ def load_gcp_chip_from_hdf(
     coord_x_name, coord_y_name, coord_z_name = coord_names
 
     # Try HDF4 first (Landsat standard format)
+    hdf4_error = None
     try:
         from pyhdf.SD import SD, SDC
 
@@ -559,40 +560,50 @@ def load_gcp_chip_from_hdf(
         hdf.end()
 
         logger.info(f"Loaded GCP chip from HDF4 file {filepath.name}: shape {band_data.shape}")
+        return band_data, ecef_x, ecef_y, ecef_z
 
-    except (ImportError, Exception):
-        # HDF4 library not available or file is HDF5 (not HDF4), try HDF5
-        try:
-            import h5py
+    except ImportError:
+        # pyhdf not available, will try h5py below
+        pass
+    except Exception as e:
+        # pyhdf raised an error (possibly HDF4Error because file is HDF5), store and try h5py
+        hdf4_error = e
 
-            with h5py.File(filepath, "r") as hdf:
-                # Load band data
-                if band_name not in hdf:
-                    available = list(hdf.keys())
-                    raise KeyError(f"Band '{band_name}' not found. Available datasets: {available}")
+    # Try HDF5 if HDF4 failed or pyhdf not available
+    try:
+        import h5py
 
-                band_data = np.array(hdf[band_name], dtype=np.float64)
+        with h5py.File(filepath, "r") as hdf:
+            # Load band data
+            if band_name not in hdf:
+                available = list(hdf.keys())
+                raise KeyError(f"Band '{band_name}' not found. Available datasets: {available}")
 
-                # Load ECEF coordinates
-                if coord_x_name not in hdf:
-                    raise KeyError(f"X coordinate '{coord_x_name}' not found in {filepath.name}")
-                if coord_y_name not in hdf:
-                    raise KeyError(f"Y coordinate '{coord_y_name}' not found in {filepath.name}")
-                if coord_z_name not in hdf:
-                    raise KeyError(f"Z coordinate '{coord_z_name}' not found in {filepath.name}")
+            band_data = np.array(hdf[band_name], dtype=np.float64)
 
-                ecef_x = np.array(hdf[coord_x_name], dtype=np.float64)
-                ecef_y = np.array(hdf[coord_y_name], dtype=np.float64)
-                ecef_z = np.array(hdf[coord_z_name], dtype=np.float64)
+            # Load ECEF coordinates
+            if coord_x_name not in hdf:
+                raise KeyError(f"X coordinate '{coord_x_name}' not found in {filepath.name}")
+            if coord_y_name not in hdf:
+                raise KeyError(f"Y coordinate '{coord_y_name}' not found in {filepath.name}")
+            if coord_z_name not in hdf:
+                raise KeyError(f"Z coordinate '{coord_z_name}' not found in {filepath.name}")
 
-            logger.info(f"Loaded GCP chip from HDF5 file {filepath.name}: shape {band_data.shape}")
+            ecef_x = np.array(hdf[coord_x_name], dtype=np.float64)
+            ecef_y = np.array(hdf[coord_y_name], dtype=np.float64)
+            ecef_z = np.array(hdf[coord_z_name], dtype=np.float64)
 
-        except (ImportError, OSError) as e:
-            raise ImportError(
-                f"Cannot read HDF file {filepath}. "
-                f"Neither pyhdf (for HDF4) nor h5py (for HDF5) could open the file. "
-                f"Error: {e}"
-            ) from e
+        logger.info(f"Loaded GCP chip from HDF5 file {filepath.name}: shape {band_data.shape}")
+
+    except ImportError as e:
+        # Neither library available
+        error_msg = f"Cannot read HDF file {filepath}. Neither pyhdf (for HDF4) nor h5py (for HDF5) is available."
+        if hdf4_error:
+            error_msg += f" HDF4 error: {hdf4_error}"
+        raise ImportError(error_msg) from e
+    except (KeyError, OSError, ValueError):
+        # Re-raise validation/IO errors from h5py
+        raise
 
     # Validate shapes
     if not (band_data.shape == ecef_x.shape == ecef_y.shape == ecef_z.shape):
