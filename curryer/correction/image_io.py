@@ -436,19 +436,22 @@ def load_image_grid_from_netcdf(filepath: Path) -> ImageGrid:
     logger.info(f"Loading ImageGrid from NetCDF: {filepath}")
 
     with Dataset(filepath, "r") as nc:
-        # Load data
-        if "data" not in nc.variables:
+        # Load data — try canonical name first, then legacy name
+        data_name = next((n for n in ("band_data", "data") if n in nc.variables), None)
+        if data_name is None:
             raise KeyError(f"Required variable 'data' not found in {filepath.name}")
-        data = nc.variables["data"][:]
+        data = nc.variables[data_name][:]
 
-        # Load coordinates
-        if "latitude" not in nc.variables:
+        # Load coordinates — try canonical names first, then legacy names
+        lat_name = next((n for n in ("lat", "latitude") if n in nc.variables), None)
+        lon_name = next((n for n in ("lon", "longitude") if n in nc.variables), None)
+        if lat_name is None:
             raise KeyError(f"Required variable 'latitude' not found in {filepath.name}")
-        if "longitude" not in nc.variables:
+        if lon_name is None:
             raise KeyError(f"Required variable 'longitude' not found in {filepath.name}")
 
-        lat_var = nc.variables["latitude"]
-        lon_var = nc.variables["longitude"]
+        lat_var = nc.variables[lat_name]
+        lon_var = nc.variables[lon_name]
 
         # Handle 1D or 2D coordinates
         if lat_var.ndim == 1:
@@ -460,8 +463,9 @@ def load_image_grid_from_netcdf(filepath: Path) -> ImageGrid:
             lat = lat_var[:]
             lon = lon_var[:]
 
-        # Load height if available
-        h = nc.variables["height"][:] if "height" in nc.variables else None
+        # Load height if available — try canonical name first, then legacy name
+        h_name = next((n for n in ("h", "height") if n in nc.variables), None)
+        h = nc.variables[h_name][:] if h_name is not None else None
 
     logger.info(f"Loaded ImageGrid from NetCDF: shape {data.shape}")
     return ImageGrid(data=data, lat=lat, lon=lon, h=h)
