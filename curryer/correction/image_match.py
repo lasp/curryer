@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -189,7 +190,11 @@ def integrated_image_match(
 
 
 # ============================================================================
-# MATLAB File Loading Utilities
+# MATLAB File Loading Utilities — Deprecation Shims
+#
+# These functions have been moved to curryer.correction.image_io.
+# They are kept here for backward compatibility and will be removed in a
+# future release.
 # ============================================================================
 
 
@@ -199,176 +204,51 @@ def load_image_grid_from_mat(
     """
     Load ImageGrid from MATLAB .mat file.
 
-    Parameters
-    ----------
-    mat_file : Path
-        Path to .mat file.
-    key : str, default="subimage"
-        MATLAB struct key (e.g., "subimage" for L1A, "GCP" for reference).
-    name : str, optional
-        Name for NamedImageGrid. Defaults to file path.
-    as_named : bool, default=False
-        If True, return NamedImageGrid; otherwise return ImageGrid.
-
-    Returns
-    -------
-    ImageGrid or NamedImageGrid
-        Loaded image grid with data, lat, lon, h fields.
-
-    Raises
-    ------
-    FileNotFoundError
-        If mat_file doesn't exist.
-    KeyError
-        If key not found in MATLAB file.
-
-    Examples
-    --------
-    >>> # Load L1A subimage
-    >>> l1a = load_image_grid_from_mat(Path("subimage.mat"), key="subimage")
-    >>> # Load GCP reference
-    >>> gcp = load_image_grid_from_mat(Path("gcp.mat"), key="GCP")
+    .. deprecated::
+        Use :func:`curryer.correction.image_io.load_image_grid_from_mat` instead.
     """
-    from scipy.io import loadmat
+    warnings.warn(
+        "load_image_grid_from_mat has moved to curryer.correction.image_io. "
+        "Importing from image_match is deprecated and will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from .image_io import load_image_grid_from_mat as _impl
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"MATLAB file not found: {mat_file}")
-
-    mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
-
-    if key not in mat_data:
-        available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
-        raise KeyError(f"Key '{key}' not found in {mat_file.name}. Available keys: {available_keys}")
-
-    struct = mat_data[key]
-    h = getattr(struct, "h", None)
-
-    # Optimize: loadmat already returns numpy arrays, avoid redundant asarray() calls
-    # ImageGrid.__post_init__ will handle final type conversion
-    grid_kwargs = {
-        "data": struct.data,
-        "lat": struct.lat,
-        "lon": struct.lon,
-        "h": h,
-    }
-
-    if as_named:
-        grid_kwargs["name"] = name or str(mat_file)
-        return NamedImageGrid(**grid_kwargs)
-    else:
-        return ImageGrid(**grid_kwargs)
+    return _impl(mat_file, key=key, name=name, as_named=as_named)
 
 
 def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
     """
     Load optical PSF entries from MATLAB .mat file.
 
-    Parameters
-    ----------
-    mat_file : Path
-        Path to MATLAB file with PSF data.
-    key : str, default="PSF_struct_675nm"
-        Primary key to try for PSF data.
-
-    Returns
-    -------
-    list[OpticalPSFEntry]
-        Optical PSF samples with data, x, and field_angle arrays.
-
-    Raises
-    ------
-    FileNotFoundError
-        If mat_file doesn't exist.
-    KeyError
-        If no PSF data found with common key names.
-    ValueError
-        If PSF entries missing field angle attribute.
+    .. deprecated::
+        Use :func:`curryer.correction.image_io.load_optical_psf_from_mat` instead.
     """
-    from scipy.io import loadmat
+    warnings.warn(
+        "load_optical_psf_from_mat has moved to curryer.correction.image_io. "
+        "Importing from image_match is deprecated and will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from .image_io import load_optical_psf_from_mat as _impl
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"Optical PSF file not found: {mat_file}")
-
-    mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
-
-    # Try common keys in order of preference
-    for try_key in [key, "PSF_struct_675nm", "optical_PSF", "PSF"]:
-        if try_key in mat_data:
-            psf_struct = mat_data[try_key]
-            psf_entries_raw = np.atleast_1d(psf_struct)
-
-            psf_entries = []
-            for entry in psf_entries_raw:
-                # Handle both 'FA' and 'field_angle' attribute names
-                # Check if attribute exists first to avoid NumPy array boolean ambiguity
-                field_angle = getattr(entry, "FA", None)
-                if field_angle is None or (
-                    isinstance(field_angle, list | tuple | np.ndarray) and len(field_angle) == 0
-                ):
-                    # Fallback if FA is missing, None, or empty
-                    field_angle = getattr(entry, "field_angle", None)
-
-                if field_angle is None:
-                    raise ValueError(f"PSF entry missing field angle attribute (tried 'FA' and 'field_angle')")
-
-                # Optimize: loadmat already returns numpy arrays, OpticalPSFEntry.__post_init__ handles conversion
-                # Use np.atleast_1d to ensure 1D arrays efficiently
-                psf_entries.append(
-                    OpticalPSFEntry(
-                        data=entry.data,
-                        x=np.atleast_1d(entry.x).ravel(),
-                        field_angle=np.atleast_1d(field_angle).ravel(),
-                    )
-                )
-
-            logger.info(f"Loaded {len(psf_entries)} optical PSF entries from {mat_file.name}")
-            return psf_entries
-
-    available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
-    raise KeyError(f"No PSF data found in {mat_file.name}. Available keys: {available_keys}")
+    return _impl(mat_file, key=key)
 
 
 def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
     """
     Load line-of-sight vectors from MATLAB .mat file.
 
-    Parameters
-    ----------
-    mat_file : Path
-        Path to MATLAB file with LOS vectors.
-    key : str, default="b_HS"
-        Primary key to try for LOS data.
-
-    Returns
-    -------
-    np.ndarray
-        LOS unit vectors in instrument frame, shape (n_pixels, 3).
-
-    Raises
-    ------
-    FileNotFoundError
-        If mat_file doesn't exist.
-    KeyError
-        If no LOS vectors found with common key names.
+    .. deprecated::
+        Use :func:`curryer.correction.image_io.load_los_vectors_from_mat` instead.
     """
-    from scipy.io import loadmat
+    warnings.warn(
+        "load_los_vectors_from_mat has moved to curryer.correction.image_io. "
+        "Importing from image_match is deprecated and will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from .image_io import load_los_vectors_from_mat as _impl
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"LOS vector file not found: {mat_file}")
-
-    mat_data = loadmat(str(mat_file))
-
-    # Try common keys in order of preference
-    for try_key in [key, "b_HS", "los_vectors", "pixel_vectors"]:
-        if try_key in mat_data:
-            los = mat_data[try_key]
-
-            # Ensure shape is (n_pixels, 3) not (3, n_pixels)
-            if los.shape[0] == 3 and los.shape[1] > 3:
-                los = los.T
-
-            logger.info(f"Loaded LOS vectors from {mat_file.name}: shape {los.shape}")
-            return los
-
-    available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
-    raise KeyError(f"No LOS vectors found in {mat_file.name}. Available keys: {available_keys}")
+    return _impl(mat_file, key=key)
