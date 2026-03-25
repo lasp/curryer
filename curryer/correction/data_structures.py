@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pydantic import BaseModel, field_validator, model_validator
 
 
 @dataclass
@@ -132,3 +133,96 @@ class SearchConfig:
     grid_span_km: float = 11.0
     reduction_factor: float = 0.8
     spacing_limit_m: float = 10.0
+
+
+class RegridConfig(BaseModel):
+    """Configuration for GCP chip regridding.
+
+    Specifies output grid parameters for transforming irregular geodetic grids
+    to regular latitude/longitude grids. ECEF → geodetic conversion always
+    uses the WGS84 ellipsoid, which is the only ellipsoid supported by
+    ``curryer.compute.spatial.ecef_to_geodetic``.
+
+    Parameters
+    ----------
+    output_grid_size : tuple[int, int], optional
+        Desired output grid dimensions as (nrows, ncols). Mutually exclusive
+        with ``output_resolution_deg``.
+    output_resolution_deg : tuple[float, float], optional
+        Desired output resolution as (dlat, dlon) in degrees. Mutually
+        exclusive with ``output_grid_size``. Required when ``output_bounds``
+        is set.
+    output_bounds : tuple[float, float, float, float], optional
+        Explicit output grid bounds as (minlon, maxlon, minlat, maxlat) in
+        degrees. Requires ``output_resolution_deg``.
+    conservative_bounds : bool, default=True
+        If True, shrink bounds to ensure all output points lie within the
+        input irregular grid (avoids edge extrapolation).
+    interpolation_method : str, default="bilinear"
+        Interpolation method; one of ``"bilinear"`` or ``"nearest"``.
+    fill_value : float, default=NaN
+        Value assigned to output points that fall outside the input grid.
+    """
+
+    output_grid_size: tuple[int, int] | None = None
+    output_resolution_deg: tuple[float, float] | None = None
+    output_bounds: tuple[float, float, float, float] | None = None
+    conservative_bounds: bool = True
+    interpolation_method: str = "bilinear"
+    fill_value: float = float("nan")
+
+    @field_validator("interpolation_method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        """Validate interpolation method name."""
+        valid = {"bilinear", "nearest"}
+        if v not in valid:
+            raise ValueError(f"interpolation_method must be one of {valid}, got '{v}'")
+        return v
+
+    @field_validator("output_grid_size")
+    @classmethod
+    def validate_grid_size(cls, v: tuple[int, int] | None) -> tuple[int, int] | None:
+        """Validate that grid size has at least 2 rows and 2 columns."""
+        if v is not None:
+            if v[0] < 2:
+                raise ValueError(f"Grid size must have at least 2 rows and 2 columns, got {v}")
+            if v[1] < 2:
+                raise ValueError(f"Grid size must have at least 2 rows and 2 columns, got {v}")
+        return v
+
+    @field_validator("output_resolution_deg")
+    @classmethod
+    def validate_resolution(cls, v: tuple[float, float] | None) -> tuple[float, float] | None:
+        """Validate that resolution values are positive."""
+        if v is not None:
+            if v[0] <= 0 or v[1] <= 0:
+                raise ValueError(f"Resolution values must be positive (dlat, dlon), got {v}")
+        return v
+
+    @field_validator("output_bounds")
+    @classmethod
+    def validate_bounds(cls, v: tuple[float, float, float, float] | None) -> tuple[float, float, float, float] | None:
+        """Validate that bounds are properly ordered."""
+        if v is not None:
+            minlon, maxlon, minlat, maxlat = v
+            if minlon >= maxlon:
+                raise ValueError(f"minlon must be < maxlon, got {minlon} >= {maxlon}")
+            if minlat >= maxlat:
+                raise ValueError(f"minlat must be < maxlat, got {minlat} >= {maxlat}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_grid_spec(self) -> RegridConfig:
+        """Validate that grid specification options are mutually consistent."""
+        has_size = self.output_grid_size is not None
+        has_res = self.output_resolution_deg is not None
+        has_bounds = self.output_bounds is not None
+
+        if has_size and has_res:
+            raise ValueError("Cannot specify both output_grid_size and output_resolution_deg")
+        if has_bounds and not has_res:
+            raise ValueError("output_bounds requires output_resolution_deg")
+        if has_bounds and has_size:
+            raise ValueError("Cannot specify both output_bounds and output_grid_size")
+        return self
