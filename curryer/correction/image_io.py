@@ -247,18 +247,18 @@ def save_image_grid_to_netcdf(
     Notes
     -----
     The NetCDF file follows CF-1.8 conventions and contains:
-    - Variables: 'data', 'latitude', 'longitude', 'height' (if available)
+    - Variables: 'band_data', 'lat', 'lon', 'h' (if available)
     - Dimensions: 'y' (rows), 'x' (columns)
-    - Coordinates: latitude(y, x) or (y,), longitude(y, x) or (x,)
+    - Coordinates: lat(y, x) or (y,), lon(y, x) or (x,)
     - Attributes: grid info, CRS metadata, processing information
 
     For regular grids (1D coordinates), variables are stored efficiently as:
-    - latitude(y): Single column
-    - longitude(x): Single row
+    - lat(y): Single column
+    - lon(x): Single row
 
     For irregular grids (2D coordinates), full arrays are stored:
-    - latitude(y, x): Full grid
-    - longitude(y, x): Full grid
+    - lat(y, x): Full grid
+    - lon(y, x): Full grid
 
     Examples
     --------
@@ -328,13 +328,14 @@ def save_image_grid_to_netcdf(
         )
 
         # Create coordinate variables
+        # Variable names match load_gcp_chip_from_netcdf defaults: lat, lon, band_data, h
         if lat_is_1d:
             # 1D latitude (varies with y only)
-            lat_var = nc.createVariable("latitude", "f8", ("y",), **comp_kwargs)
+            lat_var = nc.createVariable("lat", "f8", ("y",), **comp_kwargs)
             lat_var[:] = image_grid.lat[:, 0] if image_grid.lat.ndim == 2 else image_grid.lat
         else:
             # 2D latitude
-            lat_var = nc.createVariable("latitude", "f8", ("y", "x"), **comp_kwargs)
+            lat_var = nc.createVariable("lat", "f8", ("y", "x"), **comp_kwargs)
             lat_var[:] = image_grid.lat
 
         lat_var.units = "degrees_north"
@@ -343,11 +344,11 @@ def save_image_grid_to_netcdf(
 
         if lon_is_1d:
             # 1D longitude (varies with x only)
-            lon_var = nc.createVariable("longitude", "f8", ("x",), **comp_kwargs)
+            lon_var = nc.createVariable("lon", "f8", ("x",), **comp_kwargs)
             lon_var[:] = image_grid.lon[0, :] if image_grid.lon.ndim == 2 else image_grid.lon
         else:
             # 2D longitude
-            lon_var = nc.createVariable("longitude", "f8", ("y", "x"), **comp_kwargs)
+            lon_var = nc.createVariable("lon", "f8", ("y", "x"), **comp_kwargs)
             lon_var[:] = image_grid.lon
 
         lon_var.units = "degrees_east"
@@ -355,11 +356,11 @@ def save_image_grid_to_netcdf(
         lon_var.standard_name = "longitude"
 
         # Create data variable
-        data_var = nc.createVariable("data", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
+        data_var = nc.createVariable("band_data", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
         data_var[:] = image_grid.data
         data_var.long_name = "regridded_radiance"
         data_var.units = "DN"
-        data_var.coordinates = "latitude longitude"
+        data_var.coordinates = "lat lon"
         data_var.grid_mapping = "crs"
 
         # Add grid statistics as attributes
@@ -372,12 +373,12 @@ def save_image_grid_to_netcdf(
 
         # Add height if available
         if image_grid.h is not None:
-            h_var = nc.createVariable("height", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
+            h_var = nc.createVariable("h", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
             h_var[:] = image_grid.h
             h_var.units = "meters"
             h_var.long_name = "height_above_reference_ellipsoid"
             h_var.standard_name = "height_above_reference_ellipsoid"
-            h_var.coordinates = "latitude longitude"
+            h_var.coordinates = "lat lon"
 
         # Add CRS information (WGS84)
         crs = nc.createVariable("crs", "i4")
