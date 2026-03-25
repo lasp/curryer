@@ -560,8 +560,8 @@ def load_gcp_chip_from_hdf(
 
         logger.info(f"Loaded GCP chip from HDF4 file {filepath.name}: shape {band_data.shape}")
 
-    except ImportError:
-        # HDF4 library not available, try HDF5
+    except (ImportError, Exception):
+        # HDF4 library not available or file is HDF5 (not HDF4), try HDF5
         try:
             import h5py
 
