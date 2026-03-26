@@ -31,6 +31,16 @@ Models
     Per-measurement/GCP error detail.
 :class:`VerificationResult`
     Structured pass/fail result; serialisable via Pydantic JSON methods.
+
+Validation
+----------
+:func:`validate_image_matching_output`
+    Validate that image matching function output conforms to required format.
+    Use this in your image_matching_func to catch errors early:
+
+    >>> from curryer.correction.verification import validate_image_matching_output
+    >>> result = my_image_matching_func(geolocated_data)
+    >>> validate_image_matching_output(result)  # Raises ValueError if invalid
 """
 
 from __future__ import annotations
@@ -517,9 +527,9 @@ def _format_summary_table(
 
 def verify(
     config: CorrectionConfig,
-    work_dir: Path,
     image_matching_results: list[xr.Dataset] | None = None,
     geolocated_data: xr.Dataset | None = None,
+    work_dir: Path | None = None,
 ) -> VerificationResult:
     """Evaluate current alignment against mission requirements.
 
@@ -538,12 +548,25 @@ def verify(
     Parameters
     ----------
     config : CorrectionConfig
-        Configuration with required performance thresholds
-        (``performance_threshold_m``, ``performance_spec_percent``,
-        ``earth_radius_m``) and optional ``verification``
-        (:class:`RequirementsConfig`) override.
-    work_dir : Path
-        Working directory for any temporary outputs.  Created if absent.
+        Configuration with all mission-specific settings:
+        - Performance thresholds (``performance_threshold_m``, ``performance_spec_percent``)
+        - Spacecraft variable names (``spacecraft_position_name``, ``boresight_name``, etc.)
+        - Geolocation settings (SPICE kernels, instrument configuration)
+        - Image matching function (``image_matching_func``)
+        - Optional ``verification`` override (:class:`RequirementsConfig`)
+    image_matching_results : list[xr.Dataset] or None
+        Pre-computed image-matching datasets, one per GCP pair.  Each must
+        have a ``measurement`` dimension and ``lat_error_deg`` /
+        ``lon_error_deg`` variables plus the spacecraft-state variables
+        expected by
+        :class:`~curryer.correction.error_stats.ErrorStatsProcessor`.
+    geolocated_data : xr.Dataset or None
+        Already-geolocated data on which image matching will be run using
+        ``config.image_matching_func``.  Ignored when
+        *image_matching_results* is provided.
+    work_dir : Path or None, optional
+        Working directory for outputs.  Created if absent.
+        If None (default), uses ``./verification_output``.
     image_matching_results : list[xr.Dataset] or None
         Pre-computed image-matching datasets, one per GCP pair.  Each must
         have a ``measurement`` dimension and ``lat_error_deg`` /
@@ -568,6 +591,10 @@ def verify(
         provided, or when *geolocated_data* is supplied but
         ``config.image_matching_func`` is not set.
     """
+    # Handle optional work_dir with sensible default
+    if work_dir is None:
+        work_dir = Path("verification_output")
+
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
