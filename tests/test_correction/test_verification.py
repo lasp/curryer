@@ -524,11 +524,11 @@ class TestVerify:
     # -------------------------------------------------------------------
 
     def test_returns_verification_result(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert isinstance(result, VerificationResult)
 
     def test_result_has_all_fields(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert isinstance(result.passed, bool)
         assert isinstance(result.per_gcp_errors, list)
         assert isinstance(result.aggregate_stats, xr.Dataset)
@@ -539,29 +539,29 @@ class TestVerify:
 
     def test_per_gcp_errors_count_matches_measurements(self, config, image_matching_dataset, tmp_path):
         n = image_matching_dataset.sizes["measurement"]
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert len(result.per_gcp_errors) == n
 
     def test_all_per_gcp_have_nadir_error(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         for err in result.per_gcp_errors:
             assert err.nadir_equiv_error_m is not None
             assert err.nadir_equiv_error_m >= 0.0
 
     def test_passed_flag_consistent_with_percent(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         if result.passed:
             assert result.percent_within_threshold >= config.performance_spec_percent
         else:
             assert result.percent_within_threshold < config.performance_spec_percent
 
     def test_summary_table_is_non_empty_string(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert len(result.summary_table) > 0
         assert "Verification Summary" in result.summary_table
 
     def test_warnings_empty_when_passed(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         if result.passed:
             assert result.warnings == []
 
@@ -569,7 +569,7 @@ class TestVerify:
         """Force a FAILED result by using a very tight spec (100 %)."""
         strict_config = _make_config(performance_spec_percent=100.0)
         ds = _make_full_image_matching_dataset(n=13, seed=0)
-        result = verify(strict_config, tmp_path, image_matching_results=[ds])
+        result = verify(strict_config, image_matching_results=[ds], work_dir=tmp_path)
         # With 100 % required, any imperfect measurement causes failure
         if not result.passed:
             assert len(result.warnings) >= 1
@@ -581,24 +581,24 @@ class TestVerify:
 
     def test_multi_pair_aggregates_all_measurements(self, config, multi_pair_results, tmp_path):
         total = sum(ds.sizes["measurement"] for ds in multi_pair_results)
-        result = verify(config, tmp_path, image_matching_results=multi_pair_results)
+        result = verify(config, image_matching_results=multi_pair_results, work_dir=tmp_path)
         assert len(result.per_gcp_errors) == total
 
     def test_multi_pair_science_keys_from_attrs(self, config, multi_pair_results, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=multi_pair_results)
+        result = verify(config, image_matching_results=multi_pair_results, work_dir=tmp_path)
         sci_keys = {e.science_key for e in result.per_gcp_errors}
         assert "scene_A" in sci_keys
         assert "scene_B" in sci_keys
 
     def test_requirements_reflect_config(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert result.requirements.performance_threshold_m == _THRESHOLD_M
         assert result.requirements.performance_spec_percent == _SPEC_PCT
 
     def test_work_dir_created_if_missing(self, config, image_matching_dataset, tmp_path):
         new_dir = tmp_path / "nonexistent" / "subdir"
         assert not new_dir.exists()
-        verify(config, new_dir, image_matching_results=[image_matching_dataset])
+        verify(config, image_matching_results=[image_matching_dataset], work_dir=new_dir)
         assert new_dir.exists()
 
     # -------------------------------------------------------------------
@@ -613,7 +613,7 @@ class TestVerify:
         # Monkeypatch the config object (verification is not a declared field but
         # _build_requirements uses getattr with a fallback)
         object.__setattr__(base_config, "verification", req)
-        result = verify(base_config, tmp_path, image_matching_results=[image_matching_dataset])
+        result = verify(base_config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert result.requirements.performance_threshold_m == 1_000_000.0
 
     # -------------------------------------------------------------------
@@ -622,16 +622,16 @@ class TestVerify:
 
     def test_empty_image_matching_list_raises(self, config, tmp_path):
         with pytest.raises(ValueError, match="must not be empty"):
-            verify(config, tmp_path, image_matching_results=[])
+            verify(config, image_matching_results=[], work_dir=tmp_path)
 
     def test_neither_input_raises_value_error(self, config, tmp_path):
         with pytest.raises(ValueError, match="Neither image_matching_results nor geolocated_data"):
-            verify(config, tmp_path)
+            verify(config, work_dir=tmp_path)
 
     def test_geolocated_data_without_func_raises(self, config, tmp_path):
         dummy_ds = xr.Dataset({"dummy": (["x"], [1, 2, 3])})
         with pytest.raises(ValueError, match="image_matching_func is not set"):
-            verify(config, tmp_path, geolocated_data=dummy_ds)
+            verify(config, geolocated_data=dummy_ds, work_dir=tmp_path)
 
     def test_geolocated_data_with_func_called(self, image_matching_dataset, tmp_path):
         """image_matching_func should be called when geolocated_data is supplied."""
@@ -643,6 +643,6 @@ class TestVerify:
 
         config = _make_config(image_matching_func=mock_matching_func)
         dummy_geolocated = xr.Dataset({"placeholder": (["x"], [1, 2])})
-        result = verify(config, tmp_path, geolocated_data=dummy_geolocated)
+        result = verify(config, geolocated_data=dummy_geolocated, work_dir=tmp_path)
         assert called["count"] == 1
         assert isinstance(result, VerificationResult)
