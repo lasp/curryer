@@ -32,15 +32,6 @@ Models
 :class:`VerificationResult`
     Structured pass/fail result; serialisable via Pydantic JSON methods.
 
-Validation
-----------
-:func:`validate_image_matching_output`
-    Validate that image matching function output conforms to required format.
-    Use this in your image_matching_func to catch errors early:
-
-    >>> from curryer.correction.verification import validate_image_matching_output
-    >>> result = my_image_matching_func(geolocated_data)
-    >>> validate_image_matching_output(result)  # Raises ValueError if invalid
 """
 
 from __future__ import annotations
@@ -204,10 +195,12 @@ def _aggregate_results(
 ) -> xr.Dataset:
     """Aggregate a list of per-GCP-pair image-matching datasets into one.
 
-    Delegates to the same aggregation logic used by the correction pipeline
-    (:func:`~curryer.correction.pipeline._aggregate_image_matching_results`),
-    adding a ``source_pair_index`` coordinate so per-GCP provenance can be
-    reconstructed from the merged dataset.
+    For multiple input datasets, this delegates to the same aggregation logic
+    used by the correction pipeline
+    (:func:`~curryer.correction.pipeline._aggregate_image_matching_results`).
+    For a single input dataset, it is returned directly after ensuring that
+    the ``measurement`` coordinate is present and consists of sequential
+    integer indices.
 
     Parameters
     ----------
@@ -408,8 +401,22 @@ def _build_source_mapping(
     """
     mapping: list[tuple[str, str]] = []
     for pair_idx, ds in enumerate(image_matching_results):
-        sci_key = str(ds.attrs.get("sci_key", ds.attrs.get("science_key", f"result_{pair_idx}")))
-        gcp_key = str(ds.attrs.get("gcp_key", ds.attrs.get("gcp_key", f"gcp_{pair_idx}")))
+        # Prefer explicit / richer identifiers when available, with stable fallbacks.
+        sci_key_attr = (
+            ds.attrs.get("sci_key")
+            or ds.attrs.get("science_key")
+            or ds.attrs.get("science_file")
+            or f"result_{pair_idx}"
+        )
+        gcp_key_attr = (
+            ds.attrs.get("gcp_pair_id")
+            or ds.attrs.get("gcp_file")
+            or ds.attrs.get("gcp_key")
+            or ds.attrs.get("gcp_pair_index")
+            or f"gcp_{pair_idx}"
+        )
+        sci_key = str(sci_key_attr)
+        gcp_key = str(gcp_key_attr)
         n_meas = ds.sizes.get("measurement", len(ds["lat_error_deg"]))
         for _ in range(n_meas):
             mapping.append((sci_key, gcp_key))
@@ -567,16 +574,6 @@ def verify(
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
         If None (default), uses ``./verification_output``.
-    image_matching_results : list[xr.Dataset] or None
-        Pre-computed image-matching datasets, one per GCP pair.  Each must
-        have a ``measurement`` dimension and ``lat_error_deg`` /
-        ``lon_error_deg`` variables plus the spacecraft-state variables
-        expected by
-        :class:`~curryer.correction.error_stats.ErrorStatsProcessor`.
-    geolocated_data : xr.Dataset or None
-        Already-geolocated data on which image matching will be run using
-        ``config.image_matching_func``.  Ignored when
-        *image_matching_results* is provided.
 
     Returns
     -------
