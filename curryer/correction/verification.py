@@ -119,8 +119,13 @@ class GCPError(BaseModel):
 class VerificationResult(BaseModel):
     """Structured result from a :func:`verify` call.
 
-    Serialisable to / from JSON via Pydantic's ``model_dump_json()`` /
-    ``model_validate_json()`` — useful for persisting weekly check results.
+    Most fields are JSON-serialisable via Pydantic's ``model_dump()`` /
+    ``model_dump_json()``.  The :attr:`aggregate_stats` field (an
+    ``xr.Dataset``) must be excluded when serialising to JSON — persist it
+    separately (e.g. via ``aggregate_stats.to_netcdf(path)``)::
+
+        json_str = result.model_dump_json(exclude={"aggregate_stats"})
+        result.aggregate_stats.to_netcdf("verification_stats.nc")
 
     Attributes
     ----------
@@ -179,6 +184,8 @@ def _build_requirements(config: CorrectionConfig) -> RequirementsConfig:
     -------
     RequirementsConfig
     """
+    # TODO(#131): Add `verification: RequirementsConfig | None` as an optional
+    # field on CorrectionConfig so this override path works without __setattr__.
     existing = getattr(config, "verification", None)
     if isinstance(existing, RequirementsConfig):
         logger.debug("Using RequirementsConfig from config.verification")
@@ -221,10 +228,10 @@ def _aggregate_results(
 
     if len(image_matching_results) == 1:
         ds = image_matching_results[0]
-        # Ensure the measurement coordinate is sequential integers
+        # Always normalize the measurement coordinate to sequential integers
+        # so that downstream gcp_index values are predictable.
         n = ds.sizes.get("measurement", len(ds["lat_error_deg"]))
-        if "measurement" not in ds.coords:
-            ds = ds.assign_coords(measurement=np.arange(n))
+        ds = ds.assign_coords(measurement=np.arange(n))
         return ds
 
     return _aggregate_image_matching_results(image_matching_results, config)
@@ -466,10 +473,22 @@ def _format_summary_table(
     w_lon = 12
     w_nadir = 10
     w_status = 8
-    inner_width = w_gcp + w_lat + w_lon + w_nadir + w_status + 4  # separators
+    col_inner = w_gcp + w_lat + w_lon + w_nadir + w_status + 4  # 4 column separators
+
+    title = " Verification Summary"
+    verdict = "PASSED" if passed else "FAILED"
+    footer_text = (
+        f" Result: {verdict} — {percent_within:.1f}% within "
+        f"{requirements.performance_threshold_m}m "
+        f"(req: {requirements.performance_spec_percent}%)"
+    )
+
+    # inner_width must accommodate columns, title, AND footer
+    inner_width = max(col_inner, len(title) + 2, len(footer_text))
 
     def _h_sep(left, mid, right, fill="─"):
-        return (
+        """Build a column-width separator, then pad to inner_width."""
+        core = (
             left
             + fill * w_gcp
             + mid
@@ -482,12 +501,10 @@ def _format_summary_table(
             + fill * w_status
             + right
         )
+        # Extend to full inner_width if footer/title made the table wider
+        return core + fill * (inner_width - len(core))
 
     lines: list[str] = []
-    title = " Verification Summary"
-    top_inner = max(inner_width, len(title) + 2)
-    # Recompute inner_width to accommodate title if needed
-    inner_width = top_inner
 
     lines.append("┌" + "─" * inner_width + "┐")
     lines.append("│" + title.ljust(inner_width) + "│")
@@ -512,15 +529,8 @@ def _format_summary_table(
         c_status = ("  ✓  " if err.passed else "  ✗  ").center(w_status)
         lines.append(f"│{c_gcp}│{c_lat}│{c_lon}│{c_nadir}│{c_status}│")
 
-    # Footer separator spans all columns
-    footer_sep = "├" + "─" * (w_gcp + w_lat + w_lon + w_nadir + w_status + 4) + "┤"
-    lines.append(footer_sep)
-    verdict = "PASSED" if passed else "FAILED"
-    footer_text = (
-        f" Result: {verdict} — {percent_within:.1f}% within "
-        f"{requirements.performance_threshold_m}m "
-        f"(req: {requirements.performance_spec_percent}%)"
-    )
+    # Footer
+    lines.append("├" + "─" * inner_width + "┤")
     lines.append("│" + footer_text.ljust(inner_width) + "│")
     lines.append("└" + "─" * inner_width + "┘")
 
