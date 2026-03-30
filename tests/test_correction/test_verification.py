@@ -307,12 +307,13 @@ class TestCheckThreshold:
         assert pct == pytest.approx(0.0)
 
     def test_exactly_at_threshold_does_not_pass(self):
-        """Measurement exactly equal to threshold does NOT pass (strict < check)."""
+        """Value at threshold fails per-measurement check, but overall spec=0 % passes."""
         stats = _make_aggregate_stats_dataset([_THRESHOLD_M])
         passed, pct = _check_threshold(stats, self._req(spec_pct=0.0))
-        # 0 % >= 0 % → should pass... except value is not < threshold
-        # Expect pct=0 % and passed=True only because spec is 0 %
+        # Per-measurement: value is not < threshold → 0 % of measurements pass.
+        # Overall: 0 % >= spec_pct (0 %) → overall verification passes.
         assert pct == pytest.approx(0.0)
+        assert passed is True
 
 
 # ===========================================================================
