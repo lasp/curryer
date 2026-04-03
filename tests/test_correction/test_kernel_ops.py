@@ -172,8 +172,9 @@ def test_apply_offset_preserves_columns():
 
 def test_load_calibration_data_no_dir(clarreo_cfg):
     """When calibration_dir is None, returned data contains no vectors."""
-    clarreo_cfg.calibration_dir = None
-    cal = correction._load_calibration_data(clarreo_cfg)
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.calibration_dir = None
+    cal = correction._load_calibration_data(cfg)
     assert cal.los_vectors is None
     assert cal.optical_psfs is None
 
