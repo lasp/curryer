@@ -762,10 +762,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
                 "sigma": param_dict.get("sigma"),
                 "units": param_dict.get("units", "radians"),
                 "distribution": param_dict.get("distribution_type", "normal"),
-                "field": (
-                    param_dict.get("field")
-                    or param_dict.get("application_target", {}).get("field_name", None)
-                ),
+                "field": (param_dict.get("field") or param_dict.get("application_target", {}).get("field_name", None)),
             }
 
         parameters.append(

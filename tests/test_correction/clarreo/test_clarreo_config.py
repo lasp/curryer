@@ -56,14 +56,10 @@ def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_ge
         assert param.ptype in valid_ptypes, f"Unexpected ptype: {param.ptype}"
 
         if param.ptype in (correction.ParameterType.CONSTANT_KERNEL, correction.ParameterType.OFFSET_KERNEL):
-            assert param.config_file is not None, (
-                f"{param.ptype.name} parameter must have a config_file, got None"
-            )
+            assert param.config_file is not None, f"{param.ptype.name} parameter must have a config_file, got None"
 
         if param.ptype in (correction.ParameterType.OFFSET_KERNEL, correction.ParameterType.OFFSET_TIME):
-            assert param.data.field is not None, (
-                f"{param.ptype.name} parameter must have data.field set, got None"
-            )
+            assert param.data.field is not None, f"{param.ptype.name} parameter must have data.field set, got None"
 
     # Count parameters by type to ensure the expected composition is preserved.
     ptypes = [p.ptype for p in reloaded.parameters]
