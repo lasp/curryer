@@ -185,12 +185,12 @@ def apply_error_variation_for_testing(
     a distinct but deterministic perturbation.
     """
     output = base_result.copy(deep=True)
-    np.random.seed(param_idx)
+    rng = np.random.default_rng(param_idx)
 
     vf = error_variation_percent / 100.0
-    lat_factor = 1.0 + np.random.normal(0, vf)
-    lon_factor = 1.0 + np.random.normal(0, vf)
-    ccv_factor = 1.0 + np.random.normal(0, vf / 10.0)
+    lat_factor = 1.0 + rng.normal(0, vf)
+    lon_factor = 1.0 + rng.normal(0, vf)
+    ccv_factor = 1.0 + rng.normal(0, vf / 10.0)
 
     orig_lat = base_result.attrs["lat_error_km"]
     orig_lon = base_result.attrs["lon_error_km"]
