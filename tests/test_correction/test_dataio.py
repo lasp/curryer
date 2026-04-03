@@ -1,42 +1,17 @@
-"""
-Tests for dataio.py module
+"""Tests for ``curryer.correction.dataio`` (generic, no AWS credentials needed).
 
-This module tests data I/O functionality:
-- S3 object discovery and download
-- NetCDF file handling
-- Configuration management
-- File path operations
-
-Running Tests:
--------------
-# Via pytest (recommended)
-pytest tests/test_correction/test_dataio.py -v
-
-# Run specific test
-pytest tests/test_correction/test_dataio.py::DataIOTestCase::test_find_objects -v
-
-# Standalone execution
-python tests/test_correction/test_dataio.py
-
-Notes:
------
-These tests use mock S3 clients to avoid requiring AWS credentials
-or network access during testing.
+CLARREO-specific S3 integration tests live in ``clarreo/test_clarreo_dataio.py``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import logging
-import os
-import tempfile
-import unittest
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from curryer import utils
 from curryer.correction.dataio import (
     S3Configuration,
     download_netcdf_objects,
@@ -46,23 +21,24 @@ from curryer.correction.dataio import (
 )
 
 logger = logging.getLogger(__name__)
-utils.enable_logging(log_level=logging.INFO, extra_loggers=[__name__])
+
+
+# ── FakeS3Client ──────────────────────────────────────────────────────────────
 
 
 class FakeS3Client:
-    def __init__(self, objects):
-        self.objects = objects  # dict: key -> bytes
-        self.list_calls = []
-        self.download_calls = []
+    """Minimal in-memory S3 mock."""
+
+    def __init__(self, objects: dict[str, bytes]):
+        self.objects = objects
+        self.list_calls: list = []
+        self.download_calls: list = []
 
     def list_objects_v2(self, **kwargs):
         bucket = kwargs["Bucket"]
         prefix = kwargs.get("Prefix", "")
         self.list_calls.append((bucket, prefix))
-        contents = []
-        for key in sorted(self.objects):
-            if key.startswith(prefix):
-                contents.append({"Key": key})
+        contents = [{"Key": k} for k in sorted(self.objects) if k.startswith(prefix)]
         return {"Contents": contents, "IsTruncated": False}
 
     def download_file(self, bucket, key, filename):
@@ -70,132 +46,45 @@ class FakeS3Client:
         Path(filename).write_bytes(self.objects[key])
 
 
-class DataIOTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self.__tmp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.__tmp_dir.cleanup)
-        self.tmp_dir = Path(self.__tmp_dir.name)
-
-    def test_find_netcdf_objects_filters_and_matches_prefix(self):
-        config = S3Configuration("test-bucket", "L1a/nadir")
-        objects = {
-            "L1a/nadir/20181225/file1.nc": b"data1",
-            "L1a/nadir/20181225/file2.txt": b"ignored",
-            "L1a/nadir/20181226/file3.nc": b"data3",
-            "L1a/nadir/20181227/file4.nc": b"out_of_range",
-        }
-        client = FakeS3Client(objects)
-
-        logger.info(f"Testing NetCDF discovery with mock S3 - bucket: {config.bucket}, prefix: {config.base_prefix}")
-        keys = find_netcdf_objects(
-            config,
-            start_date=dt.date(2018, 12, 25),
-            end_date=dt.date(2018, 12, 26),
-            s3_client=client,
-        )
-        logger.info(f"Found {len(keys)} NetCDF files matching date range and .nc extension")
-
-        self.assertListEqual(
-            keys,
-            [
-                "L1a/nadir/20181225/file1.nc",
-                "L1a/nadir/20181226/file3.nc",
-            ],
-        )
-        self.assertListEqual(
-            client.list_calls,
-            [
-                ("test-bucket", "L1a/nadir/20181225/"),
-                ("test-bucket", "L1a/nadir/20181226/"),
-            ],
-        )
-        logger.info("Verified correct S3 prefix queries and file filtering")
-
-    def test_download_netcdf_objects_writes_files(self):
-        config = S3Configuration("test-bucket", "L1a/nadir")
-        objects = {
-            "L1a/nadir/20181225/file1.nc": b"data1",
-            "L1a/nadir/20181225/file2.nc": b"data2",
-        }
-        client = FakeS3Client(objects)
-
-        logger.info(f"Testing NetCDF download with mock S3 - {len(objects)} objects to destination: {self.tmp_dir}")
-        output_paths = download_netcdf_objects(
-            config,
-            objects.keys(),
-            self.tmp_dir,
-            s3_client=client,
-        )
-
-        logger.info(f"Successfully downloaded {len(output_paths)} files: {[p.name for p in output_paths]}")
-        self.assertSetEqual({p.name for p in output_paths}, {"file1.nc", "file2.nc"})
-        for path in output_paths:
-            self.assertEqual(path.read_bytes(), objects[f"L1a/nadir/20181225/{path.name}"])
-        logger.info("Verified file contents match S3 objects")
+# ── find / download ───────────────────────────────────────────────────────────
 
 
-@unittest.skipUnless(
-    (
-        os.getenv("AWS_ACCESS_KEY_ID", "")
-        and os.getenv("AWS_SECRET_ACCESS_KEY", "")
-        and os.getenv("AWS_SESSION_TOKEN", "")
+def test_find_netcdf_objects_filters_and_matches_prefix():
+    config = S3Configuration("test-bucket", "L1a/nadir")
+    objects = {
+        "L1a/nadir/20181225/file1.nc": b"data1",
+        "L1a/nadir/20181225/file2.txt": b"ignored",
+        "L1a/nadir/20181226/file3.nc": b"data3",
+        "L1a/nadir/20181227/file4.nc": b"out_of_range",
+    }
+    client = FakeS3Client(objects)
+    keys = find_netcdf_objects(
+        config, start_date=dt.date(2018, 12, 25), end_date=dt.date(2018, 12, 26), s3_client=client
     )
-    or os.getenv("C9_USER"),
-    "Requires tester to set AWS access key environment variables or run in Cloud9.",
-)
-class ClarreoDataIOTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self.__tmp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.__tmp_dir.cleanup)
-        self.tmp_dir = Path(self.__tmp_dir.name)
+    assert keys == ["L1a/nadir/20181225/file1.nc", "L1a/nadir/20181226/file3.nc"]
+    assert client.list_calls == [
+        ("test-bucket", "L1a/nadir/20181225/"),
+        ("test-bucket", "L1a/nadir/20181226/"),
+    ]
 
-    def test_l0(self):
-        config = S3Configuration("clarreo", "L0/telemetry/hps_navigation/")
-        start_date = dt.date(2017, 1, 15)
-        end_date = dt.date(2017, 1, 15)
 
-        logger.info(f"Querying CSDS S3 bucket '{config.bucket}' for L0 telemetry data")
-        logger.info(f"Date range: {start_date} to {end_date}, prefix: {config.base_prefix}")
+def test_download_netcdf_objects_writes_files(tmp_path):
+    config = S3Configuration("test-bucket", "L1a/nadir")
+    objects = {
+        "L1a/nadir/20181225/file1.nc": b"data1",
+        "L1a/nadir/20181225/file2.nc": b"data2",
+    }
+    client = FakeS3Client(objects)
+    output_paths = download_netcdf_objects(config, objects.keys(), tmp_path, s3_client=client)
+    assert {p.name for p in output_paths} == {"file1.nc", "file2.nc"}
+    for p in output_paths:
+        assert p.read_bytes() == objects[f"L1a/nadir/20181225/{p.name}"]
 
-        keys = find_netcdf_objects(
-            config,
-            start_date=start_date,
-            end_date=end_date,
-        )
 
-        logger.info(f"Successfully retrieved {len(keys)} L0 telemetry files from CSDS S3")
-        if keys:
-            logger.info(f"Example file: {keys[0]}")
-
-        self.assertListEqual(
-            keys, ["L0/telemetry/hps_navigation/20170115/CPF_TLM_L0.V00-000.hps_navigation-20170115-0.0.0.nc"]
-        )
-
-    def test_l1a(self):
-        config = S3Configuration("clarreo", "L1a/nadir/")
-        start_date = dt.date(2022, 6, 3)
-        end_date = dt.date(2022, 6, 3)
-
-        logger.info(f"Querying CSDS S3 bucket '{config.bucket}' for L1a nadir science data")
-        logger.info(f"Date range: {start_date} to {end_date}, prefix: {config.base_prefix}")
-
-        keys = find_netcdf_objects(
-            config,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-        logger.info(f"Successfully retrieved {len(keys)} L1a science files from CSDS S3")
-        if keys:
-            logger.info(f"Example file: {keys[0]}")
-
-        self.assertEqual(34, len(keys))
-        self.assertIn("L1a/nadir/20220603/nadir-20220603T235952-step22-geolocation_creation-0.0.0.nc", keys)
+# ── validation ────────────────────────────────────────────────────────────────
 
 
 class MockConfig:
-    """Mock config for validation tests."""
-
     class MockGeo:
         time_field = "corrected_timestamp"
 
@@ -203,121 +92,51 @@ class MockConfig:
         self.geo = self.MockGeo()
 
 
-class TestDataIOValidation(unittest.TestCase):
-    """Test validation functions for data loaders."""
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.config = MockConfig()
-
-    def test_validate_telemetry_output_valid(self):
-        """Test that valid telemetry passes validation."""
-        valid_df = pd.DataFrame(
-            {
-                "time": [1.0, 2.0, 3.0],
-                "position_x": [100.0, 200.0, 300.0],
-            }
-        )
-
-        logger.info(f"Testing telemetry validation with DataFrame shape: {valid_df.shape}")
-        # Should not raise
-        validate_telemetry_output(valid_df, self.config)
-        logger.info("Telemetry validation passed for valid DataFrame")
-
-    def test_validate_telemetry_output_not_dataframe(self):
-        """Test that non-DataFrame input raises TypeError."""
-        logger.info("Testing telemetry validation rejects non-DataFrame input")
-        with pytest.raises(TypeError, match="must return pd.DataFrame"):
-            validate_telemetry_output({"not": "a dataframe"}, self.config)
-        logger.info("Correctly raised TypeError for non-DataFrame telemetry")
-
-    def test_validate_telemetry_output_empty(self):
-        """Test that empty DataFrame raises ValueError."""
-        empty_df = pd.DataFrame()
-
-        logger.info("Testing telemetry validation rejects empty DataFrame")
-        with pytest.raises(ValueError, match="empty DataFrame"):
-            validate_telemetry_output(empty_df, self.config)
-        logger.info("Correctly raised ValueError for empty telemetry DataFrame")
-
-    def test_validate_science_output_valid(self):
-        """Test that valid science output passes validation."""
-        valid_df = pd.DataFrame(
-            {
-                "corrected_timestamp": [1e6, 2e6, 3e6],
-                "frame_id": [1, 2, 3],
-            }
-        )
-
-        logger.info(
-            f"Testing science validation with DataFrame shape: {valid_df.shape}, time field: {self.config.geo.time_field}"
-        )
-        # Should not raise
-        validate_science_output(valid_df, self.config)
-        logger.info("Science validation passed for valid DataFrame with required time field")
-
-    def test_validate_science_output_not_dataframe(self):
-        """Test that non-DataFrame input raises TypeError."""
-        logger.info("Testing science validation rejects non-DataFrame input")
-        with pytest.raises(TypeError, match="must return pd.DataFrame"):
-            validate_science_output([1, 2, 3], self.config)
-        logger.info("Correctly raised TypeError for non-DataFrame science output")
-
-    def test_validate_science_output_empty(self):
-        """Test that empty DataFrame raises ValueError."""
-        empty_df = pd.DataFrame()
-
-        logger.info("Testing science validation rejects empty DataFrame")
-        with pytest.raises(ValueError, match="empty DataFrame"):
-            validate_science_output(empty_df, self.config)
-        logger.info("Correctly raised ValueError for empty science DataFrame")
-
-    def test_validate_science_output_missing_time_field(self):
-        """Test that DataFrame missing time field raises ValueError."""
-        df_no_time = pd.DataFrame(
-            {
-                "frame_id": [1, 2, 3],
-                "other_field": [100, 200, 300],
-            }
-        )
-
-        logger.info(
-            f"Testing science validation rejects DataFrame missing required time field '{self.config.geo.time_field}'"
-        )
-        with pytest.raises(ValueError, match="must include time field 'corrected_timestamp'"):
-            validate_science_output(df_no_time, self.config)
-        logger.info("Correctly raised ValueError for missing time field")
-
-    def test_validate_science_output_custom_time_field(self):
-        """Test that validation respects custom time field name."""
-        # Change config to use different time field
-        self.config.geo.time_field = "custom_time"
-
-        logger.info(f"Testing science validation with custom time field: {self.config.geo.time_field}")
-        df_custom_time = pd.DataFrame(
-            {
-                "custom_time": [1.0, 2.0, 3.0],
-                "data": [100, 200, 300],
-            }
-        )
-
-        # Should pass with custom time field
-        validate_science_output(df_custom_time, self.config)
-        logger.info("Validation passed for DataFrame with custom time field")
-
-        # Should fail without custom time field
-        df_wrong_time = pd.DataFrame(
-            {
-                "corrected_timestamp": [1.0, 2.0, 3.0],
-                "data": [100, 200, 300],
-            }
-        )
-
-        logger.info("Testing validation rejects DataFrame with wrong time field name")
-        with pytest.raises(ValueError, match="must include time field 'custom_time'"):
-            validate_science_output(df_wrong_time, self.config)
-        logger.info("Correctly raised ValueError for wrong time field name")
+@pytest.fixture
+def mock_config():
+    return MockConfig()
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_validate_telemetry_valid(mock_config):
+    df = pd.DataFrame({"time": [1.0, 2.0], "position_x": [100.0, 200.0]})
+    validate_telemetry_output(df, mock_config)  # must not raise
+
+
+def test_validate_telemetry_not_dataframe(mock_config):
+    with pytest.raises(TypeError, match="must return pd.DataFrame"):
+        validate_telemetry_output({"not": "a dataframe"}, mock_config)
+
+
+def test_validate_telemetry_empty(mock_config):
+    with pytest.raises(ValueError, match="empty DataFrame"):
+        validate_telemetry_output(pd.DataFrame(), mock_config)
+
+
+def test_validate_science_valid(mock_config):
+    df = pd.DataFrame({"corrected_timestamp": [1e6, 2e6], "frame_id": [1, 2]})
+    validate_science_output(df, mock_config)  # must not raise
+
+
+def test_validate_science_not_dataframe(mock_config):
+    with pytest.raises(TypeError, match="must return pd.DataFrame"):
+        validate_science_output([1, 2, 3], mock_config)
+
+
+def test_validate_science_empty(mock_config):
+    with pytest.raises(ValueError, match="empty DataFrame"):
+        validate_science_output(pd.DataFrame(), mock_config)
+
+
+def test_validate_science_missing_time_field(mock_config):
+    df = pd.DataFrame({"frame_id": [1, 2], "other": [100, 200]})
+    with pytest.raises(ValueError, match="must include time field 'corrected_timestamp'"):
+        validate_science_output(df, mock_config)
+
+
+def test_validate_science_custom_time_field(mock_config):
+    mock_config.geo.time_field = "custom_time"
+    df_ok = pd.DataFrame({"custom_time": [1.0, 2.0], "data": [1, 2]})
+    validate_science_output(df_ok, mock_config)  # must not raise
+    df_bad = pd.DataFrame({"corrected_timestamp": [1.0, 2.0], "data": [1, 2]})
+    with pytest.raises(ValueError, match="must include time field 'custom_time'"):
+        validate_science_output(df_bad, mock_config)
