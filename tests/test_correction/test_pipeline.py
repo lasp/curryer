@@ -129,8 +129,9 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     sci_csv = tmp_path / "sci.csv"
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
-    clarreo_cfg.data = DataConfig(file_format="csv", time_scale_factor=1e6)
-    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), clarreo_cfg)
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), cfg)
     assert isinstance(tlm_ds, pd.DataFrame)
     assert isinstance(sci_ds, pd.DataFrame)
     assert ugps is not None
