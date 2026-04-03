@@ -45,11 +45,6 @@ _SCI = pd.DataFrame(
 
 
 @pytest.fixture(scope="module")
-def root_dir():
-    return Path(__file__).parents[2]
-
-
-@pytest.fixture(scope="module")
 def clarreo_cfg(root_dir):
     return create_clarreo_correction_config(
         root_dir / "tests" / "data" / "clarreo" / "gcs",

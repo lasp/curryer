@@ -20,6 +20,12 @@ for _p in (_here, _clarreo_dir):
         sys.path.insert(0, _p)
 
 
+@pytest.fixture(scope="session")
+def root_dir():
+    """Repository root directory (two levels above ``tests/test_correction/``)."""
+    return Path(__file__).parents[2]
+
+
 @pytest.fixture
 def temp_work_dir(tmp_path):
     """Clean temporary working directory for each test."""

@@ -33,11 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="module")
-def root_dir():
-    return Path(__file__).parents[2]
-
-
-@pytest.fixture(scope="module")
 def clarreo_cfg(root_dir):
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
     generic_dir = root_dir / "data" / "generic"

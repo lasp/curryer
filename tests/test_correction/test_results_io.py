@@ -8,7 +8,6 @@ Covers:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import pytest
 from clarreo_config import create_clarreo_correction_config
@@ -16,11 +15,6 @@ from clarreo_config import create_clarreo_correction_config
 from curryer.correction import correction
 
 logger = logging.getLogger(__name__)
-
-
-@pytest.fixture(scope="module")
-def root_dir():
-    return Path(__file__).parents[2]
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +50,7 @@ def test_build_netcdf_structure_zero_initialised(clarreo_cfg):
 
 def test_checkpoint_save_load_cleanup(clarreo_cfg, tmp_path):
     """Save → load → cleanup round-trip preserves data and removes the file."""
-    cfg = clarreo_cfg
+    cfg = clarreo_cfg.model_copy(deep=True)
     cfg.n_iterations = 2
     cfg.output_filename = "ckpt_test.nc"
     output_file = tmp_path / cfg.output_filename
@@ -81,8 +75,9 @@ def test_checkpoint_save_load_cleanup(clarreo_cfg, tmp_path):
 
 def test_checkpoint_load_missing_returns_none(clarreo_cfg, tmp_path):
     """_load_checkpoint returns (None, 0) when no checkpoint file exists."""
-    clarreo_cfg.output_filename = "no_ckpt.nc"
-    output_file = tmp_path / clarreo_cfg.output_filename
-    loaded, completed = correction._load_checkpoint(output_file, clarreo_cfg)
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.output_filename = "no_ckpt.nc"
+    output_file = tmp_path / cfg.output_filename
+    loaded, completed = correction._load_checkpoint(output_file, cfg)
     assert loaded is None
     assert completed == 0
