@@ -734,6 +734,9 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
                 if kernel_file:
                     param_groups[param_name]["config_file"] = Path(kernel_file)
                     _config_logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
+                elif param_dict.get("config_file"):
+                    param_groups[param_name]["config_file"] = Path(param_dict["config_file"])
+                    _config_logger.debug(f"Using explicit config_file for OFFSET_KERNEL '{param_name}'")
                 else:
                     _config_logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
 
@@ -754,12 +757,12 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         else:
             param_dict = group_data["param_dict"]
             param_data = {
-                "current_value": param_dict.get("initial_value", 0.0),
+                "current_value": param_dict.get("current_value", param_dict.get("initial_value", 0.0)),
                 "bounds": param_dict.get("bounds", [-100, 100]),
                 "sigma": param_dict.get("sigma"),
                 "units": param_dict.get("units", "radians"),
                 "distribution": param_dict.get("distribution_type", "normal"),
-                "field": param_dict.get("application_target", {}).get("field_name", None),
+                "field": (param_dict.get("field") or param_dict.get("application_target", {}).get("field_name", None)),
             }
 
         parameters.append(

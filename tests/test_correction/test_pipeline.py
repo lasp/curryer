@@ -1,0 +1,162 @@
+"""Tests for ``curryer.correction.pipeline``.
+
+Covers:
+- ``_extract_parameter_values``
+- ``_extract_error_metrics``
+- ``_store_parameter_values``
+- ``_store_gcp_pair_results``
+- ``_compute_parameter_set_metrics``
+- ``_load_image_pair_data``
+- ``loop`` (optimised pair-outer, ``@pytest.mark.extra``)
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+from _synthetic_helpers import synthetic_image_matching
+from clarreo_config import create_clarreo_correction_config
+from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
+
+from curryer.correction import correction
+from curryer.correction.config import DataConfig
+
+logger = logging.getLogger(__name__)
+
+
+# ── shared fixtures ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def clarreo_cfg(root_dir):
+    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+    generic_dir = root_dir / "data" / "generic"
+    return create_clarreo_correction_config(data_dir, generic_dir)
+
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+
+
+def test_extract_parameter_values():
+    """_extract_parameter_values returns roll/pitch/yaw keys."""
+    param_config = correction.ParameterConfig(
+        ptype=correction.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), data=None
+    )
+    param_data = pd.DataFrame(
+        {
+            "angle_x": [np.radians(1.0 / 3600)],
+            "angle_y": [np.radians(2.0 / 3600)],
+            "angle_z": [np.radians(3.0 / 3600)],
+        }
+    )
+    result = correction._extract_parameter_values([(param_config, param_data)])
+    assert isinstance(result, dict)
+    assert len(result) == 3
+    assert "test_kernel_roll" in result
+    assert "test_kernel_pitch" in result
+    assert "test_kernel_yaw" in result
+
+
+def test_extract_error_metrics():
+    """_extract_error_metrics pulls named metrics from a Dataset."""
+    ds = xr.Dataset({"lat_error_deg": (["pt"], [0.001, 0.002])})
+    ds.attrs.update(
+        {
+            "rms_error_m": 150.0,
+            "mean_error_m": 140.0,
+            "max_error_m": 200.0,
+            "std_error_m": 10.0,
+            "total_measurements": 2,
+        }
+    )
+    m = correction._extract_error_metrics(ds)
+    assert m["rms_error_m"] == 150.0
+    assert m["n_measurements"] == 2
+
+
+def test_store_parameter_values():
+    """_store_parameter_values writes values at the correct index."""
+    netcdf_data = {"parameter_set_id": np.zeros(3, dtype=int), "param_foo": np.zeros(3)}
+    correction._store_parameter_values(netcdf_data, param_idx=1, param_values={"foo": 2.5})
+    assert netcdf_data["param_foo"][1] == pytest.approx(2.5)
+
+
+def test_store_gcp_pair_results():
+    """_store_gcp_pair_results populates all metric arrays correctly."""
+    nc = {k: np.zeros((2, 2)) for k in ("rms_error_m", "mean_error_m", "max_error_m", "std_error_m")}
+    nc["n_measurements"] = np.zeros((2, 2), dtype=int)
+    metrics = {
+        "rms_error_m": 150.0,
+        "mean_error_m": 140.0,
+        "max_error_m": 200.0,
+        "std_error_m": 10.0,
+        "n_measurements": 10,
+    }
+    correction._store_gcp_pair_results(nc, param_idx=0, pair_idx=1, error_metrics=metrics)
+    assert nc["rms_error_m"][0, 1] == 150.0
+    assert nc["std_error_m"][0, 1] == 10.0
+    assert nc["n_measurements"][0, 1] == 10
+
+
+def test_compute_parameter_set_metrics():
+    """_compute_parameter_set_metrics populates aggregate stats."""
+    nc = {
+        "percent_under_250m": np.zeros(2),
+        "mean_rms_all_pairs": np.zeros(2),
+        "best_pair_rms": np.zeros(2),
+        "worst_pair_rms": np.zeros(2),
+    }
+    correction._compute_parameter_set_metrics(nc, param_idx=0, pair_errors=[100.0, 200.0, 300.0], threshold_m=250.0)
+    assert nc["percent_under_250m"][0] > 0
+    assert nc["best_pair_rms"][0] == 100.0
+    assert nc["worst_pair_rms"][0] == 300.0
+
+
+def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
+    """_load_image_pair_data returns DataFrames for tlm and sci."""
+    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+    tlm_csv = tmp_path / "tlm.csv"
+    sci_csv = tmp_path / "sci.csv"
+    load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
+    load_clarreo_science(data_dir).to_csv(sci_csv)
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), cfg)
+    assert isinstance(tlm_ds, pd.DataFrame)
+    assert isinstance(sci_ds, pd.DataFrame)
+    assert ugps is not None
+
+
+@pytest.mark.extra
+def test_loop_optimized(root_dir, tmp_path):
+    """loop() produces correct result structure. Requires GMTED – ``--run-extra``."""
+    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+    generic_dir = root_dir / "data" / "generic"
+    config = create_clarreo_correction_config(data_dir, generic_dir)
+    config.n_iterations = 2
+    config.output_filename = "test_loop.nc"
+    work = tmp_path / "loop"
+    work.mkdir()
+    tlm_csv, sci_csv = work / "tlm.csv", work / "sci.csv"
+    load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
+    load_clarreo_science(data_dir).to_csv(sci_csv)
+    config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    config.image_matching_func = synthetic_image_matching
+    sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
+    np.random.seed(42)
+    results, nc = correction.loop(config, work, sets, resume_from_checkpoint=False)
+    assert isinstance(results, list)
+    assert len(results) > 0
+    assert len(results) == config.n_iterations * len(sets)
+    assert nc["rms_error_m"].shape == (config.n_iterations, len(sets))
+    for r in results:
+        assert "param_index" in r
+        assert "pair_index" in r
+        assert "rms_error_m" in r
+        assert r["aggregate_rms_error_m"] is not None
+        assert isinstance(r["aggregate_rms_error_m"], (int, float, np.number))
