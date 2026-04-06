@@ -48,7 +48,7 @@ dependencies = [
     "requests>=2.28",
     "jinja2>=3",
     # NOTE: SpiceyPy 8.1+ breaks curryer compatibility. Keep this pin until
-    # that issue is resolved upstream/in curryer (add issue/PR reference here).
+    # that issue is resolved upstream/in curryer (CURRYER-148).
     "spiceypy>=6,<8.1.0",
     "openpyxl>=3",
     "numpy >=1.23,<2.0",
