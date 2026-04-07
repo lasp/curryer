@@ -38,8 +38,6 @@ authors:
     email: maxine.hartnett@lasp.colorado.edu
     affiliation: LASP
     orcid: "https://orcid.org/0009-0002-1495-5652"
-version: 0.3.2
-date-released: "2026-04-07"
 identifiers:
   - type: doi
     value: https://doi.org/10.5281/zenodo.18734309
