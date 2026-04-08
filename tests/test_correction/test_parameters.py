@@ -132,7 +132,6 @@ def _make_config(
         geo=geo,
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
     )
 
 
@@ -554,7 +553,6 @@ class TestConfigValidation:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
         )
         assert config.search_strategy == SearchStrategy.RANDOM
 

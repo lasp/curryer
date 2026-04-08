@@ -214,8 +214,6 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         # Performance metrics (CLARREO requirements)
         performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
         performance_spec_percent=39.0,  # CLARREO requirement: 39% of measurements under threshold
-        # Geodetic parameters (WGS84)
-        earth_radius_m=6378140.0,  # WGS84 Earth radius in meters
         # NetCDF output configuration
         netcdf=netcdf_config,
         # Calibration file names (CLARREO/HySICS specific)
@@ -265,7 +263,6 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
                 "n_iterations": config.n_iterations,
                 "performance_threshold_m": config.performance_threshold_m,
                 "performance_spec_percent": config.performance_spec_percent,
-                "earth_radius_m": config.earth_radius_m,
                 "parameters": [],
             },
             "geolocation": {

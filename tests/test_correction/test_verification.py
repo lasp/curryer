@@ -48,7 +48,6 @@ from curryer.correction.verification import (
 # Helpers / factories
 # ===========================================================================
 
-_EARTH_RADIUS_M = 6_378_140.0
 _THRESHOLD_M = 250.0
 _SPEC_PCT = 39.0
 
@@ -81,7 +80,6 @@ def _make_config(**overrides) -> CorrectionConfig:
         geo=_make_geo(),
         performance_threshold_m=_THRESHOLD_M,
         performance_spec_percent=_SPEC_PCT,
-        earth_radius_m=_EARTH_RADIUS_M,
         # CLARREO-style names so the 13-case dataset validates cleanly
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
@@ -111,7 +109,7 @@ def _make_full_image_matching_dataset(n: int = 5, seed: int = 0) -> xr.Dataset:
     :class:`~curryer.correction.error_stats.ErrorStatsProcessor` can compute
     nadir-equivalent errors without triggering geometry warnings.
     """
-    from tests.test_correction.test_geolocation_error_stats import (
+    from test_geolocation_error_stats import (
         create_test_dataset_13_cases,
     )
 

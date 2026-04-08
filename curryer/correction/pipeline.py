@@ -26,7 +26,7 @@ import xarray as xr
 
 from curryer import meta
 from curryer import spicierpy as sp
-from curryer.compute import spatial
+from curryer.compute import constants, spatial
 from curryer.correction.config import (
     CalibrationData,
     CorrectionConfig,
@@ -270,7 +270,7 @@ def image_matching(
 
     # Convert errors from km to degrees
     lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
-    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_center_lat))
     lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
     processing_time = time.time() - start_time
@@ -866,7 +866,6 @@ def loop(
             geo=geo_config,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
             data=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
         results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
@@ -1181,3 +1180,109 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 # =============================================================================
 # Incremental NetCDF Saving (Checkpoint/Resume)
 # =============================================================================
+
+# =============================================================================
+# Preferred-name aliases  (backward-compat originals kept above)
+# =============================================================================
+
+
+def run_correction(
+    config: CorrectionConfig,
+    work_dir: Path,
+    tlm_sci_gcp_sets: list[tuple[str, str, str]],
+    resume_from_checkpoint: bool = False,
+):
+    """Run the correction parameter sweep.
+
+    This is the preferred name for :func:`loop`.  See :func:`loop` for
+    full documentation.
+
+    Parameters
+    ----------
+    config : CorrectionConfig
+        Full correction configuration.
+    work_dir : Path
+        Working directory for temporary files.
+    tlm_sci_gcp_sets : list of (str, str, str)
+        List of (telemetry_key, science_key, gcp_key) tuples.
+    resume_from_checkpoint : bool, optional
+        If True, resume from an existing checkpoint.
+
+    Returns
+    -------
+    results : list
+    netcdf_data : dict
+    """
+    return loop(config, work_dir, tlm_sci_gcp_sets, resume_from_checkpoint)
+
+
+def compute_error_stats(image_matching_results, correction_config: "CorrectionConfig"):
+    """Compute error statistics from image matching results.
+
+    This is the preferred name for :func:`call_error_stats_module`.
+    See :func:`call_error_stats_module` for full documentation.
+
+    Parameters
+    ----------
+    image_matching_results : xr.Dataset or list of xr.Dataset
+        Output from image matching, either a single dataset or a list.
+    correction_config : CorrectionConfig
+        Correction configuration used to initialise the error stats processor.
+
+    Returns
+    -------
+    xr.Dataset
+        Aggregate error statistics dataset.
+    """
+    return call_error_stats_module(image_matching_results, correction_config)
+
+
+def run_image_matching(
+    geolocated_data: "xr.Dataset",
+    gcp_reference_file: Path,
+    telemetry: "pd.DataFrame",
+    calibration_dir: Path,
+    params_info: list,
+    config: "CorrectionConfig",
+    los_vectors_cached: "np.ndarray | None" = None,
+    optical_psfs_cached: "list | None" = None,
+) -> "xr.Dataset":
+    """Run image matching against GCP reference.
+
+    This is the preferred name for :func:`image_matching`.
+    See :func:`image_matching` for full documentation.
+
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Geolocated scene data with latitude/longitude.
+    gcp_reference_file : Path
+        Path to the GCP reference image (.mat file).
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft state.
+    calibration_dir : Path
+        Directory containing calibration files.
+    params_info : list
+        Parameter information for the current iteration.
+    config : CorrectionConfig
+        Full correction configuration.
+    los_vectors_cached : np.ndarray or None, optional
+        Pre-loaded LOS vectors; loaded from disk if None.
+    optical_psfs_cached : list or None, optional
+        Pre-loaded optical PSFs; loaded from disk if None.
+
+    Returns
+    -------
+    xr.Dataset
+        Image matching results dataset.
+    """
+    return image_matching(
+        geolocated_data,
+        gcp_reference_file,
+        telemetry,
+        calibration_dir,
+        params_info,
+        config,
+        los_vectors_cached,
+        optical_psfs_cached,
+    )

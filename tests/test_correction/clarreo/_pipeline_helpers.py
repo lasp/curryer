@@ -214,7 +214,6 @@ def run_downstream_pipeline(
         geo=base_config.geo,
         performance_threshold_m=base_config.performance_threshold_m,
         performance_spec_percent=base_config.performance_spec_percent,
-        earth_radius_m=base_config.earth_radius_m,
         netcdf=base_config.netcdf,
         calibration_file_names=base_config.calibration_file_names,
         spacecraft_position_name=base_config.spacecraft_position_name,

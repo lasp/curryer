@@ -33,7 +33,6 @@ def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_ge
     corr = config_data["correction"]
     assert isinstance(corr.get("parameters"), list)
     assert len(corr["parameters"]) > 0
-    assert corr["earth_radius_m"] == 6378140.0
     assert corr["performance_threshold_m"] == 250.0
     assert corr["performance_spec_percent"] == 39.0
     assert config_data["geolocation"]["instrument_name"] == "CPRS_HYSICS"
@@ -41,7 +40,6 @@ def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_ge
     reloaded = correction.load_config_from_json(output_path)
     assert reloaded.n_iterations == config.n_iterations
     assert len(reloaded.parameters) == len(config.parameters)
-    assert reloaded.earth_radius_m == 6378140.0
     reloaded.validate()
 
     # Verify each reloaded parameter has the expected ptype, config_file (for
@@ -91,4 +89,3 @@ class TestClarreoConfiguration:
         config = create_clarreo_correction_config(self.data_dir, self.generic_dir)
         assert config.performance_threshold_m == 250.0
         assert config.performance_spec_percent == 39.0
-        assert config.earth_radius_m == 6378140.0

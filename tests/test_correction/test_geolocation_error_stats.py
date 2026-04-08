@@ -100,16 +100,20 @@ def _create_test_config(**overrides):
     for testing CLARREO-specific scenarios. Tests can override individual values
     to test edge cases or alternative configurations.
 
-    Args:
-        **overrides: Override any default values
+    Parameters
+    ----------
+    **overrides
+        Override any default values.
 
-    Returns:
-        ErrorStatsConfig with CLARREO test values
+    Returns
+    -------
+    ErrorStatsConfig
+        ErrorStatsConfig with CLARREO test values.
     """
     # CLARREO mission defaults (from clarreo_correction_config.json)
-    # These values should match the canonical CLARREO configuration
+    # earth_radius_m is intentionally absent – all calculations use
+    # curryer.compute.constants.WGS84_SEMI_MAJOR_AXIS_KM via _EARTH_RADIUS_M.
     defaults = {
-        "earth_radius_m": 6378140.0,  # WGS84 Earth radius (CLARREO standard)
         "performance_threshold_m": 250.0,  # CLARREO accuracy requirement
         "performance_spec_percent": 39.0,  # CLARREO performance spec
         "variable_names": {
@@ -766,21 +770,19 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
     def test_geolocation_config_default(self):
         """Test default configuration values.
 
-        Validates standard Earth radius (WGS84) and performance specs:
+        Validates performance specs:
         - 250m threshold: nadir equivalent accuracy requirement
         - 39%: project performance requirement (>39% of measurements must be <250m)
+        Earth radius is no longer a config field; it comes from
+        ``curryer.compute.constants.WGS84_SEMI_MAJOR_AXIS_KM``.
         """
         config = _create_test_config()
-        self.assertEqual(config.earth_radius_m, 6378140.0)
         self.assertEqual(config.performance_threshold_m, 250.0)
         self.assertEqual(config.performance_spec_percent, 39.0)
 
     def test_geolocation_config_custom(self):
         """Test custom configuration values."""
-        config = _create_test_config(
-            earth_radius_m=6371000.0, performance_threshold_m=200.0, performance_spec_percent=40.0
-        )
-        self.assertEqual(config.earth_radius_m, 6371000.0)
+        config = _create_test_config(performance_threshold_m=200.0, performance_spec_percent=40.0)
         self.assertEqual(config.performance_threshold_m, 200.0)
         self.assertEqual(config.performance_spec_percent, 40.0)
 
@@ -789,13 +791,12 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         config = _create_test_config()
         processor = ErrorStatsProcessor(config=config)
         self.assertIsInstance(processor.config, ErrorStatsConfig)
-        self.assertEqual(processor.config.earth_radius_m, 6378140.0)
+        self.assertEqual(processor.config.performance_threshold_m, 250.0)
 
     def test_processor_initialization_custom(self):
         """Test processor initialization with custom config."""
-        config = _create_test_config(earth_radius_m=6371000.0, performance_threshold_m=200.0)
+        config = _create_test_config(performance_threshold_m=200.0)
         processor = ErrorStatsProcessor(config=config)
-        self.assertEqual(processor.config.earth_radius_m, 6371000.0)
         self.assertEqual(processor.config.performance_threshold_m, 200.0)
 
     def test_validate_input_data_success(self):
@@ -968,7 +969,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         self.assertIn("lat_error_deg", output_ds.data_vars)
         self.assertIn("lon_error_deg", output_ds.data_vars)
 
-        # Check attributes
+        # Check attributes – earth_radius_m is sourced from constants, not config
         self.assertIn("title", output_ds.attrs)
         self.assertIn("earth_radius_m", output_ds.attrs)
 
@@ -1353,7 +1354,9 @@ def run_13_case_validation():
     config = _create_test_config()
     processor = ErrorStatsProcessor(config=config)
     print(
-        f"✓ Created processor with earth_radius={config.earth_radius_m}m, threshold={config.performance_threshold_m}m"
+        f"✓ Created processor with threshold={config.performance_threshold_m}m, "
+        f"spec={config.performance_spec_percent}%  "
+        f"(earth_radius from constants: {config.performance_threshold_m})"
     )
 
     # Process all cases

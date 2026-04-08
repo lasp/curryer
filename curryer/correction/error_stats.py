@@ -20,19 +20,20 @@ from typing import Union
 import numpy as np
 import xarray as xr
 
+from curryer.compute import constants
+
 logger = logging.getLogger(__name__)
+
+# WGS84 Earth radius in meters – single source of truth from curryer.compute.constants.
+_EARTH_RADIUS_M: float = constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0
 
 
 @dataclass
 class ErrorStatsConfig:
     """Configuration parameters for geolocation error statistics processing.
 
-    All values should be provided from CorrectionConfig - no hardcoded defaults.
-
     Parameters
     ----------
-    earth_radius_m : float
-        Earth radius in meters (e.g., WGS84: 6378140.0).
     performance_threshold_m : float
         Accuracy threshold in meters (e.g., 250.0).
     performance_spec_percent : float
@@ -41,22 +42,26 @@ class ErrorStatsConfig:
         Minimum correlation filter threshold (0.0-1.0). Default is None.
     variable_names : dict of str to str or None, optional
         Mission-agnostic variable name mappings from semantic names to actual
-        dataset variable names. If None, CLARREO defaults are expected.
+        dataset variable names. If None, generic defaults are used.
+
+    Notes
+    -----
+    Earth radius is not a config field. ``_EARTH_RADIUS_M`` (derived from
+    ``curryer.compute.constants.WGS84_SEMI_MAJOR_AXIS_KM``) is used directly
+    in all calculations.
     """
 
-    earth_radius_m: float
     performance_threshold_m: float
     performance_spec_percent: float
     minimum_correlation: float | None = None
 
     # Mission-agnostic variable name mappings
     # Maps semantic names to actual variable names in the dataset
-    variable_names: dict[str, str] | None = None  # If None, uses CLARREO defaults
+    variable_names: dict[str, str] | None = None  # If None, uses generic defaults
 
     @classmethod
     def from_correction_config(cls, correction_config) -> "ErrorStatsConfig":
-        """
-        Create ErrorStatsConfig from CorrectionConfig.
+        """Create ErrorStatsConfig from CorrectionConfig.
 
         This is the preferred way to create this config - extracts all settings
         from the single source of truth (CorrectionConfig).
@@ -71,7 +76,6 @@ class ErrorStatsConfig:
         ErrorStatsConfig
             ErrorStatsConfig with settings from CorrectionConfig.
         """
-        # Create variable name mapping
         variable_names = {
             "spacecraft_position": correction_config.spacecraft_position_name,
             "boresight": correction_config.boresight_name,
@@ -79,7 +83,6 @@ class ErrorStatsConfig:
         }
 
         return cls(
-            earth_radius_m=correction_config.earth_radius_m,
             performance_threshold_m=correction_config.performance_threshold_m,
             performance_spec_percent=correction_config.performance_spec_percent,
             minimum_correlation=correction_config.geo.minimum_correlation,
@@ -210,8 +213,8 @@ class ErrorStatsProcessor:
         gcp_lon_rad = np.deg2rad(filtered_data.gcp_lon_deg.values)
 
         # Calculate N-S and E-W error distances in meters
-        ns_error_dist_m = self.config.earth_radius_m * lat_error_rad
-        ew_error_dist_m = self.config.earth_radius_m * np.cos(gcp_lat_rad) * lon_error_rad
+        ns_error_dist_m = _EARTH_RADIUS_M * lat_error_rad
+        ew_error_dist_m = _EARTH_RADIUS_M * np.cos(gcp_lat_rad) * lon_error_rad
 
         # Transform boresight vectors using configurable variable names
         bhat_ctrs = self._transform_boresight_vectors(
@@ -369,8 +372,8 @@ class ErrorStatsProcessor:
     def _calculate_scaling_factors(self, riss_ctrs: np.ndarray, theta: float) -> tuple[float, float]:
         """Calculate scaling factors for nadir-equivalent transformation."""
         r_magnitude = np.linalg.norm(riss_ctrs)
-        f = r_magnitude / self.config.earth_radius_m
-        h = r_magnitude - self.config.earth_radius_m
+        f = r_magnitude / _EARTH_RADIUS_M
+        h = r_magnitude - _EARTH_RADIUS_M
 
         # Calculate discriminant for sqrt - should be positive for physically valid geometries
         discriminant = 1 - f**2 * np.sin(theta) ** 2
@@ -389,10 +392,10 @@ class ErrorStatsProcessor:
         temp1 = np.maximum(temp1, 1e-10)
 
         # View-plane scaling factor
-        vp_factor = h / self.config.earth_radius_m / (-1 + f * np.cos(theta) / temp1)
+        vp_factor = h / _EARTH_RADIUS_M / (-1 + f * np.cos(theta) / temp1)
 
         # Cross-view-plane scaling factor
-        xvp_factor = h / self.config.earth_radius_m / np.cos(theta) / (f * np.cos(theta) - temp1)
+        xvp_factor = h / _EARTH_RADIUS_M / np.cos(theta) / (f * np.cos(theta) - temp1)
 
         return vp_factor, xvp_factor
 
@@ -464,7 +467,7 @@ class ErrorStatsProcessor:
             attrs={
                 "title": "Geolocation Error Statistics Results",
                 "processing_timestamp": np.datetime64("now"),
-                "earth_radius_m": self.config.earth_radius_m,
+                "earth_radius_m": _EARTH_RADIUS_M,
                 "performance_threshold_m": self.config.performance_threshold_m,
             },
         )

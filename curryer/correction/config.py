@@ -137,6 +137,9 @@ class DataConfig(BaseModel):
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
     time_scale_factor: float = 1.0
+    # Explicit column name mappings for telemetry spacecraft-position data.
+    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"].  None means use mission defaults.
+    position_columns: list[str] | None = None
 
 
 # ============================================================================
@@ -461,7 +464,6 @@ class CorrectionConfig(BaseModel):
         geo : GeolocationConfig
         performance_threshold_m : float
         performance_spec_percent : float
-        earth_radius_m : float
 
     DATA LOADING CONFIGURATION:
         data : DataConfig | None
@@ -516,7 +518,6 @@ class CorrectionConfig(BaseModel):
     geo: GeolocationConfig
     performance_threshold_m: float
     performance_spec_percent: float
-    earth_radius_m: float
 
     # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
     data: DataConfig | None = None
@@ -532,6 +533,9 @@ class CorrectionConfig(BaseModel):
     # CALIBRATION CONFIGURATION
     calibration_dir: Path | None = None
     calibration_file_names: dict[str, str] | None = None
+    # Direct calibration file paths (alternative to calibration_dir + calibration_file_names)
+    psf_file: Path | None = None
+    los_vectors_file: Path | None = None
 
     # MISSION-SPECIFIC NAMING
     spacecraft_position_name: str = "sc_position"
@@ -581,9 +585,6 @@ class CorrectionConfig(BaseModel):
 
         if self.geo is None:
             errors.append("geo (GeolocationConfig) is required")
-
-        if self.earth_radius_m is None or self.earth_radius_m <= 0:
-            errors.append("earth_radius_m must be a positive number (e.g., 6378140.0 for WGS84)")
 
         if self.performance_threshold_m is None or self.performance_threshold_m <= 0:
             errors.append("performance_threshold_m must be a positive number (e.g., 250.0 meters)")
@@ -793,10 +794,10 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
 
     # Extract required mission-specific parameters from correction section
     earth_radius_m = corr_config.get("earth_radius_m")
-    if earth_radius_m is None:
-        raise KeyError(
-            "Missing required 'earth_radius_m' in correction config section. "
-            "This must be specified for your mission (e.g., 6378140.0 for WGS84)."
+    if earth_radius_m is not None:
+        _config_logger.warning(
+            "earth_radius_m in config is deprecated and ignored. "
+            "The WGS84 value from curryer.compute.constants is used instead."
         )
 
     performance_threshold_m = corr_config.get("performance_threshold_m")
@@ -820,7 +821,6 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         geo=geo,
         performance_threshold_m=performance_threshold_m,
         performance_spec_percent=performance_spec_percent,
-        earth_radius_m=earth_radius_m,
     )
 
     config.validate()

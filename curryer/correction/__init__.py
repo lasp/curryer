@@ -16,6 +16,8 @@ results_io
     NetCDF result file read/write and checkpoint support.
 pipeline
     Main :func:`loop` orchestration and all per-iteration helpers.
+    Preferred-name aliases: :func:`run_correction`, :func:`run_image_matching`,
+    :func:`compute_error_stats`.
 correction
     Thin re-export shim -- keeps all existing
     ``from curryer.correction import correction`` import paths working.
@@ -74,7 +76,7 @@ from .config import (
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor
-from .pipeline import loop
+from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
 from .verification import GCPError, RequirementsConfig, VerificationResult, verify
 
 __all__ = [
@@ -106,8 +108,11 @@ __all__ = [
     "ParameterType",
     "SearchStrategy",
     "load_config_from_json",
-    # Pipeline entry point
+    # Pipeline entry points
     "loop",
+    "run_correction",
+    "compute_error_stats",
+    "run_image_matching",
     # Data structures
     "ImageGrid",
     "PSFGrid",

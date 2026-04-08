@@ -23,6 +23,7 @@ from curryer.correction.config import (
     ParameterConfig,
     ParameterData,
     ParameterType,
+    load_config_from_json,
 )
 
 # ---------------------------------------------------------------------------
@@ -107,7 +108,6 @@ def minimal_config(geo, param_constant) -> CorrectionConfig:
         geo=geo,
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
     )
 
 
@@ -121,7 +121,6 @@ def full_config(geo, param_constant, param_offset_kernel, param_offset_time, net
         geo=geo,
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
         netcdf=netcdf_cfg,
         output_filename="test_results.nc",
         calibration_dir=Path("tests/data/calibration"),
@@ -166,7 +165,6 @@ class TestDataConfig:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
             data=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
         json_str = cfg.model_dump_json()
@@ -183,7 +181,6 @@ class TestDataConfig:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
         )
         assert cfg.data is None
 
@@ -448,7 +445,6 @@ class TestCorrectionConfig:
                 geo=geo,
                 # performance_threshold_m missing
                 performance_spec_percent=39.0,
-                earth_radius_m=6_378_140.0,
             )
         assert "performance_threshold_m" in str(exc_info.value)
 
@@ -460,7 +456,6 @@ class TestCorrectionConfig:
                 geo=geo,
                 performance_threshold_m=250.0,
                 performance_spec_percent=39.0,
-                earth_radius_m=6_378_140.0,
             )
         assert "n_iterations" in str(exc_info.value)
 
@@ -477,6 +472,17 @@ class TestCorrectionConfig:
         with pytest.raises(ValueError, match="n_iterations"):
             minimal_config.validate()
         minimal_config.n_iterations = 5
+
+    def test_correction_config_requires_no_earth_radius_m(self, geo, param_constant):
+        """CorrectionConfig constructs successfully without earth_radius_m (field removed)."""
+        config = CorrectionConfig(
+            n_iterations=5,
+            parameters=[param_constant],
+            geo=geo,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+        )
+        assert not hasattr(config, "earth_radius_m") or config.model_fields.get("earth_radius_m") is None
 
     def test_ensure_netcdf_config_creates_default(self, minimal_config):
         assert minimal_config.netcdf is None
@@ -544,7 +550,7 @@ class TestJsonRoundTrip:
         assert "geo" in data
         assert "performance_threshold_m" in data
         assert "performance_spec_percent" in data
-        assert "earth_radius_m" in data
+        assert "earth_radius_m" not in data
 
     def test_path_fields_survive_roundtrip(self, minimal_config):
         reloaded = CorrectionConfig.model_validate_json(minimal_config.model_dump_json())
@@ -605,8 +611,77 @@ class TestJsonRoundTrip:
             geo=geo,
             performance_threshold_m=100.0,
             performance_spec_percent=50.0,
-            earth_radius_m=6_378_140.0,
         )
         reloaded = CorrectionConfig.model_validate_json(config.model_dump_json())
         assert reloaded.seed is None
         assert config == reloaded
+
+
+# ===========================================================================
+# load_config_from_json – earth_radius_m deprecation
+# ===========================================================================
+
+
+class TestLoadConfigFromJsonEarthRadius:
+    """Verify that earth_radius_m in JSON is accepted (with a warning) and ignored."""
+
+    def _minimal_json(self, tmp_path, *, include_earth_radius: bool) -> Path:
+        """Write a minimal valid correction config JSON to a temp file."""
+        import json
+
+        # Use the parameter format that load_config_from_json expects
+        # (name + parameter_type, not ptype).
+        payload = {
+            "mission_config": {
+                "mission_name": "TEST",
+                "kernel_mappings": {
+                    "constant_kernel": {},
+                    "offset_kernel": {},
+                },
+            },
+            "geolocation": {
+                "instrument_name": "TEST_INST",
+                "time_field": "ugps_time",
+                "meta_kernel_file": str(tmp_path / "test.kernels.tm.json"),
+                "generic_kernel_dir": str(tmp_path),
+            },
+            "correction": {
+                "n_iterations": 2,
+                "performance_threshold_m": 250.0,
+                "performance_spec_percent": 39.0,
+                "parameters": [
+                    {
+                        "name": "time_correction",
+                        "parameter_type": "OFFSET_TIME",
+                        "initial_value": 0.0,
+                        "bounds": [-50.0, 50.0],
+                        "sigma": 7.0,
+                        "units": "milliseconds",
+                        "field": "ugps_time",
+                    }
+                ],
+            },
+        }
+        if include_earth_radius:
+            payload["correction"]["earth_radius_m"] = 6_378_140.0
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_json_without_earth_radius_loads_fine(self, tmp_path):
+        """Config without earth_radius_m should load without error."""
+        config_path = self._minimal_json(tmp_path, include_earth_radius=False)
+        config = load_config_from_json(config_path)
+        assert config.performance_threshold_m == 250.0
+
+    def test_json_with_earth_radius_loads_with_warning(self, tmp_path, caplog):
+        """Config with legacy earth_radius_m loads but emits a deprecation warning."""
+        import logging
+
+        config_path = self._minimal_json(tmp_path, include_earth_radius=True)
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.config"):
+            config = load_config_from_json(config_path)
+
+        assert config.performance_threshold_m == 250.0
+        assert any("earth_radius_m" in msg and "deprecated" in msg for msg in caplog.messages)
