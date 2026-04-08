@@ -30,6 +30,7 @@ from curryer.compute import constants, spatial
 from curryer.correction.config import (
     CalibrationData,
     CorrectionConfig,
+    CorrectionInput,
     ImageMatchingContext,
     KernelContext,
     ParameterType,
@@ -245,15 +246,24 @@ def image_matching(
         optical_psfs = optical_psfs_cached
         logger.info("    Using cached calibration data")
     else:
-        # Load from files
-        # Use configurable calibration file names
-        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-        los_file = calibration_dir / los_filename
+        # Prefer direct file paths from config; fall back to calibration_dir parameter.
+        if config.los_vectors_file is not None:
+            los_file = Path(config.los_vectors_file)
+        elif calibration_dir is not None:
+            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+            los_file = calibration_dir / los_filename
+        else:
+            raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
         los_vectors = load_los_vectors_from_mat(los_file)
         logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-        psf_file = calibration_dir / psf_filename
+        if config.psf_file is not None:
+            psf_file = Path(config.psf_file)
+        elif calibration_dir is not None:
+            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+            psf_file = calibration_dir / psf_filename
+        else:
+            raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
         optical_psfs = load_optical_psf_from_mat(psf_file)
         logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
@@ -645,10 +655,14 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
 
     Note
     ----
-    This function does NOT use ``resolve_path()`` for S3 support because
-    calibration file resolution is being restructured in PR 4 (direct
-    ``config.los_vectors_file`` / ``config.psf_file`` paths). The S3-aware
-    path resolution will be added there.
+    Supports three resolution strategies (in priority order):
+
+    1. ``config.los_vectors_file`` / ``config.psf_file`` — direct file paths
+       (set in PR 1 via ``CorrectionConfig``).
+    2. ``config.calibration_dir`` + ``config.calibration_file_names`` — legacy
+       directory-based lookup.
+    3. Neither configured — returns ``CalibrationData(None, None)`` so that
+       missions without calibration files still work.
 
     Examples
     --------
@@ -657,18 +671,26 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
     ...     # Use calibration data in image matching
     ...     pass
     """
-    if not config.calibration_dir:
+    has_direct = config.los_vectors_file is not None or config.psf_file is not None
+    has_dir = bool(config.calibration_dir)
+
+    if not has_direct and not has_dir:
         return CalibrationData(los_vectors=None, optical_psfs=None)
 
     logger.info("Loading calibration data...")
 
-    # Use configurable calibration file names
-    los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-    los_file = config.calibration_dir / los_filename
+    # ---- LOS vectors ----
+    if config.los_vectors_file is not None:
+        los_file = Path(config.los_vectors_file)
+    elif config.calibration_dir is not None:
+        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+        los_file = config.calibration_dir / los_filename
+    else:
+        raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
 
     if not los_file.exists():
         raise FileNotFoundError(
-            f"LOS vectors calibration file not found: {los_file}\nExpected in calibration_dir: {config.calibration_dir}"
+            f"LOS vectors calibration file not found: {los_file}\nSet config.los_vectors_file to the correct path."
         )
 
     los_vectors_cached = load_los_vectors_from_mat(los_file)
@@ -678,12 +700,18 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
             f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors_from_mat() returned None."
         )
 
-    psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-    psf_file = config.calibration_dir / psf_filename
+    # ---- Optical PSF ----
+    if config.psf_file is not None:
+        psf_file = Path(config.psf_file)
+    elif config.calibration_dir is not None:
+        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+        psf_file = config.calibration_dir / psf_filename
+    else:
+        raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
 
     if not psf_file.exists():
         raise FileNotFoundError(
-            f"Optical PSF calibration file not found: {psf_file}\nExpected in calibration_dir: {config.calibration_dir}"
+            f"Optical PSF calibration file not found: {psf_file}\nSet config.psf_file to the correct path."
         )
 
     optical_psfs_cached = load_optical_psf_from_mat(psf_file)
@@ -926,7 +954,7 @@ def loop(
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
     # Use injected image matching function override, or fall back to built-in implementation
-    image_matching_func = config.image_matching_func if config.image_matching_func is not None else image_matching
+    image_matching_func = getattr(config, "_image_matching_override", None) or image_matching
 
     # Initialize parameter sets
     params_set = load_param_sets(config)
@@ -1261,7 +1289,7 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 def run_correction(
     config: CorrectionConfig,
     work_dir: Path,
-    tlm_sci_gcp_sets: list[tuple[str, str, str]],
+    inputs: list[CorrectionInput] | list[tuple[str, str, str]],
     resume_from_checkpoint: bool = False,
 ):
     """Run the correction parameter sweep.
@@ -1275,8 +1303,10 @@ def run_correction(
         Full correction configuration.
     work_dir : Path
         Working directory for temporary files.
-    tlm_sci_gcp_sets : list of (str, str, str)
-        List of (telemetry_key, science_key, gcp_key) tuples.
+    inputs : list of CorrectionInput or list of (str, str, str)
+        Each element is either a :class:`~curryer.correction.config.CorrectionInput`
+        (named fields) or a legacy ``(telemetry_key, science_key, gcp_key)`` tuple.
+        Both forms may be mixed in the same list.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
@@ -1285,7 +1315,13 @@ def run_correction(
     results : list
     netcdf_data : dict
     """
-    return loop(config, work_dir, tlm_sci_gcp_sets, resume_from_checkpoint)
+    normalized: list[tuple[str, str, str]] = []
+    for inp in inputs:
+        if isinstance(inp, CorrectionInput):
+            normalized.append((str(inp.telemetry_file), str(inp.science_file), str(inp.gcp_file)))
+        else:
+            normalized.append(inp)
+    return loop(config, work_dir, normalized, resume_from_checkpoint)
 
 
 def compute_error_stats(image_matching_results, correction_config: "CorrectionConfig"):

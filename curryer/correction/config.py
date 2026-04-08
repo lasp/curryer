@@ -25,12 +25,13 @@ All config objects are ``pydantic.BaseModel`` subclasses which provide:
 
 import json
 import logging
+import warnings
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 if TYPE_CHECKING:
     from curryer import meta
@@ -551,9 +552,35 @@ class CorrectionConfig(BaseModel):
     # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
     data: DataConfig | None = None
 
-    # PROCESSING FUNCTION – optional override; excluded from JSON (not serialisable).
-    # Defaults to the built-in ``pipeline.image_matching`` when ``None``.
-    image_matching_func: Any = Field(default=None, exclude=True)
+    # Private test-injection override for image matching.
+    # Not part of the public API; not serialised to JSON (PrivateAttr is always excluded).
+    # Usage: config._image_matching_override = your_func
+    # TODO(#151): Add Requirement model with evaluate_all() for multi-metric requirements.
+    _image_matching_override: Any = PrivateAttr(default=None)
+
+    @property
+    def image_matching_func(self) -> Any:
+        """Deprecated — use ``_image_matching_override`` for test injection.
+
+        .. deprecated::
+            Set ``config._image_matching_override = func`` instead.
+            This property will be removed in a future release.
+        """
+        warnings.warn(
+            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._image_matching_override
+
+    @image_matching_func.setter
+    def image_matching_func(self, value: Any) -> None:
+        warnings.warn(
+            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._image_matching_override = value
 
     # OUTPUT CONFIGURATION
     netcdf: NetCDFConfig | None = None
@@ -859,3 +886,41 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         f"{len(config.parameters)} parameter groups"
     )
     return config
+
+
+# ============================================================================
+# Typed Input Structure
+# ============================================================================
+
+
+class CorrectionInput(BaseModel):
+    """A single input set for the correction loop.
+
+    Replaces the positional tuple ``(telemetry_path, science_path, gcp_path)``
+    with named fields for clarity and IDE autocomplete.
+
+    Parameters
+    ----------
+    telemetry_file : Path
+        Path to the telemetry CSV (or NetCDF/HDF5) file.
+    science_file : Path
+        Path to the science/timing CSV (or NetCDF/HDF5) file.
+    gcp_file : Path
+        Path to the GCP reference image (``.mat`` file).
+
+    Examples
+    --------
+    >>> from curryer.correction import CorrectionInput, run_correction
+    >>> inputs = [
+    ...     CorrectionInput(
+    ...         telemetry_file="data/tlm_20240317.csv",
+    ...         science_file="data/sci_20240317.csv",
+    ...         gcp_file="gcps/landsat_chip_001.mat",
+    ...     )
+    ... ]
+    >>> results, netcdf_data = run_correction(config, work_dir, inputs)
+    """
+
+    telemetry_file: Path
+    science_file: Path
+    gcp_file: Path

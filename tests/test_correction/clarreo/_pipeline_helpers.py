@@ -98,7 +98,7 @@ def run_upstream_pipeline(
     sci_df.to_csv(sci_csv)
 
     config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config.image_matching_func = synthetic_image_matching
+    config._image_matching_override = synthetic_image_matching
 
     tlm_sci_gcp_sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
 

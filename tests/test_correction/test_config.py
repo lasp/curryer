@@ -421,16 +421,44 @@ class TestCorrectionConfig:
         assert len(minimal_config.parameters) == 1
 
     def test_callable_fields_default_none(self, minimal_config):
-        """Only image_matching_func remains as an optional callable override."""
-        assert minimal_config.image_matching_func is None
+        """_image_matching_override defaults to None."""
+        assert minimal_config._image_matching_override is None
 
-    def test_image_matching_func_can_be_set(self, minimal_config):
+    def test_image_matching_override_can_be_set(self, minimal_config):
+        """_image_matching_override accepts any callable."""
+
         def my_func(*args, **kwargs):
             return None
 
-        minimal_config.image_matching_func = my_func
-        assert minimal_config.image_matching_func is my_func
-        minimal_config.image_matching_func = None
+        minimal_config._image_matching_override = my_func
+        assert minimal_config._image_matching_override is my_func
+        minimal_config._image_matching_override = None
+
+    def test_image_matching_func_deprecated_getter(self, minimal_config):
+        """Accessing image_matching_func property emits DeprecationWarning."""
+        import warnings
+
+        minimal_config._image_matching_override = lambda: "x"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            val = minimal_config.image_matching_func
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert val is minimal_config._image_matching_override
+        minimal_config._image_matching_override = None
+
+    def test_image_matching_func_deprecated_setter(self, minimal_config):
+        """Setting image_matching_func via deprecated property emits DeprecationWarning."""
+        import warnings
+
+        def my_func(*args, **kwargs):
+            return None
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            minimal_config.image_matching_func = my_func
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert minimal_config._image_matching_override is my_func
+        minimal_config._image_matching_override = None
 
     def test_mutable_fields(self, minimal_config):
         minimal_config.n_iterations = 99
@@ -534,12 +562,13 @@ class TestJsonRoundTrip:
         assert full_config == reloaded
 
     def test_callable_fields_excluded_from_json(self, minimal_config):
-        """image_matching_func is excluded from JSON serialisation."""
-        minimal_config.image_matching_func = lambda: None
+        """_image_matching_override (PrivateAttr) is always excluded from JSON serialisation."""
+        minimal_config._image_matching_override = lambda: None
         json_str = minimal_config.model_dump_json()
         assert "image_matching_func" not in json_str
+        assert "_image_matching_override" not in json_str
         # clean up
-        minimal_config.image_matching_func = None
+        minimal_config._image_matching_override = None
 
     def test_json_contains_expected_keys(self, minimal_config):
         import json
@@ -685,3 +714,78 @@ class TestLoadConfigFromJsonEarthRadius:
 
         assert config.performance_threshold_m == 250.0
         assert any("earth_radius_m" in msg and "deprecated" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# CorrectionInput
+# ---------------------------------------------------------------------------
+
+
+class TestCorrectionInput:
+    """Tests for the typed CorrectionInput model."""
+
+    def test_basic_construction(self, tmp_path):
+        from curryer.correction.config import CorrectionInput
+
+        inp = CorrectionInput(
+            telemetry_file=tmp_path / "tlm.csv",
+            science_file=tmp_path / "sci.csv",
+            gcp_file=tmp_path / "gcp.mat",
+        )
+        assert inp.telemetry_file == tmp_path / "tlm.csv"
+        assert inp.science_file == tmp_path / "sci.csv"
+        assert inp.gcp_file == tmp_path / "gcp.mat"
+
+    def test_string_paths_coerced_to_path(self, tmp_path):
+        from curryer.correction.config import CorrectionInput
+
+        inp = CorrectionInput(
+            telemetry_file="data/tlm.csv",
+            science_file="data/sci.csv",
+            gcp_file="gcps/chip.mat",
+        )
+        assert isinstance(inp.telemetry_file, Path)
+        assert isinstance(inp.science_file, Path)
+        assert isinstance(inp.gcp_file, Path)
+
+    def test_run_correction_accepts_correction_input(self, minimal_config, tmp_path):
+        """run_correction() normalises CorrectionInput to tuples before calling loop()."""
+        from unittest.mock import patch
+
+        from curryer.correction.config import CorrectionInput
+        from curryer.correction.pipeline import run_correction
+
+        inp = CorrectionInput(
+            telemetry_file=tmp_path / "tlm.csv",
+            science_file=tmp_path / "sci.csv",
+            gcp_file=tmp_path / "gcp.mat",
+        )
+
+        with patch("curryer.correction.pipeline.loop") as mock_loop:
+            mock_loop.return_value = ([], {})
+            run_correction(minimal_config, tmp_path, [inp])
+
+        mock_loop.assert_called_once()
+        call_args = mock_loop.call_args
+        normalized_inputs = call_args[0][2]  # third positional arg
+        assert len(normalized_inputs) == 1
+        assert normalized_inputs[0] == (
+            str(tmp_path / "tlm.csv"),
+            str(tmp_path / "sci.csv"),
+            str(tmp_path / "gcp.mat"),
+        )
+
+    def test_run_correction_accepts_legacy_tuples(self, minimal_config, tmp_path):
+        """run_correction() passes legacy tuples through unchanged."""
+        from unittest.mock import patch
+
+        from curryer.correction.pipeline import run_correction
+
+        tuples = [("tlm.csv", "sci.csv", "gcp.mat")]
+
+        with patch("curryer.correction.pipeline.loop") as mock_loop:
+            mock_loop.return_value = ([], {})
+            run_correction(minimal_config, tmp_path, tuples)
+
+        call_args = mock_loop.call_args
+        assert call_args[0][2] == tuples

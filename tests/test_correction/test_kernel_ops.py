@@ -166,12 +166,41 @@ def test_apply_offset_preserves_columns():
 
 
 def test_load_calibration_data_no_dir(clarreo_cfg):
-    """When calibration_dir is None, returned data contains no vectors."""
+    """When calibration_dir is None and no direct paths, returned data contains no vectors."""
     cfg = clarreo_cfg.model_copy(deep=True)
     cfg.calibration_dir = None
+    cfg.los_vectors_file = None
+    cfg.psf_file = None
     cal = correction._load_calibration_data(cfg)
     assert cal.los_vectors is None
     assert cal.optical_psfs is None
+
+
+def test_load_calibration_data_direct_los_missing(clarreo_cfg, tmp_path):
+    """FileNotFoundError when los_vectors_file points to a non-existent file."""
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.calibration_dir = None
+    cfg.los_vectors_file = tmp_path / "nonexistent_los.mat"
+    cfg.psf_file = None
+    with pytest.raises(FileNotFoundError, match="LOS vectors"):
+        correction._load_calibration_data(cfg)
+
+
+def test_load_calibration_data_direct_psf_missing(clarreo_cfg, tmp_path):
+    """FileNotFoundError when psf_file points to a non-existent file."""
+    from unittest.mock import patch
+
+    cfg = clarreo_cfg.model_copy(deep=True)
+    cfg.calibration_dir = None
+    # Provide a fake LOS file so the LOS loading succeeds
+    fake_los = tmp_path / "los.mat"
+    fake_los.touch()
+    cfg.los_vectors_file = fake_los
+    cfg.psf_file = tmp_path / "nonexistent_psf.mat"
+    # Mock the actual loader so we don't need a real .mat file
+    with patch("curryer.correction.pipeline.load_los_vectors_from_mat", return_value=[[0.0, 0.0, 1.0]]):
+        with pytest.raises(FileNotFoundError, match="PSF"):
+            correction._load_calibration_data(cfg)
 
 
 # ── _create_dynamic_kernels ───────────────────────────────────────────────────

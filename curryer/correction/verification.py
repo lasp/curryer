@@ -514,6 +514,26 @@ def _format_summary_table(
     return "\n".join(lines)
 
 
+def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | None = None) -> None:
+    """Log a human-readable GCP pairing summary.
+
+    Parameters
+    ----------
+    pairs : list of (Path, Path)
+        Successfully paired (observation, gcp) paths.
+    unpaired : list of Path or None, optional
+        Observation paths for which no matching GCP was found.
+    """
+    lines = ["GCP Pairing Summary:"]
+    for obs, gcp in pairs:
+        lines.append(f"  ✓ {obs.name} → {gcp.name}")
+    if unpaired:
+        for obs in unpaired:
+            lines.append(f"  ✗ {obs.name} → No matching GCP found")
+    lines.append(f"Proceeding with {len(pairs)} observation(s).")
+    logger.info("\n".join(lines))
+
+
 # ============================================================================
 # Public API
 # ============================================================================
@@ -521,6 +541,11 @@ def _format_summary_table(
 
 def verify(
     config: CorrectionConfig,
+    # NEW: File-path-based input modes (signature established; body raises NotImplementedError)
+    gcp_pairs: list[tuple[str | Path, str | Path]] | None = None,
+    observation_paths: list[str | Path] | None = None,
+    gcp_directory: str | Path | None = None,
+    # EXISTING: Pre-computed input modes (backward-compatible)
     image_matching_results: list[xr.Dataset] | None = None,
     geolocated_data: xr.Dataset | None = None,
     work_dir: Path | None = None,
@@ -536,8 +561,12 @@ def verify(
     1. *image_matching_results* — pre-computed outputs from image matching;
        the most common entry point for weekly automated checks.
     2. *geolocated_data* — raw geolocated data; requires
-       ``config.image_matching_func`` to be set.
-    3. Neither provided — raises :class:`ValueError`.
+       ``config._image_matching_override`` to be set.
+    3. *gcp_pairs* — explicit (observation, gcp) file-path pairs.
+       **Not yet implemented** — raises ``NotImplementedError``.
+    4. *observation_paths* + *gcp_directory* — auto-paired via spatial overlap.
+       **Not yet implemented** — raises ``NotImplementedError``.
+    5. None of the above provided — raises :class:`ValueError`.
 
     Parameters
     ----------
@@ -546,8 +575,19 @@ def verify(
         - Performance thresholds (``performance_threshold_m``, ``performance_spec_percent``)
         - Spacecraft variable names (``spacecraft_position_name``, ``boresight_name``, etc.)
         - Geolocation settings (SPICE kernels, instrument configuration)
-        - Image matching function (``image_matching_func``)
+        - Optional ``_image_matching_override`` (for *geolocated_data* path)
         - Optional ``verification`` override (:class:`RequirementsConfig`)
+    gcp_pairs : list of (str | Path, str | Path) or None
+        Explicit (observation_path, gcp_path) pairs.
+        **Not yet implemented** — raises ``NotImplementedError``.
+    observation_paths : list of str | Path or None
+        Observation file paths for automatic GCP pairing.
+        Requires *gcp_directory*.
+        **Not yet implemented** — raises ``NotImplementedError``.
+    gcp_directory : str | Path or None
+        Directory of GCP reference images for automatic pairing with
+        *observation_paths*.
+        **Not yet implemented** — raises ``NotImplementedError``.
     image_matching_results : list[xr.Dataset] or None
         Pre-computed image-matching datasets, one per GCP pair.  Each must
         have a ``measurement`` dimension and ``lat_error_deg`` /
@@ -556,7 +596,7 @@ def verify(
         :class:`~curryer.correction.error_stats.ErrorStatsProcessor`.
     geolocated_data : xr.Dataset or None
         Already-geolocated data on which image matching will be run using
-        ``config.image_matching_func``.  Ignored when
+        ``config._image_matching_override``.  Ignored when
         *image_matching_results* is provided.
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
@@ -570,11 +610,29 @@ def verify(
 
     Raises
     ------
+    NotImplementedError
+        When *gcp_pairs* or (*observation_paths* + *gcp_directory*) is
+        provided — these file-path modes are not yet implemented.
     ValueError
-        When neither *image_matching_results* nor *geolocated_data* is
-        provided, or when *geolocated_data* is supplied but
-        ``config.image_matching_func`` is not set.
+        When none of the input modes is provided, or when *geolocated_data*
+        is supplied but ``config._image_matching_override`` is not set.
     """
+    # ------------------------------------------------------------------
+    # File-path input modes: API established; implementation deferred
+    # ------------------------------------------------------------------
+    if gcp_pairs is not None:
+        raise NotImplementedError(
+            "File-path-based verify() via gcp_pairs is not yet implemented. "
+            "Pre-compute image_matching_results and pass them directly. "
+            "See examples/correction/ for the recommended workflow."
+        )
+
+    if observation_paths is not None or gcp_directory is not None:
+        raise NotImplementedError(
+            "Auto-pairing verify() via observation_paths + gcp_directory is not yet implemented. "
+            "Pre-compute image_matching_results and pass them directly. "
+            "See examples/correction/ for the recommended workflow."
+        )
     # Handle optional work_dir with sensible default
     if work_dir is None:
         work_dir = Path("verification_output")
@@ -604,14 +662,15 @@ def verify(
         aggregated = _aggregate_results(image_matching_results, config)
 
     elif geolocated_data is not None:
-        if config.image_matching_func is None:
+        im_override = getattr(config, "_image_matching_override", None)
+        if im_override is None:
             raise ValueError(
-                "geolocated_data was provided but config.image_matching_func is not set. "
-                "Either supply pre-computed image_matching_results or attach an "
-                "image_matching_func to the config."
+                "geolocated_data was provided but config._image_matching_override is not set. "
+                "Either supply pre-computed image_matching_results or set "
+                "config._image_matching_override = your_func."
             )
         logger.info("Running image matching on provided geolocated_data")
-        matched = config.image_matching_func(geolocated_data)
+        matched = im_override(geolocated_data)
         if not isinstance(matched, list):
             matched = [matched]
         source_mapping = _build_source_mapping(matched)

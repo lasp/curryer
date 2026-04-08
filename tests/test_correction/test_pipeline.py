@@ -149,7 +149,7 @@ def test_loop_optimized(root_dir, tmp_path):
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
     config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config.image_matching_func = synthetic_image_matching
+    config._image_matching_override = synthetic_image_matching
     sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
     np.random.seed(42)
     results, nc = correction.loop(config, work, sets, resume_from_checkpoint=False)

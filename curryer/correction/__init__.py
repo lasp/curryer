@@ -18,6 +18,7 @@ pipeline
     Main :func:`loop` orchestration and all per-iteration helpers.
     Preferred-name aliases: :func:`run_correction`, :func:`run_image_matching`,
     :func:`compute_error_stats`.
+    :func:`run_correction` also accepts :class:`CorrectionInput` objects.
 correction
     Thin re-export shim -- keeps all existing
     ``from curryer.correction import correction`` import paths working.
@@ -66,6 +67,7 @@ from . import (
 # Key public names lifted to package level
 from .config import (
     CorrectionConfig,
+    CorrectionInput,
     DataConfig,
     GeolocationConfig,
     NetCDFConfig,
@@ -80,7 +82,7 @@ from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .io import resolve_path
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
-from .verification import GCPError, VerificationResult, verify
+from .verification import GCPError, VerificationResult, _log_pairing_summary, verify
 
 __all__ = [
     # Sub-modules
@@ -104,6 +106,7 @@ __all__ = [
     "verification",
     # Config
     "CorrectionConfig",
+    "CorrectionInput",
     "DataConfig",
     "GeolocationConfig",
     "NetCDFConfig",
@@ -132,6 +135,7 @@ __all__ = [
     "resolve_path",
     # Verification
     "GCPError",
+    "_log_pairing_summary",
     "RequirementsConfig",
     "VerificationResult",
     "verify",
