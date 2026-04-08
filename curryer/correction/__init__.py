@@ -59,6 +59,7 @@ from . import (
     pipeline,
     psf,
     regrid,
+    results,
     results_io,
     search,
     verification,
@@ -82,7 +83,8 @@ from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .io import resolve_path
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
-from .verification import GCPError, VerificationResult, _log_pairing_summary, verify
+from .results import CorrectionResult, ParameterSetResult
+from .verification import GCPError, VerificationResult, _log_pairing_summary, compare_results, verify
 
 __all__ = [
     # Sub-modules
@@ -101,6 +103,7 @@ __all__ = [
     "pipeline",
     "psf",
     "regrid",
+    "results",
     "results_io",
     "search",
     "verification",
@@ -138,5 +141,9 @@ __all__ = [
     "_log_pairing_summary",
     "RequirementsConfig",
     "VerificationResult",
+    "compare_results",
     "verify",
+    # Structured results
+    "CorrectionResult",
+    "ParameterSetResult",
 ]

@@ -18,11 +18,14 @@ functions it calls:
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+if TYPE_CHECKING:
+    from curryer.correction.results import CorrectionResult
 
 from curryer import meta
 from curryer import spicierpy as sp
@@ -1291,11 +1294,15 @@ def run_correction(
     work_dir: Path,
     inputs: list[CorrectionInput] | list[tuple[str, str, str]],
     resume_from_checkpoint: bool = False,
-):
+) -> "CorrectionResult":
     """Run the correction parameter sweep.
 
-    This is the preferred name for :func:`loop`.  See :func:`loop` for
-    full documentation.
+    This is the preferred user-facing entry point (compared to :func:`loop`).
+    Returns a structured :class:`~curryer.correction.results.CorrectionResult`
+    with the best parameter set, pass/fail verdict, recommendation, and a
+    human-readable summary table.  The raw ``results`` list and ``netcdf_data``
+    dict from :func:`loop` are available as ``result.results`` and
+    ``result.netcdf_data`` for advanced use.
 
     Parameters
     ----------
@@ -1312,16 +1319,39 @@ def run_correction(
 
     Returns
     -------
+    CorrectionResult
+        Structured result with best parameters, pass/fail verdict,
+        recommendation, and summary table.
     results : list
     netcdf_data : dict
     """
+    from curryer.correction.results import build_correction_result
+
+    run_start = time.time()
+
     normalized: list[tuple[str, str, str]] = []
     for inp in inputs:
         if isinstance(inp, CorrectionInput):
             normalized.append((str(inp.telemetry_file), str(inp.science_file), str(inp.gcp_file)))
         else:
             normalized.append(inp)
-    return loop(config, work_dir, normalized, resume_from_checkpoint)
+
+    results, netcdf_data = loop(config, work_dir, normalized, resume_from_checkpoint)
+    elapsed = time.time() - run_start
+    netcdf_path = work_dir / config.get_output_filename()
+
+    correction_result = build_correction_result(
+        config=config,
+        results=results,
+        netcdf_data=netcdf_data,
+        netcdf_path=netcdf_path,
+        elapsed_time_s=elapsed,
+    )
+
+    logger.info("\n%s", correction_result.summary_table)
+    logger.info(correction_result.recommendation)
+
+    return correction_result
 
 
 def compute_error_stats(image_matching_results, correction_config: "CorrectionConfig"):
