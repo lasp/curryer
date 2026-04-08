@@ -105,23 +105,57 @@ def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
     return ImageGrid(data=data, lat=lat, lon=lon, h=h)
 
 
-def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray:
-    """
-    Extract spacecraft position at mid-frame from telemetry.
+def _extract_spacecraft_position_midframe(
+    telemetry: pd.DataFrame,
+    config: "CorrectionConfig | None" = None,
+) -> np.ndarray:
+    """Extract spacecraft position at mid-frame from telemetry.
 
-    Internal adapter function: extracts position from telemetry DataFrame
-    with fallback logic for different column naming conventions.
+    Parameters
+    ----------
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft position columns.
+    config : CorrectionConfig or None, optional
+        If provided and ``config.data.position_columns`` is set, those
+        column names are used directly. Otherwise falls back to
+        pattern-guessing (with a deprecation warning).
 
-    Args:
-        telemetry: Telemetry DataFrame with spacecraft position columns
+    Returns
+    -------
+    np.ndarray
+        Shape ``(3,)`` — ``[x, y, z]`` position in metres (J2000 frame).
 
-    Returns:
-        np.ndarray, shape (3,) - [x, y, z] position in meters (J2000 frame)
-
-    Raises:
-        ValueError: If position columns cannot be found
+    Raises
+    ------
+    ValueError
+        If ``position_columns`` has wrong length, or specified columns are
+        not found, or pattern-guessing fails.
     """
     mid_idx = len(telemetry) // 2
+
+    # Prefer explicit column names from config
+    if config is not None and config.data is not None and config.data.position_columns is not None:
+        cols = config.data.position_columns
+        if len(cols) != 3:
+            raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
+        missing = [c for c in cols if c not in telemetry.columns]
+        if missing:
+            raise ValueError(
+                f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}"
+            )
+        position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+        logger.debug(
+            "Extracted spacecraft position from config.data.position_columns %s: %s",
+            cols,
+            position,
+        )
+        return position
+
+    # Legacy fallback: pattern guessing (log deprecation warning)
+    logger.warning(
+        "position_columns not configured — falling back to column name pattern-guessing. "
+        "Set config.data.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
+    )
 
     # Try common column name patterns
     position_patterns = [
@@ -224,7 +258,7 @@ def image_matching(
         logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
     # Extract spacecraft position from telemetry
-    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
+    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry, config=config)
     logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
     # Run real image matching
@@ -546,7 +580,7 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     Parameters
     ----------
     file_path : str | Path
-        Path to the data file.
+        Local path or S3 URI (``s3://bucket/key``).
     file_format : str
         One of ``"csv"``, ``"netcdf"``, or ``"hdf5"``.
 
@@ -557,13 +591,17 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     Raises
     ------
     FileNotFoundError
-        If the file does not exist.
+        If *file_path* is local and does not exist.
+    ImportError
+        If *file_path* is an S3 URI and boto3 is not installed.
     ValueError
         If ``file_format`` is not recognised.
     """
-    file_path = Path(file_path)
-    if not file_path.exists():
-        raise FileNotFoundError(f"Data file not found: {file_path}")
+    from curryer.correction.io import resolve_path
+
+    file_path = resolve_path(file_path)
+    # NOTE: resolve_path already validated existence / downloaded from S3.
+    # The old manual exists() check is removed.
 
     if file_format == "csv":
         return pd.read_csv(file_path, index_col=0)
@@ -604,6 +642,13 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
         If calibration directory is configured but files don't exist
     ValueError
         If calibration files exist but fail to load properly
+
+    Note
+    ----
+    This function does NOT use ``resolve_path()`` for S3 support because
+    calibration file resolution is being restructured in PR 4 (direct
+    ``config.los_vectors_file`` / ``config.psf_file`` paths). The S3-aware
+    path resolution will be added there.
 
     Examples
     --------
@@ -827,8 +872,9 @@ def loop(
     config : CorrectionConfig
         The single configuration containing all settings:
         - Required: parameters, iterations, thresholds, geo config
-        - Required loaders: telemetry_loader, science_loader
-        - Optional processing: gcp_pairing_func, image_matching_func
+        - Data loading: ``data`` (:class:`~curryer.correction.config.DataConfig`)
+          specifying file format and time scaling
+        - Optional: ``image_matching_func`` override (test injection only)
         - Calibration: `calibration_dir` (if image_matching_func uses calibration)
         - Output: netcdf, output_filename
     work_dir : Path

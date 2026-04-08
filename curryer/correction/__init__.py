@@ -51,6 +51,7 @@ from . import (
     error_stats,
     image_io,
     image_match,
+    io,
     kernel_ops,
     pairing,
     parameters,
@@ -77,6 +78,7 @@ from .config import (
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
+from .io import resolve_path
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
 from .verification import GCPError, VerificationResult, verify
 
@@ -90,6 +92,7 @@ __all__ = [
     "error_stats",
     "image_io",
     "image_match",
+    "io",
     "kernel_ops",
     "pairing",
     "parameters",
@@ -125,6 +128,8 @@ __all__ = [
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
     "compute_percent_below",
+    # IO
+    "resolve_path",
     # Verification
     "GCPError",
     "RequirementsConfig",

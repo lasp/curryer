@@ -28,15 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 def load_image_grid_from_mat(
-    mat_file: Path, key: str = "subimage", name: str | None = None, as_named: bool = False
+    mat_file: str | Path, key: str = "subimage", name: str | None = None, as_named: bool = False
 ) -> ImageGrid | NamedImageGrid:
     """
     Load ImageGrid from MATLAB .mat file.
 
     Parameters
     ----------
-    mat_file : Path
-        Path to .mat file.
+    mat_file : str or Path
+        Path to .mat file (local path or ``s3://`` URI).
     key : str, default="subimage"
         MATLAB struct key (e.g., "subimage" for L1A, "GCP" for reference).
     name : str, optional
@@ -52,7 +52,9 @@ def load_image_grid_from_mat(
     Raises
     ------
     FileNotFoundError
-        If mat_file doesn't exist.
+        If mat_file is a local path and doesn't exist.
+    ImportError
+        If mat_file is an S3 URI and boto3 is not installed.
     KeyError
         If key not found in MATLAB file.
 
@@ -65,8 +67,10 @@ def load_image_grid_from_mat(
     """
     from scipy.io import loadmat
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"MATLAB file not found: {mat_file}")
+    from curryer.correction.io import resolve_path
+
+    mat_file = resolve_path(mat_file)
+    # resolve_path already validated existence / downloaded from S3.
 
     mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
 
@@ -93,14 +97,14 @@ def load_image_grid_from_mat(
         return ImageGrid(**grid_kwargs)
 
 
-def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
+def load_optical_psf_from_mat(mat_file: str | Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
     """
     Load optical PSF entries from MATLAB .mat file.
 
     Parameters
     ----------
-    mat_file : Path
-        Path to MATLAB file with PSF data.
+    mat_file : str or Path
+        Path to MATLAB file with PSF data (local path or ``s3://`` URI).
     key : str, default="PSF_struct_675nm"
         Primary key to try for PSF data.
 
@@ -112,7 +116,9 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
     Raises
     ------
     FileNotFoundError
-        If mat_file doesn't exist.
+        If mat_file is a local path and doesn't exist.
+    ImportError
+        If mat_file is an S3 URI and boto3 is not installed.
     KeyError
         If no PSF data found with common key names.
     ValueError
@@ -120,8 +126,10 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
     """
     from scipy.io import loadmat
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"Optical PSF file not found: {mat_file}")
+    from curryer.correction.io import resolve_path
+
+    mat_file = resolve_path(mat_file)
+    # resolve_path already validated existence / downloaded from S3.
 
     mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
 
@@ -162,14 +170,14 @@ def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> 
     raise KeyError(f"No PSF data found in {mat_file.name}. Available keys: {available_keys}")
 
 
-def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
+def load_los_vectors_from_mat(mat_file: str | Path, key: str = "b_HS") -> np.ndarray:
     """
     Load line-of-sight vectors from MATLAB .mat file.
 
     Parameters
     ----------
-    mat_file : Path
-        Path to MATLAB file with LOS vectors.
+    mat_file : str or Path
+        Path to MATLAB file with LOS vectors (local path or ``s3://`` URI).
     key : str, default="b_HS"
         Primary key to try for LOS data.
 
@@ -181,14 +189,18 @@ def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
     Raises
     ------
     FileNotFoundError
-        If mat_file doesn't exist.
+        If mat_file is a local path and doesn't exist.
+    ImportError
+        If mat_file is an S3 URI and boto3 is not installed.
     KeyError
         If no LOS vectors found with common key names.
     """
     from scipy.io import loadmat
 
-    if not mat_file.exists():
-        raise FileNotFoundError(f"LOS vector file not found: {mat_file}")
+    from curryer.correction.io import resolve_path
+
+    mat_file = resolve_path(mat_file)
+    # resolve_path already validated existence / downloaded from S3.
 
     mat_data = loadmat(str(mat_file))
 
