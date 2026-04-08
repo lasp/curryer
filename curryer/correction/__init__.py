@@ -71,13 +71,14 @@ from .config import (
     NetCDFParameterMetadata,
     ParameterConfig,
     ParameterType,
+    RequirementsConfig,
     SearchStrategy,
     load_config_from_json,
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
-from .error_stats import ErrorStatsConfig, ErrorStatsProcessor
+from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
-from .verification import GCPError, RequirementsConfig, VerificationResult, verify
+from .verification import GCPError, VerificationResult, verify
 
 __all__ = [
     # Sub-modules
@@ -106,6 +107,7 @@ __all__ = [
     "NetCDFParameterMetadata",
     "ParameterConfig",
     "ParameterType",
+    "RequirementsConfig",
     "SearchStrategy",
     "load_config_from_json",
     # Pipeline entry points
@@ -122,6 +124,7 @@ __all__ = [
     # Error stats
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
+    "compute_percent_below",
     # Verification
     "GCPError",
     "RequirementsConfig",

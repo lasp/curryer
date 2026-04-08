@@ -44,7 +44,7 @@ import numpy as np
 import xarray as xr
 from pydantic import BaseModel, ConfigDict
 
-from curryer.correction.config import CorrectionConfig
+from curryer.correction.config import CorrectionConfig, RequirementsConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 
 logger = logging.getLogger(__name__)
@@ -52,29 +52,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Pydantic models
 # ============================================================================
-
-
-class RequirementsConfig(BaseModel):
-    """Verification requirements / thresholds.
-
-    Can be attached as an optional ``verification`` field on
-    :class:`~curryer.correction.config.CorrectionConfig`, or passed directly
-    to :func:`verify`.  When neither is supplied :func:`verify` falls back to
-    :attr:`~curryer.correction.config.CorrectionConfig.performance_threshold_m`
-    and :attr:`~curryer.correction.config.CorrectionConfig.performance_spec_percent`.
-
-    Attributes
-    ----------
-    performance_threshold_m : float
-        Per-measurement nadir-equivalent error limit in metres.
-        A measurement *passes* when its error is **below** this value.
-    performance_spec_percent : float
-        Minimum fraction of measurements (0–100) that must pass for the
-        overall verification to be considered successful.
-    """
-
-    performance_threshold_m: float
-    performance_spec_percent: float
 
 
 class GCPError(BaseModel):

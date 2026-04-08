@@ -1,15 +1,22 @@
 """
 Geolocation statistics processor with Xarray inputs and outputs.
 
-This module processes geolocation errors from the GCS image matching algorithm and
-produces performance verification metrics, specifically the nadir-equivalent geolocation errors
-which pass when less than 250m.
+This module processes geolocation errors from the image matching algorithm and
+produces nadir-equivalent geolocation errors together with mission-agnostic
+summary statistics.
 
 The main processing pipeline:
-1) Convert angular errors to N-S and E-W distances
-2) Transform error components to view-plane/cross-view-plane distances
-3) Scale to nadir-equivalent using geometric factors
-4) Compute statistical performance metrics
+
+1. Convert angular errors to N-S and E-W distances.
+2. Transform error components to view-plane / cross-view-plane distances.
+3. Scale to nadir-equivalent using geometric factors.
+4. (Optional) Compute comprehensive statistics across all measurements.
+
+Pass/fail evaluation is intentionally **not** included here — whether the
+statistics meet mission requirements is the caller's responsibility.  Use
+:func:`compute_percent_below` for custom threshold queries, or compare the
+fixed threshold-table entries (``percent_below_100m``, ``percent_below_250m``,
+etc.) directly.
 """
 
 import logging
@@ -28,31 +35,55 @@ logger = logging.getLogger(__name__)
 _EARTH_RADIUS_M: float = constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0
 
 
-@dataclass
-class ErrorStatsConfig:
-    """Configuration parameters for geolocation error statistics processing.
+def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
+    """Compute the percentage of errors below a given threshold.
+
+    Useful for evaluating custom thresholds not in the standard table
+    produced by :meth:`ErrorStatsProcessor._calculate_statistics`.
 
     Parameters
     ----------
-    performance_threshold_m : float
-        Accuracy threshold in meters (e.g., 250.0).
-    performance_spec_percent : float
-        Performance requirement percentage (e.g., 39.0).
+    errors : np.ndarray
+        Array of nadir-equivalent geolocation errors in metres.
+    threshold_m : float
+        Threshold in metres.
+
+    Returns
+    -------
+    float
+        Percentage (0–100) of errors strictly below *threshold_m*.
+        Returns ``0.0`` when *errors* is empty.
+    """
+    if len(errors) == 0:
+        return 0.0
+    return float(np.sum(errors < threshold_m) / len(errors) * 100)
+
+
+@dataclass
+class ErrorStatsConfig:
+    """Configuration for geolocation error statistics processing.
+
+    Parameters
+    ----------
     minimum_correlation : float or None, optional
-        Minimum correlation filter threshold (0.0-1.0). Default is None.
+        Minimum correlation filter threshold (0.0–1.0).  Measurements whose
+        correlation score falls below this value are excluded before
+        processing.  Default is ``None`` (no filtering).
     variable_names : dict of str to str or None, optional
         Mission-agnostic variable name mappings from semantic names to actual
-        dataset variable names. If None, generic defaults are used.
+        dataset variable names.  If ``None``, generic defaults are used.
 
     Notes
     -----
-    Earth radius is not a config field. ``_EARTH_RADIUS_M`` (derived from
-    ``curryer.compute.constants.WGS84_SEMI_MAJOR_AXIS_KM``) is used directly
-    in all calculations.
+    Pass/fail thresholds are **not** part of this config.
+    ``ErrorStatsProcessor`` computes statistics only; whether those numbers
+    meet mission requirements is the caller's responsibility.
+
+    Earth radius is not a config field either.  ``_EARTH_RADIUS_M`` (derived
+    from ``curryer.compute.constants.WGS84_SEMI_MAJOR_AXIS_KM``) is used
+    directly in all calculations.
     """
 
-    performance_threshold_m: float
-    performance_spec_percent: float
     minimum_correlation: float | None = None
 
     # Mission-agnostic variable name mappings
@@ -61,20 +92,19 @@ class ErrorStatsConfig:
 
     @classmethod
     def from_correction_config(cls, correction_config) -> "ErrorStatsConfig":
-        """Create ErrorStatsConfig from CorrectionConfig.
+        """Create an :class:`ErrorStatsConfig` from a :class:`CorrectionConfig`.
 
-        This is the preferred way to create this config - extracts all settings
-        from the single source of truth (CorrectionConfig).
+        This is the preferred way to create this config — it extracts all
+        settings from the single source of truth (:class:`CorrectionConfig`).
 
         Parameters
         ----------
         correction_config : CorrectionConfig
-            CorrectionConfig instance to extract settings from.
+            Top-level correction configuration.
 
         Returns
         -------
         ErrorStatsConfig
-            ErrorStatsConfig with settings from CorrectionConfig.
         """
         variable_names = {
             "spacecraft_position": correction_config.spacecraft_position_name,
@@ -83,8 +113,6 @@ class ErrorStatsConfig:
         }
 
         return cls(
-            performance_threshold_m=correction_config.performance_threshold_m,
-            performance_spec_percent=correction_config.performance_spec_percent,
             minimum_correlation=correction_config.geo.minimum_correlation,
             variable_names=variable_names,
         )
@@ -179,49 +207,61 @@ class ErrorStatsProcessor:
 
         return filtered_data
 
-    def process_geolocation_errors(self, input_data: xr.Dataset) -> xr.Dataset:
-        """
-        Process geolocation errors from input dataset to nadir-equivalent statistics.
+    def compute_nadir_equivalent_errors(self, input_data: xr.Dataset) -> xr.Dataset:
+        """Compute per-measurement nadir-equivalent errors WITHOUT aggregate statistics.
 
-        Args:
-            input_data: Xarray Dataset with required error measurement variables
+        This is the method to call inside the correction loop — it requires
+        observation geometry (spacecraft position, boresight, transformation
+        matrix) that is only available during each iteration, and produces
+        nadir-equivalent errors for each measurement.  No aggregate statistics
+        are computed (meaningless for a single GCP pair in isolation).
 
-        Returns:
-            Xarray Dataset with processed results and statistics
+        Use this inside the loop for checkpoint/resume support.
+        Call :meth:`process_geolocation_errors` for the final aggregate pass
+        (nadir-equivalent + comprehensive statistics).
+
+        Parameters
+        ----------
+        input_data : xr.Dataset
+            Dataset with required error measurement variables and a
+            ``measurement`` dimension.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with ``nadir_equiv_total_error_m`` and related intermediate
+            variables.  No statistical attributes are set on the output.
+
+        Raises
+        ------
+        ValueError
+            If required variables are missing or all measurements are filtered
+            out by the correlation threshold.
         """
-        # Validate input data
         self._validate_input_data(input_data)
-
-        # NEW: Apply correlation filtering if configured
         filtered_data = self._filter_by_correlation(input_data)
 
         if len(filtered_data.measurement) == 0:
             raise ValueError("No measurements remaining after correlation filtering")
 
-        # Extract data arrays (now using filtered_data)
         n_measurements = len(filtered_data.measurement)
 
-        # Get actual variable names from config
         sc_pos_var = self.config.get_variable_name("spacecraft_position")
         boresight_var = self.config.get_variable_name("boresight")
         transform_var = self.config.get_variable_name("transformation_matrix")
 
-        # Convert angular errors to distance errors
         lat_error_rad = np.deg2rad(filtered_data.lat_error_deg.values)
         lon_error_rad = np.deg2rad(filtered_data.lon_error_deg.values)
         gcp_lat_rad = np.deg2rad(filtered_data.gcp_lat_deg.values)
         gcp_lon_rad = np.deg2rad(filtered_data.gcp_lon_deg.values)
 
-        # Calculate N-S and E-W error distances in meters
         ns_error_dist_m = _EARTH_RADIUS_M * lat_error_rad
         ew_error_dist_m = _EARTH_RADIUS_M * np.cos(gcp_lat_rad) * lon_error_rad
 
-        # Transform boresight vectors using configurable variable names
         bhat_ctrs = self._transform_boresight_vectors(
             filtered_data[boresight_var].values, filtered_data[transform_var].values
         )
 
-        # Process each measurement to nadir-equivalent using configurable variable name
         results = self._process_to_nadir_equivalent(
             ns_error_dist_m,
             ew_error_dist_m,
@@ -232,11 +272,29 @@ class ErrorStatsProcessor:
             n_measurements,
         )
 
-        # Create output dataset
-        output_data = self._create_output_dataset(filtered_data, results)
+        return self._create_output_dataset(filtered_data, results)
 
-        # Add statistics as global attributes
-        stats = self._calculate_statistics(results["nadir_equiv_total_error_m"])
+    def process_geolocation_errors(self, input_data: xr.Dataset) -> xr.Dataset:
+        """Full processing: nadir-equivalent errors + aggregate statistics.
+
+        Use this for final aggregation after the loop, or in :func:`verify`.
+        For per-iteration computation (single GCP pair), prefer
+        :meth:`compute_nadir_equivalent_errors` to avoid computing aggregate
+        statistics on a small or single-measurement sample.
+
+        Parameters
+        ----------
+        input_data : xr.Dataset
+            Dataset with required error measurement variables.
+
+        Returns
+        -------
+        xr.Dataset
+            Dataset with ``nadir_equiv_total_error_m`` and related intermediate
+            variables, plus comprehensive statistics as global attributes.
+        """
+        output_data = self.compute_nadir_equivalent_errors(input_data)
+        stats = self._calculate_statistics(output_data["nadir_equiv_total_error_m"].values)
         output_data.attrs.update(stats)
 
         return output_data
@@ -468,7 +526,6 @@ class ErrorStatsProcessor:
                 "title": "Geolocation Error Statistics Results",
                 "processing_timestamp": np.datetime64("now"),
                 "earth_radius_m": _EARTH_RADIUS_M,
-                "performance_threshold_m": self.config.performance_threshold_m,
             },
         )
 
@@ -480,26 +537,52 @@ class ErrorStatsProcessor:
         return output_ds
 
     def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> dict[str, float | int]:
-        """Calculate performance statistics on nadir-equivalent errors."""
+        """Calculate comprehensive, mission-agnostic performance statistics.
 
-        # Count errors below threshold
-        num_below_threshold = np.sum(nadir_equiv_errors_m < self.config.performance_threshold_m)
+        This method intentionally does NOT include any pass/fail evaluation.
+        Whether these statistics meet mission requirements is the caller's
+        responsibility.  Use :func:`compute_percent_below` for custom threshold
+        queries not covered by the standard table.
 
-        # Calculate statistics
-        stats = {
-            "mean_error_distance_m": float(np.mean(nadir_equiv_errors_m)),
-            "std_error_distance_m": float(np.std(nadir_equiv_errors_m)),
-            "min_error_distance_m": float(np.min(nadir_equiv_errors_m)),
-            "max_error_distance_m": float(np.max(nadir_equiv_errors_m)),
-            "percent_below_250m": float(num_below_threshold / len(nadir_equiv_errors_m) * 100),
-            "num_below_250m": int(num_below_threshold),
-            "total_measurements": int(len(nadir_equiv_errors_m)),
-            "performance_spec_met": bool(
-                num_below_threshold / len(nadir_equiv_errors_m) * 100 > self.config.performance_spec_percent
-            ),
+        Parameters
+        ----------
+        nadir_equiv_errors_m : np.ndarray
+            Array of nadir-equivalent geolocation errors in metres.
+
+        Returns
+        -------
+        dict[str, float | int]
+            Keys: central tendency (``mean_error_m``, ``median_error_m``,
+            ``rms_error_m``), spread (``std_error_m``, ``min_error_m``,
+            ``max_error_m``), percentiles (``p25_error_m`` … ``p99_error_m``),
+            count (``total_measurements``), and a threshold table at standard
+            intervals (``percent_below_100m`` … ``percent_below_1000m``).
+        """
+        n = len(nadir_equiv_errors_m)
+        return {
+            # Central tendency
+            "mean_error_m": float(np.mean(nadir_equiv_errors_m)),
+            "median_error_m": float(np.median(nadir_equiv_errors_m)),
+            "rms_error_m": float(np.sqrt(np.mean(nadir_equiv_errors_m**2))),
+            # Spread
+            "std_error_m": float(np.std(nadir_equiv_errors_m)),
+            "min_error_m": float(np.min(nadir_equiv_errors_m)),
+            "max_error_m": float(np.max(nadir_equiv_errors_m)),
+            # Percentiles
+            "p25_error_m": float(np.percentile(nadir_equiv_errors_m, 25)),
+            "p75_error_m": float(np.percentile(nadir_equiv_errors_m, 75)),
+            "p90_error_m": float(np.percentile(nadir_equiv_errors_m, 90)),
+            "p95_error_m": float(np.percentile(nadir_equiv_errors_m, 95)),
+            "p99_error_m": float(np.percentile(nadir_equiv_errors_m, 99)),
+            # Count
+            "total_measurements": int(n),
+            # Threshold table (standard intervals, for quick reference)
+            "percent_below_100m": float(np.sum(nadir_equiv_errors_m < 100.0) / n * 100),
+            "percent_below_250m": float(np.sum(nadir_equiv_errors_m < 250.0) / n * 100),
+            "percent_below_500m": float(np.sum(nadir_equiv_errors_m < 500.0) / n * 100),
+            "percent_below_750m": float(np.sum(nadir_equiv_errors_m < 750.0) / n * 100),
+            "percent_below_1000m": float(np.sum(nadir_equiv_errors_m < 1000.0) / n * 100),
         }
-
-        return stats
 
     def process_from_netcdf(self, filepath: Union[str, "Path"], minimum_correlation: float | None = None) -> xr.Dataset:
         """

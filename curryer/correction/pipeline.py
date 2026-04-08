@@ -972,9 +972,35 @@ def loop(
                 match_ctx,
             )
 
-            # Process individual pair error statistics
-            individual_stats = call_error_stats_module(image_matching_output, correction_config=config)
-            individual_metrics = _extract_error_metrics(individual_stats)
+            # Compute nadir-equivalent errors for this GCP pair.
+            # compute_nadir_equivalent_errors() skips aggregate statistics —
+            # computing mean/std/percentiles on a single GCP pair is
+            # mathematically uninformative and wastes time in a tight loop.
+            from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
+
+            error_config = ErrorStatsConfig.from_correction_config(config)
+            processor = ErrorStatsProcessor(config=error_config)
+            individual_nadir = processor.compute_nadir_equivalent_errors(image_matching_output)
+
+            nadir_errors = individual_nadir["nadir_equiv_total_error_m"].values
+            if len(nadir_errors) == 1:
+                nadir_error = float(nadir_errors[0])
+                individual_metrics = {
+                    "rms_error_m": nadir_error,
+                    "mean_error_m": nadir_error,
+                    "max_error_m": nadir_error,
+                    "std_error_m": 0.0,
+                    "n_measurements": 1,
+                }
+            else:
+                individual_metrics = {
+                    "rms_error_m": float(np.sqrt(np.mean(nadir_errors**2))),
+                    "mean_error_m": float(np.mean(nadir_errors)),
+                    "max_error_m": float(np.max(nadir_errors)),
+                    "std_error_m": float(np.std(nadir_errors)),
+                    "n_measurements": len(nadir_errors),
+                }
+            individual_stats = individual_nadir
 
             # Store results in NetCDF (maintain [param_idx, pair_idx] ordering)
             _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)

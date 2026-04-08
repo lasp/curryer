@@ -425,6 +425,35 @@ class NetCDFConfig(BaseModel):
 
 
 # ============================================================================
+# Verification Requirements Configuration
+# ============================================================================
+
+
+class RequirementsConfig(BaseModel):
+    """Verification requirements / thresholds.
+
+    Can be attached as an optional ``verification`` field on
+    :class:`CorrectionConfig`, or passed directly to
+    :func:`~curryer.correction.verification.verify`.  When neither is supplied,
+    :func:`~curryer.correction.verification.verify` falls back to
+    :attr:`CorrectionConfig.performance_threshold_m` and
+    :attr:`CorrectionConfig.performance_spec_percent`.
+
+    Attributes
+    ----------
+    performance_threshold_m : float
+        Per-measurement nadir-equivalent error limit in metres.
+        A measurement *passes* when its error is **below** this value.
+    performance_spec_percent : float
+        Minimum fraction of measurements (0–100) that must pass for the
+        overall verification to be considered successful.
+    """
+
+    performance_threshold_m: float
+    performance_spec_percent: float
+
+
+# ============================================================================
 # Top-Level Correction Configuration
 # ============================================================================
 
