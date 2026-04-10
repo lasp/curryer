@@ -23,6 +23,7 @@ from curryer.correction.config import (
     ParameterConfig,
     ParameterData,
     ParameterType,
+    load_config_from_json,
 )
 
 # ---------------------------------------------------------------------------
@@ -107,7 +108,6 @@ def minimal_config(geo, param_constant) -> CorrectionConfig:
         geo=geo,
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
     )
 
 
@@ -121,7 +121,6 @@ def full_config(geo, param_constant, param_offset_kernel, param_offset_time, net
         geo=geo,
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
         netcdf=netcdf_cfg,
         output_filename="test_results.nc",
         calibration_dir=Path("tests/data/calibration"),
@@ -166,7 +165,6 @@ class TestDataConfig:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
             data=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
         json_str = cfg.model_dump_json()
@@ -183,7 +181,6 @@ class TestDataConfig:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
         )
         assert cfg.data is None
 
@@ -424,16 +421,44 @@ class TestCorrectionConfig:
         assert len(minimal_config.parameters) == 1
 
     def test_callable_fields_default_none(self, minimal_config):
-        """Only image_matching_func remains as an optional callable override."""
-        assert minimal_config.image_matching_func is None
+        """_image_matching_override defaults to None."""
+        assert minimal_config._image_matching_override is None
 
-    def test_image_matching_func_can_be_set(self, minimal_config):
+    def test_image_matching_override_can_be_set(self, minimal_config):
+        """_image_matching_override accepts any callable."""
+
         def my_func(*args, **kwargs):
             return None
 
-        minimal_config.image_matching_func = my_func
-        assert minimal_config.image_matching_func is my_func
-        minimal_config.image_matching_func = None
+        minimal_config._image_matching_override = my_func
+        assert minimal_config._image_matching_override is my_func
+        minimal_config._image_matching_override = None
+
+    def test_image_matching_func_deprecated_getter(self, minimal_config):
+        """Accessing image_matching_func property emits DeprecationWarning."""
+        import warnings
+
+        minimal_config._image_matching_override = lambda: "x"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            val = minimal_config.image_matching_func
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert val is minimal_config._image_matching_override
+        minimal_config._image_matching_override = None
+
+    def test_image_matching_func_deprecated_setter(self, minimal_config):
+        """Setting image_matching_func via deprecated property emits DeprecationWarning."""
+        import warnings
+
+        def my_func(*args, **kwargs):
+            return None
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            minimal_config.image_matching_func = my_func
+        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        assert minimal_config._image_matching_override is my_func
+        minimal_config._image_matching_override = None
 
     def test_mutable_fields(self, minimal_config):
         minimal_config.n_iterations = 99
@@ -448,7 +473,6 @@ class TestCorrectionConfig:
                 geo=geo,
                 # performance_threshold_m missing
                 performance_spec_percent=39.0,
-                earth_radius_m=6_378_140.0,
             )
         assert "performance_threshold_m" in str(exc_info.value)
 
@@ -460,7 +484,6 @@ class TestCorrectionConfig:
                 geo=geo,
                 performance_threshold_m=250.0,
                 performance_spec_percent=39.0,
-                earth_radius_m=6_378_140.0,
             )
         assert "n_iterations" in str(exc_info.value)
 
@@ -477,6 +500,17 @@ class TestCorrectionConfig:
         with pytest.raises(ValueError, match="n_iterations"):
             minimal_config.validate()
         minimal_config.n_iterations = 5
+
+    def test_correction_config_requires_no_earth_radius_m(self, geo, param_constant):
+        """CorrectionConfig constructs successfully without earth_radius_m (field removed)."""
+        config = CorrectionConfig(
+            n_iterations=5,
+            parameters=[param_constant],
+            geo=geo,
+            performance_threshold_m=250.0,
+            performance_spec_percent=39.0,
+        )
+        assert not hasattr(config, "earth_radius_m") or config.model_fields.get("earth_radius_m") is None
 
     def test_ensure_netcdf_config_creates_default(self, minimal_config):
         assert minimal_config.netcdf is None
@@ -528,12 +562,13 @@ class TestJsonRoundTrip:
         assert full_config == reloaded
 
     def test_callable_fields_excluded_from_json(self, minimal_config):
-        """image_matching_func is excluded from JSON serialisation."""
-        minimal_config.image_matching_func = lambda: None
+        """_image_matching_override (PrivateAttr) is always excluded from JSON serialisation."""
+        minimal_config._image_matching_override = lambda: None
         json_str = minimal_config.model_dump_json()
         assert "image_matching_func" not in json_str
+        assert "_image_matching_override" not in json_str
         # clean up
-        minimal_config.image_matching_func = None
+        minimal_config._image_matching_override = None
 
     def test_json_contains_expected_keys(self, minimal_config):
         import json
@@ -544,7 +579,7 @@ class TestJsonRoundTrip:
         assert "geo" in data
         assert "performance_threshold_m" in data
         assert "performance_spec_percent" in data
-        assert "earth_radius_m" in data
+        assert "earth_radius_m" not in data
 
     def test_path_fields_survive_roundtrip(self, minimal_config):
         reloaded = CorrectionConfig.model_validate_json(minimal_config.model_dump_json())
@@ -605,8 +640,152 @@ class TestJsonRoundTrip:
             geo=geo,
             performance_threshold_m=100.0,
             performance_spec_percent=50.0,
-            earth_radius_m=6_378_140.0,
         )
         reloaded = CorrectionConfig.model_validate_json(config.model_dump_json())
         assert reloaded.seed is None
         assert config == reloaded
+
+
+# ===========================================================================
+# load_config_from_json – earth_radius_m deprecation
+# ===========================================================================
+
+
+class TestLoadConfigFromJsonEarthRadius:
+    """Verify that earth_radius_m in JSON is accepted (with a warning) and ignored."""
+
+    def _minimal_json(self, tmp_path, *, include_earth_radius: bool) -> Path:
+        """Write a minimal valid correction config JSON to a temp file."""
+        import json
+
+        # Use the parameter format that load_config_from_json expects
+        # (name + parameter_type, not ptype).
+        payload = {
+            "mission_config": {
+                "mission_name": "TEST",
+                "kernel_mappings": {
+                    "constant_kernel": {},
+                    "offset_kernel": {},
+                },
+            },
+            "geolocation": {
+                "instrument_name": "TEST_INST",
+                "time_field": "ugps_time",
+                "meta_kernel_file": str(tmp_path / "test.kernels.tm.json"),
+                "generic_kernel_dir": str(tmp_path),
+            },
+            "correction": {
+                "n_iterations": 2,
+                "performance_threshold_m": 250.0,
+                "performance_spec_percent": 39.0,
+                "parameters": [
+                    {
+                        "name": "time_correction",
+                        "parameter_type": "OFFSET_TIME",
+                        "initial_value": 0.0,
+                        "bounds": [-50.0, 50.0],
+                        "sigma": 7.0,
+                        "units": "milliseconds",
+                        "field": "ugps_time",
+                    }
+                ],
+            },
+        }
+        if include_earth_radius:
+            payload["correction"]["earth_radius_m"] = 6_378_140.0
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload))
+        return path
+
+    def test_json_without_earth_radius_loads_fine(self, tmp_path):
+        """Config without earth_radius_m should load without error."""
+        config_path = self._minimal_json(tmp_path, include_earth_radius=False)
+        config = load_config_from_json(config_path)
+        assert config.performance_threshold_m == 250.0
+
+    def test_json_with_earth_radius_loads_with_warning(self, tmp_path, caplog):
+        """Config with legacy earth_radius_m loads but emits a deprecation warning."""
+        import logging
+
+        config_path = self._minimal_json(tmp_path, include_earth_radius=True)
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.config"):
+            config = load_config_from_json(config_path)
+
+        assert config.performance_threshold_m == 250.0
+        assert any("earth_radius_m" in msg and "deprecated" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# CorrectionInput
+# ---------------------------------------------------------------------------
+
+
+class TestCorrectionInput:
+    """Tests for the typed CorrectionInput model."""
+
+    def test_basic_construction(self, tmp_path):
+        from curryer.correction.config import CorrectionInput
+
+        inp = CorrectionInput(
+            telemetry_file=tmp_path / "tlm.csv",
+            science_file=tmp_path / "sci.csv",
+            gcp_file=tmp_path / "gcp.mat",
+        )
+        assert inp.telemetry_file == tmp_path / "tlm.csv"
+        assert inp.science_file == tmp_path / "sci.csv"
+        assert inp.gcp_file == tmp_path / "gcp.mat"
+
+    def test_string_paths_coerced_to_path(self, tmp_path):
+        from curryer.correction.config import CorrectionInput
+
+        inp = CorrectionInput(
+            telemetry_file="data/tlm.csv",
+            science_file="data/sci.csv",
+            gcp_file="gcps/chip.mat",
+        )
+        assert isinstance(inp.telemetry_file, Path)
+        assert isinstance(inp.science_file, Path)
+        assert isinstance(inp.gcp_file, Path)
+
+    def test_run_correction_accepts_correction_input(self, minimal_config, tmp_path):
+        """run_correction() normalises CorrectionInput to tuples before calling loop()."""
+        from unittest.mock import patch
+
+        from curryer.correction.config import CorrectionInput
+        from curryer.correction.pipeline import run_correction
+
+        inp = CorrectionInput(
+            telemetry_file=tmp_path / "tlm.csv",
+            science_file=tmp_path / "sci.csv",
+            gcp_file=tmp_path / "gcp.mat",
+        )
+
+        with patch("curryer.correction.pipeline.loop") as mock_loop:
+            mock_loop.return_value = ([], {})
+            run_correction(minimal_config, tmp_path, [inp])
+
+        mock_loop.assert_called_once()
+        call_args = mock_loop.call_args
+        normalized_inputs = call_args[0][2]  # third positional arg
+        assert len(normalized_inputs) == 1
+        assert normalized_inputs[0] == (
+            str(tmp_path / "tlm.csv"),
+            str(tmp_path / "sci.csv"),
+            str(tmp_path / "gcp.mat"),
+        )
+
+    def test_run_correction_accepts_legacy_tuples(self, minimal_config, tmp_path):
+        """run_correction() passes legacy tuples through unchanged."""
+        from unittest.mock import patch
+
+        from curryer.correction.pipeline import run_correction
+
+        tuples = [("tlm.csv", "sci.csv", "gcp.mat")]
+
+        with patch("curryer.correction.pipeline.loop") as mock_loop:
+            mock_loop.return_value = ([], {})
+            run_correction(minimal_config, tmp_path, tuples)
+
+        call_args = mock_loop.call_args
+        assert call_args[0][2] == tuples

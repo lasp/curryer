@@ -16,6 +16,9 @@ results_io
     NetCDF result file read/write and checkpoint support.
 pipeline
     Main :func:`loop` orchestration and all per-iteration helpers.
+    Preferred-name aliases: :func:`run_correction`, :func:`run_image_matching`,
+    :func:`compute_error_stats`.
+    :func:`run_correction` also accepts :class:`CorrectionInput` objects.
 correction
     Thin re-export shim -- keeps all existing
     ``from curryer.correction import correction`` import paths working.
@@ -24,11 +27,19 @@ correction_config
 data_structures
     Shared data-container dataclasses (``ImageGrid``, ``PSFGrid``, ...).
 dataio
-    Validation helpers and S3 data-access utilities.
+    Validation helpers and S3 data-access utilities.  The S3 utilities
+    (``S3Configuration``, ``find_netcdf_objects``, ``download_netcdf_objects``)
+    are optional convenience helpers for mission-specific data pipelines;
+    the core correction API does not depend on them.
 error_stats
     Error statistics computation (``ErrorStatsProcessor``).
 image_match
     Image-matching algorithm (``integrated_image_match``).
+io
+    Unified path resolution (``resolve_path``).  Transparently handles
+    local paths and S3 URIs (``s3://…``) when ``boto3`` is installed.
+    Optional convenience — the public API contract is local ``Path``
+    objects; S3 support is opt-in.
 pairing
     Ground-control-point pairing utilities.
 psf
@@ -49,12 +60,14 @@ from . import (
     error_stats,
     image_io,
     image_match,
+    io,
     kernel_ops,
     pairing,
     parameters,
     pipeline,
     psf,
     regrid,
+    results,
     results_io,
     search,
     verification,
@@ -63,19 +76,23 @@ from . import (
 # Key public names lifted to package level
 from .config import (
     CorrectionConfig,
+    CorrectionInput,
     DataConfig,
     GeolocationConfig,
     NetCDFConfig,
     NetCDFParameterMetadata,
     ParameterConfig,
     ParameterType,
+    RequirementsConfig,
     SearchStrategy,
     load_config_from_json,
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
-from .error_stats import ErrorStatsConfig, ErrorStatsProcessor
-from .pipeline import loop
-from .verification import GCPError, RequirementsConfig, VerificationResult, verify
+from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
+from .io import resolve_path
+from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
+from .results import CorrectionResult, ParameterSetResult
+from .verification import GCPError, VerificationResult, compare_results, verify
 
 __all__ = [
     # Sub-modules
@@ -87,27 +104,34 @@ __all__ = [
     "error_stats",
     "image_io",
     "image_match",
+    "io",
     "kernel_ops",
     "pairing",
     "parameters",
     "pipeline",
     "psf",
     "regrid",
+    "results",
     "results_io",
     "search",
     "verification",
     # Config
     "CorrectionConfig",
+    "CorrectionInput",
     "DataConfig",
     "GeolocationConfig",
     "NetCDFConfig",
     "NetCDFParameterMetadata",
     "ParameterConfig",
     "ParameterType",
+    "RequirementsConfig",
     "SearchStrategy",
     "load_config_from_json",
-    # Pipeline entry point
+    # Pipeline entry points
     "loop",
+    "run_correction",
+    "compute_error_stats",
+    "run_image_matching",
     # Data structures
     "ImageGrid",
     "PSFGrid",
@@ -117,9 +141,15 @@ __all__ = [
     # Error stats
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
+    "compute_percent_below",
+    # IO
+    "resolve_path",
     # Verification
     "GCPError",
-    "RequirementsConfig",
     "VerificationResult",
+    "compare_results",
     "verify",
+    # Structured results
+    "CorrectionResult",
+    "ParameterSetResult",
 ]

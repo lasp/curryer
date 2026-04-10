@@ -17,19 +17,24 @@ functions it calls:
 
 import logging
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+if TYPE_CHECKING:
+    from curryer.correction.results import CorrectionResult
+
 from curryer import meta
 from curryer import spicierpy as sp
-from curryer.compute import spatial
+from curryer.compute import constants, spatial
 from curryer.correction.config import (
     CalibrationData,
     CorrectionConfig,
+    CorrectionInput,
     ImageMatchingContext,
     KernelContext,
     ParameterType,
@@ -43,6 +48,7 @@ from curryer.correction.dataio import (
     validate_science_output,
     validate_telemetry_output,
 )
+from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.image_io import (
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
@@ -105,23 +111,57 @@ def _geolocated_to_image_grid(geo_dataset: xr.Dataset):
     return ImageGrid(data=data, lat=lat, lon=lon, h=h)
 
 
-def _extract_spacecraft_position_midframe(telemetry: pd.DataFrame) -> np.ndarray:
-    """
-    Extract spacecraft position at mid-frame from telemetry.
+def _extract_spacecraft_position_midframe(
+    telemetry: pd.DataFrame,
+    config: "CorrectionConfig | None" = None,
+) -> np.ndarray:
+    """Extract spacecraft position at mid-frame from telemetry.
 
-    Internal adapter function: extracts position from telemetry DataFrame
-    with fallback logic for different column naming conventions.
+    Parameters
+    ----------
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft position columns.
+    config : CorrectionConfig or None, optional
+        If provided and ``config.data.position_columns`` is set, those
+        column names are used directly. Otherwise falls back to
+        pattern-guessing (with a deprecation warning).
 
-    Args:
-        telemetry: Telemetry DataFrame with spacecraft position columns
+    Returns
+    -------
+    np.ndarray
+        Shape ``(3,)`` — ``[x, y, z]`` position in metres (J2000 frame).
 
-    Returns:
-        np.ndarray, shape (3,) - [x, y, z] position in meters (J2000 frame)
-
-    Raises:
-        ValueError: If position columns cannot be found
+    Raises
+    ------
+    ValueError
+        If ``position_columns`` has wrong length, or specified columns are
+        not found, or pattern-guessing fails.
     """
     mid_idx = len(telemetry) // 2
+
+    # Prefer explicit column names from config
+    if config is not None and config.data is not None and config.data.position_columns is not None:
+        cols = config.data.position_columns
+        if len(cols) != 3:
+            raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
+        missing = [c for c in cols if c not in telemetry.columns]
+        if missing:
+            raise ValueError(
+                f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}"
+            )
+        position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+        logger.debug(
+            "Extracted spacecraft position from config.data.position_columns %s: %s",
+            cols,
+            position,
+        )
+        return position
+
+    # Legacy fallback: pattern guessing (log deprecation warning)
+    logger.warning(
+        "position_columns not configured — falling back to column name pattern-guessing. "
+        "Set config.data.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
+    )
 
     # Try common column name patterns
     position_patterns = [
@@ -211,20 +251,29 @@ def image_matching(
         optical_psfs = optical_psfs_cached
         logger.info("    Using cached calibration data")
     else:
-        # Load from files
-        # Use configurable calibration file names
-        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-        los_file = calibration_dir / los_filename
+        # Prefer direct file paths from config; fall back to calibration_dir parameter.
+        if config.los_vectors_file is not None:
+            los_file = Path(config.los_vectors_file)
+        elif calibration_dir is not None:
+            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+            los_file = calibration_dir / los_filename
+        else:
+            raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
         los_vectors = load_los_vectors_from_mat(los_file)
         logger.info(f"    LOS vectors: {los_vectors.shape}")
 
-        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-        psf_file = calibration_dir / psf_filename
+        if config.psf_file is not None:
+            psf_file = Path(config.psf_file)
+        elif calibration_dir is not None:
+            psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+            psf_file = calibration_dir / psf_filename
+        else:
+            raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
         optical_psfs = load_optical_psf_from_mat(psf_file)
         logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
     # Extract spacecraft position from telemetry
-    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry)
+    r_iss_midframe = _extract_spacecraft_position_midframe(telemetry, config=config)
     logger.info(f"    Spacecraft position: {r_iss_midframe}")
 
     # Run real image matching
@@ -270,7 +319,7 @@ def image_matching(
 
     # Convert errors from km to degrees
     lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
-    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
+    lon_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_center_lat))
     lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
     processing_time = time.time() - start_time
@@ -546,7 +595,7 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     Parameters
     ----------
     file_path : str | Path
-        Path to the data file.
+        Local path or S3 URI (``s3://bucket/key``).
     file_format : str
         One of ``"csv"``, ``"netcdf"``, or ``"hdf5"``.
 
@@ -557,13 +606,17 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
     Raises
     ------
     FileNotFoundError
-        If the file does not exist.
+        If *file_path* is local and does not exist.
+    ImportError
+        If *file_path* is an S3 URI and boto3 is not installed.
     ValueError
         If ``file_format`` is not recognised.
     """
-    file_path = Path(file_path)
-    if not file_path.exists():
-        raise FileNotFoundError(f"Data file not found: {file_path}")
+    from curryer.correction.io import resolve_path
+
+    file_path = resolve_path(file_path)
+    # NOTE: resolve_path already validated existence / downloaded from S3.
+    # The old manual exists() check is removed.
 
     if file_format == "csv":
         return pd.read_csv(file_path, index_col=0)
@@ -605,6 +658,17 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
     ValueError
         If calibration files exist but fail to load properly
 
+    Note
+    ----
+    Supports three resolution strategies (in priority order):
+
+    1. ``config.los_vectors_file`` / ``config.psf_file`` — direct file paths
+       (set in PR 1 via ``CorrectionConfig``).
+    2. ``config.calibration_dir`` + ``config.calibration_file_names`` — legacy
+       directory-based lookup.
+    3. Neither configured — returns ``CalibrationData(None, None)`` so that
+       missions without calibration files still work.
+
     Examples
     --------
     >>> calib_data = _load_calibration_data(config)
@@ -612,18 +676,26 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
     ...     # Use calibration data in image matching
     ...     pass
     """
-    if not config.calibration_dir:
+    has_direct = config.los_vectors_file is not None or config.psf_file is not None
+    has_dir = bool(config.calibration_dir)
+
+    if not has_direct and not has_dir:
         return CalibrationData(los_vectors=None, optical_psfs=None)
 
     logger.info("Loading calibration data...")
 
-    # Use configurable calibration file names
-    los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-    los_file = config.calibration_dir / los_filename
+    # ---- LOS vectors ----
+    if config.los_vectors_file is not None:
+        los_file = Path(config.los_vectors_file)
+    elif config.calibration_dir is not None:
+        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
+        los_file = config.calibration_dir / los_filename
+    else:
+        raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
 
     if not los_file.exists():
         raise FileNotFoundError(
-            f"LOS vectors calibration file not found: {los_file}\nExpected in calibration_dir: {config.calibration_dir}"
+            f"LOS vectors calibration file not found: {los_file}\nSet config.los_vectors_file to the correct path."
         )
 
     los_vectors_cached = load_los_vectors_from_mat(los_file)
@@ -633,12 +705,18 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
             f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors_from_mat() returned None."
         )
 
-    psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-    psf_file = config.calibration_dir / psf_filename
+    # ---- Optical PSF ----
+    if config.psf_file is not None:
+        psf_file = Path(config.psf_file)
+    elif config.calibration_dir is not None:
+        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+        psf_file = config.calibration_dir / psf_filename
+    else:
+        raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
 
     if not psf_file.exists():
         raise FileNotFoundError(
-            f"Optical PSF calibration file not found: {psf_file}\nExpected in calibration_dir: {config.calibration_dir}"
+            f"Optical PSF calibration file not found: {psf_file}\nSet config.psf_file to the correct path."
         )
 
     optical_psfs_cached = load_optical_psf_from_mat(psf_file)
@@ -827,14 +905,19 @@ def loop(
     config : CorrectionConfig
         The single configuration containing all settings:
         - Required: parameters, iterations, thresholds, geo config
-        - Required loaders: telemetry_loader, science_loader
-        - Optional processing: gcp_pairing_func, image_matching_func
-        - Calibration: `calibration_dir` (if image_matching_func uses calibration)
+        - Data loading: ``data`` (:class:`~curryer.correction.config.DataConfig`)
+          specifying file format and time scaling
+        - Optional: ``_image_matching_override`` override on ``config``
+          (test injection only)
+        - Calibration: `calibration_dir` (if the image-matching override uses calibration)
         - Output: netcdf, output_filename
     work_dir : Path
         Working directory for temporary files.
     tlm_sci_gcp_sets : list of (str, str, str)
         List of (`telemetry_key`, `science_key`, `gcp_key`) tuples.
+        File paths are expected to be local. S3 URIs (``s3://…``) are also
+        accepted as a convenience when ``boto3`` is installed; see
+        :func:`~curryer.correction.io.resolve_path`.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
@@ -866,7 +949,6 @@ def loop(
             geo=geo_config,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            earth_radius_m=6_378_140.0,
             data=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
         results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
@@ -881,7 +963,7 @@ def loop(
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
     # Use injected image matching function override, or fall back to built-in implementation
-    image_matching_func = config.image_matching_func if config.image_matching_func is not None else image_matching
+    image_matching_func = getattr(config, "_image_matching_override", None) or image_matching
 
     # Initialize parameter sets
     params_set = load_param_sets(config)
@@ -922,6 +1004,10 @@ def loop(
 
     # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
     calibration_data = _load_calibration_data(config)
+
+    # Create error stats processor once (config is constant; processor is stateless)
+    error_config = ErrorStatsConfig.from_correction_config(config)
+    error_processor = ErrorStatsProcessor(config=error_config)
 
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
@@ -973,9 +1059,31 @@ def loop(
                 match_ctx,
             )
 
-            # Process individual pair error statistics
-            individual_stats = call_error_stats_module(image_matching_output, correction_config=config)
-            individual_metrics = _extract_error_metrics(individual_stats)
+            # Compute nadir-equivalent errors for this GCP pair.
+            # compute_nadir_equivalent_errors() skips aggregate statistics —
+            # computing mean/std/percentiles on a single GCP pair is
+            # mathematically uninformative and wastes time in a tight loop.
+            individual_nadir = error_processor.compute_nadir_equivalent_errors(image_matching_output)
+
+            nadir_errors = individual_nadir["nadir_equiv_total_error_m"].values
+            if len(nadir_errors) == 1:
+                nadir_error = float(nadir_errors[0])
+                individual_metrics = {
+                    "rms_error_m": nadir_error,
+                    "mean_error_m": nadir_error,
+                    "max_error_m": nadir_error,
+                    "std_error_m": 0.0,
+                    "n_measurements": 1,
+                }
+            else:
+                individual_metrics = {
+                    "rms_error_m": float(np.sqrt(np.mean(nadir_errors**2))),
+                    "mean_error_m": float(np.mean(nadir_errors)),
+                    "max_error_m": float(np.max(nadir_errors)),
+                    "std_error_m": float(np.std(nadir_errors)),
+                    "n_measurements": len(nadir_errors),
+                }
+            individual_stats = individual_nadir
 
             # Store results in NetCDF (maintain [param_idx, pair_idx] ordering)
             _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, individual_metrics)
@@ -1181,3 +1289,147 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 # =============================================================================
 # Incremental NetCDF Saving (Checkpoint/Resume)
 # =============================================================================
+
+# =============================================================================
+# Preferred-name aliases  (backward-compat originals kept above)
+# =============================================================================
+
+
+def run_correction(
+    config: CorrectionConfig,
+    work_dir: Path,
+    inputs: Sequence[CorrectionInput | tuple[str, str, str]],
+    resume_from_checkpoint: bool = False,
+) -> "CorrectionResult":
+    """Run the correction parameter sweep.
+
+    This is the preferred user-facing entry point (compared to :func:`loop`).
+    Returns a structured :class:`~curryer.correction.results.CorrectionResult`
+    with the best parameter set, pass/fail verdict, recommendation, and a
+    human-readable summary table.  The raw ``results`` list and ``netcdf_data``
+    dict from :func:`loop` are available as ``result.results`` and
+    ``result.netcdf_data`` for advanced use.
+
+    Parameters
+    ----------
+    config : CorrectionConfig
+        Full correction configuration.
+    work_dir : Path
+        Working directory for temporary files.
+    inputs : list of CorrectionInput or list of (str, str, str)
+        Each element is either a :class:`~curryer.correction.config.CorrectionInput`
+        (named fields) or a legacy ``(telemetry_key, science_key, gcp_key)`` tuple.
+        Both forms may be mixed in the same list.
+        File paths are expected to be local. S3 URIs (``s3://…``) are also
+        accepted as a convenience when ``boto3`` is installed; see
+        :func:`~curryer.correction.io.resolve_path`.
+    resume_from_checkpoint : bool, optional
+        If True, resume from an existing checkpoint.
+
+    Returns
+    -------
+    CorrectionResult
+        Structured result with best parameters, pass/fail verdict,
+        recommendation, summary table, and raw NetCDF/intermediate data
+        available on the returned object (for example,
+        ``result.netcdf_data``).
+    """
+    from curryer.correction.results import build_correction_result
+
+    run_start = time.time()
+
+    normalized: list[tuple[str, str, str]] = []
+    for inp in inputs:
+        if isinstance(inp, CorrectionInput):
+            normalized.append((str(inp.telemetry_file), str(inp.science_file), str(inp.gcp_file)))
+        else:
+            normalized.append(inp)
+
+    results, netcdf_data = loop(config, work_dir, normalized, resume_from_checkpoint)
+    elapsed = time.time() - run_start
+    netcdf_path = work_dir / config.get_output_filename()
+
+    correction_result = build_correction_result(
+        config=config,
+        results=results,
+        netcdf_data=netcdf_data,
+        netcdf_path=netcdf_path,
+        elapsed_time_s=elapsed,
+    )
+
+    logger.info("\n%s", correction_result.summary_table)
+    logger.info(correction_result.recommendation)
+
+    return correction_result
+
+
+def compute_error_stats(image_matching_results, correction_config: "CorrectionConfig"):
+    """Compute error statistics from image matching results.
+
+    This is the preferred name for :func:`call_error_stats_module`.
+    See :func:`call_error_stats_module` for full documentation.
+
+    Parameters
+    ----------
+    image_matching_results : xr.Dataset or list of xr.Dataset
+        Output from image matching, either a single dataset or a list.
+    correction_config : CorrectionConfig
+        Correction configuration used to initialise the error stats processor.
+
+    Returns
+    -------
+    xr.Dataset
+        Aggregate error statistics dataset.
+    """
+    return call_error_stats_module(image_matching_results, correction_config)
+
+
+def run_image_matching(
+    geolocated_data: "xr.Dataset",
+    gcp_reference_file: Path,
+    telemetry: "pd.DataFrame",
+    calibration_dir: Path,
+    params_info: list,
+    config: "CorrectionConfig",
+    los_vectors_cached: "np.ndarray | None" = None,
+    optical_psfs_cached: "list | None" = None,
+) -> "xr.Dataset":
+    """Run image matching against GCP reference.
+
+    This is the preferred name for :func:`image_matching`.
+    See :func:`image_matching` for full documentation.
+
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Geolocated scene data with latitude/longitude.
+    gcp_reference_file : Path
+        Path to the GCP reference image (.mat file).
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft state.
+    calibration_dir : Path
+        Directory containing calibration files.
+    params_info : list
+        Parameter information for the current iteration.
+    config : CorrectionConfig
+        Full correction configuration.
+    los_vectors_cached : np.ndarray or None, optional
+        Pre-loaded LOS vectors; loaded from disk if None.
+    optical_psfs_cached : list or None, optional
+        Pre-loaded optical PSFs; loaded from disk if None.
+
+    Returns
+    -------
+    xr.Dataset
+        Image matching results dataset.
+    """
+    return image_matching(
+        geolocated_data,
+        gcp_reference_file,
+        telemetry,
+        calibration_dir,
+        params_info,
+        config,
+        los_vectors_cached,
+        optical_psfs_cached,
+    )

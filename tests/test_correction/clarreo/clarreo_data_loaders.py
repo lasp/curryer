@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""CLARREO-specific data preprocessing functions (compatibility shim).
+"""CLARREO-specific data PREPROCESSING scripts.
+
+These functions join multiple raw CSV files, flip azimuth signs, and convert
+DCM to quaternion. They are NOT part of the correction pipeline — run them
+BEFORE using the correction module to produce standard single-file inputs.
+
+See examples/correction/ for the recommended workflow.
 
 .. deprecated::
     The Protocol-based loader pattern (``TelemetryLoader``, ``ScienceLoader``,

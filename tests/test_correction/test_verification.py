@@ -48,7 +48,6 @@ from curryer.correction.verification import (
 # Helpers / factories
 # ===========================================================================
 
-_EARTH_RADIUS_M = 6_378_140.0
 _THRESHOLD_M = 250.0
 _SPEC_PCT = 39.0
 
@@ -81,7 +80,6 @@ def _make_config(**overrides) -> CorrectionConfig:
         geo=_make_geo(),
         performance_threshold_m=_THRESHOLD_M,
         performance_spec_percent=_SPEC_PCT,
-        earth_radius_m=_EARTH_RADIUS_M,
         # CLARREO-style names so the 13-case dataset validates cleanly
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
@@ -111,7 +109,7 @@ def _make_full_image_matching_dataset(n: int = 5, seed: int = 0) -> xr.Dataset:
     :class:`~curryer.correction.error_stats.ErrorStatsProcessor` can compute
     nadir-equivalent errors without triggering geometry warnings.
     """
-    from tests.test_correction.test_geolocation_error_stats import (
+    from tests.test_correction.test_error_stats import (
         create_test_dataset_13_cases,
     )
 
@@ -631,19 +629,83 @@ class TestVerify:
 
     def test_geolocated_data_without_func_raises(self, config, tmp_path):
         dummy_ds = xr.Dataset({"dummy": (["x"], [1, 2, 3])})
-        with pytest.raises(ValueError, match="image_matching_func is not set"):
+        with pytest.raises(ValueError, match="_image_matching_override is not set"):
             verify(config, geolocated_data=dummy_ds, work_dir=tmp_path)
 
     def test_geolocated_data_with_func_called(self, image_matching_dataset, tmp_path):
-        """image_matching_func should be called when geolocated_data is supplied."""
+        """_image_matching_override should be called when geolocated_data is supplied."""
         called = {"count": 0}
 
         def mock_matching_func(data):
             called["count"] += 1
             return [image_matching_dataset]
 
-        config = _make_config(image_matching_func=mock_matching_func)
+        config = _make_config()
+        config._image_matching_override = mock_matching_func
         dummy_geolocated = xr.Dataset({"placeholder": (["x"], [1, 2])})
         result = verify(config, geolocated_data=dummy_geolocated, work_dir=tmp_path)
         assert called["count"] == 1
         assert isinstance(result, VerificationResult)
+
+    def test_gcp_pairs_raises_not_implemented(self, config, tmp_path):
+        """gcp_pairs mode raises NotImplementedError with a helpful message."""
+        with pytest.raises(NotImplementedError, match="gcp_pairs"):
+            verify(config, gcp_pairs=[("obs.mat", "gcp.mat")], work_dir=tmp_path)
+
+    def test_observation_paths_raises_not_implemented(self, config, tmp_path):
+        """observation_paths + gcp_directory mode raises NotImplementedError."""
+        with pytest.raises(NotImplementedError, match="observation_paths"):
+            verify(config, observation_paths=["obs.mat"], gcp_directory=tmp_path, work_dir=tmp_path)
+
+    def test_gcp_directory_alone_raises_not_implemented(self, config, tmp_path):
+        """gcp_directory without observation_paths also raises NotImplementedError."""
+        with pytest.raises(NotImplementedError):
+            verify(config, gcp_directory=tmp_path, work_dir=tmp_path)
+
+
+# ===========================================================================
+# _log_pairing_summary
+# ===========================================================================
+
+
+class TestLogPairingSummary:
+    """Tests for the _log_pairing_summary logging helper."""
+
+    def test_all_paired(self, caplog):
+        import logging
+
+        from curryer.correction.verification import _log_pairing_summary
+
+        pairs = [(Path("obs_001.mat"), Path("gcp_001.mat")), (Path("obs_002.mat"), Path("gcp_002.mat"))]
+        with caplog.at_level(logging.INFO, logger="curryer.correction.verification"):
+            _log_pairing_summary(pairs)
+
+        log_text = "\n".join(caplog.messages)
+        assert "obs_001.mat" in log_text
+        assert "gcp_001.mat" in log_text
+        assert "Proceeding with 2 observation(s)" in log_text
+
+    def test_with_unpaired(self, caplog):
+        import logging
+
+        from curryer.correction.verification import _log_pairing_summary
+
+        pairs = [(Path("obs_001.mat"), Path("gcp_001.mat"))]
+        unpaired = [Path("obs_002.mat")]
+        with caplog.at_level(logging.INFO, logger="curryer.correction.verification"):
+            _log_pairing_summary(pairs, unpaired=unpaired)
+
+        log_text = "\n".join(caplog.messages)
+        assert "obs_002.mat" in log_text
+        assert "No matching GCP" in log_text
+        assert "Proceeding with 1 observation(s)" in log_text
+
+    def test_empty_pairs(self, caplog):
+        import logging
+
+        from curryer.correction.verification import _log_pairing_summary
+
+        with caplog.at_level(logging.INFO, logger="curryer.correction.verification"):
+            _log_pairing_summary([])
+
+        assert "Proceeding with 0 observation(s)" in "\n".join(caplog.messages)

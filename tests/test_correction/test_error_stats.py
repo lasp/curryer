@@ -13,18 +13,18 @@ demonstrating compliance with CLARREO geolocation requirements.
 Running Tests:
 -------------
 # Via pytest (recommended for CI/CD)
-pytest test_geolocation_error_stats.py -v
+pytest test_error_stats.py -v
 
 # Run only the 13 test cases
-pytest test_geolocation_error_stats.py::TestErrorStats13Cases -v
+pytest test_error_stats.py::TestErrorStats13Cases -v
 
 # Run specific test case
-pytest test_geolocation_error_stats.py::TestErrorStats13Cases::test_case_01_dili_region -v
+pytest test_error_stats.py::TestErrorStats13Cases::test_case_01_dili_region -v
 
 Standalone Execution:
 --------------------
 # Generate NASA demonstration report
-python test_geolocation_error_stats.py
+python test_error_stats.py
 
 This runs all 13 test cases and prints a comprehensive validation report
 showing individual case results and overall performance metrics.
@@ -44,6 +44,7 @@ from curryer import utils
 from curryer.correction.error_stats import (
     ErrorStatsConfig,
     ErrorStatsProcessor,
+    compute_percent_below,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,22 +97,22 @@ def _create_test_config(**overrides):
     """
     Create ErrorStatsConfig for testing with CLARREO defaults.
 
-    These values come from the CLARREO mission configuration and are appropriate
-    for testing CLARREO-specific scenarios. Tests can override individual values
-    to test edge cases or alternative configurations.
+    Provides the variable name mappings used by the CLARREO mission; tests can
+    override individual values to exercise edge-cases.
 
-    Args:
-        **overrides: Override any default values
+    Parameters
+    ----------
+    **overrides
+        Override any default values.
 
-    Returns:
-        ErrorStatsConfig with CLARREO test values
+    Returns
+    -------
+    ErrorStatsConfig
+        ErrorStatsConfig with CLARREO variable-name defaults.
     """
-    # CLARREO mission defaults (from clarreo_correction_config.json)
-    # These values should match the canonical CLARREO configuration
+    # CLARREO mission variable names — no pass/fail thresholds here.
+    # Those belong in RequirementsConfig / CorrectionConfig, not ErrorStatsConfig.
     defaults = {
-        "earth_radius_m": 6378140.0,  # WGS84 Earth radius (CLARREO standard)
-        "performance_threshold_m": 250.0,  # CLARREO accuracy requirement
-        "performance_spec_percent": 39.0,  # CLARREO performance spec
         "variable_names": {
             "spacecraft_position": "riss_ctrs",  # CLARREO/ISS variable name
             "boresight": "bhat_hs",  # HySICS boresight variable name
@@ -370,18 +371,14 @@ def process_test_data(display_results: bool = True) -> xr.Dataset:
     results = processor.process_geolocation_errors(test_data)
 
     if display_results:
-        print(f"Processing Results Summary:")
-        print(f"=" * 50)
+        print("Processing Results Summary:")
+        print("=" * 50)
         print(f"Total measurements: {results.attrs['total_measurements']}")
-        print(f"Mean error distance: {results.attrs['mean_error_distance_m']:.2f} m")
-        print(f"Std error distance: {results.attrs['std_error_distance_m']:.2f} m")
-        print(
-            f"Min/Max error: {results.attrs['min_error_distance_m']:.2f} / {results.attrs['max_error_distance_m']:.2f} m"
-        )
-        print(f"Errors < 250m: {results.attrs['num_below_250m']} ({results.attrs['percent_below_250m']:.1f}%)")
-
-        spec_status = "✓ PASS" if results.attrs["performance_spec_met"] else "✗ FAIL"
-        print(f"Performance spec (>39% < 250m): {spec_status}")
+        print(f"Mean error: {results.attrs['mean_error_m']:.2f} m")
+        print(f"RMS error:  {results.attrs['rms_error_m']:.2f} m")
+        print(f"Std error:  {results.attrs['std_error_m']:.2f} m")
+        print(f"Min/Max:    {results.attrs['min_error_m']:.2f} / {results.attrs['max_error_m']:.2f} m")
+        print(f"Errors < 250 m: {results.attrs['percent_below_250m']:.1f}%")
 
     return results
 
@@ -404,10 +401,10 @@ class TestErrorStats13Cases:
 
     Usage:
         # Run all 13 test cases
-        pytest test_geolocation_error_stats.py::TestErrorStats13Cases -v
+        pytest test_error_stats.py::TestErrorStats13Cases -v
 
         # Run specific test case
-        pytest test_geolocation_error_stats.py::TestErrorStats13Cases::test_case_01_dili_region -v
+        pytest test_error_stats.py::TestErrorStats13Cases::test_case_01_dili_region -v
     """
 
     @pytest.fixture(scope="class")
@@ -648,59 +645,44 @@ class TestErrorStats13Cases:
             logger.info(f"Case 13 (S Atlantic): Processing produced NaN")
 
     def test_performance_spec_all_cases(self, test_dataset, processor):
-        """Test CLARREO performance spec (>39% < 250m) on all 13 cases.
+        """Test CLARREO performance (>39% of measurements < 250 m) on all 13 cases.
 
-        Validates that:
-        1. The expected number of measurements fall below 250m threshold
-        2. The CLARREO performance requirement (>39%) is met
-        3. Results are consistent with original MATLAB implementation
+        Validates that the percentage of measurements below 250 m matches the
+        Engineering baseline and that the standard threshold table is populated.
+        Pass/fail evaluation is deliberately left to the caller — this test
+        checks that the *statistics* are computed correctly.
         """
         results = processor.process_geolocation_errors(test_dataset)
 
-        # CLARREO requirement: 39% of measurements < 250m
-        percent_below_threshold = results.attrs["percent_below_250m"]
-        spec_met = results.attrs["performance_spec_met"]
-        num_below = results.attrs["num_below_250m"]
+        # CLARREO baseline: 8 out of 13 cases are below 250 m
+        percent_below_250 = results.attrs["percent_below_250m"]
+        total = results.attrs["total_measurements"]
 
         logger.info(f"\n{'=' * 60}")
-        logger.info(f"CLARREO Performance Spec Validation")
+        logger.info("CLARREO Error Statistics Validation")
         logger.info(f"{'=' * 60}")
-        logger.info(f"Measurements < 250m: {num_below}/13")
-        logger.info(f"Percentage: {percent_below_threshold:.1f}%")
-        logger.info(f"Requirement: >39%")
-        logger.info(f"Result: {'✓ PASS' if spec_met else '✗ FAIL'}")
+        logger.info(f"Total measurements:  {total}")
+        logger.info(f"Percentage < 250 m:  {percent_below_250:.1f}%%")
         logger.info(f"{'=' * 60}")
 
-        # Expected results from Engineering baseline
-        # Based on the actual computed values from the 13 test cases:
-        # Cases 6, 7, 8, 9, 10, 11, 12, 13 are below 250m
-        expected_num_below = 8  # Cases 6, 7, 8, 9, 10, 11, 12, 13
-        expected_percent = 61.5  # 8/13 * 100 ≈ 61.54%
-
-        # Validate against expected values
-        assert num_below == expected_num_below, f"Expected {expected_num_below} measurements < 250m, got {num_below}"
-        assert abs(percent_below_threshold - expected_percent) < 0.5, (
-            f"Expected {expected_percent:.1f}%, got {percent_below_threshold:.1f}%"
+        # 8/13 ≈ 61.54 % below 250 m (Engineering baseline)
+        expected_percent = 100.0 * 8 / 13
+        assert abs(percent_below_250 - expected_percent) < 0.5, (
+            f"Expected ~{expected_percent:.1f}%, got {percent_below_250:.1f}%"
         )
+        assert percent_below_250 > 39.0, "Should exceed 39 % (CLARREO mission spec)"
 
-        # Validate CLARREO spec is met
-        assert spec_met is True, "CLARREO performance spec should be met with these test cases"
-        assert percent_below_threshold > 39.0, "Should exceed 39% threshold"
+        # Standard threshold table must be present
+        for key in (
+            "percent_below_100m",
+            "percent_below_250m",
+            "percent_below_500m",
+            "percent_below_750m",
+            "percent_below_1000m",
+        ):
+            assert key in results.attrs, f"Missing threshold table entry: {key}"
 
-        # This assertion documents whether the spec is met with these test cases
-        # The test data is fixed, so this will consistently pass
-        assert isinstance(spec_met, bool), "Performance spec result should be boolean"
-
-        logger.info("✓ Performance metrics match expected MATLAB results")
-        logger.info(f"Percentage: {percent_below_threshold:.1f}%")
-        logger.info(f"Requirement: >39%")
-        logger.info(f"Result: {'✓ PASS' if spec_met else '✗ FAIL'}")
-        logger.info(f"{'=' * 60}")
-
-        # Note: This assertion documents whether the spec is met with these test cases
-        # The test data is fixed, so this will consistently pass or fail
-        # Keeping as assertion to ensure we're aware of the performance level
-        assert isinstance(spec_met, bool), "Performance spec result should be boolean"
+        logger.info("✓ Statistics match Engineering baseline")
 
 
 # ============================================================================
@@ -764,39 +746,33 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         )
 
     def test_geolocation_config_default(self):
-        """Test default configuration values.
+        """Test default configuration.
 
-        Validates standard Earth radius (WGS84) and performance specs:
-        - 250m threshold: nadir equivalent accuracy requirement
-        - 39%: project performance requirement (>39% of measurements must be <250m)
+        After removing pass/fail fields from ErrorStatsConfig, the only
+        significant defaults are ``minimum_correlation`` (None) and the
+        ``variable_names`` mapping.
         """
         config = _create_test_config()
-        self.assertEqual(config.earth_radius_m, 6378140.0)
-        self.assertEqual(config.performance_threshold_m, 250.0)
-        self.assertEqual(config.performance_spec_percent, 39.0)
+        self.assertIsNone(config.minimum_correlation)
+        self.assertIsNotNone(config.variable_names)
 
     def test_geolocation_config_custom(self):
         """Test custom configuration values."""
-        config = _create_test_config(
-            earth_radius_m=6371000.0, performance_threshold_m=200.0, performance_spec_percent=40.0
-        )
-        self.assertEqual(config.earth_radius_m, 6371000.0)
-        self.assertEqual(config.performance_threshold_m, 200.0)
-        self.assertEqual(config.performance_spec_percent, 40.0)
+        config = _create_test_config(minimum_correlation=0.7)
+        self.assertEqual(config.minimum_correlation, 0.7)
 
     def test_processor_initialization_default(self):
         """Test processor initialization with default config."""
         config = _create_test_config()
         processor = ErrorStatsProcessor(config=config)
         self.assertIsInstance(processor.config, ErrorStatsConfig)
-        self.assertEqual(processor.config.earth_radius_m, 6378140.0)
+        self.assertIsNone(processor.config.minimum_correlation)
 
     def test_processor_initialization_custom(self):
         """Test processor initialization with custom config."""
-        config = _create_test_config(earth_radius_m=6371000.0, performance_threshold_m=200.0)
+        config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
-        self.assertEqual(processor.config.earth_radius_m, 6371000.0)
-        self.assertEqual(processor.config.performance_threshold_m, 200.0)
+        self.assertEqual(processor.config.minimum_correlation, 0.5)
 
     def test_validate_input_data_success(self):
         """Test successful input validation."""
@@ -906,32 +882,34 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         self.assertFalse(np.isnan(xvp_factor))
 
     def test_calculate_statistics_basic(self):
-        """Test basic statistics calculation."""
+        """Test basic statistics calculation with new mission-agnostic keys."""
         errors = np.array([100.0, 200.0, 300.0, 400.0, 500.0])
 
         stats = self.processor._calculate_statistics(errors)
 
-        self.assertEqual(stats["mean_error_distance_m"], 300.0)
-        self.assertEqual(stats["min_error_distance_m"], 100.0)
-        self.assertEqual(stats["max_error_distance_m"], 500.0)
+        self.assertAlmostEqual(stats["mean_error_m"], 300.0)
+        self.assertEqual(stats["min_error_m"], 100.0)
+        self.assertEqual(stats["max_error_m"], 500.0)
         self.assertEqual(stats["total_measurements"], 5)
-        self.assertEqual(stats["num_below_250m"], 2)
-        self.assertEqual(stats["percent_below_250m"], 40.0)
-        self.assertTrue(stats["performance_spec_met"])  # 40% > 39%
+        # 2 out of 5 values are < 250 → 40 %
+        self.assertAlmostEqual(stats["percent_below_250m"], 40.0)
+        # Keys that must NOT be present (removed pass/fail)
+        self.assertNotIn("performance_spec_met", stats)
+        self.assertNotIn("num_below_250m", stats)
 
     def test_calculate_statistics_edge_cases(self):
         """Test statistics with edge cases."""
         # All errors below threshold
         errors_low = np.array([50.0, 100.0, 150.0])
         stats_low = self.processor._calculate_statistics(errors_low)
-        self.assertEqual(stats_low["percent_below_250m"], 100.0)
-        self.assertTrue(stats_low["performance_spec_met"])
+        self.assertAlmostEqual(stats_low["percent_below_250m"], 100.0)
+        self.assertNotIn("performance_spec_met", stats_low)
 
         # All errors above threshold
         errors_high = np.array([300.0, 400.0, 500.0])
         stats_high = self.processor._calculate_statistics(errors_high)
-        self.assertEqual(stats_high["percent_below_250m"], 0.0)
-        self.assertFalse(stats_high["performance_spec_met"])
+        self.assertAlmostEqual(stats_high["percent_below_250m"], 0.0)
+        self.assertNotIn("performance_spec_met", stats_high)
 
     def test_create_output_dataset(self):
         """Test output dataset creation."""
@@ -968,7 +946,7 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         self.assertIn("lat_error_deg", output_ds.data_vars)
         self.assertIn("lon_error_deg", output_ds.data_vars)
 
-        # Check attributes
+        # Check attributes – earth_radius_m is sourced from constants, not config
         self.assertIn("title", output_ds.attrs)
         self.assertIn("earth_radius_m", output_ds.attrs)
 
@@ -983,37 +961,56 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         self.assertIn("nadir_equiv_total_error_m", results.data_vars)
         self.assertEqual(len(results.measurement), 13)
 
-        # Check statistics are computed
-        self.assertIn("mean_error_distance_m", results.attrs)
-        self.assertIn("percent_below_250m", results.attrs)
-        self.assertIn("performance_spec_met", results.attrs)
+        # New statistics keys
+        for key in (
+            "mean_error_m",
+            "rms_error_m",
+            "std_error_m",
+            "min_error_m",
+            "max_error_m",
+            "total_measurements",
+            "percent_below_250m",
+        ):
+            self.assertIn(key, results.attrs, f"Missing stats key: {key}")
+
+        # Pass/fail keys must NOT be present
+        self.assertNotIn("performance_spec_met", results.attrs)
+        self.assertNotIn("num_below_250m", results.attrs)
 
     def test_regression_against_known_values(self):
         """Test against known good values from original implementation."""
         results = process_test_data(display_results=False)
 
-        # These are the expected values from the original implementation
-        expected_mean = 1203.26  # meters
-        expected_percent_below_250 = 61.5  # percent
-        expected_num_below_250 = 8
+        # Expected values from the Engineering baseline (13 test cases)
+        expected_mean = 1203.26  # metres
+        expected_percent_below_250 = 100.0 * 8 / 13  # ≈ 61.54 %
 
-        # Allow small numerical differences
-        self.assertLess(abs(results.attrs["mean_error_distance_m"] - expected_mean), 0.1)
+        self.assertLess(abs(results.attrs["mean_error_m"] - expected_mean), 0.1)
         self.assertLess(abs(results.attrs["percent_below_250m"] - expected_percent_below_250), 0.1)
-        self.assertEqual(results.attrs["num_below_250m"], expected_num_below_250)
-        self.assertTrue(results.attrs["performance_spec_met"])
+        # Verify new keys present, old pass/fail key absent
+        self.assertIn("rms_error_m", results.attrs)
+        self.assertNotIn("performance_spec_met", results.attrs)
+        self.assertNotIn("num_below_250m", results.attrs)
 
     def test_custom_config_processing(self):
-        """Test processing with custom configuration."""
-        custom_config = _create_test_config(performance_threshold_m=300.0)
+        """Test processing with custom minimum_correlation config."""
+        custom_config = _create_test_config(minimum_correlation=0.3)
         processor = ErrorStatsProcessor(custom_config)
         test_data = create_test_dataset_13_cases()
 
         results = processor.process_geolocation_errors(test_data)
 
-        # With higher threshold, more errors should be below threshold
-        self.assertLessEqual(results.attrs["num_below_250m"], results.attrs["total_measurements"])
-        self.assertEqual(results.attrs["performance_threshold_m"], 300.0)
+        # All 13 measurements should be present (no correlation variable in dataset → no filtering)
+        self.assertEqual(results.attrs["total_measurements"], 13)
+        # Standard threshold table entries must be present
+        for key in (
+            "percent_below_100m",
+            "percent_below_250m",
+            "percent_below_500m",
+            "percent_below_750m",
+            "percent_below_1000m",
+        ):
+            self.assertIn(key, results.attrs)
 
     def test_invalid_input_types(self):
         """Test handling of invalid input types."""
@@ -1066,6 +1063,78 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
 
         # Check orthogonality
         self.assertLess(abs(np.dot(v_uen, x_uen)), 1e-10)
+
+    def test_compute_nadir_equivalent_errors_no_stats(self):
+        """compute_nadir_equivalent_errors() must NOT populate aggregate stats.
+
+        This is the inner-loop path — computing mean/std on a single GCP pair
+        is not meaningful, so the output dataset should have no statistical attrs.
+        """
+        test_data = create_test_dataset_13_cases()
+        result = self.processor.compute_nadir_equivalent_errors(test_data)
+
+        # Core output variable present
+        self.assertIn("nadir_equiv_total_error_m", result.data_vars)
+        self.assertEqual(len(result.measurement), 13)
+
+        # Stats attributes must NOT be present
+        for key in (
+            "mean_error_m",
+            "rms_error_m",
+            "std_error_m",
+            "percent_below_250m",
+            "total_measurements",
+            "performance_spec_met",
+        ):
+            self.assertNotIn(key, result.attrs, f"Stats key should not be present: {key}")
+
+    def test_compute_nadir_equivalent_errors_values_match_full_pipeline(self):
+        """Per-measurement values from the two-stage path must equal the one-stage path."""
+        test_data = create_test_dataset_13_cases()
+
+        nadir_only = self.processor.compute_nadir_equivalent_errors(test_data)
+        full = self.processor.process_geolocation_errors(test_data)
+
+        npt.assert_allclose(
+            nadir_only["nadir_equiv_total_error_m"].values,
+            full["nadir_equiv_total_error_m"].values,
+            rtol=1e-12,
+        )
+
+
+class TestComputePercentBelow(unittest.TestCase):
+    """Tests for the module-level compute_percent_below() helper."""
+
+    def test_basic(self):
+        errors = np.array([50.0, 100.0, 200.0, 400.0, 500.0])
+        # 3 values < 250 m → 60 %
+        self.assertAlmostEqual(compute_percent_below(errors, 250.0), 60.0)
+
+    def test_all_below(self):
+        errors = np.array([10.0, 20.0, 30.0])
+        self.assertAlmostEqual(compute_percent_below(errors, 100.0), 100.0)
+
+    def test_none_below(self):
+        errors = np.array([300.0, 400.0])
+        self.assertAlmostEqual(compute_percent_below(errors, 250.0), 0.0)
+
+    def test_empty_array(self):
+        self.assertEqual(compute_percent_below(np.array([]), 250.0), 0.0)
+
+    def test_custom_threshold(self):
+        errors = np.array([100.0, 200.0, 300.0, 400.0, 500.0])
+        self.assertAlmostEqual(compute_percent_below(errors, 350.0), 60.0)
+
+    def test_consistency_with_standard_table(self):
+        """compute_percent_below at 250 m must match percent_below_250m from stats."""
+        test_data = create_test_dataset_13_cases()
+        config = _create_test_config()
+        processor = ErrorStatsProcessor(config=config)
+        results = processor.process_geolocation_errors(test_data)
+
+        errors = results["nadir_equiv_total_error_m"].values
+        manual = compute_percent_below(errors, 250.0)
+        self.assertAlmostEqual(manual, results.attrs["percent_below_250m"], places=10)
 
 
 class TestCorrelationFiltering(unittest.TestCase):
@@ -1352,9 +1421,7 @@ def run_13_case_validation():
     # Create processor
     config = _create_test_config()
     processor = ErrorStatsProcessor(config=config)
-    print(
-        f"✓ Created processor with earth_radius={config.earth_radius_m}m, threshold={config.performance_threshold_m}m"
-    )
+    print("✓ Created processor")
 
     # Process all cases
     print("\nProcessing all test cases...")
@@ -1384,31 +1451,32 @@ def run_13_case_validation():
 
     for idx, name, lat, lon in case_info:
         nadir_error = results["nadir_equiv_total_error_m"].values[idx]
-        below_threshold = nadir_error < config.performance_threshold_m
-        status = "✓" if below_threshold else "✗"
-
         print(f"\nCase {idx + 1:2d}: {name:20s} ({lat:6.1f}°, {lon:7.1f}°)")
-        print(f"         Nadir-equiv error: {nadir_error:6.1f} m  {status}")
+        print(f"         Nadir-equiv error: {nadir_error:6.1f} m")
 
     # Display summary statistics
     print("\n" + "=" * 80)
     print("SUMMARY STATISTICS")
     print("=" * 80)
-    print(f"Total measurements:        {results.attrs['total_measurements']}")
-    print(f"Mean error distance:       {results.attrs['mean_error_distance_m']:.2f} m")
-    print(f"Std error distance:        {results.attrs['std_error_distance_m']:.2f} m")
+    print(f"Total measurements:  {results.attrs['total_measurements']}")
+    print(f"Mean error:          {results.attrs['mean_error_m']:.2f} m")
+    print(f"RMS error:           {results.attrs['rms_error_m']:.2f} m")
+    print(f"Std error:           {results.attrs['std_error_m']:.2f} m")
+    print(f"Min / Max error:     {results.attrs['min_error_m']:.2f} / {results.attrs['max_error_m']:.2f} m")
     print(
-        f"Min/Max error:             {results.attrs['min_error_distance_m']:.2f} / "
-        f"{results.attrs['max_error_distance_m']:.2f} m"
+        f"P90 / P95 / P99:     {results.attrs['p90_error_m']:.1f} / "
+        f"{results.attrs['p95_error_m']:.1f} / {results.attrs['p99_error_m']:.1f} m"
     )
-    print(f"Measurements < 250m:       {results.attrs['num_below_250m']}")
-    print(f"Percentage < 250m:         {results.attrs['percent_below_250m']:.1f}%")
-
-    # Display performance spec result
-    spec_met = results.attrs["performance_spec_met"]
-    spec_status = "✓ PASS" if spec_met else "✗ FAIL"
-    print(f"\nCLARREO Performance Spec:  >39% of measurements < 250m")
-    print(f"Result:                    {spec_status}")
+    print("\nThreshold table:")
+    for key in (
+        "percent_below_100m",
+        "percent_below_250m",
+        "percent_below_500m",
+        "percent_below_750m",
+        "percent_below_1000m",
+    ):
+        threshold = key.replace("percent_below_", "").replace("m", "")
+        print(f"  < {threshold:>6s} m : {results.attrs[key]:.1f}%")
 
     print("=" * 80)
 

@@ -102,7 +102,12 @@ def create_synthetic_geolocated_data(n_measurements: int = 50, seed: int = 42) -
 
 
 def create_minimal_config() -> CorrectionConfig:
-    """Create a minimal CorrectionConfig with a stub image_matching_func."""
+    """Create a minimal CorrectionConfig with a stub image matching override.
+
+    The matching function is attached via ``config._image_matching_override``
+    after construction.  This is the correct pattern for test/example injection;
+    ``image_matching_func`` (the old public field) is deprecated.
+    """
 
     def stub_image_matching(data: xr.Dataset) -> xr.Dataset:
         """Stub image matching function.
@@ -134,7 +139,7 @@ def create_minimal_config() -> CorrectionConfig:
         )
         return result
 
-    return CorrectionConfig(
+    config = CorrectionConfig(
         n_iterations=1,
         parameters=[
             ParameterConfig(
@@ -150,13 +155,14 @@ def create_minimal_config() -> CorrectionConfig:
         ),
         performance_threshold_m=250.0,
         performance_spec_percent=39.0,
-        earth_radius_m=6_378_140.0,
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
         transformation_matrix_name="t_hs2ctrs",
-        # This is required for the geolocated_data workflow
-        image_matching_func=stub_image_matching,
     )
+    # Attach matching override after construction (PrivateAttr – not a constructor arg).
+    # In production, omit this: pipeline.image_matching() runs automatically.
+    config._image_matching_override = stub_image_matching
+    return config
 
 
 def main():
@@ -174,7 +180,7 @@ def main():
     # Step 2: Create config with image matching function
     print("\n2. Setting up verification config...")
     config = create_minimal_config()
-    print(f"   image_matching_func: {config.image_matching_func.__name__}")
+    print(f"   _image_matching_override: {config._image_matching_override.__name__}")
     print(f"   Threshold: {config.performance_threshold_m}m")
     print(f"   Spec: {config.performance_spec_percent}%")
 

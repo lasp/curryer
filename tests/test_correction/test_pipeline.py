@@ -7,6 +7,7 @@ Covers:
 - ``_store_gcp_pair_results``
 - ``_compute_parameter_set_metrics``
 - ``_load_image_pair_data``
+- ``_extract_spacecraft_position_midframe`` (position_columns feature)
 - ``loop`` (optimised pair-outer, ``@pytest.mark.extra``)
 """
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -25,6 +27,7 @@ from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 from curryer.correction import correction
 from curryer.correction.config import DataConfig
+from curryer.correction.pipeline import _extract_spacecraft_position_midframe
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +149,7 @@ def test_loop_optimized(root_dir, tmp_path):
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
     config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config.image_matching_func = synthetic_image_matching
+    config._image_matching_override = synthetic_image_matching
     sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
     np.random.seed(42)
     results, nc = correction.loop(config, work, sets, resume_from_checkpoint=False)
@@ -160,3 +163,88 @@ def test_loop_optimized(root_dir, tmp_path):
         assert "rms_error_m" in r
         assert r["aggregate_rms_error_m"] is not None
         assert isinstance(r["aggregate_rms_error_m"], (int, float, np.number))
+
+
+# ── _extract_spacecraft_position_midframe ─────────────────────────────────────
+
+
+def _make_telemetry() -> pd.DataFrame:
+    """Return a 3-row telemetry DataFrame with standard column names."""
+    return pd.DataFrame(
+        {
+            "sc_pos_x": [1.0, 2.0, 3.0],
+            "sc_pos_y": [4.0, 5.0, 6.0],
+            "sc_pos_z": [7.0, 8.0, 9.0],
+        }
+    )
+
+
+class TestExtractSpacecraftPositionMidframe:
+    """Tests for _extract_spacecraft_position_midframe with position_columns."""
+
+    def test_explicit_position_columns_used(self):
+        """config.data.position_columns should be used directly."""
+        telemetry = pd.DataFrame(
+            {
+                "my_x": [1.0, 2.0, 3.0],
+                "my_y": [4.0, 5.0, 6.0],
+                "my_z": [7.0, 8.0, 9.0],
+            }
+        )
+        config = MagicMock()
+        config.data = DataConfig(position_columns=["my_x", "my_y", "my_z"])
+
+        result = _extract_spacecraft_position_midframe(telemetry, config=config)
+
+        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])  # mid_idx = 1
+
+    def test_explicit_position_columns_returns_float64(self):
+        """Result should be a float64 ndarray of shape (3,)."""
+        telemetry = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]})
+        config = MagicMock()
+        config.data = DataConfig(position_columns=["a", "b", "c"])
+
+        result = _extract_spacecraft_position_midframe(telemetry, config=config)
+
+        assert result.shape == (3,)
+        assert result.dtype == np.float64
+
+    def test_position_columns_wrong_length_raises_valueerror(self):
+        """position_columns with != 3 entries should raise ValueError."""
+        telemetry = pd.DataFrame({"x": [1.0], "y": [2.0]})
+        config = MagicMock()
+        config.data = DataConfig(position_columns=["x", "y"])
+
+        with pytest.raises(ValueError, match="exactly 3 entries"):
+            _extract_spacecraft_position_midframe(telemetry, config=config)
+
+    def test_position_columns_missing_column_raises_valueerror(self):
+        """position_columns referencing nonexistent columns should raise ValueError."""
+        telemetry = pd.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]})
+        config = MagicMock()
+        config.data = DataConfig(position_columns=["x", "y", "MISSING"])
+
+        with pytest.raises(ValueError, match="not found in telemetry"):
+            _extract_spacecraft_position_midframe(telemetry, config=config)
+
+    def test_no_position_columns_falls_back_with_warning(self, caplog):
+        """When position_columns is None, fall back to pattern-guessing with warning."""
+        telemetry = _make_telemetry()
+        config = MagicMock()
+        config.data = None  # position_columns not configured
+
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
+            result = _extract_spacecraft_position_midframe(telemetry, config=config)
+
+        assert "position_columns not configured" in caplog.text
+        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
+
+    def test_no_config_falls_back_to_pattern_guessing(self, caplog):
+        """When config=None entirely, pattern-guessing is used (backward compat)."""
+        telemetry = _make_telemetry()
+
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
+            result = _extract_spacecraft_position_midframe(telemetry, config=None)
+
+        assert "position_columns not configured" in caplog.text
+        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])

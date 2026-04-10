@@ -25,12 +25,13 @@ All config objects are ``pydantic.BaseModel`` subclasses which provide:
 
 import json
 import logging
+import warnings
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 if TYPE_CHECKING:
     from curryer import meta
@@ -137,6 +138,9 @@ class DataConfig(BaseModel):
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
     time_scale_factor: float = 1.0
+    # Explicit column name mappings for telemetry spacecraft-position data.
+    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"].  None means use mission defaults.
+    position_columns: list[str] | None = None
 
 
 # ============================================================================
@@ -422,6 +426,35 @@ class NetCDFConfig(BaseModel):
 
 
 # ============================================================================
+# Verification Requirements Configuration
+# ============================================================================
+
+
+class RequirementsConfig(BaseModel):
+    """Verification requirements / thresholds.
+
+    Can be attached as an optional ``verification`` field on
+    :class:`CorrectionConfig`, or passed directly to
+    :func:`~curryer.correction.verification.verify`.  When neither is supplied,
+    :func:`~curryer.correction.verification.verify` falls back to
+    :attr:`CorrectionConfig.performance_threshold_m` and
+    :attr:`CorrectionConfig.performance_spec_percent`.
+
+    Attributes
+    ----------
+    performance_threshold_m : float
+        Per-measurement nadir-equivalent error limit in metres.
+        A measurement *passes* when its error is **below** this value.
+    performance_spec_percent : float
+        Minimum fraction of measurements (0–100) that must pass for the
+        overall verification to be considered successful.
+    """
+
+    performance_threshold_m: float
+    performance_spec_percent: float
+
+
+# ============================================================================
 # Top-Level Correction Configuration
 # ============================================================================
 
@@ -461,7 +494,6 @@ class CorrectionConfig(BaseModel):
         geo : GeolocationConfig
         performance_threshold_m : float
         performance_spec_percent : float
-        earth_radius_m : float
 
     DATA LOADING CONFIGURATION:
         data : DataConfig | None
@@ -516,14 +548,39 @@ class CorrectionConfig(BaseModel):
     geo: GeolocationConfig
     performance_threshold_m: float
     performance_spec_percent: float
-    earth_radius_m: float
 
     # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
     data: DataConfig | None = None
 
-    # PROCESSING FUNCTION – optional override; excluded from JSON (not serialisable).
-    # Defaults to the built-in ``pipeline.image_matching`` when ``None``.
-    image_matching_func: Any = Field(default=None, exclude=True)
+    # Private test-injection override for image matching.
+    # Not part of the public API; not serialised to JSON (PrivateAttr is always excluded).
+    # Usage: config._image_matching_override = your_func
+    # TODO(#151): Add Requirement model with evaluate_all() for multi-metric requirements.
+    _image_matching_override: Any = PrivateAttr(default=None)
+
+    @property
+    def image_matching_func(self) -> Any:
+        """Deprecated — use ``_image_matching_override`` for test injection.
+
+        .. deprecated::
+            Set ``config._image_matching_override = func`` instead.
+            This property will be removed in a future release.
+        """
+        warnings.warn(
+            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._image_matching_override
+
+    @image_matching_func.setter
+    def image_matching_func(self, value: Any) -> None:
+        warnings.warn(
+            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._image_matching_override = value
 
     # OUTPUT CONFIGURATION
     netcdf: NetCDFConfig | None = None
@@ -532,6 +589,9 @@ class CorrectionConfig(BaseModel):
     # CALIBRATION CONFIGURATION
     calibration_dir: Path | None = None
     calibration_file_names: dict[str, str] | None = None
+    # Direct calibration file paths (alternative to calibration_dir + calibration_file_names)
+    psf_file: Path | None = None
+    los_vectors_file: Path | None = None
 
     # MISSION-SPECIFIC NAMING
     spacecraft_position_name: str = "sc_position"
@@ -581,9 +641,6 @@ class CorrectionConfig(BaseModel):
 
         if self.geo is None:
             errors.append("geo (GeolocationConfig) is required")
-
-        if self.earth_radius_m is None or self.earth_radius_m <= 0:
-            errors.append("earth_radius_m must be a positive number (e.g., 6378140.0 for WGS84)")
 
         if self.performance_threshold_m is None or self.performance_threshold_m <= 0:
             errors.append("performance_threshold_m must be a positive number (e.g., 250.0 meters)")
@@ -793,10 +850,10 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
 
     # Extract required mission-specific parameters from correction section
     earth_radius_m = corr_config.get("earth_radius_m")
-    if earth_radius_m is None:
-        raise KeyError(
-            "Missing required 'earth_radius_m' in correction config section. "
-            "This must be specified for your mission (e.g., 6378140.0 for WGS84)."
+    if earth_radius_m is not None:
+        _config_logger.warning(
+            "earth_radius_m in config is deprecated and ignored. "
+            "The WGS84 value from curryer.compute.constants is used instead."
         )
 
     performance_threshold_m = corr_config.get("performance_threshold_m")
@@ -820,7 +877,6 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         geo=geo,
         performance_threshold_m=performance_threshold_m,
         performance_spec_percent=performance_spec_percent,
-        earth_radius_m=earth_radius_m,
     )
 
     config.validate()
@@ -830,3 +886,43 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         f"{len(config.parameters)} parameter groups"
     )
     return config
+
+
+# ============================================================================
+# Typed Input Structure
+# ============================================================================
+
+
+class CorrectionInput(BaseModel):
+    """A single input set for the correction loop.
+
+    Replaces the positional tuple ``(telemetry_path, science_path, gcp_path)``
+    with named fields for clarity and IDE autocomplete.
+
+    Parameters
+    ----------
+    telemetry_file : Path
+        Path to the telemetry CSV (or NetCDF/HDF5) file.
+    science_file : Path
+        Path to the science/timing CSV (or NetCDF/HDF5) file.
+    gcp_file : Path
+        Path to the GCP reference image (``.mat`` file).
+
+    Examples
+    --------
+    >>> from curryer.correction import CorrectionInput, run_correction
+    >>> inputs = [
+    ...     CorrectionInput(
+    ...         telemetry_file="data/tlm_20240317.csv",
+    ...         science_file="data/sci_20240317.csv",
+    ...         gcp_file="gcps/landsat_chip_001.mat",
+    ...     )
+    ... ]
+    >>> result = run_correction(config, work_dir, inputs)
+    >>> results = result.results
+    >>> netcdf_data = result.netcdf_data
+    """
+
+    telemetry_file: Path
+    science_file: Path
+    gcp_file: Path
