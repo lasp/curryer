@@ -18,6 +18,7 @@ functions it calls:
 import logging
 import time
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -1293,7 +1294,7 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 def run_correction(
     config: CorrectionConfig,
     work_dir: Path,
-    inputs: list[CorrectionInput] | list[tuple[str, str, str]],
+    inputs: Sequence[CorrectionInput | tuple[str, str, str]],
     resume_from_checkpoint: bool = False,
 ) -> "CorrectionResult":
     """Run the correction parameter sweep.
