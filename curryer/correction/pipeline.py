@@ -17,8 +17,8 @@ functions it calls:
 
 import logging
 import time
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
