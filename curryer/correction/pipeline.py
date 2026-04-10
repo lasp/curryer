@@ -1321,9 +1321,9 @@ def run_correction(
     -------
     CorrectionResult
         Structured result with best parameters, pass/fail verdict,
-        recommendation, and summary table.
-    results : list
-    netcdf_data : dict
+        recommendation, summary table, and raw NetCDF/intermediate data
+        available on the returned object (for example,
+        ``result.netcdf_data``).
     """
     from curryer.correction.results import build_correction_result
 
