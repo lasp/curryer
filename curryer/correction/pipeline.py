@@ -905,8 +905,9 @@ def loop(
         - Required: parameters, iterations, thresholds, geo config
         - Data loading: ``data`` (:class:`~curryer.correction.config.DataConfig`)
           specifying file format and time scaling
-        - Optional: ``image_matching_func`` override (test injection only)
-        - Calibration: `calibration_dir` (if image_matching_func uses calibration)
+        - Optional: ``_image_matching_override`` override on ``config``
+          (test injection only)
+        - Calibration: `calibration_dir` (if the image-matching override uses calibration)
         - Output: netcdf, output_filename
     work_dir : Path
         Working directory for temporary files.
