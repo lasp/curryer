@@ -109,7 +109,7 @@ def _make_full_image_matching_dataset(n: int = 5, seed: int = 0) -> xr.Dataset:
     :class:`~curryer.correction.error_stats.ErrorStatsProcessor` can compute
     nadir-equivalent errors without triggering geometry warnings.
     """
-    from test_error_stats import (
+    from tests.test_correction.test_error_stats import (
         create_test_dataset_13_cases,
     )
 
