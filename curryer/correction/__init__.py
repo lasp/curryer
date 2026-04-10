@@ -27,11 +27,19 @@ correction_config
 data_structures
     Shared data-container dataclasses (``ImageGrid``, ``PSFGrid``, ...).
 dataio
-    Validation helpers and S3 data-access utilities.
+    Validation helpers and S3 data-access utilities.  The S3 utilities
+    (``S3Configuration``, ``find_netcdf_objects``, ``download_netcdf_objects``)
+    are optional convenience helpers for mission-specific data pipelines;
+    the core correction API does not depend on them.
 error_stats
     Error statistics computation (``ErrorStatsProcessor``).
 image_match
     Image-matching algorithm (``integrated_image_match``).
+io
+    Unified path resolution (``resolve_path``).  Transparently handles
+    local paths and S3 URIs (``s3://…``) when ``boto3`` is installed.
+    Optional convenience — the public API contract is local ``Path``
+    objects; S3 support is opt-in.
 pairing
     Ground-control-point pairing utilities.
 psf

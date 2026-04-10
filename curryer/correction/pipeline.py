@@ -48,6 +48,7 @@ from curryer.correction.dataio import (
     validate_science_output,
     validate_telemetry_output,
 )
+from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.image_io import (
     load_image_grid_from_mat,
     load_los_vectors_from_mat,
@@ -914,6 +915,9 @@ def loop(
         Working directory for temporary files.
     tlm_sci_gcp_sets : list of (str, str, str)
         List of (`telemetry_key`, `science_key`, `gcp_key`) tuples.
+        File paths are expected to be local. S3 URIs (``s3://…``) are also
+        accepted as a convenience when ``boto3`` is installed; see
+        :func:`~curryer.correction.io.resolve_path`.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
@@ -1001,6 +1005,10 @@ def loop(
     # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
     calibration_data = _load_calibration_data(config)
 
+    # Create error stats processor once (config is constant; processor is stateless)
+    error_config = ErrorStatsConfig.from_correction_config(config)
+    error_processor = ErrorStatsProcessor(config=error_config)
+
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
         param_values = _extract_parameter_values(params)
@@ -1055,11 +1063,7 @@ def loop(
             # compute_nadir_equivalent_errors() skips aggregate statistics —
             # computing mean/std/percentiles on a single GCP pair is
             # mathematically uninformative and wastes time in a tight loop.
-            from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
-
-            error_config = ErrorStatsConfig.from_correction_config(config)
-            processor = ErrorStatsProcessor(config=error_config)
-            individual_nadir = processor.compute_nadir_equivalent_errors(image_matching_output)
+            individual_nadir = error_processor.compute_nadir_equivalent_errors(image_matching_output)
 
             nadir_errors = individual_nadir["nadir_equiv_total_error_m"].values
             if len(nadir_errors) == 1:
@@ -1316,6 +1320,9 @@ def run_correction(
         Each element is either a :class:`~curryer.correction.config.CorrectionInput`
         (named fields) or a legacy ``(telemetry_key, science_key, gcp_key)`` tuple.
         Both forms may be mixed in the same list.
+        File paths are expected to be local. S3 URIs (``s3://…``) are also
+        accepted as a convenience when ``boto3`` is installed; see
+        :func:`~curryer.correction.io.resolve_path`.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
