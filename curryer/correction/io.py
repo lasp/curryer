@@ -142,17 +142,17 @@ def _download_from_s3(s3_uri: str, *, s3_client=None) -> Path:
     suffix = Path(key).suffix or ""
 
     logger.info("Downloading from S3: %s", s3_uri)
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    # Create and immediately close the temp file so the handle is released
+    # before boto3 writes to it (avoids Windows file-locking errors).
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_name = tmp.name
+    tmp_path = Path(tmp_name)
     try:
-        client.download_file(bucket, key, tmp.name)
+        client.download_file(bucket, key, tmp_name)
     except Exception:
         # Clean up partial download on failure
-        tmp.close()
-        Path(tmp.name).unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
         raise
-    tmp.close()
-
-    tmp_path = Path(tmp.name)
     _temp_files.append(tmp_path)
     logger.info("  Downloaded to: %s", tmp_path)
     return tmp_path
