@@ -918,7 +918,9 @@ class CorrectionInput(BaseModel):
     ...         gcp_file="gcps/landsat_chip_001.mat",
     ...     )
     ... ]
-    >>> results, netcdf_data = run_correction(config, work_dir, inputs)
+    >>> result = run_correction(config, work_dir, inputs)
+    >>> results = result.results
+    >>> netcdf_data = result.netcdf_data
     """
 
     telemetry_file: Path
