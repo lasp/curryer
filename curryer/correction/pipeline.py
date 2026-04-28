@@ -28,7 +28,7 @@ import xarray as xr
 if TYPE_CHECKING:
     from curryer.correction.results import CorrectionResult
 
-from curryer import meta
+from curryer import meta, spicetime
 from curryer import spicierpy as sp
 from curryer.compute import constants, spatial
 from curryer.correction.config import (
@@ -191,6 +191,54 @@ def _extract_spacecraft_position_midframe(
 # ============================================================================
 
 
+def _get_spice_boresight_and_rotation(
+    instrument_name: str,
+    et_midframe: float,
+    ref_frame: str = "ITRF93",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the instrument boresight and HS→CTRS rotation matrix from SPICE.
+
+    Retrieves the nominal boresight direction from the loaded Instrument Kernel
+    (IK) via :func:`~curryer.spicierpy.ext.instrument_boresight`, then queries
+    the CK/FK kernels for the rotation matrix that transforms vectors from the
+    instrument (HS) frame to the Earth-centred, Earth-fixed CTRS frame at the
+    given epoch.
+
+    Parameters
+    ----------
+    instrument_name : str
+        SPICE instrument name (e.g. ``"CPRS_HYSICS"``); taken from
+        ``config.geo.instrument_name``.
+    et_midframe : float
+        Ephemeris time (ET seconds past J2000) at the mid-frame epoch.
+    ref_frame : str, optional
+        Target reference frame for the rotation.  Default ``"ITRF93"``
+        (Earth-centred, Earth-fixed), matching the frame assumed by
+        :class:`~curryer.correction.error_stats.ErrorStatsProcessor`.
+
+    Returns
+    -------
+    boresight : np.ndarray, shape (3,)
+        Unit boresight vector expressed in the instrument (HS) frame.
+    t_hs2ctrs : np.ndarray, shape (3, 3)
+        Rotation matrix R such that ``v_ctrs = R @ v_hs``.
+
+    Raises
+    ------
+    SpiceyError
+        If the required SPICE kernels (IK, FK, CK, SCLK, LSK) are not loaded
+        or do not cover *et_midframe*.
+    """
+    boresight = sp.ext.instrument_boresight(instrument_name, norm=True)
+
+    # getfov also gives the frame name the boresight is expressed in
+    instr = sp.obj.Instrument(instrument_name)
+    _, hs_frame_name, _, _, _ = sp.getfov(instr.id, 1, 80, 80)
+
+    t_hs2ctrs = np.asarray(sp.pxform(hs_frame_name, ref_frame, et_midframe))
+    return boresight, t_hs2ctrs
+
+
 def image_matching(
     geolocated_data: xr.Dataset,
     gcp_reference_file: Path,
@@ -296,26 +344,33 @@ def image_matching(
 
     # Create single measurement result (image matching produces one correlation per GCP)
 
-    # NOTE: Boresight and transformation matrix for error_stats module
-    # ----------------------------------------------------------------
-    # These values are NOT used by image_matching() itself - the image correlation
-    # is complete and accurate without them. They are needed by call_error_stats_module()
-    # for converting off-nadir errors to nadir-equivalent errors.
+    # Boresight and transformation matrix for error_stats module
+    # ----------------------------------------------------------
+    # These values are NOT used by integrated_image_match() — the image
+    # correlation is already complete.  They are needed by ErrorStatsProcessor
+    # to convert the raw lat/lon errors to nadir-equivalent errors.
     #
-    # Currently using simplified nadir assumptions which are acceptable for:
-    # - Near-nadir observations (< ~5 degrees off-nadir)
-    # - Testing image matching correlation accuracy (doesn't affect matching)
+    # We query SPICE for real values:
+    #   - boresight:  nominal instrument boresight from the IK (getfov)
+    #   - t_hs2ctrs:  rotation HS→CTRS from the CK/FK kernels at mid-frame epoch
     #
-    # For accurate nadir-equivalent error conversion with off-nadir pointing, these
-    # should be extracted from SPICE/geolocation data:
-    # - boresight: Extract from spicierpy.getfov(instrument) and transform via geo_dataset['attitude']
-    # - t_matrix: Extract from geo_dataset['attitude'] (transformation from instrument to CTRS)
-    #
-    # See: error_stats.py _transform_boresight_vectors() for usage
-    # See: BORESIGHT_TRANSFORM_ANALYSIS.md for detailed analysis and future enhancement plan
+    # If kernels are unavailable (e.g. unit tests without SPICE data) we fall
+    # back to nadir-direction boresight + identity matrix, which yields scaling
+    # factors = 1.0 and passes raw errors through unchanged.
 
-    t_matrix = np.eye(3)  # Simplified: Identity matrix (no rotation)
-    boresight = np.array([0.0, 0.0, 1.0])  # Simplified: Nadir pointing assumption
+    ugps_midframe = int(telemetry.index[len(telemetry) // 2])
+    et_midframe = float(spicetime.adapt(ugps_midframe, from_="ugps", to="et"))
+
+    try:
+        boresight, t_matrix = _get_spice_boresight_and_rotation(config.geo.instrument_name, et_midframe)
+        logger.info("  Boresight from SPICE IK (HS frame): %s", boresight)
+    except Exception as exc:
+        logger.warning(
+            "  SPICE boresight/rotation unavailable (%s); using nadir approximation for nadir-equivalent error stats.",
+            exc,
+        )
+        boresight = -r_iss_midframe / np.linalg.norm(r_iss_midframe)
+        t_matrix = np.eye(3)
 
     # Convert errors from km to degrees
     lat_error_deg = result.lat_error_km / 111.0  # ~111 km per degree latitude
