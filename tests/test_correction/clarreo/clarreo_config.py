@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""CLARREO-specific Correction configuration generation.
+"""CLARREO-specific Correction configuration generation — **test fixture**.
 
-This module demonstrates how to create mission-specific configurations
-for the mission-agnostic correction module. All CLARREO-specific values
-(kernel names, parameters, instruments) are defined here.
+This module is a **test infrastructure helper**. It is not part of the
+public API and is not intended as a user-facing example.
 
-This serves as a template for other missions - copy this file and modify
-the kernel names, parameter values, and instrument settings for your mission.
+For user-facing examples and documentation, see:
+  - ``examples/correction/clarreo_config.py``    — public-API config factory
+  - ``examples/correction/clarreo_config.json``  — JSON config (loadable)
+  - ``examples/correction/example_verification.py`` — runnable demo
+  - ``docs/source/correction_user_guide.md``     — full reference
+
+This module creates the CLARREO CorrectionConfig used by integration tests.
+All CLARREO-specific values (kernel names, parameters, instruments) are
+defined here and injected into tests via fixtures.
 
 Usage:
     from tests.test_correction.clarreo_config import create_clarreo_correction_config
