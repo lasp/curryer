@@ -385,7 +385,7 @@ class TestNetCDFLoading:
         try:
             ds.to_netcdf(tmp_path)
 
-            with pytest.raises(OSError, match="band_data"):
+            with pytest.raises(KeyError, match="band_data"):
                 load_image_grid_from_netcdf(tmp_path)
         finally:
             tmp_path.unlink(missing_ok=True)
