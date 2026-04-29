@@ -225,6 +225,100 @@ def load_los_vectors_from_mat(mat_file: str | Path, key: str = "b_HS") -> np.nda
 # ============================================================================
 
 
+def load_image_grid_from_netcdf(
+    filepath: Path,
+    band_var: str = "band_data",
+    lat_var: str = "lat",
+    lon_var: str = "lon",
+    height_var: str = "h",
+) -> ImageGrid:
+    """Load an :class:`ImageGrid` from a NetCDF file.
+
+    Handles both regular (1-D lat/lon) and irregular (2-D lat/lon) grids.
+    1-D coordinate arrays are broadcast to a full 2-D grid so that the
+    returned :class:`ImageGrid` always has matching ``(y, x)`` shaped arrays.
+
+    Parameters
+    ----------
+    filepath : Path
+        Path to a NetCDF file written by :func:`save_image_grid_to_netcdf` or
+        the regridding pipeline.
+    band_var : str, optional
+        Name of the band/radiance variable.  Falls back to ``"data"`` when
+        the specified name is not present (legacy files).
+    lat_var : str, optional
+        Name of the latitude variable.  Falls back to ``"latitude"``.
+    lon_var : str, optional
+        Name of the longitude variable.  Falls back to ``"longitude"``.
+    height_var : str, optional
+        Name of the optional height variable.  Not required; ``h`` is set to
+        ``None`` when absent.
+
+    Returns
+    -------
+    ImageGrid
+        Loaded image grid with ``data``, ``lat``, ``lon``, and ``h`` fields.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *filepath* does not exist.
+    KeyError
+        If a required variable (band, lat, or lon) is not found.
+
+    Examples
+    --------
+    >>> grid = load_image_grid_from_netcdf(Path("regridded.nc"))
+    >>> grid.data.shape
+    (421, 433)
+    """
+    import xarray as xr
+
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"NetCDF file not found: {filepath}")
+
+    logger.info("Loading ImageGrid from NetCDF: %s", filepath)
+
+    with xr.open_dataset(filepath) as ds:
+        # Resolve band variable (with legacy fallback)
+        if band_var not in ds:
+            legacy = "data"
+            if legacy in ds:
+                band_var = legacy
+            else:
+                raise KeyError(
+                    f"Band variable '{band_var}' not found in {filepath.name}. "
+                    f"Available variables: {list(ds.data_vars)}"
+                )
+
+        # Resolve lat/lon variables (with legacy fallbacks)
+        if lat_var not in ds:
+            lat_var = next((v for v in ("latitude",) if v in ds), None)
+            if lat_var is None:
+                raise KeyError(f"Latitude variable not found in {filepath.name}")
+        if lon_var not in ds:
+            lon_var = next((v for v in ("longitude",) if v in ds), None)
+            if lon_var is None:
+                raise KeyError(f"Longitude variable not found in {filepath.name}")
+
+        data = np.asarray(ds[band_var].values, dtype=float)
+        lat = np.asarray(ds[lat_var].values, dtype=float)
+        lon = np.asarray(ds[lon_var].values, dtype=float)
+        h = np.asarray(ds[height_var].values, dtype=float) if height_var in ds else None
+
+    # Broadcast 1-D coordinates to 2-D so ImageGrid shape invariants hold
+    if lat.ndim == 1 and lon.ndim == 1:
+        lon, lat = np.meshgrid(lon, lat)
+    elif lat.ndim == 1:
+        lat = np.repeat(lat[:, np.newaxis], data.shape[1], axis=1)
+    elif lon.ndim == 1:
+        lon = np.tile(lon[np.newaxis, :], (data.shape[0], 1))
+
+    logger.info("Loaded ImageGrid from NetCDF: shape %s", data.shape)
+    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
+
+
 def save_image_grid_to_netcdf(
     filepath: Path,
     image_grid: ImageGrid,
@@ -340,7 +434,7 @@ def save_image_grid_to_netcdf(
         )
 
         # Create coordinate variables
-        # Variable names match load_gcp_chip_from_netcdf defaults: lat, lon, band_data, h
+        # Variable names match load_image_grid_from_netcdf defaults: lat, lon, band_data, h
         if lat_is_1d:
             # 1D latitude (varies with y only)
             lat_var = nc.createVariable("lat", "f8", ("y",), **comp_kwargs)
@@ -401,86 +495,6 @@ def save_image_grid_to_netcdf(
         crs.crs_wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
 
     logger.info(f"NetCDF file saved successfully: {filepath} ({filepath.stat().st_size / 1024:.1f} KB)")
-
-
-def load_image_grid_from_netcdf(filepath: Path) -> ImageGrid:
-    """
-    Load ImageGrid from NetCDF file.
-
-    Loads regridded GCP chips or other gridded data saved in NetCDF format.
-    Automatically handles both 1D and 2D coordinate arrays.
-
-    Parameters
-    ----------
-    filepath : Path
-        Input NetCDF file path.
-
-    Returns
-    -------
-    ImageGrid
-        Loaded image grid with data, lat, lon, and h (if available).
-
-    Raises
-    ------
-    ImportError
-        If netCDF4 is not installed.
-    FileNotFoundError
-        If filepath doesn't exist.
-    KeyError
-        If required variables not found in file.
-
-    Examples
-    --------
-    >>> regridded = load_image_grid_from_netcdf(Path("regridded.nc"))
-    >>> regridded.data.shape
-    (421, 433)
-    """
-    try:
-        from netCDF4 import Dataset
-    except ImportError as e:
-        raise ImportError("netCDF4 is required to load NetCDF files. Install with: pip install netCDF4") from e
-
-    filepath = Path(filepath)
-
-    if not filepath.exists():
-        raise FileNotFoundError(f"NetCDF file not found: {filepath}")
-
-    logger.info(f"Loading ImageGrid from NetCDF: {filepath}")
-
-    with Dataset(filepath, "r") as nc:
-        # Load data — try canonical name first, then legacy name
-        data_name = next((n for n in ("band_data", "data") if n in nc.variables), None)
-        if data_name is None:
-            raise KeyError(f"Required variable 'data' not found in {filepath.name}")
-        data = nc.variables[data_name][:]
-
-        # Load coordinates — try canonical names first, then legacy names
-        lat_name = next((n for n in ("lat", "latitude") if n in nc.variables), None)
-        lon_name = next((n for n in ("lon", "longitude") if n in nc.variables), None)
-        if lat_name is None:
-            raise KeyError(f"Required variable 'latitude' not found in {filepath.name}")
-        if lon_name is None:
-            raise KeyError(f"Required variable 'longitude' not found in {filepath.name}")
-
-        lat_var = nc.variables[lat_name]
-        lon_var = nc.variables[lon_name]
-
-        # Handle 1D or 2D coordinates
-        if lat_var.ndim == 1:
-            # Expand 1D to 2D
-            lat_1d = lat_var[:]
-            lon_1d = lon_var[:]
-            lon, lat = np.meshgrid(lon_1d, lat_1d)
-        else:
-            lat = lat_var[:]
-            lon = lon_var[:]
-
-        # Load height if available — try canonical name first, then legacy name
-        h_name = next((n for n in ("h", "height") if n in nc.variables), None)
-        h = nc.variables[h_name][:] if h_name is not None else None
-
-    logger.info(f"Loaded ImageGrid from NetCDF: shape {data.shape}")
-    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
 
 
 # ============================================================================
@@ -627,79 +641,6 @@ def load_gcp_chip_from_hdf(
     return band_data, ecef_x, ecef_y, ecef_z
 
 
-def load_gcp_chip_from_netcdf(
-    filepath: Path,
-    band_var: str = "band_data",
-    lat_var: str = "lat",
-    lon_var: str = "lon",
-    height_var: str = "h",
-) -> ImageGrid:
-    """
-    Load regridded GCP chip from NetCDF file.
-
-    Parameters
-    ----------
-    filepath : Path
-        Path to NetCDF file.
-    band_var : str, default="band_data"
-        Name of the band data variable.
-    lat_var : str, default="lat"
-        Name of the latitude variable.
-    lon_var : str, default="lon"
-        Name of the longitude variable.
-    height_var : str, default="h"
-        Name of the height variable (optional).
-
-    Returns
-    -------
-    ImageGrid
-        Loaded image grid with data, lat, lon, h fields.
-
-    Raises
-    ------
-    FileNotFoundError
-        If filepath doesn't exist.
-    KeyError
-        If required variables not found.
-
-    Examples
-    --------
-    >>> gcp = load_gcp_chip_from_netcdf("regridded_chip.nc")
-    >>> gcp.data.shape
-    (420, 420)
-    """
-    import xarray as xr
-
-    if not filepath.exists():
-        raise FileNotFoundError(f"NetCDF file not found: {filepath}")
-
-    try:
-        ds = xr.open_dataset(filepath)
-
-        # Check required variables
-        if band_var not in ds:
-            raise KeyError(f"Band variable '{band_var}' not found in {filepath.name}")
-        if lat_var not in ds:
-            raise KeyError(f"Latitude variable '{lat_var}' not found in {filepath.name}")
-        if lon_var not in ds:
-            raise KeyError(f"Longitude variable '{lon_var}' not found in {filepath.name}")
-
-        # Load data
-        data = ds[band_var].values
-        lat = ds[lat_var].values
-        lon = ds[lon_var].values
-        h = ds[height_var].values if height_var in ds else None
-
-        ds.close()
-
-    except Exception as e:
-        raise OSError(f"Error reading NetCDF file {filepath}: {e}") from e
-
-    logger.info(f"Loaded GCP chip from {filepath.name}: shape {data.shape}")
-
-    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
-
-
 # ============================================================================
 # Generic Image Savers (new for regridding + general use)
 # ============================================================================
@@ -743,7 +684,7 @@ def save_image_grid(
     format = format.lower()
 
     if format == "netcdf":
-        _save_image_grid_netcdf(filepath, image_grid, metadata)
+        save_image_grid_to_netcdf(filepath, image_grid, metadata)
     elif format == "mat":
         _save_image_grid_mat(filepath, image_grid, metadata)
     elif format == "geotiff":
@@ -752,56 +693,6 @@ def save_image_grid(
         raise ValueError(f"Unsupported format: {format}. Supported: 'netcdf', 'mat', 'geotiff'")
 
     logger.info(f"Saved ImageGrid to {filepath} (format: {format})")
-
-
-def _save_image_grid_netcdf(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
-    """Save ImageGrid to NetCDF file (internal helper)."""
-    import xarray as xr
-
-    # Create xarray Dataset
-    nrows, ncols = image_grid.data.shape
-
-    ds = xr.Dataset(
-        {
-            "band_data": (["y", "x"], image_grid.data),
-            "lat": (["y", "x"], image_grid.lat),
-            "lon": (["y", "x"], image_grid.lon),
-        },
-        coords={
-            "y": np.arange(nrows),
-            "x": np.arange(ncols),
-        },
-    )
-
-    # Add height if present
-    if image_grid.h is not None:
-        ds["h"] = (["y", "x"], image_grid.h)
-
-    # Add metadata
-    if metadata:
-        ds.attrs.update(metadata)
-
-    # Add standard attributes
-    ds.attrs["title"] = "Regridded GCP Chip"
-    ds.attrs["Conventions"] = "CF-1.8"
-
-    # Add variable attributes
-    ds["band_data"].attrs["long_name"] = "Band radiometric data"
-    ds["band_data"].attrs["units"] = "digital_number"
-    ds["lat"].attrs["long_name"] = "Latitude"
-    ds["lat"].attrs["units"] = "degrees_north"
-    ds["lon"].attrs["long_name"] = "Longitude"
-    ds["lon"].attrs["units"] = "degrees_east"
-
-    if "h" in ds:
-        ds["h"].attrs["long_name"] = "Height above ellipsoid"
-        ds["h"].attrs["units"] = "meters"
-
-    # Write to file
-    try:
-        ds.to_netcdf(filepath, engine="netcdf4")
-    except Exception as e:
-        raise OSError(f"Error writing NetCDF file {filepath}: {e}") from e
 
 
 def _save_image_grid_mat(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
@@ -869,3 +760,68 @@ def _save_image_grid_geotiff(filepath: Path, image_grid: ImageGrid, metadata: di
 
     except Exception as e:
         raise OSError(f"Error writing GeoTIFF file {filepath}: {e}") from e
+
+
+# ============================================================================
+# Format-agnostic loader
+# ============================================================================
+
+
+def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> NamedImageGrid:
+    """Load any supported image file as a :class:`NamedImageGrid`.
+
+    Dispatches on file extension so callers do not need to know the underlying
+    format.  The returned grid always carries the file path as its ``name``.
+
+    Supported formats
+    -----------------
+    ``.mat``
+        MATLAB struct file.  The struct accessed via *mat_key* must have
+        ``data``, ``lat``, and ``lon`` attributes (and optionally ``h``).
+    ``.nc`` / ``.netcdf`` / ``.nc4``
+        NetCDF file written by :func:`save_image_grid_to_netcdf` or the
+        regridding pipeline (expects ``band_data``, ``lat``, ``lon``).
+
+    Parameters
+    ----------
+    filepath : path-like
+        Path to the image file.
+    mat_key : str, optional
+        MATLAB struct key to read.  Defaults to ``"subimage"``.  Ignored for
+        NetCDF files.
+
+    Returns
+    -------
+    NamedImageGrid
+        Loaded image grid with ``name`` set to the string representation of
+        *filepath*.
+
+    Raises
+    ------
+    ValueError
+        If the file extension is not recognised.
+    FileNotFoundError
+        If *filepath* does not exist.
+
+    Examples
+    --------
+    >>> obs = load_named_image_grid(Path("TestCase1a_subimage.mat"), mat_key="subimage")
+    >>> gcp = load_named_image_grid(Path("GCP12055Dili_regridded.nc"))
+    """
+    filepath = Path(filepath)
+    suffix = filepath.suffix.lower()
+    name = str(filepath)
+
+    if suffix == ".mat":
+        result = load_image_grid_from_mat(filepath, key=mat_key, name=name, as_named=True)
+        if not isinstance(result, NamedImageGrid):
+            raise TypeError(f"Expected NamedImageGrid from .mat file, got {type(result).__name__!r}")
+        return result
+
+    if suffix in (".nc", ".netcdf", ".nc4"):
+        grid = load_image_grid_from_netcdf(filepath)
+        return NamedImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon, h=grid.h, name=name)
+
+    raise ValueError(
+        f"Unrecognised file extension '{suffix}' for {filepath}. Supported formats: .mat, .nc, .netcdf, .nc4"
+    )
