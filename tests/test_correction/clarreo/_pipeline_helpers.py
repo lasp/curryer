@@ -139,7 +139,7 @@ def run_downstream_pipeline(
     from _image_match_helpers import discover_test_image_match_cases, run_image_matching_with_applied_errors
     from clarreo_config import create_clarreo_correction_config
 
-    from curryer.correction.image_match import load_image_grid_from_mat
+    from curryer.correction.image_io import load_image_grid_from_mat
     from curryer.correction.pairing import find_l1a_gcp_pairs
 
     logger.info("=== DOWNSTREAM PIPELINE TEST ===")
