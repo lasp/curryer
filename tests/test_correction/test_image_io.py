@@ -12,7 +12,6 @@ import pytest
 from curryer.correction.data_structures import ImageGrid, NamedImageGrid
 from curryer.correction.image_io import (
     load_gcp_chip_from_hdf,
-    load_gcp_chip_from_netcdf,
     load_image_grid_from_mat,
     load_image_grid_from_netcdf,
     save_image_grid,
@@ -59,7 +58,7 @@ class TestImageGridSaveLoad:
         try:
             save_image_grid(tmp_path, original_grid, format="netcdf")
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid_from_netcdf(tmp_path)
 
             np.testing.assert_array_almost_equal(loaded_grid.data, original_grid.data)
             np.testing.assert_array_almost_equal(loaded_grid.lat, original_grid.lat)
@@ -77,7 +76,7 @@ class TestImageGridSaveLoad:
         try:
             save_image_grid(tmp_path, original_grid, format="netcdf")
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid_from_netcdf(tmp_path)
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -336,7 +335,7 @@ class TestHDFLoading:
 
 
 # ---------------------------------------------------------------------------
-# load_gcp_chip_from_netcdf (xarray-based)
+# load_image_grid_from_netcdf (xarray-based)
 # ---------------------------------------------------------------------------
 
 
@@ -346,7 +345,7 @@ class TestNetCDFLoading:
     def test_missing_file(self):
         """Test that missing file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            load_gcp_chip_from_netcdf(Path("nonexistent.nc"))
+            load_image_grid_from_netcdf(Path("nonexistent.nc"))
 
     def test_round_trip_with_height(self):
         """Height variable is loaded when present in file."""
@@ -358,7 +357,7 @@ class TestNetCDFLoading:
         try:
             save_image_grid(tmp_path, original_grid, format="netcdf")
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid_from_netcdf(tmp_path)
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -387,7 +386,7 @@ class TestNetCDFLoading:
             ds.to_netcdf(tmp_path)
 
             with pytest.raises(OSError, match="band_data"):
-                load_gcp_chip_from_netcdf(tmp_path)
+                load_image_grid_from_netcdf(tmp_path)
         finally:
             tmp_path.unlink(missing_ok=True)
 
