@@ -3,6 +3,7 @@
    :caption: Contents:
 
    users.md
+   correction_user_guide.md
    gcp_regridding.md
    developers.md
    acknowledgements.md

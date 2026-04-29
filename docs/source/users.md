@@ -24,9 +24,8 @@ pip install lasp-curryer
 
 # Basic Usage
 
-```python
-# Example code goes here
-```
+See [Correction Package User Guide](correction_user_guide.md) for verification
+and correction workflows, and `examples/correction/` for runnable scripts.
 
 ### Data / Binary Files
 
@@ -56,6 +55,32 @@ Download Third-party Files:
   15-arc-second.
   - Alternatively, use the script [download_dem.py](bin/download_dem.py) to
     download different types and/or resolutions from the USGS.
+
+## Correction Package
+
+The `curryer.correction` package checks and optimises geolocation alignment
+against mission requirements. Two entry points:
+
+- **`verify()`** — check whether the current kernels meet accuracy requirements
+- **`run_correction()`** — find better parameters via a parameter sweep
+
+**5-line quickstart (verification):**
+
+```python
+from curryer.correction import CorrectionConfig, verify
+import xarray as xr
+
+config = CorrectionConfig(...)          # or load_config_from_json("config.json")
+result = verify(config, image_matching_results=[xr.open_dataset("matching.nc")])
+print(result.summary_table)            # ASCII table with per-GCP pass/fail
+print("Passed:", result.passed)
+```
+
+See the [Correction User Guide](correction_user_guide.md) for the full
+configuration reference and workflow documentation, and
+`examples/correction/` for runnable scripts.
+
+---
 
 ## Examples
 
