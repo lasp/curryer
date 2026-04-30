@@ -850,9 +850,9 @@ def load_observation_file(
         grid = load_image_grid(filepath)
         r_sc_m = None
         try:
-            ds = xr.open_dataset(filepath)
-            if "position" in ds:
-                r_sc_m = np.asarray(ds["position"].values).ravel()
+            with xr.open_dataset(filepath) as ds:
+                if "position" in ds:
+                    r_sc_m = np.asarray(ds["position"].values).ravel()
         except Exception:
             logger.debug("Could not read spacecraft position from %s", filepath, exc_info=True)
         return grid, r_sc_m
