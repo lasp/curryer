@@ -667,7 +667,6 @@ def save_image_grid(
 
 def _save_to_mat(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
     """Save ImageGrid to MATLAB .mat file (private helper)."""
-    """Save ImageGrid to MATLAB .mat file (internal helper)."""
     from scipy.io import savemat
 
     # Prepare data structure
