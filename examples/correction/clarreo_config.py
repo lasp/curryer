@@ -46,10 +46,11 @@ def create_clarreo_config(
 ) -> CorrectionConfig:
     """Create the CLARREO Pathfinder geolocation correction configuration.
 
-    Defines all 12 CLARREO-specific correction parameters:
-    - 9 CONSTANT_KERNEL parameters (3 frames x 3 attitude angles each)
-    - 2 OFFSET_KERNEL parameters (azimuth and elevation angle biases)
-    - 1 OFFSET_TIME parameter (science timing correction)
+    Defines 6 CLARREO-specific ``ParameterConfig`` entries covering 12
+    underlying scalar correction values:
+    - 3 CONSTANT_KERNEL entries (one per frame, each with a 3-angle attitude vector)
+    - 2 OFFSET_KERNEL entries (azimuth and elevation angle biases)
+    - 1 OFFSET_TIME entry (science timing correction)
 
     Parameters
     ----------
