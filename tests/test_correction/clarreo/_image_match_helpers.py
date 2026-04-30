@@ -17,9 +17,9 @@ import xarray as xr
 
 from curryer.correction.data_structures import ImageGrid, PSFSamplingConfig, SearchConfig
 from curryer.correction.image_io import (
-    load_image_grid_from_mat,
-    load_los_vectors_from_mat,
-    load_optical_psf_from_mat,
+    load_image_grid,
+    load_los_vectors,
+    load_optical_psf,
 )
 from curryer.correction.image_match import integrated_image_match
 
@@ -268,8 +268,8 @@ def run_image_matching_with_applied_errors(
     logger.info("Running image matching: %s", test_case["case_name"])
     start = time.time()
 
-    subimage = load_image_grid_from_mat(test_case["subimage_file"], key="subimage")
-    gcp = load_image_grid_from_mat(test_case["gcp_file"], key="GCP")
+    subimage = load_image_grid(test_case["subimage_file"], mat_key="subimage")
+    gcp = load_image_grid(test_case["gcp_file"], mat_key="GCP")
     mid_i, mid_j = gcp.mid_indices
     gcp_center_lat = float(gcp.lat[mid_i, mid_j])
     gcp_center_lon = float(gcp.lon[mid_i, mid_j])
@@ -278,8 +278,8 @@ def run_image_matching_with_applied_errors(
         subimage, gcp, test_case["expected_lat_error_km"], test_case["expected_lon_error_km"]
     )
 
-    los_vectors = load_los_vectors_from_mat(test_case["los_file"])
-    optical_psfs = load_optical_psf_from_mat(test_case["psf_file"])
+    los_vectors = load_los_vectors(test_case["los_file"])
+    optical_psfs = load_optical_psf(test_case["psf_file"])
     from scipy.io import loadmat  # noqa: PLC0415
 
     ancil_data = loadmat(test_case["ancil_file"], squeeze_me=True)

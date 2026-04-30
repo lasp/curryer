@@ -1,13 +1,27 @@
 """Image I/O utilities for correction pipeline.
 
-This module provides format-agnostic loading and saving of image data
-used in the correction pipeline, including:
-- MATLAB .mat files (legacy test data)
-- HDF files (raw GCP chips)
-- NetCDF files (regridded GCPs, outputs)
+Provides format-agnostic loading and saving of image data used in the
+correction pipeline.  All format-specific logic is in private helpers;
+the public API dispatches on file extension so callers never need to
+know the underlying format.
 
-All functions work with ImageGrid and related data structures.
-No dependencies on image matching or other correction algorithms.
+Supported formats
+-----------------
+``.mat``   — MATLAB struct files (calibration and legacy test data).
+``.nc`` / ``.netcdf`` / ``.nc4`` — NetCDF (regridded GCPs, outputs).
+``.hdf`` / ``.h5`` — HDF4/5 raw GCP chips; use :func:`load_gcp_chip_from_hdf`
+    then ``curryer.correction.regrid`` to convert ECEF to an ImageGrid.
+
+Public API (8 functions)
+------------------------
+:func:`load_image_grid`       — any image file → :class:`ImageGrid`
+:func:`load_named_image_grid` — any image file → :class:`NamedImageGrid`
+:func:`load_observation_file` — observation + spacecraft position
+:func:`load_los_vectors`      — LOS unit vectors from calibration file
+:func:`load_optical_psf`      — PSF entries from calibration file
+:func:`load_gcp_chip_from_hdf`— raw HDF chip (band + ECEF arrays)
+:func:`save_image_grid`       — write ImageGrid; format from extension
+:func:`infer_spacecraft_state`— derive boresight/t_matrix from position
 """
 
 from __future__ import annotations
@@ -22,84 +36,102 @@ from .data_structures import ImageGrid, NamedImageGrid, OpticalPSFEntry
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# MATLAB File I/O (migrated from image_match.py)
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Private format-specific loaders
+# ---------------------------------------------------------------------------
+
+_MAT_EXTS = frozenset({".mat"})
+_NC_EXTS = frozenset({".nc", ".netcdf", ".nc4"})
+_TIFF_EXTS = frozenset({".tif", ".tiff"})
 
 
-def load_image_grid_from_mat(
-    mat_file: str | Path, key: str = "subimage", name: str | None = None, as_named: bool = False
-) -> ImageGrid | NamedImageGrid:
-    """
-    Load ImageGrid from MATLAB .mat file.
+def _load_mat_image_grid(filepath: Path, key: str) -> ImageGrid:
+    """Load an :class:`ImageGrid` from a MATLAB ``.mat`` struct.
 
     Parameters
     ----------
-    mat_file : str or Path
-        Path to .mat file (local path or ``s3://`` URI).
-    key : str, default="subimage"
-        MATLAB struct key (e.g., "subimage" for L1A, "GCP" for reference).
-    name : str, optional
-        Name for NamedImageGrid. Defaults to file path.
-    as_named : bool, default=False
-        If True, return NamedImageGrid; otherwise return ImageGrid.
+    filepath : Path
+        Resolved local path to the ``.mat`` file.
+    key : str
+        MATLAB struct key (e.g. ``"subimage"``, ``"GCP"``).
 
     Returns
     -------
-    ImageGrid or NamedImageGrid
-        Loaded image grid with data, lat, lon, h fields.
+    ImageGrid
 
     Raises
     ------
-    FileNotFoundError
-        If mat_file is a local path and doesn't exist.
-    ImportError
-        If mat_file is an S3 URI and boto3 is not installed.
     KeyError
-        If key not found in MATLAB file.
-
-    Examples
-    --------
-    >>> # Load L1A subimage
-    >>> l1a = load_image_grid_from_mat(Path("subimage.mat"), key="subimage")
-    >>> # Load GCP reference
-    >>> gcp = load_image_grid_from_mat(Path("gcp.mat"), key="GCP")
+        If *key* is not present in the file.
     """
     from scipy.io import loadmat
 
     from curryer.correction.io import resolve_path
 
-    mat_file = resolve_path(mat_file)
-    # resolve_path already validated existence / downloaded from S3.
-
-    mat_data = loadmat(str(mat_file), squeeze_me=True, struct_as_record=False)
+    filepath = resolve_path(filepath)
+    mat_data = loadmat(str(filepath), squeeze_me=True, struct_as_record=False)
 
     if key not in mat_data:
         available_keys = [k for k in mat_data.keys() if not k.startswith("__")]
-        raise KeyError(f"Key '{key}' not found in {mat_file.name}. Available keys: {available_keys}")
+        raise KeyError(f"Key '{key}' not found in {filepath.name}. Available keys: {available_keys}")
 
     struct = mat_data[key]
-    h = getattr(struct, "h", None)
-
-    # Optimize: loadmat already returns numpy arrays, avoid redundant asarray() calls
-    # ImageGrid.__post_init__ will handle final type conversion
-    grid_kwargs = {
-        "data": struct.data,
-        "lat": struct.lat,
-        "lon": struct.lon,
-        "h": h,
-    }
-
-    if as_named:
-        grid_kwargs["name"] = name or str(mat_file)
-        return NamedImageGrid(**grid_kwargs)
-    else:
-        return ImageGrid(**grid_kwargs)
+    return ImageGrid(
+        data=struct.data,
+        lat=struct.lat,
+        lon=struct.lon,
+        h=getattr(struct, "h", None),
+    )
 
 
-def load_optical_psf_from_mat(mat_file: str | Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def load_image_grid(filepath: Path | str, mat_key: str = "subimage") -> ImageGrid:
+    """Load any supported image file as an :class:`ImageGrid`.
+
+    Dispatches on file extension — callers do not need to know the
+    underlying format.
+
+    Parameters
+    ----------
+    filepath : path-like
+        Path to the image file.  Local paths and ``s3://`` URIs supported
+        (S3 requires ``boto3``).
+    mat_key : str, optional
+        MATLAB struct key.  Defaults to ``"subimage"``.  Ignored for NetCDF.
+
+    Returns
+    -------
+    ImageGrid
+
+    Raises
+    ------
+    ValueError
+        If the file extension is not recognised.
+    FileNotFoundError
+        If *filepath* does not exist.
+
+    Examples
+    --------
+    >>> obs = load_image_grid(Path("subimage.mat"), mat_key="subimage")
+    >>> gcp = load_image_grid(Path("GCP12055_regridded.nc"))
     """
-    Load optical PSF entries from MATLAB .mat file.
+    filepath = Path(str(filepath))
+    suffix = filepath.suffix.lower()
+    if suffix in _MAT_EXTS:
+        return _load_mat_image_grid(filepath, key=mat_key)
+    if suffix in _NC_EXTS:
+        return _load_netcdf_image_grid(filepath)
+    raise ValueError(
+        f"Unrecognised file extension '{suffix}' for {filepath}. Supported: {sorted(_MAT_EXTS | _NC_EXTS)}"
+    )
+
+
+def load_optical_psf(mat_file: str | Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
+    """Load optical PSF entries from a ``.mat`` calibration file.
 
     Parameters
     ----------
@@ -170,9 +202,8 @@ def load_optical_psf_from_mat(mat_file: str | Path, key: str = "PSF_struct_675nm
     raise KeyError(f"No PSF data found in {mat_file.name}. Available keys: {available_keys}")
 
 
-def load_los_vectors_from_mat(mat_file: str | Path, key: str = "b_HS") -> np.ndarray:
-    """
-    Load line-of-sight vectors from MATLAB .mat file.
+def load_los_vectors(mat_file: str | Path, key: str = "b_HS") -> np.ndarray:
+    """Load line-of-sight unit vectors from a ``.mat`` calibration file.
 
     Parameters
     ----------
@@ -221,43 +252,39 @@ def load_los_vectors_from_mat(mat_file: str | Path, key: str = "b_HS") -> np.nda
 
 
 # ============================================================================
-# NetCDF File I/O (for regridded chips and general image grids)
+# NetCDF File I/O
 # ============================================================================
 
 
-def load_image_grid_from_netcdf(
+def _load_netcdf_image_grid(
     filepath: Path,
     band_var: str = "band_data",
     lat_var: str = "lat",
     lon_var: str = "lon",
     height_var: str = "h",
 ) -> ImageGrid:
-    """Load an :class:`ImageGrid` from a NetCDF file.
+    """Load an :class:`ImageGrid` from a NetCDF file (private helper).
 
-    Handles both regular (1-D lat/lon) and irregular (2-D lat/lon) grids.
-    1-D coordinate arrays are broadcast to a full 2-D grid so that the
-    returned :class:`ImageGrid` always has matching ``(y, x)`` shaped arrays.
+    Called by :func:`load_image_grid` and :func:`load_named_image_grid`.
+    Handles both regular (1-D lat/lon) and irregular (2-D lat/lon) grids;
+    1-D coordinate arrays are broadcast to full 2-D.
 
     Parameters
     ----------
     filepath : Path
-        Path to a NetCDF file written by :func:`save_image_grid_to_netcdf` or
-        the regridding pipeline.
+        Path to a NetCDF file.
     band_var : str, optional
-        Name of the band/radiance variable.  Falls back to ``"data"`` when
-        the specified name is not present (legacy files).
+        Band/radiance variable name.  Falls back to ``"data"`` for legacy files.
     lat_var : str, optional
-        Name of the latitude variable.  Falls back to ``"latitude"``.
+        Latitude variable name.  Falls back to ``"latitude"``.
     lon_var : str, optional
-        Name of the longitude variable.  Falls back to ``"longitude"``.
+        Longitude variable name.  Falls back to ``"longitude"``.
     height_var : str, optional
-        Name of the optional height variable.  Not required; ``h`` is set to
-        ``None`` when absent.
+        Height variable name.  Optional — ``h`` is ``None`` when absent.
 
     Returns
     -------
     ImageGrid
-        Loaded image grid with ``data``, ``lat``, ``lon``, and ``h`` fields.
 
     Raises
     ------
@@ -265,12 +292,6 @@ def load_image_grid_from_netcdf(
         If *filepath* does not exist.
     KeyError
         If a required variable (band, lat, or lon) is not found.
-
-    Examples
-    --------
-    >>> grid = load_image_grid_from_netcdf(Path("regridded.nc"))
-    >>> grid.data.shape
-    (421, 433)
     """
     import xarray as xr
 
@@ -319,76 +340,23 @@ def load_image_grid_from_netcdf(
     return ImageGrid(data=data, lat=lat, lon=lon, h=h)
 
 
-def save_image_grid_to_netcdf(
+def _save_to_netcdf(
     filepath: Path,
     image_grid: ImageGrid,
     metadata: dict[str, str] | None = None,
     compression: bool = True,
 ) -> None:
-    """
-    Save ImageGrid to NetCDF file (CF-1.8 compliant).
-
-    This function can be used for any ImageGrid, including regridded GCP chips,
-    L1A subimages, or other gridded data.
+    """Save *image_grid* to a CF-1.8 NetCDF file (private — called from :func:`save_image_grid`).
 
     Parameters
     ----------
     filepath : Path
         Output NetCDF file path.
     image_grid : ImageGrid
-        Image data with lat/lon coordinates to save.
-    metadata : dict[str, str], optional
-        Additional global attributes to include in the NetCDF file.
-        Common keys: 'source_file', 'mission', 'sensor', 'processing_date', 'band'.
+    metadata : dict, optional
+        Additional global attributes.
     compression : bool, default=True
-        Enable zlib compression for data variables (~50% size reduction).
-
-    Raises
-    ------
-    ImportError
-        If netCDF4 is not installed.
-    OSError
-        If file cannot be written.
-
-    Notes
-    -----
-    The NetCDF file follows CF-1.8 conventions and contains:
-    - Variables: 'band_data', 'lat', 'lon', 'h' (if available)
-    - Dimensions: 'y' (rows), 'x' (columns)
-    - Coordinates: lat(y, x) or (y,), lon(y, x) or (x,)
-    - Attributes: grid info, CRS metadata, processing information
-
-    For regular grids (1D coordinates), variables are stored efficiently as:
-    - lat(y): Single column
-    - lon(x): Single row
-
-    For irregular grids (2D coordinates), full arrays are stored:
-    - lat(y, x): Full grid
-    - lon(y, x): Full grid
-
-    Examples
-    --------
-    Save regridded GCP chip:
-
-    >>> save_image_grid_to_netcdf(
-    ...     Path("regridded.nc"),
-    ...     regridded_chip,
-    ...     metadata={
-    ...         'source_file': 'LT08CHP.20140803.p002r071.c01.v001.hdf',
-    ...         'mission': 'CLARREO Pathfinder',
-    ...         'sensor': 'Landsat-8',
-    ...         'band': 'red',
-    ...         'processing_date': '2026-02-02'
-    ...     }
-    ... )
-
-    Save L1A subimage:
-
-    >>> save_image_grid_to_netcdf(
-    ...     Path("l1a_subimage.nc"),
-    ...     l1a_grid,
-    ...     metadata={'mission': 'CLARREO', 'level': 'L1A'}
-    ... )
+        Enable zlib compression.
     """
     try:
         import datetime
@@ -434,7 +402,7 @@ def save_image_grid_to_netcdf(
         )
 
         # Create coordinate variables
-        # Variable names match load_image_grid_from_netcdf defaults: lat, lon, band_data, h
+        # Variable names match _load_netcdf_image_grid defaults: lat, lon, band_data, h
         if lat_is_1d:
             # 1D latitude (varies with y only)
             lat_var = nc.createVariable("lat", "f8", ("y",), **comp_kwargs)
@@ -494,7 +462,7 @@ def save_image_grid_to_netcdf(
         crs.long_name = "WGS84"
         crs.crs_wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
 
-    logger.info(f"NetCDF file saved successfully: {filepath} ({filepath.stat().st_size / 1024:.1f} KB)")
+    logger.info(f"NetCDF saved: {filepath} ({filepath.stat().st_size / 1024:.1f} KB)")
 
 
 # ============================================================================
@@ -642,60 +610,63 @@ def load_gcp_chip_from_hdf(
 
 
 # ============================================================================
-# Generic Image Savers (new for regridding + general use)
+# Generic Image Save/Load — public dispatcher
 # ============================================================================
 
 
 def save_image_grid(
     filepath: Path,
     image_grid: ImageGrid,
-    format: str = "netcdf",
     metadata: dict | None = None,
+    compression: bool = True,
 ) -> None:
-    """
-    Save ImageGrid to file (netcdf, mat, or geotiff).
+    """Save an :class:`ImageGrid` to file.
 
-    This function works with any ImageGrid, not just regridded GCPs.
-    It can be used throughout the correction pipeline.
+    The output format is determined by the file extension:
+
+    * ``.nc`` / ``.netcdf`` / ``.nc4`` → CF-1.8 NetCDF (via ``netCDF4``)
+    * ``.mat`` → MATLAB struct (key ``"GCP"``)
+    * ``.tif`` / ``.tiff`` → GeoTIFF (requires ``rasterio``)
 
     Parameters
     ----------
     filepath : Path
-        Output file path.
+        Output file path.  Extension controls the format.
     image_grid : ImageGrid
         Image data with lat/lon coordinates.
-    format : str, default="netcdf"
-        Output format: 'netcdf', 'mat', or 'geotiff'.
     metadata : dict, optional
-        Additional metadata to include in output.
+        Additional metadata written as file-level attributes or tags.
+    compression : bool, optional
+        Enable compression for NetCDF output (default ``True``).
+        Ignored for other formats.
 
     Raises
     ------
     ValueError
-        If format is not supported.
-    IOError
-        If file cannot be written.
+        If the file extension is not supported.
 
     Examples
     --------
-    >>> save_image_grid("output.nc", regridded_gcp, format="netcdf")
-    >>> save_image_grid("output.mat", regridded_gcp, format="mat")
+    >>> save_image_grid(Path("chip.nc"), regridded, metadata={"band": "red"})
+    >>> save_image_grid(Path("chip.mat"), regridded)
     """
-    format = format.lower()
-
-    if format == "netcdf":
-        save_image_grid_to_netcdf(filepath, image_grid, metadata)
-    elif format == "mat":
-        _save_image_grid_mat(filepath, image_grid, metadata)
-    elif format == "geotiff":
-        _save_image_grid_geotiff(filepath, image_grid, metadata)
+    suffix = Path(filepath).suffix.lower()
+    if suffix in _NC_EXTS:
+        _save_to_netcdf(filepath, image_grid, metadata, compression)
+    elif suffix in _MAT_EXTS:
+        _save_to_mat(filepath, image_grid, metadata)
+    elif suffix in _TIFF_EXTS:
+        _save_to_geotiff(filepath, image_grid, metadata)
     else:
-        raise ValueError(f"Unsupported format: {format}. Supported: 'netcdf', 'mat', 'geotiff'")
+        raise ValueError(
+            f"Unsupported format: extension '{suffix}' for {filepath}. "
+            f"Supported: {sorted(_NC_EXTS | _MAT_EXTS | _TIFF_EXTS)}"
+        )
+    logger.info(f"Saved ImageGrid to {filepath}")
 
-    logger.info(f"Saved ImageGrid to {filepath} (format: {format})")
 
-
-def _save_image_grid_mat(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
+def _save_to_mat(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
+    """Save ImageGrid to MATLAB .mat file (private helper)."""
     """Save ImageGrid to MATLAB .mat file (internal helper)."""
     from scipy.io import savemat
 
@@ -719,8 +690,8 @@ def _save_image_grid_mat(filepath: Path, image_grid: ImageGrid, metadata: dict |
         raise OSError(f"Error writing MAT file {filepath}: {e}") from e
 
 
-def _save_image_grid_geotiff(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
-    """Save ImageGrid to GeoTIFF file (internal helper)."""
+def _save_to_geotiff(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
+    """Save ImageGrid to GeoTIFF file (private helper)."""
     try:
         import rasterio
         from rasterio.transform import from_bounds
@@ -779,7 +750,7 @@ def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> Na
         MATLAB struct file.  The struct accessed via *mat_key* must have
         ``data``, ``lat``, and ``lon`` attributes (and optionally ``h``).
     ``.nc`` / ``.netcdf`` / ``.nc4``
-        NetCDF file written by :func:`save_image_grid_to_netcdf` or the
+        NetCDF file written by :func:`save_image_grid` or the
         regridding pipeline (expects ``band_data``, ``lat``, ``lon``).
 
     Parameters
@@ -813,15 +784,148 @@ def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> Na
     name = str(filepath)
 
     if suffix == ".mat":
-        result = load_image_grid_from_mat(filepath, key=mat_key, name=name, as_named=True)
-        if not isinstance(result, NamedImageGrid):
-            raise TypeError(f"Expected NamedImageGrid from .mat file, got {type(result).__name__!r}")
-        return result
+        result = _load_mat_image_grid(filepath, key=mat_key)
+        return NamedImageGrid(data=result.data, lat=result.lat, lon=result.lon, h=result.h, name=name)
 
     if suffix in (".nc", ".netcdf", ".nc4"):
-        grid = load_image_grid_from_netcdf(filepath)
+        grid = _load_netcdf_image_grid(filepath)
         return NamedImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon, h=grid.h, name=name)
 
     raise ValueError(
         f"Unrecognised file extension '{suffix}' for {filepath}. Supported formats: .mat, .nc, .netcdf, .nc4"
     )
+
+
+def load_observation_file(
+    filepath: str | Path,
+    mat_key: str = "subimage",
+) -> tuple[ImageGrid, np.ndarray | None]:
+    """Load one observation file and return ``(ImageGrid, spacecraft_position_m)``.
+
+    Supports ``.mat`` and NetCDF (``.nc``, ``.nc4``, ``.netcdf``) formats.
+    The spacecraft ECEF position is extracted when available in the file; when
+    absent, ``None`` is returned and callers should fall back to
+    :func:`infer_spacecraft_state`.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Local path or ``s3://`` URI to a ``.mat`` or ``.nc`` observation file.
+    mat_key : str, optional
+        MATLAB struct key containing the image data.  Defaults to
+        ``"subimage"``.  Ignored for NetCDF files.
+
+    Returns
+    -------
+    grid : ImageGrid
+        Radiance data on a lat/lon grid.
+    r_spacecraft_m : ndarray of shape (3,) or None
+        Spacecraft ECEF position in metres at the mid-frame, extracted from the
+        file when available.  ``None`` when not present — caller should use
+        :func:`infer_spacecraft_state` to approximate.
+
+    Raises
+    ------
+    ValueError
+        If the file extension is not recognised.
+    FileNotFoundError
+        If *filepath* is a local path that does not exist.
+    ImportError
+        If *filepath* is an S3 URI and ``boto3`` is not installed.
+    """
+    import xarray as xr
+
+    filepath = Path(str(filepath))
+    suffix = filepath.suffix.lower()
+
+    if suffix == ".mat":
+        from scipy.io import loadmat  # noqa: PLC0415
+
+        grid = load_image_grid(filepath, mat_key=mat_key)
+        mat_raw = loadmat(str(filepath), squeeze_me=True)
+        r_sc_m = np.asarray(mat_raw["R_ISS_midframe"]).ravel() if "R_ISS_midframe" in mat_raw else None
+        return grid, r_sc_m
+
+    if suffix in (".nc", ".netcdf", ".nc4"):
+        grid = load_image_grid(filepath)
+        r_sc_m = None
+        try:
+            ds = xr.open_dataset(filepath)
+            if "position" in ds:
+                r_sc_m = np.asarray(ds["position"].values).ravel()
+        except Exception:
+            logger.debug("Could not read spacecraft position from %s", filepath, exc_info=True)
+        return grid, r_sc_m
+
+    raise ValueError(
+        f"Unsupported observation file format '{suffix}' for {filepath}. Supported formats: .mat, .nc, .netcdf, .nc4"
+    )
+
+
+def infer_spacecraft_state(
+    grid: ImageGrid,
+    r_spacecraft_m: np.ndarray | None,
+    default_altitude_m: float = 400_000.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return ``(r_spacecraft_m, boresight, t_matrix)`` for image-matching.
+
+    When *r_spacecraft_m* is provided it is used directly; the boresight is
+    the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
+    grid centre lat/lon is used to build an approximate nadir position at
+    *default_altitude_m* above the WGS-84 ellipsoid surface.
+
+    The rotation matrix is always the ``3×3`` identity — the boresight is
+    already expressed in the CTRS frame via the nadir-approximation, so no
+    additional rotation is needed.
+
+    Parameters
+    ----------
+    grid : ImageGrid
+        Observation grid, used for the centre lat/lon when *r_spacecraft_m*
+        is ``None``.
+    r_spacecraft_m : ndarray of shape (3,) or None
+        Spacecraft ECEF position in metres.  Pass ``None`` to fall back to
+        the nadir approximation.
+    default_altitude_m : float, optional
+        Spacecraft altitude above the WGS-84 surface (metres) used when
+        *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
+        Override for other spacecraft (e.g. 505 000 m for CTIM).
+
+    Returns
+    -------
+    r_spacecraft_m : ndarray, shape (3,)
+        ECEF spacecraft position in metres.
+    boresight : ndarray, shape (3,)
+        Nadir unit vector from spacecraft toward Earth centre.
+    t_matrix : ndarray, shape (3, 3)
+        Identity rotation matrix.
+    """
+    from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
+
+    if r_spacecraft_m is not None:
+        r = np.asarray(r_spacecraft_m, dtype=float).ravel()
+        boresight = -r / np.linalg.norm(r)
+        return r, boresight, np.eye(3)
+
+    # Approximate nadir from grid centre lat/lon
+    mid_i, mid_j = grid.mid_indices
+    lat = float(grid.lat[mid_i, mid_j])
+    lon = float(grid.lon[mid_i, mid_j])
+    lat_r = np.deg2rad(lat)
+    lon_r = np.deg2rad(lon)
+    nadir_hat = np.array(
+        [
+            np.cos(lat_r) * np.cos(lon_r),
+            np.cos(lat_r) * np.sin(lon_r),
+            np.sin(lat_r),
+        ]
+    )
+    r_approx = (WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
+    logger.debug(
+        "No spacecraft position in observation file — approximating nadir "
+        "from grid centre (lat=%.2f, lon=%.2f, alt=%.0f m)",
+        lat,
+        lon,
+        default_altitude_m,
+    )
+    return r_approx, -nadir_hat, np.eye(3)

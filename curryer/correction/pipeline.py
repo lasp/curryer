@@ -50,9 +50,9 @@ from curryer.correction.dataio import (
 )
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.image_io import (
-    load_image_grid_from_mat,
-    load_los_vectors_from_mat,
-    load_optical_psf_from_mat,
+    load_image_grid,
+    load_los_vectors,
+    load_optical_psf,
 )
 from curryer.correction.image_match import (
     integrated_image_match,
@@ -284,7 +284,7 @@ def image_matching(
 
     # Load GCP reference image
     logger.info(f"  Loading GCP reference from {gcp_reference_file}...")
-    gcp = load_image_grid_from_mat(gcp_reference_file, key="GCP")
+    gcp = load_image_grid(gcp_reference_file, mat_key="GCP")
     # Get GCP center location (center pixel)
     gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
     gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
@@ -307,7 +307,7 @@ def image_matching(
             los_file = calibration_dir / los_filename
         else:
             raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
-        los_vectors = load_los_vectors_from_mat(los_file)
+        los_vectors = load_los_vectors(los_file)
         logger.info(f"    LOS vectors: {los_vectors.shape}")
 
         if config.psf_file is not None:
@@ -317,7 +317,7 @@ def image_matching(
             psf_file = calibration_dir / psf_filename
         else:
             raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
-        optical_psfs = load_optical_psf_from_mat(psf_file)
+        optical_psfs = load_optical_psf(psf_file)
         logger.info(f"    Optical PSF: {len(optical_psfs)} entries")
 
     # Extract spacecraft position from telemetry
@@ -753,11 +753,11 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
             f"LOS vectors calibration file not found: {los_file}\nSet config.los_vectors_file to the correct path."
         )
 
-    los_vectors_cached = load_los_vectors_from_mat(los_file)
+    los_vectors_cached = load_los_vectors(los_file)
 
     if los_vectors_cached is None:
         raise ValueError(
-            f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors_from_mat() returned None."
+            f"Failed to load LOS vectors from {los_file}. File exists but load_los_vectors() returned None."
         )
 
     # ---- Optical PSF ----
@@ -774,11 +774,11 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
             f"Optical PSF calibration file not found: {psf_file}\nSet config.psf_file to the correct path."
         )
 
-    optical_psfs_cached = load_optical_psf_from_mat(psf_file)
+    optical_psfs_cached = load_optical_psf(psf_file)
 
     if optical_psfs_cached is None:
         raise ValueError(
-            f"Failed to load optical PSF from {psf_file}. File exists but load_optical_psf_from_mat() returned None."
+            f"Failed to load optical PSF from {psf_file}. File exists but load_optical_psf() returned None."
         )
 
     logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}")

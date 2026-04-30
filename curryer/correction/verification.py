@@ -554,13 +554,147 @@ def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | 
 # ============================================================================
 
 
+def _run_image_matching_for_pairs(
+    pairs: list[tuple[Path, Path]],
+    los_file: Path,
+    psf_file: Path,
+    config: CorrectionConfig,
+    default_altitude_m: float = 400_000.0,
+) -> list[xr.Dataset]:
+    """Run image matching for a list of (observation, gcp) file-path pairs.
+
+    Loads each observation and GCP file, infers spacecraft state, runs
+    :func:`~curryer.correction.image_match.integrated_image_match`, and
+    packages the result as an ``xr.Dataset`` compatible with
+    :func:`verify`.
+
+    Parameters
+    ----------
+    pairs : list of (Path, Path)
+        ``(observation_path, gcp_path)`` tuples.
+    los_file : Path
+        Instrument line-of-sight vectors (``.mat`` file).
+    psf_file : Path
+        Optical PSF ``.mat`` file.
+    config : CorrectionConfig
+        Used for spacecraft-state variable names.
+    default_altitude_m : float, optional
+        Fallback spacecraft altitude in metres when the observation file does
+        not contain position data.  Default 400 000 m (ISS nominal orbit).
+
+    Returns
+    -------
+    list[xr.Dataset]
+        One dataset per successfully matched pair.  Failures are logged as
+        warnings and skipped.
+    """
+    from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
+
+    from .data_structures import PSFSamplingConfig, SearchConfig
+    from .image_io import (
+        infer_spacecraft_state,
+        load_image_grid,
+        load_los_vectors,
+        load_observation_file,
+        load_optical_psf,
+    )
+    from .image_match import integrated_image_match
+
+    sc_pos_name = getattr(config, "spacecraft_position_name", "sc_position")
+    boresight_name = getattr(config, "boresight_name", "boresight")
+    t_matrix_name = getattr(config, "transformation_matrix_name", "t_inst2ref")
+
+    los_vectors = load_los_vectors(los_file)
+    optical_psfs = load_optical_psf(psf_file)
+
+    datasets: list[xr.Dataset] = []
+    for obs_path, gcp_path in pairs:
+        try:
+            obs_grid, r_sc_file = load_observation_file(obs_path)
+            gcp_grid = load_image_grid(gcp_path, mat_key="GCP")
+
+            mid_i, mid_j = gcp_grid.mid_indices
+            gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
+            gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
+
+            r_iss_m, boresight, t_matrix = infer_spacecraft_state(
+                obs_grid, r_sc_file, default_altitude_m=default_altitude_m
+            )
+
+            result = integrated_image_match(
+                subimage=obs_grid,
+                gcp=gcp_grid,
+                r_iss_midframe_m=r_iss_m,
+                los_vectors_hs=los_vectors,
+                optical_psfs=optical_psfs,
+                geolocation_config=PSFSamplingConfig(),
+                search_config=SearchConfig(),
+            )
+
+            # Convert km errors to degrees
+            lat_error_deg = result.lat_error_km / 111.0
+            lon_radius_km = WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_lat))
+            lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+            ds = xr.Dataset(
+                {
+                    "lat_error_deg": (["measurement"], [lat_error_deg]),
+                    "lon_error_deg": (["measurement"], [lon_error_deg]),
+                    "gcp_lat_deg": (["measurement"], [gcp_lat]),
+                    "gcp_lon_deg": (["measurement"], [gcp_lon]),
+                    "gcp_alt": (["measurement"], [0.0]),
+                    sc_pos_name: (["measurement", "xyz"], [r_iss_m]),
+                    boresight_name: (["measurement", "xyz"], [boresight]),
+                    t_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
+                },
+                coords={
+                    "measurement": [0],
+                    "xyz": ["x", "y", "z"],
+                    "xyz_from": ["x", "y", "z"],
+                    "xyz_to": ["x", "y", "z"],
+                },
+                attrs={
+                    "lat_error_km": result.lat_error_km,
+                    "lon_error_km": result.lon_error_km,
+                    "correlation_ccv": result.ccv_final,
+                    "obs_file": Path(obs_path).name,
+                    "gcp_file": Path(gcp_path).name,
+                    "sci_key": Path(obs_path).name,
+                    "gcp_key": Path(gcp_path).name,
+                },
+            )
+            datasets.append(ds)
+            logger.info(
+                "  Matched %s → %s: lat_err=%.3f km  lon_err=%.3f km  ccv=%.3f",
+                Path(obs_path).name,
+                Path(gcp_path).name,
+                result.lat_error_km,
+                result.lon_error_km,
+                result.ccv_final,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Image match failed for %s → %s: %s",
+                Path(obs_path).name,
+                Path(gcp_path).name,
+                exc,
+            )
+
+    return datasets
+
+
 def verify(
     config: CorrectionConfig,
-    # NEW: File-path-based input modes (signature established; body raises NotImplementedError)
+    # File-path-based input modes
     gcp_pairs: list[tuple[str | Path, str | Path]] | None = None,
     observation_paths: list[str | Path] | None = None,
     gcp_directory: str | Path | None = None,
-    # EXISTING: Pre-computed input modes (backward-compatible)
+    los_file: str | Path | None = None,
+    psf_file: str | Path | None = None,
+    max_distance_m: float = 0.0,
+    gcp_pattern: str = "*_regridded.nc",
+    default_altitude_m: float = 400_000.0,
+    # Pre-computed input modes (backward-compatible)
     image_matching_results: list[xr.Dataset] | None = None,
     geolocated_data: xr.Dataset | None = None,
     work_dir: Path | None = None,
@@ -577,45 +711,47 @@ def verify(
        the most common entry point for weekly automated checks.
     2. *geolocated_data* — raw geolocated data; requires
        ``config._image_matching_override`` to be set.
-    3. *gcp_pairs* — explicit (observation, gcp) file-path pairs.
-       **Not yet implemented** — raises ``NotImplementedError``.
+    3. *gcp_pairs* — explicit ``(observation_path, gcp_path)`` file-path pairs.
+       Requires *los_file* and *psf_file*.
     4. *observation_paths* + *gcp_directory* — auto-paired via spatial overlap.
-       **Not yet implemented** — raises ``NotImplementedError``.
+       Requires *los_file* and *psf_file*.
     5. None of the above provided — raises :class:`ValueError`.
 
     Parameters
     ----------
     config : CorrectionConfig
-        Configuration with all mission-specific settings:
-        - Performance thresholds (``performance_threshold_m``, ``performance_spec_percent``)
-        - Spacecraft variable names (``spacecraft_position_name``, ``boresight_name``, etc.)
-        - Geolocation settings (SPICE kernels, instrument configuration)
-        - Optional ``_image_matching_override`` (for *geolocated_data* path)
-        - Optional ``verification`` override (:class:`RequirementsConfig`)
-    gcp_pairs : list of (str | Path, str | Path) or None
-        Explicit (observation_path, gcp_path) pairs.
-        **Not yet implemented** — raises ``NotImplementedError``.
-    observation_paths : list of str | Path or None
+        Configuration with all mission-specific settings.
+    gcp_pairs : list of (path, path) or None
+        Explicit ``(observation_path, gcp_path)`` pairs.  Each path may be a
+        local path or an ``s3://`` URI (requires ``boto3``).
+    observation_paths : list of path or None
         Observation file paths for automatic GCP pairing.
-        Requires *gcp_directory*.
-        **Not yet implemented** — raises ``NotImplementedError``.
-    gcp_directory : str | Path or None
+        Requires *gcp_directory*, *los_file*, and *psf_file*.
+    gcp_directory : path or None
         Directory of GCP reference images for automatic pairing with
         *observation_paths*.
-        **Not yet implemented** — raises ``NotImplementedError``.
+    los_file : path or None
+        Instrument line-of-sight vectors (``.mat`` file).  Required when
+        *gcp_pairs* or *observation_paths* is provided.
+    psf_file : path or None
+        Optical PSF ``.mat`` file.  Required when *gcp_pairs* or
+        *observation_paths* is provided.
+    max_distance_m : float, optional
+        Spatial pairing margin for the auto-pair mode (default ``0.0`` —
+        GCP centre must be inside the observation footprint).
+    gcp_pattern : str, optional
+        Glob pattern used to discover GCP chips when *gcp_directory* is
+        provided.  Defaults to ``"*_regridded.nc"``.
+    default_altitude_m : float, optional
+        Fallback spacecraft altitude (metres) used when observation files do
+        not contain position data.  Default ``400_000.0`` (ISS nominal orbit).
+        Override for other platforms (e.g. ``505_000.0`` for CTIM).
     image_matching_results : list[xr.Dataset] or None
-        Pre-computed image-matching datasets, one per GCP pair.  Each must
-        have a ``measurement`` dimension and ``lat_error_deg`` /
-        ``lon_error_deg`` variables plus the spacecraft-state variables
-        expected by
-        :class:`~curryer.correction.error_stats.ErrorStatsProcessor`.
+        Pre-computed image-matching datasets, one per GCP pair.
     geolocated_data : xr.Dataset or None
-        Already-geolocated data on which image matching will be run using
-        ``config._image_matching_override``.  Ignored when
-        *image_matching_results* is provided.
+        Already-geolocated data; requires ``config._image_matching_override``.
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
-        If None (default), uses ``./verification_output``.
 
     Returns
     -------
@@ -625,33 +761,17 @@ def verify(
 
     Raises
     ------
-    NotImplementedError
-        When *gcp_pairs* or (*observation_paths* + *gcp_directory*) is
-        provided — these file-path modes are not yet implemented.
     ValueError
-        When none of the input modes is provided, or when *geolocated_data*
-        is supplied but ``config._image_matching_override`` is not set.
+        When none of the input modes is provided, when *geolocated_data* is
+        supplied but ``config._image_matching_override`` is not set, or when
+        a required argument (*los_file*, *psf_file*) is missing for a
+        file-based mode.
+    FileNotFoundError
+        If any of the supplied file paths do not exist.
     """
-    # ------------------------------------------------------------------
-    # File-path input modes: API established; implementation deferred
-    # ------------------------------------------------------------------
-    if gcp_pairs is not None:
-        raise NotImplementedError(
-            "File-path-based verify() via gcp_pairs is not yet implemented. "
-            "Pre-compute image_matching_results and pass them directly. "
-            "See examples/correction/ for the recommended workflow."
-        )
-
-    if observation_paths is not None or gcp_directory is not None:
-        raise NotImplementedError(
-            "Auto-pairing verify() via observation_paths + gcp_directory is not yet implemented. "
-            "Pre-compute image_matching_results and pass them directly. "
-            "See examples/correction/ for the recommended workflow."
-        )
     # Handle optional work_dir with sensible default
     if work_dir is None:
         work_dir = Path("verification_output")
-
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -692,9 +812,28 @@ def verify(
         source_mapping = _build_source_mapping(matched)
         aggregated = _aggregate_results(matched, config)
 
+    elif gcp_pairs is not None:
+        # ------------------------------------------------------------------
+        # File-path mode 1: explicit (obs, gcp) pairs — not yet implemented
+        # ------------------------------------------------------------------
+        raise NotImplementedError(
+            "gcp_pairs mode is not yet implemented. Supply pre-computed image_matching_results instead."
+        )
+
+    elif observation_paths is not None or gcp_directory is not None:
+        # ------------------------------------------------------------------
+        # File-path mode 2: auto-pair observations with GCP chips — not yet implemented
+        # ------------------------------------------------------------------
+        raise NotImplementedError(
+            "observation_paths / gcp_directory mode is not yet implemented. "
+            "Supply pre-computed image_matching_results instead."
+        )
+
     else:
         raise ValueError(
-            "Neither image_matching_results nor geolocated_data was provided. Supply at least one of them to verify()."
+            "Neither image_matching_results nor geolocated_data was provided. "
+            "Supply one of: image_matching_results, geolocated_data, "
+            "gcp_pairs, or observation_paths + gcp_directory."
         )
 
     # ------------------------------------------------------------------
