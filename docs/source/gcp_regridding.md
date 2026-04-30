@@ -160,9 +160,10 @@ The output NetCDF files are `ImageGrid`-compatible and plug directly into the
 correction pipeline:
 
 ```python
-from curryer.correction.image_io import load_image_grid_from_netcdf
+from pathlib import Path
+from curryer.correction.image_io import load_image_grid
 
-gcp = load_image_grid_from_netcdf(Path("regridded_chip.nc"))
+gcp = load_image_grid(Path("regridded_chip.nc"))
 # gcp.data  — 2-D radiometric values
 # gcp.lat   — 2-D latitude  (regular grid, decreasing from top to bottom)
 # gcp.lon   — 2-D longitude (regular grid, increasing left to right)
