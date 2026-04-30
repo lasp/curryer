@@ -89,6 +89,15 @@ from .config import (
 )
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
+from .image_io import (
+    infer_spacecraft_state,
+    load_image_grid,
+    load_los_vectors,
+    load_named_image_grid,
+    load_observation_file,
+    load_optical_psf,
+    save_image_grid,
+)
 from .io import resolve_path
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
 from .results import CorrectionResult, ParameterSetResult
@@ -138,6 +147,14 @@ __all__ = [
     "PSFSamplingConfig",
     "RegridConfig",
     "SearchConfig",
+    # Image I/O helpers
+    "load_image_grid",
+    "load_named_image_grid",
+    "load_observation_file",
+    "load_los_vectors",
+    "load_optical_psf",
+    "save_image_grid",
+    "infer_spacecraft_state",
     # Error stats
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
