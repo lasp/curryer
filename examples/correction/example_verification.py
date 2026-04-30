@@ -86,12 +86,8 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
         from scipy.io import loadmat
 
         from curryer.correction.data_structures import ImageGrid, PSFSamplingConfig, SearchConfig
-        from curryer.correction.image_match import (
-            integrated_image_match,
-            load_image_grid_from_mat,
-            load_los_vectors_from_mat,
-            load_optical_psf_from_mat,
-        )
+        from curryer.correction.image_io import load_image_grid, load_los_vectors, load_optical_psf
+        from curryer.correction.image_match import integrated_image_match
     except ImportError as exc:
         logger.warning("Missing dependency for image matching (%s); using synthetic data.", exc)
         return None
@@ -99,18 +95,13 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
     print("Loading CLARREO test case 1a (Dili) image-match data...")
 
     # Load subimage (instrument observation projected to lat/lon grid)
-    subimage_struct = loadmat(str(subimage_file), squeeze_me=True, struct_as_record=False)["subimage"]
-    subimage = ImageGrid(
-        data=np.asarray(subimage_struct.data),
-        lat=np.asarray(subimage_struct.lat),
-        lon=np.asarray(subimage_struct.lon),
-        h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
-    )
+    subimage = load_image_grid(subimage_file, mat_key="subimage")
 
     # Load GCP reference image and ancillary spacecraft state
-    gcp = load_image_grid_from_mat(str(gcp_file), key="GCP")
-    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    gcp = load_image_grid(gcp_file, mat_key="GCP")
+    mid_i, mid_j = gcp.mid_indices
+    gcp_center_lat = float(gcp.lat[mid_i, mid_j])
+    gcp_center_lon = float(gcp.lon[mid_i, mid_j])
 
     ancil = loadmat(str(ancil_file), squeeze_me=True)
     r_iss_midframe = ancil["R_ISS_midframe"].ravel()
@@ -132,8 +123,8 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
 
     # Run image matching
     print("  Running integrated_image_match … (this may take 15–30 s)")
-    los_vectors = load_los_vectors_from_mat(str(los_file))
-    optical_psfs = load_optical_psf_from_mat(str(psf_file))
+    los_vectors = load_los_vectors(los_file)
+    optical_psfs = load_optical_psf(psf_file)
 
     result = integrated_image_match(
         subimage=subimage_shifted,
