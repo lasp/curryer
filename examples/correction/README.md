@@ -63,7 +63,7 @@ python examples/correction/regrid_gcp_chips.py \
 
 Converts raw HDF chips from ECEF coordinates to a regular lat/lon grid and
 writes CF-1.8 NetCDF files. The output is loadable with
-`load_image_grid_from_netcdf` and is directly compatible with the correction
+`load_image_grid(Path('...nc'))` and is directly compatible with the correction
 and verification pipeline. See `docs/source/gcp_regridding.md` for a full
 walkthrough.
 
