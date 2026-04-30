@@ -813,21 +813,76 @@ def verify(
         aggregated = _aggregate_results(matched, config)
 
     elif gcp_pairs is not None:
-        # ------------------------------------------------------------------
-        # File-path mode 1: explicit (obs, gcp) pairs — not yet implemented
-        # ------------------------------------------------------------------
-        raise NotImplementedError(
-            "gcp_pairs mode is not yet implemented. Supply pre-computed image_matching_results instead."
+        im_override = getattr(config, "_image_matching_override", None)
+        if im_override is None:
+            raise ValueError(
+                "gcp_pairs was provided but config._image_matching_override is not set. "
+                "Either supply pre-computed image_matching_results or set "
+                "config._image_matching_override = your_func."
+            )
+        if not gcp_pairs:
+            raise ValueError("gcp_pairs must not be empty.")
+
+        normalized_pairs = []
+        for pair in gcp_pairs:
+            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                raise ValueError("Each entry in gcp_pairs must be a 2-item (observation_path, gcp_path) pair.")
+            obs_path, gcp_path = pair
+            normalized_pairs.append((str(Path(obs_path)), str(Path(gcp_path))))
+
+        logger.info("Running image matching on %d explicit observation/GCP pair(s)", len(normalized_pairs))
+        matched = im_override(
+            {
+                "mode": "gcp_pairs",
+                "gcp_pairs": normalized_pairs,
+                "los_file": None if los_file is None else str(Path(los_file)),
+                "psf_file": None if psf_file is None else str(Path(psf_file)),
+                "max_distance_m": max_distance_m,
+                "default_altitude_m": default_altitude_m,
+            }
         )
+        if not isinstance(matched, list):
+            matched = [matched]
+        source_mapping = _build_source_mapping(matched)
+        aggregated = _aggregate_results(matched, config)
 
     elif observation_paths is not None or gcp_directory is not None:
-        # ------------------------------------------------------------------
-        # File-path mode 2: auto-pair observations with GCP chips — not yet implemented
-        # ------------------------------------------------------------------
-        raise NotImplementedError(
-            "observation_paths / gcp_directory mode is not yet implemented. "
-            "Supply pre-computed image_matching_results instead."
+        im_override = getattr(config, "_image_matching_override", None)
+        if im_override is None:
+            raise ValueError(
+                "observation_paths / gcp_directory was provided but config._image_matching_override is not set. "
+                "Either supply pre-computed image_matching_results or set "
+                "config._image_matching_override = your_func."
+            )
+        if observation_paths is None or gcp_directory is None:
+            raise ValueError("observation_paths and gcp_directory must be provided together.")
+        if not observation_paths:
+            raise ValueError("observation_paths must not be empty.")
+
+        normalized_observation_paths = [str(Path(obs_path)) for obs_path in observation_paths]
+        normalized_gcp_directory = str(Path(gcp_directory))
+
+        logger.info(
+            "Running image matching on %d observation path(s) using GCP directory '%s'",
+            len(normalized_observation_paths),
+            normalized_gcp_directory,
         )
+        matched = im_override(
+            {
+                "mode": "observation_paths",
+                "observation_paths": normalized_observation_paths,
+                "gcp_directory": normalized_gcp_directory,
+                "gcp_pattern": gcp_pattern,
+                "los_file": None if los_file is None else str(Path(los_file)),
+                "psf_file": None if psf_file is None else str(Path(psf_file)),
+                "max_distance_m": max_distance_m,
+                "default_altitude_m": default_altitude_m,
+            }
+        )
+        if not isinstance(matched, list):
+            matched = [matched]
+        source_mapping = _build_source_mapping(matched)
+        aggregated = _aggregate_results(matched, config)
 
     else:
         raise ValueError(
