@@ -647,19 +647,19 @@ class TestVerify:
         assert called["count"] == 1
         assert isinstance(result, VerificationResult)
 
-    def test_gcp_pairs_raises_not_implemented(self, config, tmp_path):
-        """gcp_pairs mode raises NotImplementedError with a helpful message."""
-        with pytest.raises(NotImplementedError, match="gcp_pairs"):
+    def test_gcp_pairs_raises_without_los_psf(self, config, tmp_path):
+        """gcp_pairs mode raises ValueError when los_file or psf_file is missing."""
+        with pytest.raises(ValueError, match="los_file"):
             verify(config, gcp_pairs=[("obs.mat", "gcp.mat")], work_dir=tmp_path)
 
-    def test_observation_paths_raises_not_implemented(self, config, tmp_path):
-        """observation_paths + gcp_directory mode raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="observation_paths"):
+    def test_observation_paths_raises_without_los_psf(self, config, tmp_path):
+        """observation_paths + gcp_directory mode raises ValueError when los_file/psf_file missing."""
+        with pytest.raises(ValueError, match="los_file"):
             verify(config, observation_paths=["obs.mat"], gcp_directory=tmp_path, work_dir=tmp_path)
 
-    def test_gcp_directory_alone_raises_not_implemented(self, config, tmp_path):
-        """gcp_directory without observation_paths also raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
+    def test_gcp_directory_alone_raises_value_error(self, config, tmp_path):
+        """gcp_directory without observation_paths raises ValueError."""
+        with pytest.raises(ValueError, match="observation_paths and gcp_directory"):
             verify(config, gcp_directory=tmp_path, work_dir=tmp_path)
 
 

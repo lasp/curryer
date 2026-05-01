@@ -529,6 +529,83 @@ def _format_summary_table(
     return "\n".join(lines)
 
 
+def _pair_by_spatial_overlap(
+    observation_paths: list[Path],
+    gcp_directory: Path,
+    gcp_pattern: str,
+    max_distance_m: float,
+) -> tuple[list[tuple[Path, Path]], list[Path]]:
+    """Pair observation files with GCP chips by spatial overlap.
+
+    For each observation, the image grid is loaded to obtain its lat/lon
+    bounding box.  Every GCP chip whose centre falls inside that bounding box
+    (plus an optional margin) is treated as a match; the first match wins.
+
+    Parameters
+    ----------
+    observation_paths : list[Path]
+        Observation file paths to pair.
+    gcp_directory : Path
+        Directory containing GCP reference chips.
+    gcp_pattern : str
+        Glob pattern used to discover chips inside *gcp_directory*.
+    max_distance_m : float
+        Extra margin around each observation's bounding box in metres.
+        ``0.0`` means the GCP centre must fall strictly inside the footprint.
+
+    Returns
+    -------
+    tuple[list[tuple[Path, Path]], list[Path]]
+        ``(pairs, unpaired)`` where *pairs* is a list of
+        ``(observation_path, gcp_path)`` 2-tuples and *unpaired* contains
+        observations for which no GCP chip was found.
+    """
+    from .image_io import load_image_grid
+
+    gcp_files = sorted(gcp_directory.glob(gcp_pattern))
+    if not gcp_files:
+        logger.warning("No GCP files matching '%s' found in %s", gcp_pattern, gcp_directory)
+
+    # Convert max_distance_m to an approximate degree margin (1° ≈ 111 km).
+    margin_deg = max_distance_m / 111_000.0
+
+    pairs: list[tuple[Path, Path]] = []
+    unpaired: list[Path] = []
+
+    for obs_path in observation_paths:
+        try:
+            obs_grid = load_image_grid(obs_path)
+            lat_min = float(obs_grid.lat.min()) - margin_deg
+            lat_max = float(obs_grid.lat.max()) + margin_deg
+            lon_min = float(obs_grid.lon.min()) - margin_deg
+            lon_max = float(obs_grid.lon.max()) + margin_deg
+        except Exception as exc:
+            logger.warning("Could not load observation %s for spatial pairing: %s", obs_path, exc)
+            unpaired.append(obs_path)
+            continue
+
+        matched_gcp: Path | None = None
+        for gcp_path in gcp_files:
+            try:
+                gcp_grid = load_image_grid(gcp_path)
+                mid_i = gcp_grid.lat.shape[0] // 2
+                mid_j = gcp_grid.lat.shape[1] // 2
+                gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
+                gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
+                if lat_min <= gcp_lat <= lat_max and lon_min <= gcp_lon <= lon_max:
+                    matched_gcp = gcp_path
+                    break
+            except Exception as exc:
+                logger.debug("Could not load GCP file %s: %s", gcp_path, exc)
+
+        if matched_gcp is not None:
+            pairs.append((obs_path, matched_gcp))
+        else:
+            unpaired.append(obs_path)
+
+    return pairs, unpaired
+
+
 def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | None = None) -> None:
     """Log a human-readable GCP pairing summary.
 
@@ -762,14 +839,12 @@ def verify(
     Raises
     ------
     ValueError
-        When none of the input modes is provided, when *geolocated_data* is
-        supplied but ``config._image_matching_override`` is not set, or when
-        a required argument (*los_file*, *psf_file*) is missing for a
-        file-based mode.
-    NotImplementedError
-        When *gcp_pairs*, *observation_paths*, or *gcp_directory* is provided
-        but ``config._image_matching_override`` is not set.  Supply
-        pre-computed *image_matching_results* or register an override function.
+        When none of the input modes is provided; when *geolocated_data* is
+        supplied but ``config._image_matching_override`` is not set; when
+        *los_file* or *psf_file* is ``None`` for a file-path mode (*gcp_pairs*
+        or *observation_paths* + *gcp_directory*); when *observation_paths*
+        and *gcp_directory* are not both supplied; or when image matching
+        produces no results.
     FileNotFoundError
         If any of the supplied file paths do not exist.
     """
@@ -817,74 +892,70 @@ def verify(
         aggregated = _aggregate_results(matched, config)
 
     elif gcp_pairs is not None:
-        im_override = getattr(config, "_image_matching_override", None)
-        if im_override is None:
-            raise NotImplementedError(
-                "gcp_pairs mode requires config._image_matching_override to be set. "
-                "Either supply pre-computed image_matching_results or set "
-                "config._image_matching_override = your_func."
-            )
         if not gcp_pairs:
             raise ValueError("gcp_pairs must not be empty.")
+        if los_file is None or psf_file is None:
+            raise ValueError(
+                "los_file and psf_file are required when gcp_pairs is provided. "
+                "Supply the instrument LOS-vector and PSF calibration .mat files."
+            )
 
-        normalized_pairs = []
+        pairs: list[tuple[Path, Path]] = []
         for pair in gcp_pairs:
             if not isinstance(pair, (tuple, list)) or len(pair) != 2:
                 raise ValueError("Each entry in gcp_pairs must be a 2-item (observation_path, gcp_path) pair.")
-            obs_path, gcp_path = pair
-            normalized_pairs.append((str(Path(obs_path)), str(Path(gcp_path))))
+            obs_p, gcp_p = pair
+            pairs.append((Path(str(obs_p)), Path(str(gcp_p))))
 
-        logger.info("Running image matching on %d explicit observation/GCP pair(s)", len(normalized_pairs))
-        matched = im_override(
-            {
-                "mode": "gcp_pairs",
-                "gcp_pairs": normalized_pairs,
-                "los_file": None if los_file is None else str(Path(los_file)),
-                "psf_file": None if psf_file is None else str(Path(psf_file)),
-                "max_distance_m": max_distance_m,
-                "default_altitude_m": default_altitude_m,
-            }
+        logger.info("Running image matching on %d explicit observation/GCP pair(s)", len(pairs))
+        matched = _run_image_matching_for_pairs(
+            pairs,
+            Path(str(los_file)),
+            Path(str(psf_file)),
+            config,
+            default_altitude_m=default_altitude_m,
         )
-        if not isinstance(matched, list):
-            matched = [matched]
+        if not matched:
+            raise ValueError("Image matching produced no results for the supplied gcp_pairs.")
         source_mapping = _build_source_mapping(matched)
         aggregated = _aggregate_results(matched, config)
 
     elif observation_paths is not None or gcp_directory is not None:
-        im_override = getattr(config, "_image_matching_override", None)
-        if im_override is None:
-            raise NotImplementedError(
-                "observation_paths / gcp_directory mode requires config._image_matching_override to be set. "
-                "Either supply pre-computed image_matching_results or set "
-                "config._image_matching_override = your_func."
-            )
         if observation_paths is None or gcp_directory is None:
             raise ValueError("observation_paths and gcp_directory must be provided together.")
         if not observation_paths:
             raise ValueError("observation_paths must not be empty.")
+        if los_file is None or psf_file is None:
+            raise ValueError(
+                "los_file and psf_file are required when observation_paths / gcp_directory is provided. "
+                "Supply the instrument LOS-vector and PSF calibration .mat files."
+            )
 
-        normalized_observation_paths = [str(Path(obs_path)) for obs_path in observation_paths]
-        normalized_gcp_directory = str(Path(gcp_directory))
+        gcp_dir = Path(str(gcp_directory))
+        obs_path_list = [Path(str(p)) for p in observation_paths]
 
         logger.info(
-            "Running image matching on %d observation path(s) using GCP directory '%s'",
-            len(normalized_observation_paths),
-            normalized_gcp_directory,
+            "Auto-pairing %d observation(s) with GCP chips from '%s' (pattern: %s)",
+            len(obs_path_list),
+            gcp_dir,
+            gcp_pattern,
         )
-        matched = im_override(
-            {
-                "mode": "observation_paths",
-                "observation_paths": normalized_observation_paths,
-                "gcp_directory": normalized_gcp_directory,
-                "gcp_pattern": gcp_pattern,
-                "los_file": None if los_file is None else str(Path(los_file)),
-                "psf_file": None if psf_file is None else str(Path(psf_file)),
-                "max_distance_m": max_distance_m,
-                "default_altitude_m": default_altitude_m,
-            }
+        pairs, unpaired = _pair_by_spatial_overlap(obs_path_list, gcp_dir, gcp_pattern, max_distance_m)
+        _log_pairing_summary(pairs, unpaired or None)
+        if not pairs:
+            raise ValueError(
+                f"No observations could be paired with GCP chips in '{gcp_dir}' (pattern: '{gcp_pattern}')."
+            )
+
+        matched = _run_image_matching_for_pairs(
+            pairs,
+            Path(str(los_file)),
+            Path(str(psf_file)),
+            config,
+            default_altitude_m=default_altitude_m,
         )
-        if not isinstance(matched, list):
-            matched = [matched]
+        if not matched:
+            raise ValueError("Image matching produced no results for the observation/GCP pairs.")
         source_mapping = _build_source_mapping(matched)
         aggregated = _aggregate_results(matched, config)
 
