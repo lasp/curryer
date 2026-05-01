@@ -249,30 +249,51 @@ def image_matching(
     los_vectors_cached: np.ndarray | None = None,
     optical_psfs_cached: list | None = None,
 ) -> xr.Dataset:
-    """
-    Image matching using integrated_image_match() module.
+    """Image matching using integrated_image_match() module.
 
-    This function performs actual image correlation between geolocated
-    pixels and Landsat GCP reference imagery.
+    Performs image correlation between geolocated pixels and a Landsat GCP
+    reference image to measure geolocation error.
 
-    Args:
-        geolocated_data: xarray.Dataset with latitude, longitude from geolocation
-        gcp_reference_file: Path to GCP reference image (MATLAB .mat file)
-        telemetry: Telemetry DataFrame with spacecraft state
-        calibration_dir: Directory containing calibration files (LOS vectors, PSF)
-        params_info: Current parameter values for error tracking
-        config: CorrectionConfig with coordinate name mappings
-        los_vectors_cached: Pre-loaded LOS vectors (optional, for performance)
-        optical_psfs_cached: Pre-loaded optical PSF entries (optional, for performance)
+    The mid-frame epoch used for SPICE boresight/rotation queries is derived
+    from ``geolocated_data["frame"]``, which stores GPS seconds
+    (``ugps_times / 1e6``) and is set by :class:`~curryer.compute.spatial.Geolocate`.
+    The ``telemetry`` index is **not** used for timing: it holds a frame/row
+    counter from ``index_col=0`` CSV loading, not a uGPS timestamp.
 
-    Returns:
-        xarray.Dataset with error measurements in format expected by error_stats:
-            - lat_error_deg, lon_error_deg: Spatial errors in degrees
-            - Additional metadata for error statistics processing
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Geolocation output from :class:`~curryer.compute.spatial.Geolocate`,
+        including ``latitude``, ``longitude``, and a ``frame`` coordinate
+        (GPS seconds).
+    gcp_reference_file : Path
+        Path to GCP reference image (MATLAB ``.mat`` file).
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft state columns (position, attitude).
+        The index is a frame counter, not a time series.
+    calibration_dir : Path
+        Directory containing calibration files (LOS vectors, PSF).
+    params_info : list
+        Current parameter values for error tracking.
+    config : CorrectionConfig
+        Configuration with coordinate name mappings and instrument metadata.
+    los_vectors_cached : np.ndarray or None, optional
+        Pre-loaded LOS vectors; loaded from disk when ``None``.
+    optical_psfs_cached : list or None, optional
+        Pre-loaded optical PSF entries; loaded from disk when ``None``.
 
-    Raises:
-        FileNotFoundError: If calibration files are missing
-        ValueError: If geolocation data is invalid
+    Returns
+    -------
+    xr.Dataset
+        Error measurements compatible with the error_stats module:
+        ``lat_error_deg``, ``lon_error_deg``, and additional metadata.
+
+    Raises
+    ------
+    FileNotFoundError
+        If calibration files are missing.
+    ValueError
+        If geolocation data is invalid.
     """
     logger.info(f"Image Matching: correlation with {gcp_reference_file.name}")
     start_time = time.time()
@@ -358,7 +379,32 @@ def image_matching(
     # back to nadir-direction boresight + identity matrix, which yields scaling
     # factors = 1.0 and passes raw errors through unchanged.
 
-    ugps_midframe = int(telemetry.index[len(telemetry) // 2])
+    # Derive the mid-frame epoch from the geolocation output.
+    # geolocated_data["frame"] stores GPS *seconds* (ugps_times / 1e6), so
+    # multiply by 1e6 to recover uGPS (microseconds since 1980-01-06).
+    # This is the authoritative source: telemetry.index holds a frame/row
+    # counter from index_col=0 CSV loading, NOT a uGPS timestamp.
+    if "frame" in geolocated_data.coords:
+        frame_vals = geolocated_data.coords["frame"].values
+        ugps_midframe = int(float(frame_vals[len(frame_vals) // 2]) * 1e6)
+    else:
+        # Fallback: pull the mid-frame time from the correct science-time column.
+        _time_field = getattr(config.geo, "time_field", None) if config.geo is not None else None
+        if _time_field and _time_field in telemetry.columns:
+            ugps_midframe = int(telemetry[_time_field].iloc[len(telemetry) // 2])
+            logger.warning(
+                "geolocated_data has no 'frame' coordinate; using telemetry column '%s' as the mid-frame uGPS time.",
+                _time_field,
+            )
+        else:
+            logger.warning(
+                "Cannot determine mid-frame uGPS time: 'frame' coordinate absent "
+                "from geolocated_data and no time column ('%s') found in telemetry. "
+                "SPICE boresight query will likely fail and fall back to the nadir "
+                "approximation.",
+                _time_field,
+            )
+            ugps_midframe = 0
     et_midframe = float(spicetime.adapt(ugps_midframe, from_="ugps", to="et"))
 
     try:
