@@ -839,26 +839,31 @@ def load_observation_file(
     """
     import xarray as xr
 
-    filepath = Path(str(filepath))
-    suffix = filepath.suffix.lower()
+    from curryer.correction.io import resolve_path
+
+    # Extract the suffix from the original path *before* resolving so that S3
+    # URIs (whose temp-file names may differ) dispatch correctly.
+    suffix = Path(str(filepath)).suffix.lower()
+    # Resolve S3 URIs to a local path; validate local existence.
+    local_filepath = resolve_path(filepath)
 
     if suffix == ".mat":
         from scipy.io import loadmat  # noqa: PLC0415
 
-        grid = load_image_grid(filepath, mat_key=mat_key)
-        mat_raw = loadmat(str(filepath), squeeze_me=True)
+        grid = load_image_grid(local_filepath, mat_key=mat_key)
+        mat_raw = loadmat(str(local_filepath), squeeze_me=True)
         r_sc_m = np.asarray(mat_raw["R_ISS_midframe"]).ravel() if "R_ISS_midframe" in mat_raw else None
         return grid, r_sc_m
 
     if suffix in (".nc", ".netcdf", ".nc4"):
-        grid = load_image_grid(filepath)
+        grid = load_image_grid(local_filepath)
         r_sc_m = None
         try:
-            with xr.open_dataset(filepath) as ds:
+            with xr.open_dataset(local_filepath) as ds:
                 if "position" in ds:
                     r_sc_m = np.asarray(ds["position"].values).ravel()
         except Exception:
-            logger.debug("Could not read spacecraft position from %s", filepath, exc_info=True)
+            logger.debug("Could not read spacecraft position from %s", local_filepath, exc_info=True)
         return grid, r_sc_m
 
     raise ValueError(
