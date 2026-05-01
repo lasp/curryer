@@ -25,8 +25,9 @@ Adapting for your mission
 --------------------------
 1. Copy ``examples/correction/example_config.json``, rename it, and fill in
    your mission's kernel paths and parameter specs.
-2. Preprocess your raw telemetry into a single merged CSV (see your mission's
-   equivalent of ``scripts/clarreo_preprocess.py``).
+2. Preprocess your raw telemetry into a single merged CSV.  Preprocessing
+   is mission-specific; see your mission's ingestion scripts or the inline
+   comments in :func:`_build_inputs` below for the expected file format.
 3. Replace the ``_build_inputs()`` function below with your file paths.
 4. Run::
 
@@ -123,15 +124,12 @@ def _build_inputs() -> list[CorrectionInput]:
     science-timing CSV to one GCP reference image.  Add more entries to the
     list to incorporate additional overpasses / GCP sites.
 
-    For CLARREO, raw telemetry comes from ``scripts/clarreo_preprocess.py``,
-    which merges the four raw CSV feeds (SC_SPK, SC_CK, ST_CK, AZEL_CK) into
-    a single merged telemetry file.  The individual raw CSVs in
-    ``tests/data/clarreo/gcs/`` are **not** directly suitable — run the
-    preprocess script first::
-
-        python scripts/clarreo_preprocess.py \\
-            --data-dir tests/data/clarreo/gcs \\
-            --out-dir workdir_correction
+    For CLARREO, the telemetry_file must be a single merged CSV that
+    combines the four raw feeds (SC_SPK, SC_CK, ST_CK, AZEL_CK).  That
+    merge step is mission-specific; implement it in your own preprocessing
+    script (or reuse the logic in ``tests/test_correction/clarreo/``).
+    The individual raw CSVs in ``tests/data/clarreo/gcs/`` are **not**
+    directly suitable as telemetry_file — they must be merged first.
 
     **Replace these paths with your mission's preprocessed files.**
 
@@ -141,9 +139,8 @@ def _build_inputs() -> list[CorrectionInput]:
     """
     return [
         CorrectionInput(
-            # Merged/preprocessed telemetry produced by scripts/clarreo_preprocess.py.
-            # The individual raw CSVs (openloop_tlm_5a_*_ck_*.csv) are NOT suitable
-            # as the telemetry_file — they must be merged first.
+            # Merged/preprocessed telemetry CSV (SC_SPK, SC_CK, ST_CK, AZEL_CK merged).
+            # Produce this file with your mission's preprocessing workflow.
             telemetry_file=_GCS_DIR / "clarreo_preprocessed_tlm.csv",
             # One row per science frame — contains 'corrected_timestamp' in GPS seconds.
             # This file is committed to the repo and can be used directly.
