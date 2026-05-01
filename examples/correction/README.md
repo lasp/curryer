@@ -135,9 +135,9 @@ print(verification_result.summary_table)
 
 ```python
 from pathlib import Path
-from curryer.correction.image_io import load_image_grid_from_netcdf
+from curryer.correction.image_io import load_image_grid
 
-gcp = load_image_grid_from_netcdf(Path("regridded_chip.nc"))
+gcp = load_image_grid(Path("regridded_chip.nc"))
 # gcp.data  — 2-D radiometric values
 # gcp.lat   — 2-D latitude array  (degrees north)
 # gcp.lon   — 2-D longitude array (degrees east)
