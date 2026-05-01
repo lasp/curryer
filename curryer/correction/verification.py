@@ -766,6 +766,10 @@ def verify(
         supplied but ``config._image_matching_override`` is not set, or when
         a required argument (*los_file*, *psf_file*) is missing for a
         file-based mode.
+    NotImplementedError
+        When *gcp_pairs*, *observation_paths*, or *gcp_directory* is provided
+        but ``config._image_matching_override`` is not set.  Supply
+        pre-computed *image_matching_results* or register an override function.
     FileNotFoundError
         If any of the supplied file paths do not exist.
     """
@@ -815,8 +819,8 @@ def verify(
     elif gcp_pairs is not None:
         im_override = getattr(config, "_image_matching_override", None)
         if im_override is None:
-            raise ValueError(
-                "gcp_pairs was provided but config._image_matching_override is not set. "
+            raise NotImplementedError(
+                "gcp_pairs mode requires config._image_matching_override to be set. "
                 "Either supply pre-computed image_matching_results or set "
                 "config._image_matching_override = your_func."
             )
@@ -849,8 +853,8 @@ def verify(
     elif observation_paths is not None or gcp_directory is not None:
         im_override = getattr(config, "_image_matching_override", None)
         if im_override is None:
-            raise ValueError(
-                "observation_paths / gcp_directory was provided but config._image_matching_override is not set. "
+            raise NotImplementedError(
+                "observation_paths / gcp_directory mode requires config._image_matching_override to be set. "
                 "Either supply pre-computed image_matching_results or set "
                 "config._image_matching_override = your_func."
             )
