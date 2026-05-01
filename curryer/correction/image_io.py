@@ -119,8 +119,12 @@ def load_image_grid(filepath: Path | str, mat_key: str = "subimage") -> ImageGri
     >>> obs = load_image_grid(Path("subimage.mat"), mat_key="subimage")
     >>> gcp = load_image_grid(Path("GCP12055_regridded.nc"))
     """
-    filepath = Path(str(filepath))
-    suffix = filepath.suffix.lower()
+    from curryer.correction.io import resolve_path
+
+    # Extract the suffix from the original path *before* resolving so that S3
+    # URIs (which resolve to temp files with mangled names) dispatch correctly.
+    suffix = Path(str(filepath)).suffix.lower()
+    filepath = resolve_path(filepath)
     if suffix in _MAT_EXTS:
         return _load_mat_image_grid(filepath, key=mat_key)
     if suffix in _NC_EXTS:
@@ -295,9 +299,10 @@ def _load_netcdf_image_grid(
     """
     import xarray as xr
 
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise FileNotFoundError(f"NetCDF file not found: {filepath}")
+    from curryer.correction.io import resolve_path
+
+    # resolve_path validates local existence and downloads S3 URIs.
+    filepath = resolve_path(filepath)
 
     logger.info("Loading ImageGrid from NetCDF: %s", filepath)
 
