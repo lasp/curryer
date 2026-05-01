@@ -170,7 +170,7 @@ class TestImageGridSaveLoad:
 
 
 # ---------------------------------------------------------------------------
-# CF-1.8 save_image_grid_to_netcdf / load_image_grid_from_netcdf pair
+# CF-1.8 save_image_grid / load_image_grid (Netcdf) pair
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +331,7 @@ class TestHDFLoading:
 
 
 # ---------------------------------------------------------------------------
-# load_image_grid_from_netcdf (xarray-based)
+# load_image_grid (netcdf xarray-based)
 # ---------------------------------------------------------------------------
 
 
@@ -491,7 +491,7 @@ class TestLoadNamedImageGrid:
 
 
 # ---------------------------------------------------------------------------
-# load_image_grid_from_netcdf — legacy variable names and 1-D broadcast edge cases
+# load_image_grid — legacy variable names and 1-D broadcast edge cases
 # ---------------------------------------------------------------------------
 
 
