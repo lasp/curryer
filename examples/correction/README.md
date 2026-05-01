@@ -127,7 +127,7 @@ config = load_config_from_json("my_mission_config.json")
 result = run_correction(config, work_dir, inputs)
 
 # Standalone compliance check
-verification_result = verify(config, work_dir, image_matching_results=datasets)
+verification_result = verify(config, work_dir=work_dir, image_matching_results=datasets)
 print(verification_result.summary_table)
 ```
 
