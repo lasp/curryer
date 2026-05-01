@@ -18,10 +18,18 @@ Post-correction validation
 
     >>> result = verify(config, work_dir, image_matching_results=post_correction_datasets)
 
-One-off compliance check
-    Provide already-geolocated data and let verification run image matching:
+One-off compliance check with in-memory geolocated data
+    Supply an already-geolocated dataset together with a GCP chip directory and
+    calibration files; verification auto-pairs and image-matches without any
+    additional setup:
 
-    >>> result = verify(config, work_dir, geolocated_data=raw_dataset)
+    >>> result = verify(
+    ...     config,
+    ...     geolocated_data=raw_dataset,
+    ...     gcp_directory="data/gcps/",
+    ...     los_file="cal/b_HS.mat",
+    ...     psf_file="cal/optical_PSF_675nm.mat",
+    ... )
 
 Models
 ------
