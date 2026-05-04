@@ -12,16 +12,17 @@ Supported formats
 ``.hdf`` / ``.h5`` — HDF4/5 raw GCP chips; use :func:`load_gcp_chip_from_hdf`
     then ``curryer.correction.regrid`` to convert ECEF to an ImageGrid.
 
-Public API (8 functions)
+Public API (9 functions)
 ------------------------
-:func:`load_image_grid`       — any image file → :class:`ImageGrid`
-:func:`load_named_image_grid` — any image file → :class:`NamedImageGrid`
-:func:`load_observation_file` — observation + spacecraft position
-:func:`load_los_vectors`      — LOS unit vectors from calibration file
-:func:`load_optical_psf`      — PSF entries from calibration file
-:func:`load_gcp_chip_from_hdf`— raw HDF chip (band + ECEF arrays)
-:func:`save_image_grid`       — write ImageGrid; format from extension
-:func:`infer_spacecraft_state`— derive boresight/t_matrix from position
+:func:`load_image_grid`              — any image file → :class:`ImageGrid`
+:func:`load_named_image_grid`        — any image file → :class:`NamedImageGrid`
+:func:`load_observation_file`        — observation + spacecraft position
+:func:`load_los_vectors`             — LOS unit vectors from calibration file
+:func:`load_optical_psf`             — PSF entries from calibration file
+:func:`load_gcp_chip_from_hdf`       — raw HDF chip (band + ECEF arrays)
+:func:`save_image_grid`              — write ImageGrid; format from extension
+:func:`infer_spacecraft_state`       — derive boresight/t_matrix from position
+:func:`geolocated_to_image_grid`     — convert geolocated xr.Dataset → :class:`ImageGrid`
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import xarray as xr
 
 from .data_structures import ImageGrid, NamedImageGrid, OpticalPSFEntry
 
@@ -938,3 +940,63 @@ def infer_spacecraft_state(
         default_altitude_m,
     )
     return r_approx, -nadir_hat, np.eye(3)
+
+
+def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:
+    """Convert a geolocated ``xr.Dataset`` to an :class:`ImageGrid` for image matching.
+
+    This is the canonical adapter between SPICE geolocation output and the
+    image-matching subsystem.  It should be used wherever an :class:`ImageGrid`
+    is needed from an already-geolocated dataset, ensuring a single consistent
+    implementation across the correction pipeline and the verification module.
+
+    Parameters
+    ----------
+    geo_dataset : xr.Dataset
+        Geolocated dataset with ``latitude`` and ``longitude`` variables (2-D
+        arrays) and optionally ``altitude``/``height``, ``radiance``, or
+        ``reflectance``.
+
+    Returns
+    -------
+    ImageGrid
+        Image grid with ``lat``, ``lon``, ``h`` from the dataset and ``data``
+        set to the first available of ``radiance``, ``reflectance``, or an
+        all-ones placeholder.
+
+    Notes
+    -----
+    Altitude/height defaults to an all-zeros array when absent.  The placeholder
+    ``data`` array (all ones) is used only for geometric operations where actual
+    radiance values are not yet required.
+    """
+
+    # Accept both "latitude"/"longitude" (geolocation output) and "lat"/"lon" (observation files)
+    lat_key = "latitude" if "latitude" in geo_dataset else "lat"
+    lon_key = "longitude" if "longitude" in geo_dataset else "lon"
+    if lat_key not in geo_dataset or lon_key not in geo_dataset:
+        raise KeyError(
+            f"geolocated_to_image_grid: dataset must contain 'latitude'/'lat' and 'longitude'/'lon'. "
+            f"Available variables: {list(geo_dataset.data_vars) + list(geo_dataset.coords)}"
+        )
+
+    lat = np.asarray(geo_dataset[lat_key].values, dtype=float)
+    lon = np.asarray(geo_dataset[lon_key].values, dtype=float)
+
+    # Altitude / height
+    if "altitude" in geo_dataset:
+        h: np.ndarray | None = np.asarray(geo_dataset["altitude"].values, dtype=float)
+    elif "height" in geo_dataset:
+        h = np.asarray(geo_dataset["height"].values, dtype=float)
+    else:
+        h = np.zeros_like(lat)
+
+    # Spectral data
+    if "radiance" in geo_dataset:
+        data = np.asarray(geo_dataset["radiance"].values, dtype=float)
+    elif "reflectance" in geo_dataset:
+        data = np.asarray(geo_dataset["reflectance"].values, dtype=float)
+    else:
+        data = np.ones_like(lat)
+
+    return ImageGrid(data=data, lat=lat, lon=lon, h=h)
