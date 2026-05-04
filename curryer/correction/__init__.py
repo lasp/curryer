@@ -100,9 +100,9 @@ from .image_io import (
     save_image_grid,
 )
 from .io import resolve_path
-from .pipeline import compute_error_stats, loop, match_geolocated_to_gcp_files, run_correction, run_image_matching
+from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
 from .results import CorrectionResult, ParameterSetResult
-from .verification import GCPError, VerificationResult, compare_results, verify
+from .verification import GCPError, VerificationResult, compare_results, match_geolocated_to_gcp_files, verify
 
 __all__ = [
     # Sub-modules
