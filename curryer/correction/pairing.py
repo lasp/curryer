@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import xarray as xr
 
 from ..compute.spatial import geodetic_to_ecef
 from .data_structures import ImageGrid, NamedImageGrid
@@ -518,3 +519,88 @@ def pair_files(
         logger.debug(f"  Paired: {l1a_file.name} → {gcp_file.name} (margin={match.distance_m:.1f}m)")
 
     return pairs
+
+
+def pair_geolocated_dataset_with_gcp_files(
+    geolocated_data: xr.Dataset,
+    gcp_files: list[Path],
+    max_distance_m: float = 0.0,
+    gcp_key: str = "GCP",
+) -> list[Path]:
+    """Find GCP chip files that spatially overlap an in-memory geolocated dataset.
+
+    This is the in-memory-observation counterpart of :func:`pair_files`. Both
+    delegate to the same core spatial-pairing algorithm
+    (:func:`find_l1a_gcp_pairs`) with proper ENU-distance polygon containment,
+    ensuring a single implementation for all GCP pairing.
+
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Already-geolocated observation dataset with ``latitude`` and
+        ``longitude`` variables.
+    gcp_files : list[Path]
+        GCP chip file paths to test for spatial overlap.
+    max_distance_m : float, optional
+        Minimum signed margin (metres) required between the GCP chip centre
+        and the nearest observation footprint edge.  ``0.0`` (default) means
+        the GCP centre must fall strictly inside the footprint;
+        negative values allow the centre to lie *outside* the footprint by up
+        to ``abs(max_distance_m)`` metres.
+    gcp_key : str, optional
+        MATLAB struct key used when loading ``.mat`` GCP chips.  Defaults to
+        ``"GCP"``.  Ignored for NetCDF files.
+
+    Returns
+    -------
+    list[Path]
+        Subset of *gcp_files* whose centre-points overlap the observation
+        footprint, ordered by their original position in *gcp_files*.
+        Empty when no overlap is found or when *gcp_files* is empty.
+
+    Notes
+    -----
+    Files that cannot be loaded are silently skipped with a DEBUG log entry.
+    This mirrors the behaviour of :func:`pair_files` for individual files.
+
+    Examples
+    --------
+    >>> gcp_dir = Path("data/gcp_chips")
+    >>> all_chips = sorted(gcp_dir.glob("*_regridded.nc"))
+    >>> matched = pair_geolocated_dataset_with_gcp_files(geo_ds, all_chips, max_distance_m=-500.0)
+    >>> print(f"{len(matched)}/{len(all_chips)} chips overlap the observation footprint")
+    """
+
+    from .image_io import geolocated_to_image_grid, load_named_image_grid  # noqa: PLC0415
+
+    if not gcp_files:
+        return []
+
+    # Convert the in-memory dataset to a NamedImageGrid so it can be passed
+    # directly to find_l1a_gcp_pairs.
+    obs_grid = geolocated_to_image_grid(geolocated_data)
+    obs_named = NamedImageGrid(
+        data=obs_grid.data,
+        lat=obs_grid.lat,
+        lon=obs_grid.lon,
+        h=obs_grid.h,
+        name="observation",
+    )
+
+    # Load GCP files, skipping any that fail.
+    gcp_named: list[NamedImageGrid] = []
+    valid_gcp_files: list[Path] = []
+    for gcp_file in gcp_files:
+        mat_key = gcp_key if Path(gcp_file).suffix.lower() == ".mat" else "GCP"
+        try:
+            gcp_named.append(load_named_image_grid(gcp_file, mat_key=mat_key))
+            valid_gcp_files.append(Path(gcp_file))
+        except Exception as exc:
+            logger.debug("Could not load GCP chip %s for pairing: %s", Path(gcp_file).name, exc)
+
+    if not gcp_named:
+        return []
+
+    pairing_result = find_l1a_gcp_pairs([obs_named], gcp_named, max_distance_m)
+    matched_indices = {m.gcp_index for m in pairing_result.matches}
+    return [valid_gcp_files[i] for i in sorted(matched_indices)]
