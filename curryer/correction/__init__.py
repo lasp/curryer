@@ -90,6 +90,7 @@ from .config import (
 from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .image_io import (
+    geolocated_to_image_grid,
     infer_spacecraft_state,
     load_image_grid,
     load_los_vectors,
@@ -99,7 +100,7 @@ from .image_io import (
     save_image_grid,
 )
 from .io import resolve_path
-from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
+from .pipeline import compute_error_stats, loop, match_geolocated_to_gcp_files, run_correction, run_image_matching
 from .results import CorrectionResult, ParameterSetResult
 from .verification import GCPError, VerificationResult, compare_results, verify
 
@@ -141,6 +142,7 @@ __all__ = [
     "run_correction",
     "compute_error_stats",
     "run_image_matching",
+    "match_geolocated_to_gcp_files",
     # Data structures
     "ImageGrid",
     "PSFGrid",
@@ -155,6 +157,7 @@ __all__ = [
     "load_optical_psf",
     "save_image_grid",
     "infer_spacecraft_state",
+    "geolocated_to_image_grid",
     # Error stats
     "ErrorStatsConfig",
     "ErrorStatsProcessor",
