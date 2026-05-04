@@ -50,11 +50,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from pydantic import BaseModel, ConfigDict, Field
 
+from curryer import spicetime
+from curryer import spicierpy as sp
+from curryer.compute import constants
 from curryer.correction.config import CorrectionConfig, RequirementsConfig
+from curryer.correction.data_structures import PSFSamplingConfig, SearchConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
+from curryer.correction.image_io import (
+    geolocated_to_image_grid,
+    load_image_grid,
+    load_los_vectors,
+    load_optical_psf,
+)
+from curryer.correction.image_match import integrated_image_match
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +236,6 @@ def _aggregate_results(
     xr.Dataset
         Combined dataset with a single ``measurement`` dimension.
     """
-    from curryer.correction.pipeline import _aggregate_image_matching_results
-
     if len(image_matching_results) == 1:
         ds = image_matching_results[0]
         # Always normalize the measurement coordinate to sequential integers
@@ -537,81 +547,480 @@ def _format_summary_table(
     return "\n".join(lines)
 
 
-def _pair_by_spatial_overlap(
-    observation_paths: list[Path],
-    gcp_directory: Path,
-    gcp_pattern: str,
-    max_distance_m: float,
-) -> tuple[list[tuple[Path, Path]], list[Path]]:
-    """Pair observation files with GCP chips by spatial overlap.
-
-    For each observation, the image grid is loaded to obtain its lat/lon
-    bounding box.  Every GCP chip whose centre falls inside that bounding box
-    (plus an optional margin) is treated as a match; the first match wins.
+def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | None = None) -> None:
+    """Log a human-readable GCP pairing summary.
 
     Parameters
     ----------
-    observation_paths : list[Path]
-        Observation file paths to pair.
-    gcp_directory : Path
-        Directory containing GCP reference chips.
-    gcp_pattern : str
-        Glob pattern used to discover chips inside *gcp_directory*.
-    max_distance_m : float
-        Extra margin around each observation's bounding box in metres.
-        ``0.0`` means the GCP centre must fall strictly inside the footprint.
+    pairs : list of (Path, Path)
+        Successfully paired (observation, gcp) paths.
+    unpaired : list of Path or None, optional
+        Observation paths for which no matching GCP was found.
+    """
+    lines = ["GCP Pairing Summary:"]
+    for obs, gcp in pairs:
+        lines.append(f"  ✓ {obs.name} → {gcp.name}")
+    if unpaired:
+        for obs in unpaired:
+            lines.append(f"  ✗ {obs.name} → No matching GCP found")
+    lines.append(f"Proceeding with {len(pairs)} observation(s).")
+    logger.info("\n".join(lines))
+
+
+# ============================================================================
+# Image matching + aggregation (core of the verification pipeline)
+# ============================================================================
+# These functions were previously in pipeline.py, but belong here because
+# verification owns the "GCP pairing → image matching → error stats" pipeline.
+# pipeline.py now imports them from here, achieving the correct dependency
+# direction: pipeline → verification → [pairing, image_io, image_match, error_stats]
+# ============================================================================
+
+
+def _get_spice_boresight_and_rotation(
+    instrument_name: str,
+    et_midframe: float,
+    ref_frame: str = "ITRF93",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the instrument boresight and HS→CTRS rotation matrix from SPICE.
+
+    Parameters
+    ----------
+    instrument_name : str
+        SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
+    et_midframe : float
+        Ephemeris time (ET seconds past J2000) at the mid-frame epoch.
+    ref_frame : str, optional
+        Target reference frame.  Default ``"ITRF93"`` (ECEF).
 
     Returns
     -------
-    tuple[list[tuple[Path, Path]], list[Path]]
-        ``(pairs, unpaired)`` where *pairs* is a list of
-        ``(observation_path, gcp_path)`` 2-tuples and *unpaired* contains
-        observations for which no GCP chip was found.
+    boresight : np.ndarray, shape (3,)
+        Unit boresight vector in instrument (HS) frame.
+    t_hs2ctrs : np.ndarray, shape (3, 3)
+        Rotation matrix ``v_ctrs = R @ v_hs``.
+
+    Raises
+    ------
+    SpiceyError
+        If required kernels are not loaded or do not cover *et_midframe*.
     """
-    from .image_io import load_image_grid
+    boresight = sp.ext.instrument_boresight(instrument_name, norm=True)
+    instr = sp.obj.Instrument(instrument_name)
+    _, hs_frame_name, _, _, _ = sp.getfov(instr.id, 1, 80, 80)
+    t_hs2ctrs = np.asarray(sp.pxform(hs_frame_name, ref_frame, et_midframe))
+    return boresight, t_hs2ctrs
 
-    gcp_files = sorted(gcp_directory.glob(gcp_pattern))
-    if not gcp_files:
-        logger.warning("No GCP files matching '%s' found in %s", gcp_pattern, gcp_directory)
 
-    # Convert max_distance_m to an approximate degree margin (1° ≈ 111 km).
-    margin_deg = max_distance_m / 111_000.0
+def _extract_spacecraft_position_midframe(
+    telemetry: pd.DataFrame,
+    config: CorrectionConfig | None = None,
+) -> np.ndarray:
+    """Extract spacecraft position at mid-frame from telemetry.
 
-    pairs: list[tuple[Path, Path]] = []
-    unpaired: list[Path] = []
+    Parameters
+    ----------
+    telemetry : pd.DataFrame
+        Telemetry DataFrame with spacecraft position columns.
+    config : CorrectionConfig or None, optional
+        If provided and ``config.data.position_columns`` is set, those
+        column names are used directly. Otherwise falls back to
+        pattern-guessing (with a deprecation warning).
 
-    for obs_path in observation_paths:
-        try:
-            obs_grid = load_image_grid(obs_path)
-            lat_min = float(obs_grid.lat.min()) - margin_deg
-            lat_max = float(obs_grid.lat.max()) + margin_deg
-            lon_min = float(obs_grid.lon.min()) - margin_deg
-            lon_max = float(obs_grid.lon.max()) + margin_deg
-        except Exception as exc:
-            logger.warning("Could not load observation %s for spatial pairing: %s", obs_path, exc)
-            unpaired.append(obs_path)
-            continue
+    Returns
+    -------
+    np.ndarray
+        Shape ``(3,)`` — ``[x, y, z]`` position in metres (J2000 frame).
 
-        matched_gcp: Path | None = None
-        for gcp_path in gcp_files:
-            try:
-                gcp_grid = load_image_grid(gcp_path)
-                mid_i = gcp_grid.lat.shape[0] // 2
-                mid_j = gcp_grid.lat.shape[1] // 2
-                gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
-                gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
-                if lat_min <= gcp_lat <= lat_max and lon_min <= gcp_lon <= lon_max:
-                    matched_gcp = gcp_path
-                    break
-            except Exception as exc:
-                logger.debug("Could not load GCP file %s: %s", gcp_path, exc)
+    Raises
+    ------
+    ValueError
+        If ``position_columns`` has wrong length, or specified columns are
+        not found, or pattern-guessing fails.
+    """
+    mid_idx = len(telemetry) // 2
 
-        if matched_gcp is not None:
-            pairs.append((obs_path, matched_gcp))
+    if config is not None and config.data is not None and config.data.position_columns is not None:
+        cols = config.data.position_columns
+        if len(cols) != 3:
+            raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
+        missing = [c for c in cols if c not in telemetry.columns]
+        if missing:
+            raise ValueError(
+                f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}"
+            )
+        position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+        logger.debug("Extracted spacecraft position from config.data.position_columns %s: %s", cols, position)
+        return position
+
+    # Legacy fallback: pattern guessing
+    logger.warning(
+        "position_columns not configured — falling back to column name pattern-guessing. "
+        "Set config.data.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
+    )
+
+    for cols in [
+        ["sc_pos_x", "sc_pos_y", "sc_pos_z"],
+        ["position_x", "position_y", "position_z"],
+        ["r_x", "r_y", "r_z"],
+        ["pos_x", "pos_y", "pos_z"],
+    ]:
+        if all(c in telemetry.columns for c in cols):
+            return telemetry[cols].iloc[mid_idx].values.astype(np.float64)
+
+    pos_cols = [c for c in telemetry.columns if "pos" in c.lower() or c.startswith("r_")]
+    if len(pos_cols) >= 3:
+        logger.warning("Using first 3 position-like columns: %s", pos_cols[:3])
+        return telemetry[pos_cols[:3]].iloc[mid_idx].values.astype(np.float64)
+
+    raise ValueError(f"Cannot find position columns in telemetry. Available columns: {telemetry.columns.tolist()}")
+
+
+def image_matching(
+    geolocated_data: xr.Dataset,
+    gcp_reference_file: Path,
+    telemetry: pd.DataFrame | None = None,
+    calibration_dir: Path | None = None,
+    params_info: list | None = None,
+    config: CorrectionConfig | None = None,
+    los_vectors_cached: np.ndarray | None = None,
+    optical_psfs_cached: list | None = None,
+    r_iss_midframe: np.ndarray | None = None,
+) -> xr.Dataset:
+    """Image matching using :func:`~curryer.correction.image_match.integrated_image_match`.
+
+    Performs image correlation between geolocated pixels and a Landsat GCP
+    reference image to measure geolocation error.
+
+    This function is the single implementation used by both the correction loop
+    (:func:`~curryer.correction.pipeline.loop`) and standalone verification
+    (:func:`verify`).  ``pipeline.py`` imports it from here.
+
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Geolocation output with ``latitude``, ``longitude``, and a ``frame``
+        coordinate (GPS seconds = ``ugps_times / 1e6``).
+    gcp_reference_file : Path
+        Path to GCP reference image (``.mat`` or ``.nc``).
+    telemetry : pd.DataFrame or None, optional
+        Telemetry DataFrame with spacecraft state.  Required when
+        *r_iss_midframe* is not supplied.
+    calibration_dir : Path or None, optional
+        Directory containing calibration files.  Used when
+        ``config.los_vectors_file`` / ``config.psf_file`` are not set.
+    params_info : list or None, optional
+        Current parameter values for error tracking.  Defaults to ``[]``.
+    config : CorrectionConfig or None, optional
+        Configuration for coordinate names, calibration paths, and instrument
+        metadata.
+    los_vectors_cached : np.ndarray or None, optional
+        Pre-loaded LOS vectors.
+    optical_psfs_cached : list or None, optional
+        Pre-loaded optical PSF entries.
+    r_iss_midframe : np.ndarray of shape (3,) or None, optional
+        Spacecraft ECEF position in metres at mid-frame.  When provided,
+        *telemetry* is not consulted for position.
+
+    Returns
+    -------
+    xr.Dataset
+        Error measurements: ``lat_error_deg``, ``lon_error_deg``, and metadata.
+
+    Raises
+    ------
+    ValueError
+        If neither *telemetry* nor *r_iss_midframe* is supplied, or if
+        calibration files are missing.
+    """
+    if params_info is None:
+        params_info = []
+
+    logger.info("Image Matching: correlation with %s", Path(gcp_reference_file).name)
+    start_time = time.time()
+
+    # Convert geolocation output to ImageGrid
+    subimage = geolocated_to_image_grid(geolocated_data)
+    logger.info("  Subimage shape: %s", subimage.data.shape)
+
+    # Load GCP reference
+    gcp = load_image_grid(gcp_reference_file, mat_key="GCP")
+    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
+    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    logger.info("  GCP shape: %s, centre: (%.4f, %.4f)", gcp.data.shape, gcp_center_lat, gcp_center_lon)
+
+    # Calibration data
+    if los_vectors_cached is not None and optical_psfs_cached is not None:
+        los_vectors = los_vectors_cached
+        optical_psfs = optical_psfs_cached
+        logger.info("  Using cached calibration data")
+    else:
+        if config is not None and config.los_vectors_file is not None:
+            los_file = Path(config.los_vectors_file)
+        elif calibration_dir is not None:
+            los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat") if config else "b_HS.mat"
+            los_file = calibration_dir / los_filename
         else:
-            unpaired.append(obs_path)
+            raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
+        los_vectors = load_los_vectors(los_file)
 
-    return pairs, unpaired
+        if config is not None and config.psf_file is not None:
+            psf_file = Path(config.psf_file)
+        elif calibration_dir is not None:
+            psf_filename = (
+                config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
+                if config
+                else "optical_PSF_675nm_upsampled.mat"
+            )
+            psf_file = calibration_dir / psf_filename
+        else:
+            raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
+        optical_psfs = load_optical_psf(psf_file)
+
+    # Spacecraft position
+    if r_iss_midframe is None:
+        if telemetry is None:
+            raise ValueError(
+                "image_matching() requires either 'telemetry' (correction loop) or "
+                "'r_iss_midframe' (standalone / verification use)."
+            )
+        r_iss_midframe = _extract_spacecraft_position_midframe(telemetry, config=config)
+    logger.info("  Spacecraft position: %s", r_iss_midframe)
+
+    # Run image matching
+    result = integrated_image_match(
+        subimage=subimage,
+        gcp=gcp,
+        r_iss_midframe_m=r_iss_midframe,
+        los_vectors_hs=los_vectors,
+        optical_psfs=optical_psfs,
+        geolocation_config=PSFSamplingConfig(),
+        search_config=SearchConfig(),
+    )
+
+    # Derive mid-frame epoch from geolocated_data["frame"] (GPS seconds = ugps/1e6)
+    if "frame" in geolocated_data.coords:
+        frame_vals = geolocated_data.coords["frame"].values
+        ugps_midframe = int(float(frame_vals[len(frame_vals) // 2]) * 1e6)
+    else:
+        _time_field = getattr(config.geo, "time_field", None) if config and config.geo else None
+        if (
+            _time_field
+            and telemetry is not None
+            and _time_field in (telemetry.columns if telemetry is not None else [])
+        ):
+            ugps_midframe = int(telemetry[_time_field].iloc[len(telemetry) // 2])
+            logger.warning("geolocated_data has no 'frame' coord; using telemetry column '%s'.", _time_field)
+        else:
+            logger.warning("Cannot determine mid-frame uGPS; SPICE boresight query may fall back to nadir.")
+            ugps_midframe = 0
+    et_midframe = float(spicetime.adapt(ugps_midframe, from_="ugps", to="et"))
+
+    instrument_name = config.geo.instrument_name if config and config.geo else None
+    try:
+        if instrument_name is None:
+            raise ValueError("No instrument_name in config.geo")
+        boresight, t_matrix = _get_spice_boresight_and_rotation(instrument_name, et_midframe)
+        logger.info("  Boresight from SPICE IK (HS frame): %s", boresight)
+    except Exception as exc:
+        logger.warning("  SPICE boresight/rotation unavailable (%s); using nadir approximation.", exc)
+        boresight = -r_iss_midframe / np.linalg.norm(r_iss_midframe)
+        t_matrix = np.eye(3)
+
+    # Convert errors km → degrees
+    lat_error_deg = result.lat_error_km / 111.0
+    lon_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_center_lat))
+    lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+    processing_time = time.time() - start_time
+    logger.info(
+        "  Image matching complete in %.2fs: lat=%.3f km, lon=%.3f km, ccv=%.4f",
+        processing_time,
+        result.lat_error_km,
+        result.lon_error_km,
+        result.ccv_final,
+    )
+
+    sc_pos_name = config.spacecraft_position_name if config else "sc_position"
+    boresight_name = config.boresight_name if config else "boresight"
+    transform_name = config.transformation_matrix_name if config else "t_inst2ref"
+
+    output = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], [lat_error_deg]),
+            "lon_error_deg": (["measurement"], [lon_error_deg]),
+            sc_pos_name: (["measurement", "xyz"], [r_iss_midframe]),
+            boresight_name: (["measurement", "xyz"], [boresight]),
+            transform_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis, :, :]),
+            "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
+            "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
+            "gcp_alt": (["measurement"], [0.0]),
+        },
+        coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
+    )
+    output.attrs.update(
+        {
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation_ccv": result.ccv_final,
+            "final_grid_step_m": result.final_grid_step_m,
+            "final_index_row": result.final_index_row,
+            "final_index_col": result.final_index_col,
+            "processing_time_s": processing_time,
+            "gcp_file": str(Path(gcp_reference_file).name),
+            "gcp_center_lat": gcp_center_lat,
+            "gcp_center_lon": gcp_center_lon,
+        }
+    )
+    return output
+
+
+def _aggregate_image_matching_results(
+    image_matching_results: list[xr.Dataset],
+    config: CorrectionConfig,
+) -> xr.Dataset:
+    """Aggregate multiple image matching results into one dataset.
+
+    Parameters
+    ----------
+    image_matching_results : list[xr.Dataset]
+        Per-GCP-pair datasets from :func:`image_matching`.
+    config : CorrectionConfig
+        Used for variable name mappings.
+
+    Returns
+    -------
+    xr.Dataset
+        Combined dataset with a single ``measurement`` dimension.
+    """
+    logger.info("Aggregating %d image matching results", len(image_matching_results))
+
+    sc_pos_name = config.spacecraft_position_name
+    boresight_name = config.boresight_name
+    transform_name = config.transformation_matrix_name
+
+    all_lat_errors: list[float] = []
+    all_lon_errors: list[float] = []
+    all_sc_positions: list[np.ndarray] = []
+    all_boresights: list[np.ndarray] = []
+    all_transforms: list[np.ndarray] = []
+    all_gcp_lats: list[float] = []
+    all_gcp_lons: list[float] = []
+    all_gcp_alts: list[float] = []
+
+    for result in image_matching_results:
+        n = len(result["lat_error_deg"])
+        all_lat_errors.extend(result["lat_error_deg"].values)
+        all_lon_errors.extend(result["lon_error_deg"].values)
+        if sc_pos_name in result:
+            all_sc_positions.extend(result[sc_pos_name].values[j] for j in range(n))
+        if boresight_name in result:
+            all_boresights.extend(result[boresight_name].values[j] for j in range(n))
+        if transform_name in result:
+            all_transforms.extend(result[transform_name].values[j, :, :] for j in range(n))
+        if "gcp_lat_deg" in result:
+            all_gcp_lats.extend(result["gcp_lat_deg"].values)
+        if "gcp_lon_deg" in result:
+            all_gcp_lons.extend(result["gcp_lon_deg"].values)
+        if "gcp_alt" in result:
+            all_gcp_alts.extend(result["gcp_alt"].values)
+
+    n_total = len(all_lat_errors)
+    aggregated = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], np.array(all_lat_errors)),
+            "lon_error_deg": (["measurement"], np.array(all_lon_errors)),
+        },
+        coords={"measurement": np.arange(n_total)},
+    )
+
+    if all_sc_positions:
+        aggregated[sc_pos_name] = (["measurement", "xyz"], np.array(all_sc_positions))
+        aggregated = aggregated.assign_coords({"xyz": ["x", "y", "z"]})
+    if all_boresights:
+        aggregated[boresight_name] = (["measurement", "xyz"], np.array(all_boresights))
+    if all_transforms:
+        t_stacked = np.stack(all_transforms, axis=0)
+        aggregated[transform_name] = (["measurement", "xyz_from", "xyz_to"], t_stacked)
+        aggregated = aggregated.assign_coords({"xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]})
+    if all_gcp_lats:
+        aggregated["gcp_lat_deg"] = (["measurement"], np.array(all_gcp_lats))
+    if all_gcp_lons:
+        aggregated["gcp_lon_deg"] = (["measurement"], np.array(all_gcp_lons))
+    if all_gcp_alts:
+        aggregated["gcp_alt"] = (["measurement"], np.array(all_gcp_alts))
+
+    aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
+    aggregated.attrs["total_measurements"] = n_total
+    logger.info("  Aggregated: %d measurements from %d GCP pairs", n_total, len(image_matching_results))
+    return aggregated
+
+
+def match_geolocated_to_gcp_files(
+    geolocated_data: xr.Dataset,
+    gcp_files: list[Path],
+    config: CorrectionConfig,
+    los_vectors_cached: np.ndarray | None = None,
+    optical_psfs_cached: list | None = None,
+) -> list[xr.Dataset]:
+    """Run image matching between already-geolocated data and GCP reference files.
+
+    This is the reusable *pipeline tail*: both the correction loop (after
+    kernel tweaking and geolocation) and standalone :func:`verify` call this
+    function.  Given geolocated data and a list of GCP reference files it
+    performs image matching against each file and returns the per-GCP error
+    datasets ready for aggregation and error-stats processing.
+
+    Parameters
+    ----------
+    geolocated_data : xr.Dataset
+        Geolocated observation dataset with ``latitude``, ``longitude``, and
+        a ``frame`` coordinate (GPS seconds).
+    gcp_files : list of Path
+        GCP reference files to match against.
+    config : CorrectionConfig
+        Mission configuration (calibration paths, variable names, instrument name).
+    los_vectors_cached : np.ndarray or None, optional
+        Pre-loaded LOS vectors.
+    optical_psfs_cached : list or None, optional
+        Pre-loaded optical PSF entries.
+
+    Returns
+    -------
+    list of xr.Dataset
+        One error dataset per successfully matched GCP file.
+        Failures are logged as warnings and skipped.
+    """
+    sc_pos_name = getattr(config, "spacecraft_position_name", None)
+    r_iss_midframe: np.ndarray | None = None
+    if sc_pos_name and sc_pos_name in geolocated_data:
+        arr = np.asarray(geolocated_data[sc_pos_name].values, dtype=float)
+        if arr.ndim == 2:
+            arr = arr[arr.shape[0] // 2]
+        if arr.size == 3:
+            r_iss_midframe = arr.ravel()
+
+    calibration_dir = getattr(config, "calibration_dir", None)
+
+    matched: list[xr.Dataset] = []
+    for gcp_file in gcp_files:
+        try:
+            result = image_matching(
+                geolocated_data=geolocated_data,
+                gcp_reference_file=Path(gcp_file),
+                telemetry=None,
+                calibration_dir=calibration_dir,
+                params_info=[],
+                config=config,
+                los_vectors_cached=los_vectors_cached,
+                optical_psfs_cached=optical_psfs_cached,
+                r_iss_midframe=r_iss_midframe,
+            )
+            matched.append(result)
+        except Exception as exc:
+            logger.warning("Image match failed for GCP %s: %s", Path(gcp_file).name, exc)
+
+    return matched
 
 
 def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | None = None) -> None:
@@ -848,10 +1257,11 @@ def verify(
     ------
     ValueError
         When none of the input modes is provided; when *geolocated_data* is
-        supplied but ``config._image_matching_override`` is not set; when
-        *los_file* or *psf_file* is ``None`` for a file-path mode (*gcp_pairs*
-        or *observation_paths* + *gcp_directory*); when *observation_paths*
-        and *gcp_directory* are not both supplied; or when image matching
+        supplied without *gcp_directory* / *los_file* / *psf_file* and
+        ``config._image_matching_override`` is not set; when *los_file* or
+        *psf_file* is ``None`` for a file-path mode (*gcp_pairs* or
+        *observation_paths* + *gcp_directory*); when *observation_paths* and
+        *gcp_directory* are not both supplied; or when image matching
         produces no results.
     FileNotFoundError
         If any of the supplied file paths do not exist.
@@ -885,17 +1295,75 @@ def verify(
         aggregated = _aggregate_results(image_matching_results, config)
 
     elif geolocated_data is not None:
+        # Primary path: the caller provides already-geolocated data.
+        # GCP chips are spatial-paired using pairing.py's core algorithm,
+        # then image matching runs via match_geolocated_to_gcp_files() in
+        # this same module — no duplicate implementation.
         im_override = getattr(config, "_image_matching_override", None)
-        if im_override is None:
-            raise ValueError(
-                "geolocated_data was provided but config._image_matching_override is not set. "
-                "Either supply pre-computed image_matching_results or set "
-                "config._image_matching_override = your_func."
+        if im_override is not None:
+            # Backward-compat / test injection.
+            logger.info("Running image matching on provided geolocated_data via override")
+            matched = im_override(geolocated_data)
+            if not isinstance(matched, list):
+                matched = [matched]
+        elif gcp_directory is not None and los_file is not None and psf_file is not None:
+            from curryer.correction import pairing as _pairing  # noqa: PLC0415
+
+            gcp_dir = Path(str(gcp_directory))
+            gcp_files_all = sorted(gcp_dir.glob(gcp_pattern))
+            if not gcp_files_all:
+                raise ValueError(f"No GCP chips matching '{gcp_pattern}' found in '{gcp_dir}'.")
+
+            # Spatial pairing: use the single canonical pairing algorithm in pairing.py.
+            matched_gcp_files = _pairing.pair_geolocated_dataset_with_gcp_files(
+                geolocated_data,
+                gcp_files_all,
+                max_distance_m=max_distance_m,
             )
-        logger.info("Running image matching on provided geolocated_data")
-        matched = im_override(geolocated_data)
-        if not isinstance(matched, list):
-            matched = [matched]
+            logger.info(
+                "GCP pairing: %d chip(s) matched, %d outside footprint",
+                len(matched_gcp_files),
+                len(gcp_files_all) - len(matched_gcp_files),
+            )
+            if not matched_gcp_files:
+                raise ValueError(
+                    f"No GCP chips in '{gcp_dir}' (pattern: '{gcp_pattern}') overlap "
+                    f"with the geolocated_data footprint."
+                )
+
+            # Pre-load calibration once.
+            los_vectors = load_los_vectors(Path(str(los_file)))
+            optical_psfs = load_optical_psf(Path(str(psf_file)))
+
+            # Image matching — same code path as the correction loop.
+            matched = match_geolocated_to_gcp_files(
+                geolocated_data,
+                matched_gcp_files,
+                config,
+                los_vectors_cached=los_vectors,
+                optical_psfs_cached=optical_psfs,
+            )
+        else:
+            missing = [
+                name
+                for name, val in (
+                    ("gcp_directory", gcp_directory),
+                    ("los_file", los_file),
+                    ("psf_file", psf_file),
+                )
+                if val is None
+            ]
+            raise ValueError(
+                f"geolocated_data was provided but the following required arguments are missing: "
+                f"{missing}. Supply gcp_directory, los_file, and psf_file to enable automatic "
+                f"GCP pairing and image matching, or set config._image_matching_override for a "
+                f"custom matching function."
+            )
+        if not matched:
+            raise ValueError(
+                "Image matching produced no results for the provided geolocated_data. "
+                "Check that GCP chips in gcp_directory spatially overlap the dataset footprint."
+            )
         source_mapping = _build_source_mapping(matched)
         aggregated = _aggregate_results(matched, config)
 
@@ -948,15 +1416,26 @@ def verify(
             gcp_dir,
             gcp_pattern,
         )
-        pairs, unpaired = _pair_by_spatial_overlap(obs_path_list, gcp_dir, gcp_pattern, max_distance_m)
-        _log_pairing_summary(pairs, unpaired or None)
-        if not pairs:
+        # Use the single canonical pairing algorithm from pairing.py
+        from curryer.correction import pairing as _pairing  # noqa: PLC0415
+
+        raw_pairs = _pairing.pair_files(
+            obs_path_list,
+            gcp_dir,
+            max_distance_m=max_distance_m,
+            gcp_pattern=gcp_pattern,
+        )
+        # Derive unpaired for logging
+        paired_obs = {p for p, _ in raw_pairs}
+        unpaired = [p for p in obs_path_list if p not in paired_obs]
+        _log_pairing_summary(raw_pairs, unpaired or None)
+        if not raw_pairs:
             raise ValueError(
                 f"No observations could be paired with GCP chips in '{gcp_dir}' (pattern: '{gcp_pattern}')."
             )
 
         matched = _run_image_matching_for_pairs(
-            pairs,
+            raw_pairs,
             Path(str(los_file)),
             Path(str(psf_file)),
             config,
