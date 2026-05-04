@@ -85,10 +85,8 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # ADAPTER FUNCTIONS
 # ============================================================================
-# image_matching(), _get_spice_boresight_and_rotation(), _extract_spacecraft_position_midframe(),
-# match_geolocated_to_gcp_files(), and _aggregate_image_matching_results() now live in
-# verification.py and are imported at the top of this module.
-# This achieves the correct dependency direction: pipeline → verification.
+# image_matching() and _aggregate_image_matching_results() live in
+# verification.py and are imported above (pipeline → verification direction).
 # ============================================================================
 
 
@@ -167,11 +165,8 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
         )
 
 
-# match_geolocated_to_gcp_files and _aggregate_image_matching_results are
-# imported from verification.py at the top of this module.
-# Backward-compat re-exports are kept so existing callers continue to work:
-#   from curryer.correction.pipeline import match_geolocated_to_gcp_files
-# Both should be removed from this re-export list in a future cleanup.
+# _aggregate_image_matching_results and image_matching live in verification.py
+# and are imported above for use within this module (pipeline → verification).
 
 
 def _resolve_gcp_pairs(
