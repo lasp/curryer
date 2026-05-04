@@ -628,9 +628,82 @@ class TestVerify:
             verify(config, work_dir=tmp_path)
 
     def test_geolocated_data_without_func_raises(self, config, tmp_path):
+        """geolocated_data without gcp_directory/los_file/psf_file raises ValueError."""
         dummy_ds = xr.Dataset({"dummy": (["x"], [1, 2, 3])})
-        with pytest.raises(ValueError, match="_image_matching_override is not set"):
+        with pytest.raises(ValueError, match="gcp_directory"):
             verify(config, geolocated_data=dummy_ds, work_dir=tmp_path)
+
+    def test_geolocated_data_primary_mode(self, image_matching_dataset, tmp_path):
+        """Primary mode: geolocated_data + gcp_directory + los_file + psf_file auto-pairs and matches."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+
+        config = _make_config()
+
+        # Build a minimal dataset with lat/lon so the footprint filter runs.
+        lat = np.linspace(38.0, 39.0, 5)
+        lon = np.linspace(-116.0, -115.0, 6)
+        lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
+        dummy_geolocated = xr.Dataset(
+            {
+                "band_data": (["y", "x"], np.ones((5, 6))),
+                "lat": (["y", "x"], lat_grid),
+                "lon": (["y", "x"], lon_grid),
+            }
+        )
+
+        # Create a synthetic GCP chip that falls inside the footprint so at least
+        # one chip is matched (otherwise verify() raises before calling the pipeline).
+        with tempfile.TemporaryDirectory() as tmp_gcp_dir:
+            gcp_dir = Path(tmp_gcp_dir)
+            gcp_chip_path = gcp_dir / "chip_001_regridded.nc"
+            # Centre of chip is inside the observation footprint.
+            chip_lat = np.linspace(38.3, 38.7, 4)
+            chip_lon = np.linspace(-115.8, -115.4, 4)
+            chip_lat_g, chip_lon_g = np.meshgrid(chip_lat, chip_lon, indexing="ij")
+            chip_ds = xr.Dataset(
+                {
+                    "band_data": (["y", "x"], np.ones((4, 4))),
+                    "lat": (["y", "x"], chip_lat_g),
+                    "lon": (["y", "x"], chip_lon_g),
+                }
+            )
+            chip_ds.to_netcdf(gcp_chip_path)
+
+            with (
+                patch(
+                    "curryer.correction.verification.match_geolocated_to_gcp_files",
+                    return_value=[image_matching_dataset],
+                ) as mock_fn,
+                patch(
+                    "curryer.correction.verification.load_los_vectors",
+                    return_value=[[0.0, 0.0, 1.0]],
+                ),
+                patch(
+                    "curryer.correction.verification.load_optical_psf",
+                    return_value=[],
+                ),
+            ):
+                result = verify(
+                    config,
+                    geolocated_data=dummy_geolocated,
+                    gcp_directory=gcp_dir,
+                    los_file=tmp_path / "los.mat",
+                    psf_file=tmp_path / "psf.mat",
+                    work_dir=tmp_path,
+                )
+                mock_fn.assert_called_once()
+                call_args = mock_fn.call_args
+                # First positional arg is the geolocated dataset
+                assert call_args.args[0] is dummy_geolocated
+                # Second positional arg is the list of matched GCP paths
+                assert gcp_chip_path in call_args.args[1]
+
+        assert isinstance(result, VerificationResult)
+        assert result.passed
 
     def test_geolocated_data_with_func_called(self, image_matching_dataset, tmp_path):
         """_image_matching_override should be called when geolocated_data is supplied."""

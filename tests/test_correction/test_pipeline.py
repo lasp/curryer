@@ -27,7 +27,7 @@ from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 from curryer.correction import correction
 from curryer.correction.config import DataConfig
-from curryer.correction.pipeline import _extract_spacecraft_position_midframe
+from curryer.correction.verification import _extract_spacecraft_position_midframe
 
 logger = logging.getLogger(__name__)
 
