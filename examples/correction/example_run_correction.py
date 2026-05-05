@@ -260,8 +260,9 @@ def _print_dry_run_summary(missing_files: list[Path], missing_generic: bool) -> 
         print("\n  Missing data files:")
         for f in missing_files:
             print(f"    {f}")
-        print("\n  For CLARREO, generate the preprocessed telemetry first:")
-        print("    python scripts/clarreo_preprocess.py --help")
+        print("\n  Generate the preprocessed telemetry first.")
+        print("    Preprocessing is mission-specific; use your mission's ingestion")
+        print("    scripts or the _build_inputs() comments in this template.")
         print("    # Then point telemetry_file at the merged output CSV.")
     if missing_generic:
         print(f"\n  Missing / empty generic SPICE kernel dir: {_GENERIC_DIR}")
