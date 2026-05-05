@@ -141,13 +141,14 @@ print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 | ---------------------------- | --------------------------------------- | ---------------------------------------------------------- |
 | Pre-computed image matching  | `image_matching_results=`               | **Recommended** for production and automated checks        |
 | Run image matching on demand | `geolocated_data=`                      | Calls `config._image_matching_override(data)`; must be set |
-| Explicit file-path pairs     | `gcp_pairs=`                            | Not yet implemented                                        |
-| Auto-paired paths            | `observation_paths=` + `gcp_directory=` | Not yet implemented                                        |
+| Explicit file-path pairs     | `gcp_pairs=`                            | Supported                                                  |
+| Auto-paired paths            | `observation_paths=` + `gcp_directory=` | Supported                                                  |
 
 The `geolocated_data` path does **not** include a built-in image-matching
 algorithm. `verify()` calls whatever callable you attach to
 `config._image_matching_override`. If that attribute is not set, the call
-raises `ValueError`. Use `image_matching_results=` for all other cases.
+raises `ValueError`. Use `image_matching_results=`, `gcp_pairs=`, or
+`observation_paths=` + `gcp_directory=` for other supported cases.
 
 A runnable example using real test data: `examples/correction/example_verification.py`
 
