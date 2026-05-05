@@ -235,7 +235,6 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
         return 1
 
     top_results = sorted(result.results, key=lambda r: r["rms_error_m"])[:3]
-    best = top_results[0]
     print(f"\n  Parameter sets evaluated : {len(result.results)}")
     print(f"  Best RMS error           : {result.best_rms_m:.2f} m")
 
