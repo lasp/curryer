@@ -234,12 +234,13 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
         logger.error("No results produced — check logs for errors.")
         return 1
 
-    best = min(result.results, key=lambda r: r.rms_error_m)
+    top_results = sorted(result.results, key=lambda r: r["rms_error_m"])[:3]
+    best = top_results[0]
     print(f"\n  Parameter sets evaluated : {len(result.results)}")
-    print(f"  Best RMS error           : {best.rms_error_m:.2f} m")
+    print(f"  Best RMS error           : {result.best_rms_m:.2f} m")
 
     print("\n  Top-3 by RMS error:")
-    for r in sorted(result.results, key=lambda x: x.rms_error_m)[:3]:
+    for r in top_results:
         print(f"    {r}")
 
     nc_path = work_dir / "correction_results.nc"
