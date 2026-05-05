@@ -58,7 +58,7 @@ For a directory of 100 Landsat chips use the provided script directly:
 
 ```bash
 # Regrid all *.hdf files in /data/landsat_gcps/ and write NetCDF to /data/regridded/
-python scripts/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/
+python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/
 ```
 
 Output:
