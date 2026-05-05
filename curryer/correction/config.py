@@ -870,6 +870,15 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
             "This must be specified for your mission (e.g., 39.0 percent for CLARREO)."
         )
 
+    # Optional calibration paths (direct file paths or directory + filename map)
+    calibration_dir_raw = corr_config.get("calibration_dir")
+    calibration_dir = Path(calibration_dir_raw) if calibration_dir_raw else None
+    calibration_file_names = corr_config.get("calibration_file_names")
+    los_vectors_file_raw = corr_config.get("los_vectors_file")
+    los_vectors_file = Path(los_vectors_file_raw) if los_vectors_file_raw else None
+    psf_file_raw = corr_config.get("psf_file")
+    psf_file = Path(psf_file_raw) if psf_file_raw else None
+
     config = CorrectionConfig(
         seed=corr_config.get("seed"),
         n_iterations=corr_config.get("n_iterations", 10),
@@ -877,6 +886,10 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         geo=geo,
         performance_threshold_m=performance_threshold_m,
         performance_spec_percent=performance_spec_percent,
+        calibration_dir=calibration_dir,
+        calibration_file_names=calibration_file_names,
+        los_vectors_file=los_vectors_file,
+        psf_file=psf_file,
     )
 
     config.validate()

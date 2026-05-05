@@ -153,7 +153,9 @@
         "units": "milliseconds",
         "distribution_type": "normal"
       }
-    ]
+    ],
+    "los_vectors_file": "tests/data/clarreo/image_match/b_HS.mat",
+    "psf_file": "tests/data/clarreo/image_match/optical_PSF_675nm_upsampled.mat"
   },
   "geolocation": {
     "meta_kernel_file": "tests/data/clarreo/gcs/cprs_v01.kernels.tm.json",

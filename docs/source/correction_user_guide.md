@@ -466,10 +466,6 @@ automatically. Override the temp directory if `/tmp` is unavailable:
 export CURRYER_TEMP_DIR=/tmp
 ```
 
-**`NotImplementedError` from `verify()`**
-The `gcp_pairs=` and `observation_paths=` input modes are not yet
-implemented. Use `image_matching_results=` instead.
-
 **`geolocated_data was provided but config._image_matching_override is not set`**
 `verify()` does not include a built-in image matcher. Attach a callable to
 `config._image_matching_override` before calling `verify()`, or pass
