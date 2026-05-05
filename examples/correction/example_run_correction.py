@@ -243,9 +243,8 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
     for r in top_results:
         print(f"    {r}")
 
-    nc_path = work_dir / "correction_results.nc"
-    result.netcdf_data.to_netcdf(nc_path)
-    print(f"\n  Results saved: {nc_path}")
+    if result.netcdf_path is not None:
+        print(f"\n  Results saved: {result.netcdf_path}")
 
     print("\n" + "=" * 68)
     print("  Correction loop complete.")
