@@ -809,9 +809,7 @@ def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> Na
         grid = _load_netcdf_image_grid(loader_filepath)
         return NamedImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon, h=grid.h, name=name)
 
-    raise ValueError(
-        f"Unrecognised file extension '{suffix}' for {name}. Supported formats: .mat, .nc, .netcdf, .nc4"
-    )
+    raise ValueError(f"Unrecognised file extension '{suffix}' for {name}. Supported formats: .mat, .nc, .netcdf, .nc4")
 
 
 def load_observation_file(
