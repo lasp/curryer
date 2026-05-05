@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""CLARREO-specific data PREPROCESSING scripts.
+"""CLARREO-specific data PREPROCESSING scripts — **test fixture**.
 
-These functions join multiple raw CSV files, flip azimuth signs, and convert
-DCM to quaternion. They are NOT part of the correction pipeline — run them
-BEFORE using the correction module to produce standard single-file inputs.
+These functions are **test infrastructure helpers**, not user-facing examples.
 
-See examples/correction/ for the recommended workflow.
+For user-facing examples and documentation, see:
+  - ``examples/correction/example_verification.py`` — runnable verification demo
+  - ``examples/correction/example_run_correction.py`` — correction loop template
+  - ``docs/source/correction_user_guide.md``          — full reference
 
 .. deprecated::
     The Protocol-based loader pattern (``TelemetryLoader``, ``ScienceLoader``,

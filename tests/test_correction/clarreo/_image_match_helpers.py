@@ -14,15 +14,14 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
-from scipy.io import loadmat
 
 from curryer.correction.data_structures import ImageGrid, PSFSamplingConfig, SearchConfig
-from curryer.correction.image_match import (
-    integrated_image_match,
-    load_image_grid_from_mat,
-    load_los_vectors_from_mat,
-    load_optical_psf_from_mat,
+from curryer.correction.image_io import (
+    load_image_grid,
+    load_los_vectors,
+    load_optical_psf,
 )
+from curryer.correction.image_match import integrated_image_match
 
 logger = logging.getLogger(__name__)
 
@@ -269,23 +268,20 @@ def run_image_matching_with_applied_errors(
     logger.info("Running image matching: %s", test_case["case_name"])
     start = time.time()
 
-    subimage_struct = loadmat(test_case["subimage_file"], squeeze_me=True, struct_as_record=False)["subimage"]
-    subimage = ImageGrid(
-        data=np.asarray(subimage_struct.data),
-        lat=np.asarray(subimage_struct.lat),
-        lon=np.asarray(subimage_struct.lon),
-        h=np.asarray(subimage_struct.h) if hasattr(subimage_struct, "h") else None,
-    )
-    gcp = load_image_grid_from_mat(test_case["gcp_file"], key="GCP")
-    gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
-    gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
+    subimage = load_image_grid(test_case["subimage_file"], mat_key="subimage")
+    gcp = load_image_grid(test_case["gcp_file"], mat_key="GCP")
+    mid_i, mid_j = gcp.mid_indices
+    gcp_center_lat = float(gcp.lat[mid_i, mid_j])
+    gcp_center_lon = float(gcp.lon[mid_i, mid_j])
 
     subimage_with_error = apply_geolocation_error_to_subimage(
         subimage, gcp, test_case["expected_lat_error_km"], test_case["expected_lon_error_km"]
     )
 
-    los_vectors = load_los_vectors_from_mat(test_case["los_file"])
-    optical_psfs = load_optical_psf_from_mat(test_case["psf_file"])
+    los_vectors = load_los_vectors(test_case["los_file"])
+    optical_psfs = load_optical_psf(test_case["psf_file"])
+    from scipy.io import loadmat  # noqa: PLC0415
+
     ancil_data = loadmat(test_case["ancil_file"], squeeze_me=True)
     r_iss_midframe = ancil_data["R_ISS_midframe"].ravel()
 

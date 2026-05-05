@@ -139,7 +139,8 @@ def run_downstream_pipeline(
     from _image_match_helpers import discover_test_image_match_cases, run_image_matching_with_applied_errors
     from clarreo_config import create_clarreo_correction_config
 
-    from curryer.correction.image_match import load_image_grid_from_mat
+    from curryer.correction.data_structures import NamedImageGrid
+    from curryer.correction.image_io import load_image_grid
     from curryer.correction.pairing import find_l1a_gcp_pairs
 
     logger.info("=== DOWNSTREAM PIPELINE TEST ===")
@@ -166,10 +167,12 @@ def run_downstream_pipeline(
     l1a_images = []
     l1a_to_testcase: dict[str, dict] = {}
     for tc in discovered_cases:
-        img = load_image_grid_from_mat(
-            tc["subimage_file"],
-            key="subimage",
-            as_named=True,
+        _g = load_image_grid(tc["subimage_file"], mat_key="subimage")
+        img = NamedImageGrid(
+            data=_g.data,
+            lat=_g.lat,
+            lon=_g.lon,
+            h=_g.h,
             name=str(tc["subimage_file"].relative_to(test_data_dir)),
         )
         l1a_images.append(img)
@@ -179,10 +182,12 @@ def run_downstream_pipeline(
     gcp_images = []
     for tc in discovered_cases:
         if tc["gcp_file"] not in gcp_files_seen:
-            gcp_img = load_image_grid_from_mat(
-                tc["gcp_file"],
-                key="GCP",
-                as_named=True,
+            _g = load_image_grid(tc["gcp_file"], mat_key="GCP")
+            gcp_img = NamedImageGrid(
+                data=_g.data,
+                lat=_g.lat,
+                lon=_g.lon,
+                h=_g.h,
                 name=str(tc["gcp_file"].relative_to(test_data_dir)),
             )
             gcp_images.append(gcp_img)

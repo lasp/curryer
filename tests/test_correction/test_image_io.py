@@ -12,11 +12,9 @@ import pytest
 from curryer.correction.data_structures import ImageGrid, NamedImageGrid
 from curryer.correction.image_io import (
     load_gcp_chip_from_hdf,
-    load_gcp_chip_from_netcdf,
-    load_image_grid_from_mat,
-    load_image_grid_from_netcdf,
+    load_image_grid,
+    load_named_image_grid,
     save_image_grid,
-    save_image_grid_to_netcdf,
 )
 
 # ---------------------------------------------------------------------------
@@ -57,9 +55,9 @@ class TestImageGridSaveLoad:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="netcdf")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             np.testing.assert_array_almost_equal(loaded_grid.data, original_grid.data)
             np.testing.assert_array_almost_equal(loaded_grid.lat, original_grid.lat)
@@ -75,9 +73,9 @@ class TestImageGridSaveLoad:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="netcdf")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -98,9 +96,9 @@ class TestImageGridSaveLoad:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="mat")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_image_grid_from_mat(tmp_path, key="GCP")
+            loaded_grid = load_image_grid(tmp_path, mat_key="GCP")
 
             np.testing.assert_array_almost_equal(loaded_grid.data, original_grid.data)
             np.testing.assert_array_almost_equal(loaded_grid.lat, original_grid.lat)
@@ -116,9 +114,9 @@ class TestImageGridSaveLoad:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="mat")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_image_grid_from_mat(tmp_path, key="GCP")
+            loaded_grid = load_image_grid(tmp_path, mat_key="GCP")
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -134,7 +132,6 @@ class TestImageGridSaveLoad:
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
 
         grid = ImageGrid(data=data, lat=lat_grid, lon=lon_grid)
-
         metadata = {
             "source": "test_chip.hdf",
             "mission": "test",
@@ -145,7 +142,7 @@ class TestImageGridSaveLoad:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, grid, format="netcdf", metadata=metadata)
+            save_image_grid(tmp_path, grid, metadata=metadata)
 
             import xarray as xr
 
@@ -156,8 +153,8 @@ class TestImageGridSaveLoad:
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def test_invalid_format(self):
-        """Test that invalid format raises ValueError."""
+    def test_invalid_extension(self):
+        """Test that unsupported extension raises ValueError."""
         rng = np.random.default_rng(0)
         data = rng.random((10, 10))
         lat = np.linspace(38.0, 39.0, 10)
@@ -169,48 +166,47 @@ class TestImageGridSaveLoad:
         with tempfile.NamedTemporaryFile(suffix=".xyz") as tmp:
             tmp_path = Path(tmp.name)
             with pytest.raises(ValueError, match="Unsupported format"):
-                save_image_grid(tmp_path, grid, format="invalid_format")
+                save_image_grid(tmp_path, grid)
 
 
 # ---------------------------------------------------------------------------
-# CF-1.8 save_image_grid_to_netcdf / load_image_grid_from_netcdf pair
+# CF-1.8 save_image_grid / load_image_grid (Netcdf) pair
 # ---------------------------------------------------------------------------
 
 
 class TestNetCDF4DirectIO:
-    """Test the lower-level CF-1.8 netCDF4 save/load pair."""
+    """Test the CF-1.8 NetCDF save/load round-trip via the public API."""
 
     def test_round_trip_regular_grid(self):
-        """save_image_grid_to_netcdf + load_image_grid_from_netcdf: regular grid."""
+        """save_image_grid (.nc) + load_image_grid: regular grid."""
         original_grid = _make_grid(rows=20, cols=25)
 
         with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid_to_netcdf(tmp_path, original_grid)
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_image_grid_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             assert loaded_grid.data.shape == original_grid.data.shape
             np.testing.assert_array_almost_equal(loaded_grid.data, original_grid.data)
-            # Coordinates reconstructed from 1-D arrays via meshgrid — values must match
             np.testing.assert_array_almost_equal(loaded_grid.lat, original_grid.lat)
             np.testing.assert_array_almost_equal(loaded_grid.lon, original_grid.lon)
         finally:
             tmp_path.unlink(missing_ok=True)
 
     def test_round_trip_with_height(self):
-        """Height is preserved through the netCDF4 round-trip."""
+        """Height is preserved through the NetCDF round-trip."""
         original_grid = _make_grid(rows=10, cols=10, with_height=True)
 
         with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid_to_netcdf(tmp_path, original_grid)
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_image_grid_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -226,7 +222,7 @@ class TestNetCDF4DirectIO:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid_to_netcdf(tmp_path, grid, metadata=metadata)
+            save_image_grid(tmp_path, grid, metadata=metadata)
 
             import xarray as xr
 
@@ -242,7 +238,6 @@ class TestNetCDF4DirectIO:
         rng = np.random.default_rng(1)
         nrows, ncols = 8, 10
         data = rng.random((nrows, ncols))
-        # Distorted grid — coordinates are NOT separable
         lat_base = np.linspace(38.0, 39.0, nrows)
         lon_base = np.linspace(-116.0, -115.0, ncols)
         lon_grid, lat_grid = np.meshgrid(lon_base, lat_base)
@@ -255,9 +250,9 @@ class TestNetCDF4DirectIO:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid_to_netcdf(tmp_path, original_grid)
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_image_grid_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             assert loaded_grid.data.shape == original_grid.data.shape
             np.testing.assert_array_almost_equal(loaded_grid.data, original_grid.data)
@@ -265,9 +260,9 @@ class TestNetCDF4DirectIO:
             tmp_path.unlink(missing_ok=True)
 
     def test_missing_file_raises(self):
-        """load_image_grid_from_netcdf raises FileNotFoundError for absent files."""
+        """load_image_grid raises FileNotFoundError for absent .nc files."""
         with pytest.raises(FileNotFoundError):
-            load_image_grid_from_netcdf(Path("does_not_exist.nc"))
+            load_image_grid(Path("does_not_exist.nc"))
 
 
 # ---------------------------------------------------------------------------
@@ -336,17 +331,17 @@ class TestHDFLoading:
 
 
 # ---------------------------------------------------------------------------
-# load_gcp_chip_from_netcdf (xarray-based)
+# load_image_grid (netcdf xarray-based)
 # ---------------------------------------------------------------------------
 
 
 class TestNetCDFLoading:
-    """Test NetCDF file loading."""
+    """Test NetCDF file loading via load_image_grid."""
 
     def test_missing_file(self):
         """Test that missing file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            load_gcp_chip_from_netcdf(Path("nonexistent.nc"))
+            load_image_grid(Path("nonexistent.nc"))
 
     def test_round_trip_with_height(self):
         """Height variable is loaded when present in file."""
@@ -356,9 +351,9 @@ class TestNetCDFLoading:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="netcdf")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded_grid = load_gcp_chip_from_netcdf(tmp_path)
+            loaded_grid = load_image_grid(tmp_path)
 
             assert loaded_grid.h is not None
             np.testing.assert_array_almost_equal(loaded_grid.h, original_grid.h)
@@ -366,7 +361,7 @@ class TestNetCDFLoading:
             tmp_path.unlink(missing_ok=True)
 
     def test_missing_variable_raises(self):
-        """Missing band_data variable in NetCDF raises OSError."""
+        """Missing band_data variable in NetCDF raises KeyError."""
         import xarray as xr
 
         nrows, ncols = 5, 5
@@ -374,7 +369,6 @@ class TestNetCDFLoading:
         lon = np.linspace(-116.0, -115.0, ncols)
         lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
 
-        # Build a file that is valid NetCDF but lacks "band_data"
         ds = xr.Dataset(
             {"lat": (["y", "x"], lat_grid), "lon": (["y", "x"], lon_grid)},
             coords={"y": np.arange(nrows), "x": np.arange(ncols)},
@@ -386,24 +380,24 @@ class TestNetCDFLoading:
         try:
             ds.to_netcdf(tmp_path)
 
-            with pytest.raises(OSError, match="band_data"):
-                load_gcp_chip_from_netcdf(tmp_path)
+            with pytest.raises(KeyError, match="band_data"):
+                load_image_grid(tmp_path)
         finally:
             tmp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# load_image_grid_from_mat
+# load_image_grid (MAT format)
 # ---------------------------------------------------------------------------
 
 
 class TestMATLoading:
-    """Test MATLAB file loading."""
+    """Test MATLAB file loading via load_image_grid."""
 
     def test_missing_file(self):
         """Test that missing file raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            load_image_grid_from_mat(Path("nonexistent.mat"))
+            load_image_grid(Path("nonexistent.mat"))
 
     def test_missing_key_raises(self):
         """KeyError is raised when the requested struct key is absent."""
@@ -416,27 +410,206 @@ class TestMATLoading:
             tmp_path = Path(tmp.name)
 
         try:
-            # Save under a different key than will be requested
             savemat(str(tmp_path), {"other_key": {"data": data}})
 
             with pytest.raises(KeyError, match="subimage"):
-                load_image_grid_from_mat(tmp_path, key="subimage")
+                load_image_grid(tmp_path, mat_key="subimage")
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    def test_as_named_returns_named_image_grid(self):
-        """as_named=True returns a NamedImageGrid with the correct name."""
+    def test_load_named_returns_named_image_grid(self):
+        """load_named_image_grid returns a NamedImageGrid with the correct name."""
         original_grid = _make_grid()
 
         with tempfile.NamedTemporaryFile(suffix=".mat", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            save_image_grid(tmp_path, original_grid, format="mat")
+            save_image_grid(tmp_path, original_grid)
 
-            loaded = load_image_grid_from_mat(tmp_path, key="GCP", as_named=True)
+            loaded = load_named_image_grid(tmp_path, mat_key="GCP")
 
             assert isinstance(loaded, NamedImageGrid)
             assert loaded.name is not None
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# load_named_image_grid
+# ---------------------------------------------------------------------------
+
+
+class TestLoadNamedImageGrid:
+    """Tests for the format-agnostic load_named_image_grid dispatcher."""
+
+    def test_mat_returns_named_image_grid(self):
+        """Loading a .mat file returns a NamedImageGrid with name set to the file path."""
+        original_grid = _make_grid()
+
+        with tempfile.NamedTemporaryFile(suffix=".mat", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            save_image_grid(tmp_path, original_grid)
+
+            result = load_named_image_grid(tmp_path, mat_key="GCP")
+
+            assert isinstance(result, NamedImageGrid)
+            assert result.name == str(tmp_path)
+            np.testing.assert_array_almost_equal(result.data, original_grid.data)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_netcdf_returns_named_image_grid(self):
+        """Loading a .nc file returns a NamedImageGrid with name set to the file path."""
+        original_grid = _make_grid()
+
+        with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            save_image_grid(tmp_path, original_grid)
+
+            result = load_named_image_grid(tmp_path)
+
+            assert isinstance(result, NamedImageGrid)
+            assert result.name == str(tmp_path)
+            np.testing.assert_array_almost_equal(result.data, original_grid.data)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_unknown_extension_raises_value_error(self):
+        """An unrecognised file extension raises ValueError."""
+        with pytest.raises(ValueError, match="Unrecognised file extension"):
+            load_named_image_grid(Path("some_file.tif"))
+
+    def test_missing_file_raises(self):
+        """A missing file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            load_named_image_grid(Path("nonexistent_file.nc"))
+
+
+# ---------------------------------------------------------------------------
+# load_image_grid — legacy variable names and 1-D broadcast edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestNetCDFLoadingEdgeCases:
+    """Tests for legacy variable-name fallbacks and partial 1-D coordinate broadcasting."""
+
+    def test_legacy_data_variable_name(self):
+        """Files using 'data' instead of 'band_data' are loaded via the legacy fallback."""
+        import xarray as xr
+
+        rng = np.random.default_rng(1)
+        nrows, ncols = 5, 6
+        data = rng.random((nrows, ncols))
+        lat = np.linspace(38.0, 39.0, nrows)
+        lon = np.linspace(-116.0, -115.0, ncols)
+        lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
+
+        ds = xr.Dataset(
+            {
+                "data": (["y", "x"], data),
+                "lat": (["y", "x"], lat_grid),
+                "lon": (["y", "x"], lon_grid),
+            },
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            ds.to_netcdf(tmp_path)
+            grid = load_image_grid(tmp_path)
+            np.testing.assert_array_almost_equal(grid.data, data)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_legacy_latitude_longitude_variable_names(self):
+        """Files using 'latitude'/'longitude' instead of 'lat'/'lon' are handled."""
+        import xarray as xr
+
+        rng = np.random.default_rng(2)
+        nrows, ncols = 5, 6
+        data = rng.random((nrows, ncols))
+        lat = np.linspace(38.0, 39.0, nrows)
+        lon = np.linspace(-116.0, -115.0, ncols)
+        lat_grid, lon_grid = np.meshgrid(lat, lon, indexing="ij")
+
+        ds = xr.Dataset(
+            {
+                "band_data": (["y", "x"], data),
+                "latitude": (["y", "x"], lat_grid),
+                "longitude": (["y", "x"], lon_grid),
+            },
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            ds.to_netcdf(tmp_path)
+            grid = load_image_grid(tmp_path)
+            np.testing.assert_array_almost_equal(grid.data, data)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_1d_lat_only_is_broadcast(self):
+        """A file with a 2-D lon but 1-D lat broadcasts lat to the full grid shape."""
+        import xarray as xr
+
+        rng = np.random.default_rng(3)
+        nrows, ncols = 5, 6
+        data = rng.random((nrows, ncols))
+        lat_1d = np.linspace(38.0, 39.0, nrows)
+        lon_2d = np.tile(np.linspace(-116.0, -115.0, ncols), (nrows, 1))
+
+        ds = xr.Dataset(
+            {
+                "band_data": (["y", "x"], data),
+                "lat": (["y"], lat_1d),
+                "lon": (["y", "x"], lon_2d),
+            },
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            ds.to_netcdf(tmp_path)
+            grid = load_image_grid(tmp_path)
+            assert grid.lat.shape == (nrows, ncols)
+            assert grid.lon.shape == (nrows, ncols)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_1d_lon_only_is_broadcast(self):
+        """A file with a 2-D lat but 1-D lon broadcasts lon to the full grid shape."""
+        import xarray as xr
+
+        rng = np.random.default_rng(4)
+        nrows, ncols = 5, 6
+        data = rng.random((nrows, ncols))
+        lat_2d = np.repeat(np.linspace(38.0, 39.0, nrows)[:, np.newaxis], ncols, axis=1)
+        lon_1d = np.linspace(-116.0, -115.0, ncols)
+
+        ds = xr.Dataset(
+            {
+                "band_data": (["y", "x"], data),
+                "lat": (["y", "x"], lat_2d),
+                "lon": (["x"], lon_1d),
+            },
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        try:
+            ds.to_netcdf(tmp_path)
+            grid = load_image_grid(tmp_path)
+            assert grid.lat.shape == (nrows, ncols)
+            assert grid.lon.shape == (nrows, ncols)
         finally:
             tmp_path.unlink(missing_ok=True)

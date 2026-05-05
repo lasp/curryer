@@ -198,7 +198,7 @@ def test_load_calibration_data_direct_psf_missing(clarreo_cfg, tmp_path):
     cfg.los_vectors_file = fake_los
     cfg.psf_file = tmp_path / "nonexistent_psf.mat"
     # Mock the actual loader so we don't need a real .mat file
-    with patch("curryer.correction.pipeline.load_los_vectors_from_mat", return_value=[[0.0, 0.0, 1.0]]):
+    with patch("curryer.correction.pipeline.load_los_vectors", return_value=[[0.0, 0.0, 1.0]]):
         with pytest.raises(FileNotFoundError, match="PSF"):
             correction._load_calibration_data(cfg)
 

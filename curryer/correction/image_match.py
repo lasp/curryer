@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .data_structures import (
     ImageGrid,
-    NamedImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
     PSFGrid,
@@ -187,68 +184,3 @@ def integrated_image_match(
         projected_psf=projected_psf,
         convolved_gcp=gcp_convolved,
     )
-
-
-# ============================================================================
-# MATLAB File Loading Utilities — Deprecation Shims
-#
-# These functions have been moved to curryer.correction.image_io.
-# They are kept here for backward compatibility and will be removed in a
-# future release.
-# ============================================================================
-
-
-def load_image_grid_from_mat(
-    mat_file: Path, key: str = "subimage", name: str | None = None, as_named: bool = False
-) -> ImageGrid | NamedImageGrid:
-    """
-    Load ImageGrid from MATLAB .mat file.
-
-    .. deprecated::
-        Use :func:`curryer.correction.image_io.load_image_grid_from_mat` instead.
-    """
-    warnings.warn(
-        "load_image_grid_from_mat has moved to curryer.correction.image_io. "
-        "Importing from image_match is deprecated and will be removed in a future release.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from .image_io import load_image_grid_from_mat as _impl
-
-    return _impl(mat_file, key=key, name=name, as_named=as_named)
-
-
-def load_optical_psf_from_mat(mat_file: Path, key: str = "PSF_struct_675nm") -> list[OpticalPSFEntry]:
-    """
-    Load optical PSF entries from MATLAB .mat file.
-
-    .. deprecated::
-        Use :func:`curryer.correction.image_io.load_optical_psf_from_mat` instead.
-    """
-    warnings.warn(
-        "load_optical_psf_from_mat has moved to curryer.correction.image_io. "
-        "Importing from image_match is deprecated and will be removed in a future release.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from .image_io import load_optical_psf_from_mat as _impl
-
-    return _impl(mat_file, key=key)
-
-
-def load_los_vectors_from_mat(mat_file: Path, key: str = "b_HS") -> np.ndarray:
-    """
-    Load line-of-sight vectors from MATLAB .mat file.
-
-    .. deprecated::
-        Use :func:`curryer.correction.image_io.load_los_vectors_from_mat` instead.
-    """
-    warnings.warn(
-        "load_los_vectors_from_mat has moved to curryer.correction.image_io. "
-        "Importing from image_match is deprecated and will be removed in a future release.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from .image_io import load_los_vectors_from_mat as _impl
-
-    return _impl(mat_file, key=key)
