@@ -785,20 +785,32 @@ def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> Na
     >>> obs = load_named_image_grid(Path("TestCase1a_subimage.mat"), mat_key="subimage")
     >>> gcp = load_named_image_grid(Path("GCP12055Dili_regridded.nc"))
     """
-    filepath = Path(filepath)
-    suffix = filepath.suffix.lower()
     name = str(filepath)
+    lower_name = name.lower()
+
+    if lower_name.endswith(".netcdf"):
+        suffix = ".netcdf"
+    elif lower_name.endswith(".nc4"):
+        suffix = ".nc4"
+    elif lower_name.endswith(".nc"):
+        suffix = ".nc"
+    elif lower_name.endswith(".mat"):
+        suffix = ".mat"
+    else:
+        suffix = ""
+
+    loader_filepath = filepath if isinstance(filepath, Path) else (name if "://" in name else Path(name))
 
     if suffix == ".mat":
-        result = _load_mat_image_grid(filepath, key=mat_key)
+        result = _load_mat_image_grid(loader_filepath, key=mat_key)
         return NamedImageGrid(data=result.data, lat=result.lat, lon=result.lon, h=result.h, name=name)
 
     if suffix in (".nc", ".netcdf", ".nc4"):
-        grid = _load_netcdf_image_grid(filepath)
+        grid = _load_netcdf_image_grid(loader_filepath)
         return NamedImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon, h=grid.h, name=name)
 
     raise ValueError(
-        f"Unrecognised file extension '{suffix}' for {filepath}. Supported formats: .mat, .nc, .netcdf, .nc4"
+        f"Unrecognised file extension '{suffix}' for {name}. Supported formats: .mat, .nc, .netcdf, .nc4"
     )
 
 
