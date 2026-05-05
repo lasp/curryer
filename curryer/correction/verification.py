@@ -1049,9 +1049,9 @@ def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | 
 
 
 def _run_image_matching_for_pairs(
-    pairs: list[tuple[Path, Path]],
-    los_file: Path,
-    psf_file: Path,
+    pairs: list[tuple[str | Path, str | Path]],
+    los_file: str | Path,
+    psf_file: str | Path,
     config: CorrectionConfig,
     default_altitude_m: float = 400_000.0,
 ) -> list[xr.Dataset]:
@@ -1376,18 +1376,18 @@ def verify(
                 "Supply the instrument LOS-vector and PSF calibration .mat files."
             )
 
-        pairs: list[tuple[Path, Path]] = []
+        pairs: list[tuple[str | Path, str | Path]] = []
         for pair in gcp_pairs:
             if not isinstance(pair, (tuple, list)) or len(pair) != 2:
                 raise ValueError("Each entry in gcp_pairs must be a 2-item (observation_path, gcp_path) pair.")
             obs_p, gcp_p = pair
-            pairs.append((Path(str(obs_p)), Path(str(gcp_p))))
+            pairs.append((str(obs_p), str(gcp_p)))
 
         logger.info("Running image matching on %d explicit observation/GCP pair(s)", len(pairs))
         matched = _run_image_matching_for_pairs(
             pairs,
-            Path(str(los_file)),
-            Path(str(psf_file)),
+            str(los_file),
+            str(psf_file),
             config,
             default_altitude_m=default_altitude_m,
         )
@@ -1436,8 +1436,8 @@ def verify(
 
         matched = _run_image_matching_for_pairs(
             raw_pairs,
-            Path(str(los_file)),
-            Path(str(psf_file)),
+            str(los_file),
+            str(psf_file),
             config,
             default_altitude_m=default_altitude_m,
         )
