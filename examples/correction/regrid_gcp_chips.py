@@ -5,29 +5,29 @@ Usage
 -----
 Single file::
 
-    python scripts/regrid_gcp_chips.py input.hdf output_dir/
+    python examples/correction/regrid_gcp_chips.py input.hdf output_dir/
 
 Directory of HDF files::
 
-    python scripts/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/
+    python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/
 
 Custom resolution and glob pattern::
 
-    python scripts/regrid_gcp_chips.py /data/ /out/ \\
+    python examples/correction/regrid_gcp_chips.py /data/ /out/ \\
         --pattern "LT08CHP.*.hdf" \\
         --resolution 0.001 0.001
 
 Resume an interrupted run (skip already-converted files)::
 
-    python scripts/regrid_gcp_chips.py /data/ /out/ --skip-existing
+    python examples/correction/regrid_gcp_chips.py /data/ /out/ --skip-existing
 
 Preview what would be processed without writing any files::
 
-    python scripts/regrid_gcp_chips.py /data/ /out/ --dry-run
+    python examples/correction/regrid_gcp_chips.py /data/ /out/ --dry-run
 
 See all options::
 
-    python scripts/regrid_gcp_chips.py --help
+    python examples/correction/regrid_gcp_chips.py --help
 """
 
 from __future__ import annotations
