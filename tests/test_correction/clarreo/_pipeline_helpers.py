@@ -97,7 +97,7 @@ def run_upstream_pipeline(
     tlm_df.to_csv(tlm_csv)
     sci_df.to_csv(sci_csv)
 
-    config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
     config._image_matching_override = synthetic_image_matching
 
     tlm_sci_gcp_sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
@@ -225,7 +225,7 @@ def run_downstream_pipeline(
         boresight_name=base_config.boresight_name,
         transformation_matrix_name=base_config.transformation_matrix_name,
     )
-    config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
     config.validate()
 
     # --- STEP 4: iterate ---
