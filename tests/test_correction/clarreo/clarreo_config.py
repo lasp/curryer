@@ -103,7 +103,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_base_v01.attitude.ck.json",
-            data=dict(
+            spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values in arcseconds
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
                 sigma=30.0,  # Standard deviation for offset sampling (arcseconds)
@@ -117,7 +117,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
-            data=dict(
+            spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
                 bounds=[-200.0, 200.0],  # Smaller offset range for yoke
                 sigma=20.0,
@@ -131,7 +131,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
-            data=dict(
+            spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
                 bounds=[-300.0, 300.0],  # Offset range for HySICS instrument
                 sigma=30.0,
@@ -147,7 +147,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_az_v01.attitude.ck.json",
-            data=dict(
+            spec=dict(
                 field="hps.az_ang_nonlin",  # Telemetry field to modify
                 current_value=0.0,  # Baseline azimuth bias (arcseconds)
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
@@ -162,7 +162,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_el_v01.attitude.ck.json",
-            data=dict(
+            spec=dict(
                 field="hps.el_ang_nonlin",  # Telemetry field to modify
                 current_value=0.0,  # Baseline elevation bias (arcseconds)
                 bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
@@ -179,7 +179,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         correction.ParameterConfig(
             ptype=correction.ParameterType.OFFSET_TIME,
             config_file=None,  # No config file needed for time corrections
-            data=dict(
+            spec=dict(
                 field="corrected_timestamp",  # Science timing field to modify
                 current_value=0.0,  # Baseline timing offset (milliseconds)
                 bounds=[-50.0, 50.0],  # Offset limits in milliseconds (around 0)
@@ -286,19 +286,19 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
                 "name": param.config_file.name if param.config_file else f"time_correction_{i}",
                 "parameter_type": param.ptype.name,
                 "config_file": str(param.config_file) if param.config_file else None,
-                "current_value": param.data.get("current_value"),
-                "bounds": param.data.get("bounds"),
-                "sigma": param.data.get("sigma"),
-                "units": param.data.get("units"),
-                "distribution": param.data.get("distribution"),
-                "field": param.data.get("field"),
+                "current_value": param.spec.get("current_value"),
+                "bounds": param.spec.get("bounds"),
+                "sigma": param.spec.get("sigma"),
+                "units": param.spec.get("units"),
+                "distribution": param.spec.get("distribution"),
+                "field": param.spec.get("field"),
             }
 
             # Add optional fields if they exist
-            if "transformation_type" in param.data:
-                param_dict["transformation_type"] = param.data["transformation_type"]
-            if "coordinate_frames" in param.data:
-                param_dict["coordinate_frames"] = param.data["coordinate_frames"]
+            if "transformation_type" in param.spec:
+                param_dict["transformation_type"] = param.spec["transformation_type"]
+            if "coordinate_frames" in param.spec:
+                param_dict["coordinate_frames"] = param.spec["coordinate_frames"]
 
             config_dict["correction"]["parameters"].append(param_dict)
 
