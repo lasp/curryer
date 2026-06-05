@@ -92,7 +92,7 @@ Finished: all 100 file(s) processed successfully.
 
 ```bash
 # Already processed 60/100 — pick up from where it stopped
-python scripts/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/ --skip-existing
+python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/ --skip-existing
 ```
 
 ### Preview before committing
