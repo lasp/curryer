@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
-import logging
 import os
 
 import pytest
 
 from curryer.correction.dataio import S3Configuration, find_netcdf_objects
-
-logger = logging.getLogger(__name__)
 
 _NEEDS_AWS = pytest.mark.skipif(
     not ((os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY")) or os.getenv("C9_USER")),

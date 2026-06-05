@@ -29,9 +29,6 @@ from curryer.correction import correction
 from curryer.correction.config import DataConfig
 from curryer.correction.verification import _extract_spacecraft_position_midframe
 
-logger = logging.getLogger(__name__)
-
-
 # ── shared fixtures ───────────────────────────────────────────────────────────
 
 

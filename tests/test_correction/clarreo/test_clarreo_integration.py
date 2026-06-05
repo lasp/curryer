@@ -1,15 +1,14 @@
-"""CLARREO end-to-end integration tests.
+"""CLARREO correction integration tests.
 
 Exercises the upstream (kernel creation + geolocation) and downstream
-(GCP pairing + image matching + error statistics) pipelines using
-CLARREO test data.
+(GCP pairing + image matching + error statistics) pipeline *segments*
+independently using CLARREO test data — these validate each segment in
+isolation rather than a single end-to-end run.
 
 Extra tests (require GMTED data or SPICE binaries): ``pytest --run-extra``
 """
 
 from __future__ import annotations
-
-import logging
 
 import numpy as np
 import pytest
@@ -29,8 +28,6 @@ from _synthetic_helpers import (
 from clarreo_config import create_clarreo_correction_config
 
 from curryer.correction.config import DataConfig
-
-logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
