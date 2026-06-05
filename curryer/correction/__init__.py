@@ -8,6 +8,10 @@ Sub-module layout
 config
     Config dataclasses (``CorrectionConfig``, ``ParameterConfig``, etc.)
     and the ``ParameterType`` enum.
+io_config
+    NetCDF output configuration and standard attribute definitions
+    (:class:`NetCDFConfig`, :class:`NetCDFParameterMetadata`,
+    :data:`DEFAULT_NETCDF_ATTRIBUTES`, :data:`STANDARD_VAR_NAMES`).
 parameters
     Random parameter-set generation (:func:`load_param_sets`).
 kernel_ops
@@ -25,7 +29,9 @@ correction
 correction_config
     Utilities for reading and validating JSON config files.
 data_structures
-    Shared data-container dataclasses (``ImageGrid``, ``PSFGrid``, ...).
+    Backward-compatibility re-export shim — import from grid_types or config instead.
+grid_types
+    Pure grid data containers (``ImageGrid``, ``PSFGrid``, ...).
 dataio
     Validation helpers and S3 data-access utilities.  The S3 utilities
     (``S3Configuration``, ``find_netcdf_objects``, ``download_netcdf_objects``)
@@ -58,9 +64,11 @@ from . import (
     data_structures,
     dataio,
     error_stats,
+    grid_types,
     image_io,
     image_match,
     io,
+    io_config,
     kernel_ops,
     pairing,
     parameters,
@@ -82,13 +90,17 @@ from .config import (
     NetCDFConfig,
     NetCDFParameterMetadata,
     ParameterConfig,
+    ParameterSpec,
     ParameterType,
+    PSFSamplingConfig,
+    RegridConfig,
     RequirementsConfig,
+    SearchConfig,
     SearchStrategy,
     load_config_from_json,
 )
-from .data_structures import ImageGrid, PSFGrid, PSFSamplingConfig, RegridConfig, SearchConfig
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
+from .grid_types import ImageGrid, PSFGrid
 from .image_io import (
     geolocated_to_image_grid,
     infer_spacecraft_state,
@@ -112,9 +124,11 @@ __all__ = [
     "data_structures",
     "dataio",
     "error_stats",
+    "grid_types",
     "image_io",
     "image_match",
     "io",
+    "io_config",
     "kernel_ops",
     "pairing",
     "parameters",
@@ -133,6 +147,7 @@ __all__ = [
     "NetCDFConfig",
     "NetCDFParameterMetadata",
     "ParameterConfig",
+    "ParameterSpec",
     "ParameterType",
     "RequirementsConfig",
     "SearchStrategy",
