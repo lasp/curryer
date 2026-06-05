@@ -167,7 +167,7 @@ class VerificationResult(BaseModel):
     warnings: list[str]
     timestamp: datetime
 
-    # Provenance fields (Prompt 5) — all optional so existing callers are unaffected.
+    # Provenance fields — all optional so existing callers are unaffected.
     files_processed: list[str] = Field(default_factory=list)
     elapsed_time_s: float | None = None
     config_snapshot: dict | None = None
