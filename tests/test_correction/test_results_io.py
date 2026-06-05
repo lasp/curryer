@@ -7,14 +7,10 @@ Covers:
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 from clarreo_config import create_clarreo_correction_config
 
 from curryer.correction import correction
-
-logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="module")

@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.io import loadmat
 
-from curryer.correction.data_structures import NamedImageGrid
+from curryer.correction.grid_types import NamedImageGrid
 from curryer.correction.pairing import find_l1a_gcp_pairs
-
-logger = logging.getLogger(__name__)
 
 # ── test-case metadata ────────────────────────────────────────────────────────
 

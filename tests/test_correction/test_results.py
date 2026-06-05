@@ -1,4 +1,4 @@
-"""Tests for ``curryer.correction.results`` and Prompt-5 additions.
+"""Tests for ``curryer.correction.results``.
 
 Covers
 ------

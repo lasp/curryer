@@ -6,7 +6,6 @@ CLARREO-specific S3 integration tests live in ``clarreo/test_clarreo_dataio.py``
 from __future__ import annotations
 
 import datetime as dt
-import logging
 from pathlib import Path
 
 import pandas as pd
@@ -19,9 +18,6 @@ from curryer.correction.dataio import (
     validate_science_output,
     validate_telemetry_output,
 )
-
-logger = logging.getLogger(__name__)
-
 
 # ── FakeS3Client ──────────────────────────────────────────────────────────────
 

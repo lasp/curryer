@@ -8,7 +8,6 @@ Covers:
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +20,6 @@ from curryer import meta
 from curryer import spicierpy as sp
 from curryer.correction import correction
 from curryer.kernels import create
-
-logger = logging.getLogger(__name__)
 
 # ── shared sample data ────────────────────────────────────────────────────────
 

@@ -128,7 +128,7 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
     cfg = clarreo_cfg.model_copy(deep=True)
-    cfg.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    cfg.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
     tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), cfg)
     assert isinstance(tlm_ds, pd.DataFrame)
     assert isinstance(sci_ds, pd.DataFrame)
@@ -148,7 +148,7 @@ def test_loop_optimized(root_dir, tmp_path):
     tlm_csv, sci_csv = work / "tlm.csv", work / "sci.csv"
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
-    config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
     config._image_matching_override = synthetic_image_matching
     sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
     np.random.seed(42)
@@ -183,7 +183,7 @@ class TestExtractSpacecraftPositionMidframe:
     """Tests for _extract_spacecraft_position_midframe with position_columns."""
 
     def test_explicit_position_columns_used(self):
-        """config.data.position_columns should be used directly."""
+        """config.data_config.position_columns should be used directly."""
         telemetry = pd.DataFrame(
             {
                 "my_x": [1.0, 2.0, 3.0],
@@ -192,7 +192,7 @@ class TestExtractSpacecraftPositionMidframe:
             }
         )
         config = MagicMock()
-        config.data = DataConfig(position_columns=["my_x", "my_y", "my_z"])
+        config.data_config = DataConfig(position_columns=["my_x", "my_y", "my_z"])
 
         result = _extract_spacecraft_position_midframe(telemetry, config=config)
 
@@ -202,7 +202,7 @@ class TestExtractSpacecraftPositionMidframe:
         """Result should be a float64 ndarray of shape (3,)."""
         telemetry = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]})
         config = MagicMock()
-        config.data = DataConfig(position_columns=["a", "b", "c"])
+        config.data_config = DataConfig(position_columns=["a", "b", "c"])
 
         result = _extract_spacecraft_position_midframe(telemetry, config=config)
 
@@ -213,7 +213,7 @@ class TestExtractSpacecraftPositionMidframe:
         """position_columns with != 3 entries should raise ValueError."""
         telemetry = pd.DataFrame({"x": [1.0], "y": [2.0]})
         config = MagicMock()
-        config.data = DataConfig(position_columns=["x", "y"])
+        config.data_config = DataConfig(position_columns=["x", "y"])
 
         with pytest.raises(ValueError, match="exactly 3 entries"):
             _extract_spacecraft_position_midframe(telemetry, config=config)
@@ -222,7 +222,7 @@ class TestExtractSpacecraftPositionMidframe:
         """position_columns referencing nonexistent columns should raise ValueError."""
         telemetry = pd.DataFrame({"x": [1.0], "y": [2.0], "z": [3.0]})
         config = MagicMock()
-        config.data = DataConfig(position_columns=["x", "y", "MISSING"])
+        config.data_config = DataConfig(position_columns=["x", "y", "MISSING"])
 
         with pytest.raises(ValueError, match="not found in telemetry"):
             _extract_spacecraft_position_midframe(telemetry, config=config)
@@ -231,7 +231,7 @@ class TestExtractSpacecraftPositionMidframe:
         """When position_columns is None, fall back to pattern-guessing with warning."""
         telemetry = _make_telemetry()
         config = MagicMock()
-        config.data = None  # position_columns not configured
+        config.data_config = None  # position_columns not configured
 
         with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
             result = _extract_spacecraft_position_midframe(telemetry, config=config)

@@ -3,7 +3,7 @@
 Covers:
 - Construction and field validation for all BaseModel subclasses
 - ``DataConfig`` config-driven data loading configuration
-- ``ParameterData`` backward-compatible dict-style access
+- ``ParameterSpec`` backward-compatible dict-style access
 - JSON round-trip: ``config == CorrectionConfig.model_validate_json(config.model_dump_json())``
 - ``ValidationError`` raised with field-level messages for invalid inputs
 - Callable / loader fields excluded from JSON serialisation
@@ -21,7 +21,7 @@ from curryer.correction.config import (
     NetCDFConfig,
     NetCDFParameterMetadata,
     ParameterConfig,
-    ParameterData,
+    ParameterSpec,
     ParameterType,
     load_config_from_json,
 )
@@ -165,13 +165,13 @@ class TestDataConfig:
             geo=geo,
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
-            data=DataConfig(file_format="csv", time_scale_factor=1e6),
+            data_config=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
         json_str = cfg.model_dump_json()
         restored = CorrectionConfig.model_validate_json(json_str)
-        assert restored.data is not None
-        assert restored.data.file_format == "csv"
-        assert restored.data.time_scale_factor == 1e6
+        assert restored.data_config is not None
+        assert restored.data_config.file_format == "csv"
+        assert restored.data_config.time_scale_factor == 1e6
 
     def test_none_data_field_is_valid(self, geo, param_constant):
         """CorrectionConfig.data may be None (backward compat)."""
@@ -182,17 +182,17 @@ class TestDataConfig:
             performance_threshold_m=250.0,
             performance_spec_percent=39.0,
         )
-        assert cfg.data is None
+        assert cfg.data_config is None
 
 
 # ===========================================================================
-# ParameterData – construction and typed fields
+# ParameterSpec – construction and typed fields
 # ===========================================================================
 
 
-class TestParameterData:
+class TestParameterSpec:
     def test_construction_with_all_fields(self):
-        pd = ParameterData(
+        pd = ParameterSpec(
             current_value=[1.0, 2.0, 3.0],
             bounds=[-100.0, 100.0],
             sigma=10.0,
@@ -207,7 +207,7 @@ class TestParameterData:
         assert pd.units == "arcseconds"
 
     def test_defaults(self):
-        pd = ParameterData()
+        pd = ParameterSpec()
         assert pd.current_value == 0.0
         assert pd.sigma is None
         assert pd.units is None
@@ -216,50 +216,50 @@ class TestParameterData:
     # -- dict-style backward compat -------------------------------------------
 
     def test_get_returns_value(self):
-        pd = ParameterData(sigma=30.0, units="arcseconds")
+        pd = ParameterSpec(sigma=30.0, units="arcseconds")
         assert pd.get("sigma") == 30.0
         assert pd.get("units") == "arcseconds"
 
     def test_get_returns_default_for_none_field(self):
-        pd = ParameterData()  # sigma=None by default
+        pd = ParameterSpec()  # sigma=None by default
         assert pd.get("sigma", "N/A") == "N/A"
         assert pd.get("sigma") is None
 
     def test_get_nonexistent_key_returns_default(self):
-        pd = ParameterData()
+        pd = ParameterSpec()
         assert pd.get("no_such_key", "MISSING") == "MISSING"
 
     def test_contains_true_for_non_none_field(self):
-        pd = ParameterData(sigma=30.0)
+        pd = ParameterSpec(sigma=30.0)
         assert "sigma" in pd
 
     def test_contains_false_for_none_field(self):
-        pd = ParameterData()  # sigma=None
+        pd = ParameterSpec()  # sigma=None
         assert "sigma" not in pd
 
     def test_contains_true_for_zero_sigma(self):
         """sigma=0.0 is explicitly set and must be found by 'in'."""
-        pd = ParameterData(sigma=0.0)
+        pd = ParameterSpec(sigma=0.0)
         assert "sigma" in pd
 
     def test_getitem_returns_value(self):
-        pd = ParameterData(sigma=5.0)
+        pd = ParameterSpec(sigma=5.0)
         assert pd["sigma"] == 5.0
 
     def test_getitem_raises_keyerror_for_missing_key(self):
-        pd = ParameterData()
+        pd = ParameterSpec()
         with pytest.raises(KeyError):
             _ = pd["totally_missing"]
 
     def test_extra_fields_allowed_and_accessible(self):
-        pd = ParameterData(my_custom_field="hello")
+        pd = ParameterSpec(my_custom_field="hello")
         assert pd.get("my_custom_field") == "hello"
         assert "my_custom_field" in pd
         assert pd["my_custom_field"] == "hello"
 
     def test_validation_error_for_non_numeric_sigma(self):
         with pytest.raises(ValidationError) as exc_info:
-            ParameterData(sigma="not-a-float")
+            ParameterSpec(sigma="not-a-float")
         assert "sigma" in str(exc_info.value)
 
 
@@ -270,18 +270,18 @@ class TestParameterData:
 
 class TestParameterConfig:
     def test_dict_coercion(self, param_constant):
-        """Passing data as a plain dict must produce a ParameterData instance."""
-        assert isinstance(param_constant.data, ParameterData)
+        """Passing data as a plain dict must produce a ParameterSpec instance."""
+        assert isinstance(param_constant.data, ParameterSpec)
         assert param_constant.data.sigma == 30.0
 
     def test_none_data_becomes_empty_parameter_data(self):
-        """data=None (old API) must be accepted and become a default ParameterData."""
+        """data=None (old API) must be accepted and become a default ParameterSpec."""
         pc = ParameterConfig(
             ptype=ParameterType.CONSTANT_KERNEL,
             config_file=Path("kernel.json"),
             data=None,
         )
-        assert isinstance(pc.data, ParameterData)
+        assert isinstance(pc.data, ParameterSpec)
 
     def test_no_config_file(self):
         pc = ParameterConfig(ptype=ParameterType.OFFSET_TIME, config_file=None)
@@ -495,11 +495,21 @@ class TestCorrectionConfig:
         minimal_config.validate(check_loaders=False)  # must not raise
         minimal_config.validate(check_loaders=True)  # must also not raise
 
-    def test_validate_method_raises_for_bad_n_iterations(self, minimal_config):
-        minimal_config.n_iterations = -1
-        with pytest.raises(ValueError, match="n_iterations"):
-            minimal_config.validate()
-        minimal_config.n_iterations = 5
+    def test_validate_method_is_noop(self, minimal_config):
+        """validate() is now a lightweight method that just emits a debug log."""
+        minimal_config.validate()  # must not raise regardless of field values
+
+    def test_pydantic_rejects_bad_n_iterations_at_construction(self, geo, param_constant):
+        """Pydantic enforces n_iterations > 0 at construction time."""
+        with pytest.raises(ValidationError) as exc_info:
+            CorrectionConfig(
+                n_iterations=-1,
+                parameters=[param_constant],
+                geo=geo,
+                performance_threshold_m=250.0,
+                performance_spec_percent=39.0,
+            )
+        assert "n_iterations" in str(exc_info.value)
 
     def test_correction_config_requires_no_earth_radius_m(self, geo, param_constant):
         """CorrectionConfig constructs successfully without earth_radius_m (field removed)."""
@@ -621,15 +631,15 @@ class TestJsonRoundTrip:
         reloaded = ParameterConfig.model_validate_json(json_str)
         assert param_constant == reloaded
 
-    def test_parameter_data_roundtrip_standalone(self):
-        pd = ParameterData(
+    def test_parameter_spec_roundtrip_standalone(self):
+        pd = ParameterSpec(
             current_value=[1.0, 2.0, 3.0],
             bounds=[-300.0, 300.0],
             sigma=30.0,
             units="arcseconds",
             coordinate_frames=["F1", "F2"],
         )
-        reloaded = ParameterData.model_validate_json(pd.model_dump_json())
+        reloaded = ParameterSpec.model_validate_json(pd.model_dump_json())
         assert pd == reloaded
 
     def test_roundtrip_with_none_seed(self, geo, param_constant):
