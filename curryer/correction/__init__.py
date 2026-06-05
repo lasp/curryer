@@ -28,8 +28,6 @@ correction
     ``from curryer.correction import correction`` import paths working.
 correction_config
     Utilities for reading and validating JSON config files.
-data_structures
-    Backward-compatibility re-export shim — import from grid_types or config instead.
 grid_types
     Pure grid data containers (``ImageGrid``, ``PSFGrid``, ...).
 dataio
@@ -61,7 +59,6 @@ from . import (
     config,
     correction,
     correction_config,
-    data_structures,
     dataio,
     error_stats,
     grid_types,
@@ -121,7 +118,6 @@ __all__ = [
     "config",
     "correction",
     "correction_config",
-    "data_structures",
     "dataio",
     "error_stats",
     "grid_types",
