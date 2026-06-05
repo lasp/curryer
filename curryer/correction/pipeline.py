@@ -372,7 +372,7 @@ def _load_image_pair_data(
         Path to the science frame timing file.
     config : CorrectionConfig
         Configuration containing geolocation settings, file format, and
-        time-scaling options (via ``config.data``).
+        time-scaling options (via ``config.data_config``).
 
     Returns
     -------
@@ -393,9 +393,9 @@ def _load_image_pair_data(
     file_format = "csv"
     time_scale_factor = 1.0
 
-    if config.data is not None:
-        file_format = config.data.file_format
-        time_scale_factor = config.data.time_scale_factor
+    if config.data_config is not None:
+        file_format = config.data_config.file_format
+        time_scale_factor = config.data_config.time_scale_factor
 
     # Load telemetry from file
     tlm_dataset = _load_file(tlm_key, file_format)
