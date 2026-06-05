@@ -3,9 +3,9 @@
 This module defines the data structures that represent the complete configuration
 for a correction analysis run, including:
 
-- ``ParameterType`` – enum of the three parameter variation strategies
-- ``ParameterSpec`` – typed container for a parameter's sampling spec
-- ``ParameterConfig`` – a single parameter to vary (kernel or time offset)
+- ``ParameterType`` – enum of the three parameter application strategies
+- ``ParameterSpec`` – sampling specification for a single correction parameter
+- ``ParameterConfig`` – assembles a parameter's type, kernel file, and sampling spec
 - ``GeolocationConfig`` – SPICE kernel paths and instrument settings
 - ``NetCDFParameterMetadata`` / ``NetCDFConfig`` – NetCDF output metadata (re-exported from io_config)
 - ``CorrectionConfig`` – the single top-level config object passed to ``pipeline.loop()``
@@ -21,6 +21,51 @@ All config objects are ``pydantic.BaseModel`` subclasses which provide:
 - Automatic type validation and clear ``ValidationError`` messages on construction
 - Free JSON serialization via ``model_dump_json()`` / ``model_validate_json()``
 - IDE autocomplete on every field
+
+Parameter configuration — three cooperating classes
+----------------------------------------------------
+These three classes each capture a distinct, orthogonal concern:
+
+``ParameterType`` (enum)
+    *How the value is applied to the pipeline.*  Each member maps to a different
+    pipeline code path:
+
+    - ``CONSTANT_KERNEL`` — replace the kernel value with the sampled value
+    - ``OFFSET_KERNEL``   — shift the existing kernel value by the sampled offset
+    - ``OFFSET_TIME``     — shift the input timestamps by the sampled offset
+
+    ``ParameterType`` belongs on :class:`ParameterConfig` (not on
+    :class:`ParameterSpec`) because it describes application mechanics, not
+    sampling statistics.
+
+``ParameterSpec``
+    *How to draw samples.*  Holds the statistical description of the search
+    space: the nominal ``current_value``, the ``bounds`` that clip samples, the
+    ``sigma`` for normal-distribution sampling, physical ``units``, and optional
+    ``field`` / ``coordinate_frames`` hints consumed by kernel-creation routines.
+    ``ParameterSpec`` is intentionally agnostic about how any drawn value will
+    be applied — that is ``ParameterType``'s job.
+
+``ParameterConfig``
+    *Assembles the three concerns.*  A single ``ParameterConfig`` answers:
+    "vary *this* kernel file (``config_file``), applied as *this kind* of change
+    (``ptype``), drawing samples according to *this spec* (``spec``)."
+    ``ParameterConfig`` is also the right place for cross-field validation (e.g.
+    confirming that ``data.field`` is provided whenever ``ptype`` requires it).
+
+Typical construction::
+
+    ParameterConfig(
+        ptype=ParameterType.OFFSET_TIME,
+        config_file=None,          # time offsets need no kernel file
+        spec=ParameterSpec(
+            current_value=0.0,
+            bounds=[-50.0, 50.0],
+            sigma=10.0,
+            units="milliseconds",
+            field="time_ugps",     # required for OFFSET_KERNEL / OFFSET_TIME
+        ),
+    )
 """
 
 import json
@@ -111,7 +156,7 @@ class DataConfig(BaseModel):
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
     time_scale_factor: float = 1.0
     # Explicit column name mappings for telemetry spacecraft-position data.
-    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"].  None means use mission defaults.
+    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"]. None means use mission defaults from the geolocation configuration.
     position_columns: list[str] | None = None
 
 
@@ -121,6 +166,21 @@ class DataConfig(BaseModel):
 
 
 class ParameterType(Enum):
+    """Parameter types used in the correction configuration.
+
+    Specifies how a parameter is applied during geolocation analysis:
+    whether as a constant kernel value, a kernel offset, or a time offset.
+
+    Attributes
+    ----------
+    CONSTANT_KERNEL
+        Set a specific kernel value (e.g., fixed rotation angles).
+    OFFSET_KERNEL
+        Modify input kernel data by an offset.
+    OFFSET_TIME
+        Modify input timetags by an offset.
+    """
+
     CONSTANT_KERNEL = auto()  # Set a specific value.
     OFFSET_KERNEL = auto()  # Modify input kernel data by an offset.
     OFFSET_TIME = auto()  # Modify input timetags by an offset
@@ -160,7 +220,7 @@ class ParameterSpec(BaseModel):
 
     Supports dict-style access (``get``, ``__getitem__``, ``__contains__``)
     for backward compatibility with code written against the old ``dict``-based
-    ``ParameterConfig.data`` API.
+    ``ParameterConfig.spec`` API.
 
     Attributes
     ----------
@@ -244,7 +304,7 @@ class ParameterConfig(BaseModel):
     config_file
         Path to the SPICE kernel JSON template, or ``None`` for time
         offsets that require no kernel file.
-    data
+    spec
         Sampling specification.  Accepts a plain ``dict`` or ``None`` on
         construction (Pydantic coerces both to :class:`ParameterSpec`
         automatically; ``None`` becomes an empty ``ParameterSpec()``).
@@ -252,15 +312,15 @@ class ParameterConfig(BaseModel):
 
     ptype: ParameterType
     config_file: Path | None = None
-    data: ParameterSpec = Field(default_factory=ParameterSpec)
+    spec: ParameterSpec = Field(default_factory=ParameterSpec)
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_none_data(cls, values: Any) -> Any:
-        """Convert ``data=None`` to an empty ``ParameterSpec`` (backward compat)."""
-        if isinstance(values, dict) and values.get("data") is None:
+    def _coerce_none_spec(cls, values: Any) -> Any:
+        """Convert ``spec=None`` to an empty ``ParameterSpec`` (backward compat)."""
+        if isinstance(values, dict) and values.get("spec") is None:
             values = dict(values)
-            values["data"] = {}
+            values["spec"] = {}
         return values
 
 
@@ -649,12 +709,39 @@ class CorrectionConfig(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _populate_netcdf_config(self) -> "CorrectionConfig":
+        """Auto-populate :attr:`netcdf` with defaults when it is not supplied.
+
+        Guarantees ``config.netcdf`` is always a usable :class:`NetCDFConfig`,
+        so downstream result/IO code can read it without a ``None`` guard.  The
+        default threshold is inherited from :attr:`performance_threshold_m`.
+        """
+        if self.netcdf is None:
+            self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
+        return self
+
     # ------------------------------------------------------------------
     # Methods
     # ------------------------------------------------------------------
 
-    def get_calibration_file(self, file_type: str, default: str = None) -> str:
-        """Get calibration filename for given type with fallback to default."""
+    def get_calibration_file(self, file_type: str, default: str | None = None) -> str:
+        """Return the configured calibration filename for *file_type*.
+
+        Parameters
+        ----------
+        file_type : str
+            Calibration file key (e.g. ``"psf"`` or ``"los_vectors"``) to look
+            up in :attr:`calibration_file_names`.
+        default : str, optional
+            Filename returned when *file_type* is not present in
+            :attr:`calibration_file_names`.
+
+        Raises
+        ------
+        ValueError
+            If *file_type* is unconfigured and no *default* is given.
+        """
         if self.calibration_file_names and file_type in self.calibration_file_names:
             return self.calibration_file_names[file_type]
         if default:
@@ -674,7 +761,13 @@ class CorrectionConfig(BaseModel):
         logger.debug("CorrectionConfig validation passed")
 
     def ensure_netcdf_config(self):
-        """Ensure NetCDFConfig exists, creating with defaults if needed."""
+        """Ensure :attr:`netcdf` exists, creating it with defaults if needed.
+
+        Retained for backward compatibility.  As of the ``_populate_netcdf_config``
+        model validator, :attr:`netcdf` is auto-populated at construction, so this
+        is normally a no-op; it still guards against ``netcdf`` being reset to
+        ``None`` after construction.
+        """
         if self.netcdf is None:
             self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
 
@@ -834,7 +927,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
             }
 
         parameters.append(
-            ParameterConfig(ptype=group_data["type"], config_file=group_data["config_file"], data=param_data)
+            ParameterConfig(ptype=group_data["type"], config_file=group_data["config_file"], spec=param_data)
         )
 
     logger.info(
