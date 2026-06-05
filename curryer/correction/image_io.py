@@ -33,7 +33,9 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from .data_structures import ImageGrid, NamedImageGrid, OpticalPSFEntry
+from curryer.correction.io import resolve_path
+
+from .grid_types import ImageGrid, NamedImageGrid, OpticalPSFEntry
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +69,6 @@ def _load_mat_image_grid(filepath: Path, key: str) -> ImageGrid:
         If *key* is not present in the file.
     """
     from scipy.io import loadmat
-
-    from curryer.correction.io import resolve_path
 
     filepath = resolve_path(filepath)
     mat_data = loadmat(str(filepath), squeeze_me=True, struct_as_record=False)
@@ -121,7 +121,6 @@ def load_image_grid(filepath: Path | str, mat_key: str = "subimage") -> ImageGri
     >>> obs = load_image_grid(Path("subimage.mat"), mat_key="subimage")
     >>> gcp = load_image_grid(Path("GCP12055_regridded.nc"))
     """
-    from curryer.correction.io import resolve_path
 
     # Extract the suffix from the original path *before* resolving so that S3
     # URIs (which resolve to temp files with mangled names) dispatch correctly.
@@ -163,8 +162,6 @@ def load_optical_psf(mat_file: str | Path, key: str = "PSF_struct_675nm") -> lis
         If PSF entries missing field angle attribute.
     """
     from scipy.io import loadmat
-
-    from curryer.correction.io import resolve_path
 
     mat_file = resolve_path(mat_file)
     # resolve_path already validated existence / downloaded from S3.
@@ -234,8 +231,6 @@ def load_los_vectors(mat_file: str | Path, key: str = "b_HS") -> np.ndarray:
     """
     from scipy.io import loadmat
 
-    from curryer.correction.io import resolve_path
-
     mat_file = resolve_path(mat_file)
     # resolve_path already validated existence / downloaded from S3.
 
@@ -300,8 +295,6 @@ def _load_netcdf_image_grid(
         If a required variable (band, lat, or lon) is not found.
     """
     import xarray as xr
-
-    from curryer.correction.io import resolve_path
 
     # resolve_path validates local existence and downloads S3 URIs.
     filepath = resolve_path(filepath)
@@ -851,8 +844,6 @@ def load_observation_file(
     """
     import xarray as xr
 
-    from curryer.correction.io import resolve_path
-
     # Extract the suffix from the original path *before* resolving so that S3
     # URIs (whose temp-file names may differ) dispatch correctly.
     suffix = Path(str(filepath)).suffix.lower()
@@ -888,68 +879,17 @@ def infer_spacecraft_state(
     r_spacecraft_m: np.ndarray | None,
     default_altitude_m: float = 400_000.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return ``(r_spacecraft_m, boresight, t_matrix)`` for image-matching.
+    """Deprecated — use ``resolve_spacecraft_ecef`` from ``curryer.correction.psf`` instead."""
+    import warnings
 
-    When *r_spacecraft_m* is provided it is used directly; the boresight is
-    the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
-    grid centre lat/lon is used to build an approximate nadir position at
-    *default_altitude_m* above the WGS-84 ellipsoid surface.
-
-    The rotation matrix is always the ``3×3`` identity — the boresight is
-    already expressed in the CTRS frame via the nadir-approximation, so no
-    additional rotation is needed.
-
-    Parameters
-    ----------
-    grid : ImageGrid
-        Observation grid, used for the centre lat/lon when *r_spacecraft_m*
-        is ``None``.
-    r_spacecraft_m : ndarray of shape (3,) or None
-        Spacecraft ECEF position in metres.  Pass ``None`` to fall back to
-        the nadir approximation.
-    default_altitude_m : float, optional
-        Spacecraft altitude above the WGS-84 surface (metres) used when
-        *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
-        Override for other spacecraft (e.g. 505 000 m for CTIM).
-
-    Returns
-    -------
-    r_spacecraft_m : ndarray, shape (3,)
-        ECEF spacecraft position in metres.
-    boresight : ndarray, shape (3,)
-        Nadir unit vector from spacecraft toward Earth centre.
-    t_matrix : ndarray, shape (3, 3)
-        Identity rotation matrix.
-    """
-    from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
-
-    if r_spacecraft_m is not None:
-        r = np.asarray(r_spacecraft_m, dtype=float).ravel()
-        boresight = -r / np.linalg.norm(r)
-        return r, boresight, np.eye(3)
-
-    # Approximate nadir from grid centre lat/lon
-    mid_i, mid_j = grid.mid_indices
-    lat = float(grid.lat[mid_i, mid_j])
-    lon = float(grid.lon[mid_i, mid_j])
-    lat_r = np.deg2rad(lat)
-    lon_r = np.deg2rad(lon)
-    nadir_hat = np.array(
-        [
-            np.cos(lat_r) * np.cos(lon_r),
-            np.cos(lat_r) * np.sin(lon_r),
-            np.sin(lat_r),
-        ]
+    warnings.warn(
+        "infer_spacecraft_state is deprecated. Use curryer.correction.psf.resolve_spacecraft_ecef instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    r_approx = (WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
-    logger.debug(
-        "No spacecraft position in observation file — approximating nadir "
-        "from grid centre (lat=%.2f, lon=%.2f, alt=%.0f m)",
-        lat,
-        lon,
-        default_altitude_m,
-    )
-    return r_approx, -nadir_hat, np.eye(3)
+    from curryer.correction.psf import resolve_spacecraft_ecef
+
+    return resolve_spacecraft_ecef(grid, r_spacecraft_m, default_altitude_m)
 
 
 def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:
