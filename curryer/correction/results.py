@@ -297,9 +297,22 @@ def build_correction_result(
         worst_rms = float("nan")
         mean_rms = float("nan")
 
-    # Extract 1-D parameter arrays (param_* keys)
+    # Extract parameter arrays using the same naming rules as results_io.
+    from curryer.correction.config import ParameterType  # local import to avoid cycles
+
+    param_keys: list[str] = []
+    for p in config.parameters:
+        if p.ptype == ParameterType.CONSTANT_KERNEL:
+            for angle in ("roll", "pitch", "yaw"):
+                param_keys.append(config.netcdf.get_parameter_netcdf_metadata(p, angle).variable_name)
+        else:
+            param_keys.append(config.netcdf.get_parameter_netcdf_metadata(p).variable_name)
+
+    # Keep only keys that are present and are 1-D arrays in netcdf_data
     param_keys = [
-        k for k, v in netcdf_data.items() if k.startswith("param_") and isinstance(v, np.ndarray) and v.ndim == 1
+        k
+        for k in param_keys
+        if isinstance(netcdf_data.get(k), np.ndarray) and netcdf_data[k].ndim == 1
     ]
 
     # Build per-set results
