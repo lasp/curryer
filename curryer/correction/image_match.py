@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .data_structures import (
+from .config import PSFSamplingConfig, SearchConfig
+from .grid_types import (
     ImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
     PSFGrid,
-    PSFSamplingConfig,
-    SearchConfig,
 )
 from .psf import (
     convolve_gcp_with_psf,
