@@ -72,7 +72,7 @@ def regrid_one(
     band_name : str
         HDF dataset name for the radiometric band (default ``"Band_1"``).
     """
-    from curryer.correction.data_structures import RegridConfig
+    from curryer.correction.config import RegridConfig
     from curryer.correction.image_io import load_gcp_chip_from_hdf
     from curryer.correction.regrid import regrid_gcp_chip
 
