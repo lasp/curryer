@@ -4,10 +4,10 @@ This module defines the data structures that represent the complete configuratio
 for a correction analysis run, including:
 
 - ``ParameterType`` – enum of the three parameter variation strategies
-- ``ParameterData`` – typed container for a parameter's sampling spec
+- ``ParameterSpec`` – typed container for a parameter's sampling spec
 - ``ParameterConfig`` – a single parameter to vary (kernel or time offset)
 - ``GeolocationConfig`` – SPICE kernel paths and instrument settings
-- ``NetCDFParameterMetadata`` / ``NetCDFConfig`` – NetCDF output metadata
+- ``NetCDFParameterMetadata`` / ``NetCDFConfig`` – NetCDF output metadata (re-exported from io_config)
 - ``CorrectionConfig`` – the single top-level config object passed to ``pipeline.loop()``
 - ``KernelContext``, ``CalibrationData``, ``ImageMatchingContext`` – lightweight NamedTuples
   used to pass state between pipeline helper functions
@@ -26,59 +26,27 @@ All config objects are ``pydantic.BaseModel`` subclasses which provide:
 import json
 import logging
 import warnings
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
+import curryer.correction.correction_config as _correction_config
 
 if TYPE_CHECKING:
     from curryer import meta
 
-# ============================================================================
-# Standard NetCDF Variable Attributes (Mission-Agnostic)
-# ============================================================================
+from curryer.correction.io_config import (  # noqa: E402, F401
+    DEFAULT_NETCDF_ATTRIBUTES,
+    STANDARD_VAR_NAMES,
+    NetCDFConfig,
+    NetCDFParameterMetadata,
+)
 
-STANDARD_NETCDF_ATTRIBUTES = {
-    # Geolocation error metrics (per GCP pair)
-    "rms_error_m": {"units": "meters", "long_name": "RMS geolocation error"},
-    "mean_error_m": {"units": "meters", "long_name": "Mean geolocation error"},
-    "max_error_m": {"units": "meters", "long_name": "Maximum geolocation error"},
-    "std_error_m": {"units": "meters", "long_name": "Standard deviation of geolocation error"},
-    "n_measurements": {"units": "count", "long_name": "Number of measurement points"},
-    # Aggregate performance metrics (per parameter set)
-    "mean_rms_all_pairs": {"units": "meters", "long_name": "Mean RMS error across all GCP pairs"},
-    "worst_pair_rms": {"units": "meters", "long_name": "Worst performing GCP pair RMS error"},
-    "best_pair_rms": {"units": "meters", "long_name": "Best performing GCP pair RMS error"},
-    # Image matching metrics (per GCP pair)
-    "im_lat_error_km": {"units": "kilometers", "long_name": "Image matching latitude error"},
-    "im_lon_error_km": {"units": "kilometers", "long_name": "Image matching longitude error"},
-    "im_ccv": {"units": "dimensionless", "long_name": "Image matching correlation coefficient"},
-    "im_grid_step_m": {"units": "meters", "long_name": "Image matching final grid step size"},
-}
-
-
-# ============================================================================
-# Standard Data Variable Names (Mission-Agnostic Keys)
-# ============================================================================
-
-# Standard variable names that should be present in image matching results.
-# Used for extracting data from xarray.Dataset objects.
-STANDARD_VAR_NAMES = {
-    # Error measurements (required)
-    "lat_error_deg": "lat_error_deg",
-    "lon_error_deg": "lon_error_deg",
-    # Spacecraft state (configurable names)
-    "spacecraft_position": "sc_position",  # Generic default
-    "boresight": "boresight",  # Generic default
-    "transformation_matrix": "t_inst2ref",  # Generic default
-    # Control point location (optional)
-    "gcp_lat_deg": "gcp_lat_deg",
-    "gcp_lon_deg": "gcp_lon_deg",
-    "gcp_alt": "gcp_alt",
-}
-
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Pipeline Helper NamedTuples (not config – pass-through state only)
@@ -183,7 +151,7 @@ class SearchStrategy(str, Enum):
     SINGLE_OFFSET = "single"
 
 
-class ParameterData(BaseModel):
+class ParameterSpec(BaseModel):
     """Typed sampling specification for a single correction parameter.
 
     Supports dict-style access (``get``, ``__getitem__``, ``__contains__``)
@@ -274,18 +242,18 @@ class ParameterConfig(BaseModel):
         offsets that require no kernel file.
     data
         Sampling specification.  Accepts a plain ``dict`` or ``None`` on
-        construction (Pydantic coerces both to :class:`ParameterData`
-        automatically; ``None`` becomes an empty ``ParameterData()``).
+        construction (Pydantic coerces both to :class:`ParameterSpec`
+        automatically; ``None`` becomes an empty ``ParameterSpec()``).
     """
 
     ptype: ParameterType
     config_file: Path | None = None
-    data: ParameterData = Field(default_factory=ParameterData)
+    data: ParameterSpec = Field(default_factory=ParameterSpec)
 
     @model_validator(mode="before")
     @classmethod
     def _coerce_none_data(cls, values: Any) -> Any:
-        """Convert ``data=None`` to an empty ``ParameterData`` (backward compat)."""
+        """Convert ``data=None`` to an empty ``ParameterSpec`` (backward compat)."""
         if isinstance(values, dict) and values.get("data") is None:
             values = dict(values)
             values["data"] = {}
@@ -326,106 +294,6 @@ class GeolocationConfig(BaseModel):
 
 
 # ============================================================================
-# NetCDF Output Configuration
-# ============================================================================
-
-
-class NetCDFParameterMetadata(BaseModel):
-    """NetCDF metadata for a single output parameter variable."""
-
-    variable_name: str
-    units: str
-    long_name: str
-
-
-class NetCDFConfig(BaseModel):
-    """Configuration for NetCDF output structure and metadata.
-
-    Attributes
-    ----------
-    performance_threshold_m
-        Accuracy threshold in metres used to derive threshold-specific
-        variable names (e.g. ``"percent_under_250m"``).
-    title
-        Global title attribute for the output NetCDF file.
-    description
-        Global description attribute for the output NetCDF file.
-    parameter_metadata
-        Optional mapping of parameter key → :class:`NetCDFParameterMetadata`.
-        Auto-generated from ``CorrectionConfig.parameters`` when ``None``.
-    standard_attributes
-        Optional mission-specific attribute overrides.  Falls back to the
-        module-level :data:`STANDARD_NETCDF_ATTRIBUTES` when ``None``.
-    """
-
-    performance_threshold_m: float
-    title: str = "Correction Geolocation Analysis Results"
-    description: str = "Parameter sensitivity analysis"
-    parameter_metadata: dict[str, NetCDFParameterMetadata] | None = None
-    standard_attributes: dict[str, dict[str, str]] | None = None
-
-    def get_threshold_metric_name(self) -> str:
-        """Generate metric name dynamically from threshold."""
-        threshold_m = int(self.performance_threshold_m)
-        return f"percent_under_{threshold_m}m"
-
-    def get_standard_attributes(self) -> dict[str, dict[str, str]]:
-        """Get standard variable attributes, using mission overrides if provided."""
-        if self.standard_attributes is not None:
-            return self.standard_attributes
-        return STANDARD_NETCDF_ATTRIBUTES.copy()
-
-    def get_parameter_netcdf_metadata(
-        self, param_config: "ParameterConfig", angle_type: str | None = None
-    ) -> "NetCDFParameterMetadata":
-        """Get NetCDF metadata for a parameter."""
-        if param_config.config_file:
-            param_stem = param_config.config_file.stem
-            lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
-        else:
-            lookup_key = f"param_{param_config.ptype.name.lower()}"
-
-        if self.parameter_metadata and lookup_key in self.parameter_metadata:
-            return self.parameter_metadata[lookup_key]
-
-        return self._auto_generate_metadata(param_config, angle_type, lookup_key)
-
-    def _auto_generate_metadata(
-        self, param_config: "ParameterConfig", angle_type: str | None, base_key: str
-    ) -> "NetCDFParameterMetadata":
-        """Auto-generate NetCDF metadata from parameter configuration."""
-        if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            units = "arcseconds"
-        elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            units = "arcseconds"
-        elif param_config.ptype == ParameterType.OFFSET_TIME:
-            units = "milliseconds"
-        else:
-            units = "unknown"
-
-        # Use declared units field (replaces old isinstance(data, dict) check)
-        if param_config.data.units is not None:
-            units = param_config.data.units
-
-        var_name = base_key.replace(".", "_").replace("-", "_")
-        if not var_name.startswith("param_"):
-            var_name = f"param_{var_name}"
-
-        if param_config.config_file:
-            file_stem = param_config.config_file.stem
-            clean_name = file_stem.replace("_v01", "").replace("_v02", "").replace(".attitude.ck", "")
-            clean_name = clean_name.replace("_", " ").title()
-            if angle_type:
-                long_name = f"{clean_name} {angle_type} correction"
-            else:
-                long_name = f"{clean_name} correction"
-        else:
-            long_name = f"{param_config.ptype.name.replace('_', ' ').title()} parameter"
-
-        return NetCDFParameterMetadata(variable_name=var_name, units=units, long_name=long_name)
-
-
-# ============================================================================
 # Verification Requirements Configuration
 # ============================================================================
 
@@ -452,6 +320,167 @@ class RequirementsConfig(BaseModel):
 
     performance_threshold_m: float
     performance_spec_percent: float
+
+
+# ============================================================================
+# Image-Matching Configuration
+# ============================================================================
+
+
+@dataclass
+class PSFSamplingConfig:
+    """Configuration for PSF sampling during image matching.
+
+    Default values are calibrated for Landsat 30 m GCPs, which are the
+    standard reference for GCP-based geolocation verification. Override
+    all fields for instruments with different ground resolution or motion
+    characteristics.
+
+    Parameters
+    ----------
+    gcp_step_m : float, optional
+        Ground control point step size in metres. Default is 30.0.
+    motion_convolution_step_m : float or None, optional
+        Step size for spacecraft motion convolution in metres.
+        If ``None`` (default), derived as ``gcp_step_m / 20.0`` in
+        ``__post_init__``.
+    psf_lat_sample_dist_deg : float, optional
+        PSF sample distance in the latitude direction in degrees.
+        Default approximately 2.7 m at the equator (Landsat calibration).
+    psf_lon_sample_dist_deg : float, optional
+        PSF sample distance in the longitude direction in degrees.
+        Default approximately 2.7 m at the equator (Landsat calibration).
+    """
+
+    gcp_step_m: float = 30.0
+    motion_convolution_step_m: float | None = None  # defaults to gcp_step_m / 20.0 if None
+    psf_lat_sample_dist_deg: float = 2.4397105613972e-05
+    psf_lon_sample_dist_deg: float = 2.8737038710207e-05
+
+    def __post_init__(self) -> None:
+        if self.motion_convolution_step_m is None:
+            self.motion_convolution_step_m = self.gcp_step_m / 20.0
+
+
+@dataclass
+class SearchConfig:
+    """Parameters controlling the image-matching search grid.
+
+    Default values are tuned for Landsat 30 m GCPs. Override all fields
+    for instruments with different ground resolution.
+
+    Parameters
+    ----------
+    grid_size : int, optional
+        Number of grid points per axis in the correlation search grid.
+        Default 44 (Landsat-tuned).
+    grid_span_km : float, optional
+        Half-width of the search grid in kilometres. Default 11.0.
+    reduction_factor : float, optional
+        Multiplicative reduction applied to grid spacing each iteration.
+        Default 0.8.
+    spacing_limit_m : float, optional
+        Minimum grid spacing in metres; search stops when reached.
+        Default 10.0 (Landsat-tuned).
+    """
+
+    grid_size: int = 44
+    grid_span_km: float = 11.0
+    reduction_factor: float = 0.8
+    spacing_limit_m: float = 10.0
+
+
+class RegridConfig(BaseModel):
+    """Configuration for GCP chip regridding.
+
+    Specifies output grid parameters for transforming irregular geodetic grids
+    to regular latitude/longitude grids. ECEF → geodetic conversion always
+    uses the WGS84 ellipsoid, which is the only ellipsoid supported by
+    ``curryer.compute.spatial.ecef_to_geodetic``.
+
+    Parameters
+    ----------
+    output_grid_size : tuple[int, int], optional
+        Desired output grid dimensions as (nrows, ncols). Mutually exclusive
+        with ``output_resolution_deg``.
+    output_resolution_deg : tuple[float, float], optional
+        Desired output resolution as (dlat, dlon) in degrees. Mutually
+        exclusive with ``output_grid_size``. Required when ``output_bounds``
+        is set.
+    output_bounds : tuple[float, float, float, float], optional
+        Explicit output grid bounds as (minlon, maxlon, minlat, maxlat) in
+        degrees. Requires ``output_resolution_deg``.
+    conservative_bounds : bool, default=True
+        If True, shrink bounds to ensure all output points lie within the
+        input irregular grid (avoids edge extrapolation).
+    interpolation_method : str, default="bilinear"
+        Interpolation method; one of ``"bilinear"`` or ``"nearest"``.
+    fill_value : float, default=NaN
+        Value assigned to output points that fall outside the input grid.
+    """
+
+    output_grid_size: tuple[int, int] | None = None
+    output_resolution_deg: tuple[float, float] | None = None
+    output_bounds: tuple[float, float, float, float] | None = None
+    conservative_bounds: bool = True
+    interpolation_method: str = "bilinear"
+    fill_value: float = float("nan")
+
+    @field_validator("interpolation_method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        """Validate interpolation method name."""
+        valid = {"bilinear", "nearest"}
+        if v not in valid:
+            raise ValueError(f"interpolation_method must be one of {valid}, got '{v}'")
+        return v
+
+    @field_validator("output_grid_size")
+    @classmethod
+    def validate_grid_size(cls, v: tuple[int, int] | None) -> tuple[int, int] | None:
+        """Validate that grid size has at least 2 rows and 2 columns."""
+        if v is not None:
+            if v[0] < 2:
+                raise ValueError(f"Grid size must have at least 2 rows and 2 columns, got {v}")
+            if v[1] < 2:
+                raise ValueError(f"Grid size must have at least 2 rows and 2 columns, got {v}")
+        return v
+
+    @field_validator("output_resolution_deg")
+    @classmethod
+    def validate_resolution(cls, v: tuple[float, float] | None) -> tuple[float, float] | None:
+        """Validate that resolution values are positive."""
+        if v is not None:
+            if v[0] <= 0 or v[1] <= 0:
+                raise ValueError(f"Resolution values must be positive (dlat, dlon), got {v}")
+        return v
+
+    @field_validator("output_bounds")
+    @classmethod
+    def validate_bounds(cls, v: tuple[float, float, float, float] | None) -> tuple[float, float, float, float] | None:
+        """Validate that bounds are properly ordered."""
+        if v is not None:
+            minlon, maxlon, minlat, maxlat = v
+            if minlon >= maxlon:
+                raise ValueError(f"minlon must be < maxlon, got {minlon} >= {maxlon}")
+            if minlat >= maxlat:
+                raise ValueError(f"minlat must be < maxlat, got {minlat} >= {maxlat}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_grid_spec(self) -> "RegridConfig":
+        """Validate that grid specification options are mutually consistent."""
+        has_size = self.output_grid_size is not None
+        has_res = self.output_resolution_deg is not None
+        has_bounds = self.output_bounds is not None
+
+        if has_size and has_res:
+            raise ValueError("Cannot specify both output_grid_size and output_resolution_deg")
+        if has_bounds and not has_res:
+            raise ValueError("output_bounds requires output_resolution_deg")
+        if has_bounds and has_size:
+            raise ValueError("Cannot specify both output_bounds and output_grid_size")
+        return self
 
 
 # ============================================================================
@@ -496,7 +525,7 @@ class CorrectionConfig(BaseModel):
         performance_spec_percent : float
 
     DATA LOADING CONFIGURATION:
-        data : DataConfig | None
+        data_config : DataConfig | None
             Specifies file format, time field, scale factor, and optional GCP
             discovery settings.  When provided, telemetry and science files are
             read internally by the pipeline from the paths supplied in
@@ -523,8 +552,8 @@ class CorrectionConfig(BaseModel):
 
     # CORE CORRECTION SETTINGS
     seed: int | None = None
-    n_iterations: int
-    parameters: list[ParameterConfig]
+    n_iterations: int = Field(gt=0)
+    parameters: list[ParameterConfig] = Field(min_length=1)
 
     # SEARCH STRATEGY
     search_strategy: SearchStrategy = SearchStrategy.RANDOM
@@ -546,11 +575,11 @@ class CorrectionConfig(BaseModel):
 
     # GEOLOCATION & PERFORMANCE REQUIREMENTS
     geo: GeolocationConfig
-    performance_threshold_m: float
-    performance_spec_percent: float
+    performance_threshold_m: float = Field(gt=0)
+    performance_spec_percent: float = Field(ge=0, le=100)
 
     # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
-    data: DataConfig | None = None
+    data_config: DataConfig | None = None
 
     # Private test-injection override for image matching.
     # Not part of the public API; not serialised to JSON (PrivateAttr is always excluded).
@@ -619,41 +648,13 @@ class CorrectionConfig(BaseModel):
     def validate(self, check_loaders: bool = False):
         """Validate that all required configuration values are present.
 
-        Args:
-            check_loaders: Deprecated – accepted for backward compatibility but
-                           has no effect.  Loader callables no longer exist on
-                           this config; data loading is driven by the ``data``
-                           field (:class:`DataConfig`).
-
-        Raises:
-            ValueError: If any required fields are missing or invalid
+        Parameters
+        ----------
+        check_loaders : bool, optional
+            Accepted for backward compatibility but has no effect.  Loader
+            callables no longer exist on this config; data loading is driven
+            by the ``data_config`` field (:class:`DataConfig`).
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-        errors = []
-
-        if self.n_iterations is None or self.n_iterations <= 0:
-            errors.append("n_iterations must be a positive integer")
-
-        if self.parameters is None or len(self.parameters) == 0:
-            errors.append("parameters list cannot be empty")
-
-        if self.geo is None:
-            errors.append("geo (GeolocationConfig) is required")
-
-        if self.performance_threshold_m is None or self.performance_threshold_m <= 0:
-            errors.append("performance_threshold_m must be a positive number (e.g., 250.0 meters)")
-
-        if self.performance_spec_percent is None or not (0 <= self.performance_spec_percent <= 100):
-            errors.append("performance_spec_percent must be between 0 and 100 (e.g., 39.0)")
-
-        if errors:
-            error_msg = "CorrectionConfig validation failed:\n  - " + "\n  - ".join(errors)
-            error_msg += "\n\nThese values must be provided in your mission configuration."
-            error_msg += "\nSee tests/test_correction/clarreo_config.py for an example."
-            raise ValueError(error_msg)
-
         logger.debug("CorrectionConfig validation passed")
 
     def ensure_netcdf_config(self):
@@ -682,12 +683,6 @@ class CorrectionConfig(BaseModel):
 # JSON Config Loading
 # ============================================================================
 
-# Imported here (not at module top) to avoid a circular import with the
-# correction_config sibling module, which itself has no dependency on config.
-from curryer.correction import correction_config as _correction_config  # noqa: E402
-
-_config_logger = logging.getLogger(__name__)
-
 
 def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     """Load correction configuration from a JSON file.
@@ -708,7 +703,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    _config_logger.info(f"Loading Correction configuration from: {config_path}")
+    logger.info(f"Loading Correction configuration from: {config_path}")
 
     try:
         with open(config_path) as f:
@@ -721,9 +716,9 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     constant_kernel_map = _correction_config.get_kernel_mapping(config_data, "constant_kernel")
     offset_kernel_map = _correction_config.get_kernel_mapping(config_data, "offset_kernel")
 
-    _config_logger.debug(f"Mission: {mission_config.get('mission_name', 'UNKNOWN')}")
-    _config_logger.debug(f"Constant kernel mappings: {constant_kernel_map}")
-    _config_logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
+    logger.debug(f"Mission: {mission_config.get('mission_name', 'UNKNOWN')}")
+    logger.debug(f"Constant kernel mappings: {constant_kernel_map}")
+    logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
 
     # Validate required sections exist
     if "correction" not in config_data:
@@ -756,14 +751,14 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         # Group CONSTANT_KERNEL parameters by their base frame name
         if ptype == ParameterType.CONSTANT_KERNEL:
             # Extract base name (e.g., "hysics_to_cradle" from "hysics_to_cradle_roll")
-            if "_roll" in param_name:
-                base_name = param_name.replace("_roll", "")
+            if param_name.endswith("_roll"):
+                base_name = param_name[:-5]
                 angle_type = "roll"
-            elif "_pitch" in param_name:
-                base_name = param_name.replace("_pitch", "")
+            elif param_name.endswith("_pitch"):
+                base_name = param_name[:-6]
                 angle_type = "pitch"
-            elif "_yaw" in param_name:
-                base_name = param_name.replace("_yaw", "")
+            elif param_name.endswith("_yaw"):
+                base_name = param_name[:-4]
                 angle_type = "yaw"
             else:
                 base_name = param_name
@@ -778,9 +773,9 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
             kernel_file = _correction_config.find_kernel_file(base_name, constant_kernel_map)
             if kernel_file:
                 param_groups[base_name]["config_file"] = Path(kernel_file)
-                _config_logger.debug(f"Mapped CONSTANT_KERNEL '{base_name}' → {kernel_file}")
+                logger.debug(f"Mapped CONSTANT_KERNEL '{base_name}' → {kernel_file}")
             else:
-                _config_logger.warning(f"No kernel mapping found for CONSTANT_KERNEL parameter: {base_name}")
+                logger.warning(f"No kernel mapping found for CONSTANT_KERNEL parameter: {base_name}")
 
         else:
             # OFFSET_KERNEL and OFFSET_TIME parameters are individual
@@ -790,12 +785,12 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
                 kernel_file = _correction_config.find_kernel_file(param_name, offset_kernel_map)
                 if kernel_file:
                     param_groups[param_name]["config_file"] = Path(kernel_file)
-                    _config_logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
+                    logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
                 elif param_dict.get("config_file"):
                     param_groups[param_name]["config_file"] = Path(param_dict["config_file"])
-                    _config_logger.debug(f"Using explicit config_file for OFFSET_KERNEL '{param_name}'")
+                    logger.debug(f"Using explicit config_file for OFFSET_KERNEL '{param_name}'")
                 else:
-                    _config_logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
+                    logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
 
     # Second pass: create ParameterConfig objects from groups
     for group_name, group_data in param_groups.items():
@@ -826,7 +821,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
             ParameterConfig(ptype=group_data["type"], config_file=group_data["config_file"], data=param_data)
         )
 
-    _config_logger.info(
+    logger.info(
         f"Loaded {len(parameters)} parameter groups from {len(corr_config.get('parameters', []))} individual parameters"
     )
 
@@ -840,9 +835,13 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     if time_field is None:
         raise ValueError("time_field must be specified in geolocation config")
 
+    if "meta_kernel_file" not in geo_config:
+        raise KeyError("Missing required 'meta_kernel_file' in geolocation config section.")
+    if "generic_kernel_dir" not in geo_config:
+        raise KeyError("Missing required 'generic_kernel_dir' in geolocation config section.")
     geo = GeolocationConfig(
-        meta_kernel_file=Path(geo_config.get("meta_kernel_file", "")),
-        generic_kernel_dir=Path(geo_config.get("generic_kernel_dir", "")),
+        meta_kernel_file=Path(geo_config["meta_kernel_file"]),
+        generic_kernel_dir=Path(geo_config["generic_kernel_dir"]),
         dynamic_kernels=[Path(k) for k in geo_config.get("dynamic_kernels", [])],
         instrument_name=instrument_name,
         time_field=time_field,
@@ -851,7 +850,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
     # Extract required mission-specific parameters from correction section
     earth_radius_m = corr_config.get("earth_radius_m")
     if earth_radius_m is not None:
-        _config_logger.warning(
+        logger.warning(
             "earth_radius_m in config is deprecated and ignored. "
             "The WGS84 value from curryer.compute.constants is used instead."
         )
@@ -894,7 +893,7 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
 
     config.validate()
 
-    _config_logger.info(
+    logger.info(
         f"Configuration loaded and validated: {config.n_iterations} iterations, "
         f"{len(config.parameters)} parameter groups"
     )
