@@ -139,7 +139,7 @@ def run_downstream_pipeline(
     from _image_match_helpers import discover_test_image_match_cases, run_image_matching_with_applied_errors
     from clarreo_config import create_clarreo_correction_config
 
-    from curryer.correction.data_structures import NamedImageGrid
+    from curryer.correction.grid_types import NamedImageGrid
     from curryer.correction.image_io import load_image_grid
     from curryer.correction.pairing import find_l1a_gcp_pairs
 
@@ -207,7 +207,7 @@ def run_downstream_pipeline(
             correction.ParameterConfig(
                 ptype=correction.ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
-                data={
+                spec={
                     "current_value": [0.0, 0.0, 0.0],
                     "sigma": 0.0,
                     "units": "arcseconds",
@@ -230,7 +230,7 @@ def run_downstream_pipeline(
 
     # --- STEP 4: iterate ---
     netcdf_data = correction._build_netcdf_structure(config, n_iterations, n_gcp_pairs)
-    threshold_metric = config.netcdf.get_threshold_metric_name()
+    threshold_metric = config.netcdf.threshold_metric_name
     image_match_cache: dict[str, xr.Dataset] = {}
 
     for param_idx in range(n_iterations):
