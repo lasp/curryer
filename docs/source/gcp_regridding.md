@@ -98,7 +98,7 @@ python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridd
 ### Preview before committing
 
 ```bash
-python scripts/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/ --dry-run
+python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/ --dry-run
 ```
 
 ### Non-standard band or file pattern
