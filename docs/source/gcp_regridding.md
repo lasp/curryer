@@ -19,7 +19,7 @@ HDF chip  →  ECEF → WGS84 geodetic  →  bilinear regrid  →  regular NetCD
 
 ```python
 from pathlib import Path
-from curryer.correction.data_structures import RegridConfig
+from curryer.correction.config import RegridConfig
 from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
@@ -119,7 +119,7 @@ Use this when you need custom logic (filtering, parallel execution, etc.):
 
 ```python
 from pathlib import Path
-from curryer.correction.data_structures import RegridConfig
+from curryer.correction.config import RegridConfig
 from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
@@ -175,7 +175,7 @@ gcp = load_image_grid(Path("regridded_chip.nc"))
 ## Configuration reference
 
 ```python
-from curryer.correction.data_structures import RegridConfig
+from curryer.correction.config import RegridConfig
 
 # Resolution-based (most common)
 config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))
