@@ -15,7 +15,7 @@ All implementation has been split into focused sub-modules:
 
 # Config dataclasses, enums, and JSON loader
 from curryer.correction.config import (
-    STANDARD_NETCDF_ATTRIBUTES,
+    DEFAULT_NETCDF_ATTRIBUTES,
     STANDARD_VAR_NAMES,
     CalibrationData,
     CorrectionConfig,
@@ -26,6 +26,7 @@ from curryer.correction.config import (
     NetCDFConfig,
     NetCDFParameterMetadata,
     ParameterConfig,
+    ParameterSpec,
     ParameterType,
     load_config_from_json,
 )
@@ -78,7 +79,7 @@ from curryer.correction.verification import (
 
 __all__ = [
     # Config
-    "STANDARD_NETCDF_ATTRIBUTES",
+    "DEFAULT_NETCDF_ATTRIBUTES",
     "STANDARD_VAR_NAMES",
     "CalibrationData",
     "CorrectionConfig",
@@ -89,6 +90,7 @@ __all__ = [
     "NetCDFConfig",
     "NetCDFParameterMetadata",
     "ParameterConfig",
+    "ParameterSpec",
     "ParameterType",
     "load_config_from_json",
     # Parameters
