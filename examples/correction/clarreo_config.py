@@ -96,7 +96,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_base_v01.attitude.ck.json",
-            data={
+            spec={
                 "current_value": [0.0, 0.0, 0.0],
                 "bounds": [-300.0, 300.0],
                 "sigma": 30.0,
@@ -109,7 +109,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
-            data={
+            spec={
                 "current_value": [0.0, 0.0, 0.0],
                 "bounds": [-200.0, 200.0],
                 "sigma": 20.0,
@@ -122,7 +122,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
-            data={
+            spec={
                 "current_value": [0.0, 0.0, 0.0],
                 "bounds": [-300.0, 300.0],
                 "sigma": 30.0,
@@ -140,7 +140,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_az_v01.attitude.ck.json",
-            data={
+            spec={
                 "field": "hps.az_ang_nonlin",
                 "current_value": 0.0,
                 "bounds": [-300.0, 300.0],
@@ -154,7 +154,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_el_v01.attitude.ck.json",
-            data={
+            spec={
                 "field": "hps.el_ang_nonlin",
                 "current_value": 0.0,
                 "bounds": [-300.0, 300.0],
@@ -172,7 +172,7 @@ def create_clarreo_config(
         ParameterConfig(
             ptype=ParameterType.OFFSET_TIME,
             config_file=None,
-            data={
+            spec={
                 "field": "corrected_timestamp",
                 "current_value": 0.0,
                 "bounds": [-50.0, 50.0],

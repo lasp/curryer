@@ -85,7 +85,8 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
     try:
         from scipy.io import loadmat
 
-        from curryer.correction.data_structures import ImageGrid, PSFSamplingConfig, SearchConfig
+        from curryer.correction.config import PSFSamplingConfig, SearchConfig
+        from curryer.correction.grid_types import ImageGrid
         from curryer.correction.image_io import load_image_grid, load_los_vectors, load_optical_psf
         from curryer.correction.image_match import integrated_image_match
     except ImportError as exc:
@@ -277,7 +278,7 @@ def _make_config(use_clarreo_names: bool = True) -> CorrectionConfig:
             # Nominal zero-offset parameter — no correction applied in this run
             ParameterConfig(
                 ptype=ParameterType.CONSTANT_KERNEL,
-                data={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
+                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
             )
         ],
         geo=GeolocationConfig(
