@@ -19,7 +19,8 @@ import logging
 import numpy as np
 
 from ..compute.spatial import ecef_to_geodetic
-from .data_structures import ImageGrid, RegridConfig
+from .config import RegridConfig
+from .grid_types import ImageGrid
 
 logger = logging.getLogger(__name__)
 
