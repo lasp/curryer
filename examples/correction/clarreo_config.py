@@ -220,6 +220,5 @@ def create_clarreo_config(
         transformation_matrix_name="t_hs2ctrs",
     )
 
-    config.validate()
     logger.info("CLARREO config created: %d parameters", len(config.parameters))
     return config

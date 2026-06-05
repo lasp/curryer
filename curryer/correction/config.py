@@ -748,18 +748,6 @@ class CorrectionConfig(BaseModel):
             return default
         raise ValueError(f"No calibration file configured for type: {file_type}")
 
-    def validate(self, check_loaders: bool = False):
-        """Validate that all required configuration values are present.
-
-        Parameters
-        ----------
-        check_loaders : bool, optional
-            Accepted for backward compatibility but has no effect.  Loader
-            callables no longer exist on this config; data loading is driven
-            by the ``data_config`` field (:class:`DataConfig`).
-        """
-        logger.debug("CorrectionConfig validation passed")
-
     def ensure_netcdf_config(self):
         """Ensure :attr:`netcdf` exists, creating it with defaults if needed.
 
@@ -999,8 +987,6 @@ def load_config_from_json(config_path: Path) -> "CorrectionConfig":
         los_vectors_file=los_vectors_file,
         psf_file=psf_file,
     )
-
-    config.validate()
 
     logger.info(
         f"Configuration loaded and validated: {config.n_iterations} iterations, "
