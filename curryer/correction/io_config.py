@@ -115,7 +115,12 @@ class NetCDFConfig(BaseModel):
             param_stem = param_config.config_file.stem
             lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
         else:
-            lookup_key = f"param_{param_config.ptype.name.lower()}"
+            identity = (
+                param_config.data.get("name")
+                or param_config.data.get("field")
+                or param_config.ptype.name.lower()
+            )
+            lookup_key = identity
 
         if self.parameter_metadata and lookup_key in self.parameter_metadata:
             return self.parameter_metadata[lookup_key]
