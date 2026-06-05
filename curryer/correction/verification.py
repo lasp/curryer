@@ -57,8 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from curryer import spicetime
 from curryer import spicierpy as sp
 from curryer.compute import constants
-from curryer.correction.config import CorrectionConfig, RequirementsConfig
-from curryer.correction.data_structures import PSFSamplingConfig, SearchConfig
+from curryer.correction.config import CorrectionConfig, PSFSamplingConfig, RequirementsConfig, SearchConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.image_io import (
     geolocated_to_image_grid,
@@ -623,7 +622,7 @@ def _extract_spacecraft_position_midframe(
     telemetry : pd.DataFrame
         Telemetry DataFrame with spacecraft position columns.
     config : CorrectionConfig or None, optional
-        If provided and ``config.data.position_columns`` is set, those
+        If provided and ``config.data_config.position_columns`` is set, those
         column names are used directly. Otherwise falls back to
         pattern-guessing (with a deprecation warning).
 
@@ -640,8 +639,8 @@ def _extract_spacecraft_position_midframe(
     """
     mid_idx = len(telemetry) // 2
 
-    if config is not None and config.data is not None and config.data.position_columns is not None:
-        cols = config.data.position_columns
+    if config is not None and config.data_config is not None and config.data_config.position_columns is not None:
+        cols = config.data_config.position_columns
         if len(cols) != 3:
             raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
         missing = [c for c in cols if c not in telemetry.columns]
@@ -650,13 +649,13 @@ def _extract_spacecraft_position_midframe(
                 f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}"
             )
         position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
-        logger.debug("Extracted spacecraft position from config.data.position_columns %s: %s", cols, position)
+        logger.debug("Extracted spacecraft position from config.data_config.position_columns %s: %s", cols, position)
         return position
 
     # Legacy fallback: pattern guessing
     logger.warning(
         "position_columns not configured — falling back to column name pattern-guessing. "
-        "Set config.data.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
+        "Set config.data_config.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
     )
 
     for cols in [
@@ -1084,15 +1083,15 @@ def _run_image_matching_for_pairs(
     """
     from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
 
-    from .data_structures import PSFSamplingConfig, SearchConfig
+    from .config import PSFSamplingConfig, SearchConfig
     from .image_io import (
-        infer_spacecraft_state,
         load_image_grid,
         load_los_vectors,
         load_observation_file,
         load_optical_psf,
     )
     from .image_match import integrated_image_match
+    from .psf import resolve_spacecraft_ecef
 
     sc_pos_name = getattr(config, "spacecraft_position_name", "sc_position")
     boresight_name = getattr(config, "boresight_name", "boresight")
@@ -1111,7 +1110,7 @@ def _run_image_matching_for_pairs(
             gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
             gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
 
-            r_iss_m, boresight, t_matrix = infer_spacecraft_state(
+            r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(
                 obs_grid, r_sc_file, default_altitude_m=default_altitude_m
             )
 
