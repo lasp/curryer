@@ -76,7 +76,7 @@ class TestClarreoConfiguration:
 
     def test_config_validates(self):
         config = create_clarreo_correction_config(self.data_dir, self.generic_dir)
-        config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+        config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
         config.validate()
         assert config.geo.instrument_name == "CPRS_HYSICS"
         assert config.seed == 42

@@ -21,6 +21,7 @@ _NEEDS_AWS = pytest.mark.skipif(
 )
 
 
+# TODO: Migrate to moto mock (follow-up issue)
 @_NEEDS_AWS
 def test_clarreo_find_l0_objects(tmp_path):
     """Find L0 telemetry objects in CSDS S3 bucket."""

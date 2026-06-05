@@ -68,7 +68,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         and (optionally) an ``_image_matching_override`` for test injection::
 
             config = create_clarreo_correction_config(data_dir, generic_dir)
-            config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+            config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
             config._image_matching_override = your_matching_func  # optional (tests only)
             results = correction.loop(config, work_dir, data_sets)
 
@@ -85,7 +85,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
 
         # Attach data loading config
         from curryer.correction.config import DataConfig
-        config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+        config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
 
         # Optionally override image matching (tests only)
         config._image_matching_override = synthetic_image_matching

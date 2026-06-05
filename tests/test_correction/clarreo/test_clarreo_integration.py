@@ -43,12 +43,12 @@ def work_dir(tmp_path):
 def test_upstream_configuration(clarreo_gcs_data_dir, clarreo_generic_dir):
     """Upstream configuration loads and validates correctly."""
     config = create_clarreo_correction_config(clarreo_gcs_data_dir, clarreo_generic_dir)
-    config.data = DataConfig(file_format="csv", time_scale_factor=1e6)
+    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
     config.validate()
     assert config.geo.instrument_name == "CPRS_HYSICS"
     assert len(config.parameters) > 0
     assert config.seed == 42
-    assert config.data is not None
+    assert config.data_config is not None
 
 
 def test_downstream_test_case_discovery(clarreo_image_match_data_dir):
