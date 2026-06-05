@@ -57,7 +57,7 @@ def test_apply_offset_kernel_arcseconds():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("cprs_az.json"),
-        data=dict(field="hps.az_ang_nonlin", units="arcseconds"),
+        spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
     original = _TLM["hps.az_ang_nonlin"].mean()
     modified = correction.apply_offset(p, 100.0, _TLM)
@@ -69,7 +69,7 @@ def test_apply_offset_kernel_negative():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("cprs_el.json"),
-        data=dict(field="hps.el_ang_nonlin", units="arcseconds"),
+        spec=dict(field="hps.el_ang_nonlin", units="arcseconds"),
     )
     original = _TLM["hps.el_ang_nonlin"].mean()
     modified = correction.apply_offset(p, -50.0, _TLM)
@@ -81,7 +81,7 @@ def test_apply_offset_kernel_missing_field():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("dummy.json"),
-        data=dict(field="nonexistent_field", units="arcseconds"),
+        spec=dict(field="nonexistent_field", units="arcseconds"),
     )
     modified = correction.apply_offset(p, 10.0, _TLM)
     pd.testing.assert_frame_equal(modified, _TLM)
@@ -92,7 +92,7 @@ def test_apply_offset_time_milliseconds():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_TIME,
         config_file=None,
-        data=dict(field="corrected_timestamp", units="milliseconds"),
+        spec=dict(field="corrected_timestamp", units="milliseconds"),
     )
     original = _SCI["corrected_timestamp"].mean()
     modified = correction.apply_offset(p, 10.0 / 1000.0, _SCI)  # 10 ms in seconds
@@ -103,7 +103,7 @@ def test_apply_offset_time_negative():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_TIME,
         config_file=None,
-        data=dict(field="corrected_timestamp", units="milliseconds"),
+        spec=dict(field="corrected_timestamp", units="milliseconds"),
     )
     original = _SCI["corrected_timestamp"].mean()
     modified = correction.apply_offset(p, -5.5 / 1000.0, _SCI)
@@ -116,7 +116,7 @@ def test_apply_offset_constant_kernel_passthrough():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.CONSTANT_KERNEL,
         config_file=Path("base.json"),
-        data=dict(field="base"),
+        spec=dict(field="base"),
     )
     modified = correction.apply_offset(p, kernel_data, pd.DataFrame())
     pd.testing.assert_frame_equal(modified, kernel_data)
@@ -127,7 +127,7 @@ def test_apply_offset_no_units():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("test.json"),
-        data=dict(field="hps.az_ang_nonlin"),
+        spec=dict(field="hps.az_ang_nonlin"),
     )
     original = _TLM["hps.az_ang_nonlin"].mean()
     modified = correction.apply_offset(p, 0.001, _TLM)
@@ -139,7 +139,7 @@ def test_apply_offset_not_inplace():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("cprs_az.json"),
-        data=dict(field="hps.az_ang_nonlin", units="arcseconds"),
+        spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
     original = _TLM.copy()
     correction.apply_offset(p, 100.0, _TLM)
@@ -151,7 +151,7 @@ def test_apply_offset_preserves_columns():
     p = correction.ParameterConfig(
         ptype=correction.ParameterType.OFFSET_KERNEL,
         config_file=Path("cprs_az.json"),
-        data=dict(field="hps.az_ang_nonlin", units="arcseconds"),
+        spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
     modified = correction.apply_offset(p, 50.0, _TLM)
     assert set(modified.columns) == set(_TLM.columns)

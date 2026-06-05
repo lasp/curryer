@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from curryer.correction.data_structures import ImageGrid, NamedImageGrid
+from curryer.correction.grid_types import ImageGrid, NamedImageGrid
 from curryer.correction.image_io import (
     load_gcp_chip_from_hdf,
     load_image_grid,

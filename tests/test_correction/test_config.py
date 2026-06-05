@@ -47,7 +47,7 @@ def param_constant(geo) -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.CONSTANT_KERNEL,
         config_file=Path("tests/data/test_base.attitude.ck.json"),
-        data={
+        spec={
             "current_value": [0.0, 0.0, 0.0],
             "bounds": [-300.0, 300.0],
             "sigma": 30.0,
@@ -64,7 +64,7 @@ def param_offset_kernel() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.OFFSET_KERNEL,
         config_file=Path("tests/data/test_az.attitude.ck.json"),
-        data={
+        spec={
             "field": "hps.az_ang_nonlin",
             "current_value": 0.0,
             "bounds": [-300.0, 300.0],
@@ -79,7 +79,7 @@ def param_offset_time() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.OFFSET_TIME,
         config_file=None,
-        data={
+        spec={
             "field": "corrected_timestamp",
             "current_value": 0.0,
             "bounds": [-50.0, 50.0],
@@ -174,7 +174,7 @@ class TestDataConfig:
         assert restored.data_config.time_scale_factor == 1e6
 
     def test_none_data_field_is_valid(self, geo, param_constant):
-        """CorrectionConfig.data may be None (backward compat)."""
+        """ParameterConfig.spec may be None (backward compat)."""
         cfg = CorrectionConfig(
             n_iterations=1,
             parameters=[param_constant],
@@ -270,18 +270,18 @@ class TestParameterSpec:
 
 class TestParameterConfig:
     def test_dict_coercion(self, param_constant):
-        """Passing data as a plain dict must produce a ParameterSpec instance."""
-        assert isinstance(param_constant.data, ParameterSpec)
-        assert param_constant.data.sigma == 30.0
+        """Passing spec as a plain dict must produce a ParameterSpec instance."""
+        assert isinstance(param_constant.spec, ParameterSpec)
+        assert param_constant.spec.sigma == 30.0
 
     def test_none_data_becomes_empty_parameter_data(self):
-        """data=None (old API) must be accepted and become a default ParameterSpec."""
+        """spec=None (old API) must be accepted and become a default ParameterSpec."""
         pc = ParameterConfig(
             ptype=ParameterType.CONSTANT_KERNEL,
             config_file=Path("kernel.json"),
-            data=None,
+            spec=None,
         )
-        assert isinstance(pc.data, ParameterSpec)
+        assert isinstance(pc.spec, ParameterSpec)
 
     def test_no_config_file(self):
         pc = ParameterConfig(ptype=ParameterType.OFFSET_TIME, config_file=None)
@@ -377,21 +377,21 @@ class TestNetCDFParameterMetadata:
 
 class TestNetCDFConfig:
     def test_threshold_metric_name(self, netcdf_cfg):
-        assert netcdf_cfg.get_threshold_metric_name() == "percent_under_250m"
+        assert netcdf_cfg.threshold_metric_name == "percent_under_250m"
 
     def test_threshold_metric_name_round(self):
         nc = NetCDFConfig(performance_threshold_m=500.0)
-        assert nc.get_threshold_metric_name() == "percent_under_500m"
+        assert nc.threshold_metric_name == "percent_under_500m"
 
     def test_get_standard_attributes_defaults(self, netcdf_cfg):
-        attrs = netcdf_cfg.get_standard_attributes()
+        attrs = netcdf_cfg.standard_attributes_dict
         assert "rms_error_m" in attrs
         assert attrs["rms_error_m"]["units"] == "meters"
 
     def test_get_standard_attributes_override(self):
         custom = {"my_var": {"units": "km", "long_name": "My Variable"}}
         nc = NetCDFConfig(performance_threshold_m=100.0, standard_attributes=custom)
-        assert nc.get_standard_attributes() == custom
+        assert nc.standard_attributes_dict == custom
 
     def test_auto_generate_metadata_constant_kernel(self, netcdf_cfg, param_constant):
         meta = netcdf_cfg.get_parameter_netcdf_metadata(param_constant, angle_type="roll")
@@ -523,7 +523,9 @@ class TestCorrectionConfig:
         assert not hasattr(config, "earth_radius_m") or config.model_fields.get("earth_radius_m") is None
 
     def test_ensure_netcdf_config_creates_default(self, minimal_config):
-        assert minimal_config.netcdf is None
+        # netcdf is auto-populated at construction by the _populate_netcdf_config validator;
+        # ensure_netcdf_config() is then an idempotent no-op.
+        assert isinstance(minimal_config.netcdf, NetCDFConfig)
         minimal_config.ensure_netcdf_config()
         assert isinstance(minimal_config.netcdf, NetCDFConfig)
         assert minimal_config.netcdf.performance_threshold_m == 250.0
@@ -605,10 +607,10 @@ class TestJsonRoundTrip:
     def test_parameter_data_fields_survive_roundtrip(self, full_config):
         reloaded = CorrectionConfig.model_validate_json(full_config.model_dump_json())
         for orig, reld in zip(full_config.parameters, reloaded.parameters):
-            assert orig.data.sigma == reld.data.sigma
-            assert orig.data.units == reld.data.units
-            assert orig.data.bounds == reld.data.bounds
-            assert orig.data.field == reld.data.field
+            assert orig.spec.sigma == reld.spec.sigma
+            assert orig.spec.units == reld.spec.units
+            assert orig.spec.bounds == reld.spec.bounds
+            assert orig.spec.field == reld.spec.field
 
     def test_netcdf_config_survives_roundtrip(self, full_config):
         reloaded = CorrectionConfig.model_validate_json(full_config.model_dump_json())

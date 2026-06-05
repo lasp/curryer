@@ -48,7 +48,7 @@ def clarreo_cfg(root_dir):
 def test_extract_parameter_values():
     """_extract_parameter_values returns roll/pitch/yaw keys."""
     param_config = correction.ParameterConfig(
-        ptype=correction.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), data=None
+        ptype=correction.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), spec=None
     )
     param_data = pd.DataFrame(
         {

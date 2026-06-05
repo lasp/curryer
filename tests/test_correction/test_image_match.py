@@ -15,12 +15,8 @@ import xarray as xr
 from scipy.io import loadmat
 
 from curryer.compute import constants
-from curryer.correction.data_structures import (
-    ImageGrid,
-    OpticalPSFEntry,
-    PSFSamplingConfig,
-    SearchConfig,
-)
+from curryer.correction.config import PSFSamplingConfig, SearchConfig
+from curryer.correction.grid_types import ImageGrid, OpticalPSFEntry
 from curryer.correction.image_match import integrated_image_match
 
 logger = logging.getLogger(__name__)

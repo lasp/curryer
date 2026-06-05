@@ -58,7 +58,7 @@ def param_constant() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.CONSTANT_KERNEL,
         config_file=Path("tests/data/test_base.attitude.ck.json"),
-        data={
+        spec={
             "current_value": [10.0, 20.0, 30.0],
             "bounds": [-60.0, 60.0],
             "sigma": 6.0,
@@ -73,7 +73,7 @@ def param_constant_zero() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.CONSTANT_KERNEL,
         config_file=Path("tests/data/test_base.attitude.ck.json"),
-        data={
+        spec={
             "current_value": [0.0, 0.0, 0.0],
             "bounds": [-10.0, 10.0],
             "sigma": None,
@@ -88,7 +88,7 @@ def param_offset_kernel() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.OFFSET_KERNEL,
         config_file=Path("tests/data/test_az.attitude.ck.json"),
-        data={
+        spec={
             "field": "hps.az_ang_nonlin",
             "current_value": 0.0,
             "bounds": [-3600.0, 3600.0],
@@ -104,7 +104,7 @@ def param_offset_time() -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.OFFSET_TIME,
         config_file=None,
-        data={
+        spec={
             "field": "corrected_timestamp",
             "current_value": 0.0,
             "bounds": [-50.0, 50.0],
@@ -177,7 +177,7 @@ class TestGetNominalValue:
         """Non-zero current_value is correctly converted ms → s."""
         p = ParameterConfig(
             ptype=ParameterType.OFFSET_TIME,
-            data={"current_value": 500.0, "bounds": [-100.0, 100.0], "units": "milliseconds"},
+            spec={"current_value": 500.0, "bounds": [-100.0, 100.0], "units": "milliseconds"},
         )
         val = _get_nominal_value(p)
         assert val == pytest.approx(0.5)
@@ -245,7 +245,7 @@ class TestGetGridValues:
         """Microsecond units are converted correctly."""
         p = ParameterConfig(
             ptype=ParameterType.OFFSET_TIME,
-            data={"current_value": 0.0, "bounds": [-1_000_000.0, 1_000_000.0], "units": "microseconds"},
+            spec={"current_value": 0.0, "bounds": [-1_000_000.0, 1_000_000.0], "units": "microseconds"},
         )
         vals = _get_grid_values(p, 3)
         assert vals[0] == pytest.approx(-1.0)

@@ -65,7 +65,7 @@ def _make_config(**overrides) -> CorrectionConfig:
         parameters=[
             ParameterConfig(
                 ptype=ParameterType.CONSTANT_KERNEL,
-                data={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
+                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
             )
         ],
         geo=_make_geo(),
