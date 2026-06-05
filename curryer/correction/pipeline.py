@@ -800,24 +800,24 @@ def _extract_parameter_values(params):
     param_values = {}
 
     for param_config, param_data in params:
+        # Parameters without a kernel file (e.g. OFFSET_TIME) still need a stable name
+        # so their sampled values are stored in results/NetCDF output.
         if param_config.config_file:
             param_name = param_config.config_file.stem
+        else:
+            param_name = param_config.data.get("name") or param_config.data.get("field") or param_config.ptype.name.lower()
 
-            if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-                # Extract roll, pitch, yaw from DataFrame
-                if isinstance(param_data, pd.DataFrame) and "angle_x" in param_data.columns:
-                    # Convert back to arcseconds for storage
-                    param_values[f"{param_name}_roll"] = np.degrees(param_data["angle_x"].iloc[0]) * 3600
-                    param_values[f"{param_name}_pitch"] = np.degrees(param_data["angle_y"].iloc[0]) * 3600
-                    param_values[f"{param_name}_yaw"] = np.degrees(param_data["angle_z"].iloc[0]) * 3600
+        if param_config.ptype == ParameterType.CONSTANT_KERNEL:
+            # Extract roll, pitch, yaw from DataFrame
+            if isinstance(param_data, pd.DataFrame) and "angle_x" in param_data.columns:
+                # Convert back to arcseconds for storage
+                param_values[f"{param_name}_roll"] = np.degrees(param_data["angle_x"].iloc[0]) * 3600
+                param_values[f"{param_name}_pitch"] = np.degrees(param_data["angle_y"].iloc[0]) * 3600
+                param_values[f"{param_name}_yaw"] = np.degrees(param_data["angle_z"].iloc[0]) * 3600
 
-            elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-                # Single bias value (keep in original units)
-                param_values[param_name] = param_data
-
-            elif param_config.ptype == ParameterType.OFFSET_TIME:
-                # Time correction (keep in original units)
-                param_values[param_name] = param_data
+        elif param_config.ptype in (ParameterType.OFFSET_KERNEL, ParameterType.OFFSET_TIME):
+            # Single bias / time correction value (keep in original units)
+            param_values[param_name] = param_data
 
     return param_values
 
