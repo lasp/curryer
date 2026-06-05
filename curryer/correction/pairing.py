@@ -21,7 +21,7 @@ import numpy as np
 import xarray as xr
 
 from ..compute.spatial import geodetic_to_ecef
-from .data_structures import ImageGrid, NamedImageGrid
+from .grid_types import ImageGrid, NamedImageGrid
 
 logger = logging.getLogger(__name__)
 
