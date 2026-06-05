@@ -5,9 +5,9 @@ description = "LASP SPICE extentions and geospatial data product generation tool
 authors = [
     { name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" },
     { name = "Matthew Maclay", email = "matthew.maclay@lasp.colorado.edu" },
-    { name = "Gavin Medley" },
-    { name = "Matt Watwood" },
-    { name = "Maxine Hartnett" },
+    { name = "Gavin Medley", email = "gavin.medley@lasp.colorado.edu" },
+    { name = "Matt Watwood", email = "matt.watwood@lasp.colorado.edu" },
+    { name = "Maxine Hartnett", email = "maxine.hartnett@lasp.colorado.edu" },
 ]
 readme = "README.md"
 keywords = [
