@@ -105,7 +105,7 @@ python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridd
 
 ```bash
 # Band_4 (near-IR), only files matching a date range
-python scripts/regrid_gcp_chips.py /data/ /out/ \
+python examples/correction/regrid_gcp_chips.py /data/ /out/ \
     --pattern "LT08CHP.2016*.hdf" \
     --band Band_4 \
     --resolution 0.001 0.001
