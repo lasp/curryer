@@ -6,7 +6,8 @@ Tests for GCP chip regridding algorithms.
 import numpy as np
 import pytest
 
-from curryer.correction.data_structures import ImageGrid, RegridConfig
+from curryer.correction.config import RegridConfig
+from curryer.correction.grid_types import ImageGrid
 from curryer.correction.regrid import (
     bilinear_interpolate_quad,
     compute_regular_grid_bounds,
