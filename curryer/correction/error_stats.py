@@ -58,9 +58,9 @@ def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
     Parameters
     ----------
     errors : np.ndarray
-        Array of nadir-equivalent geolocation errors in metres.
+        Array of nadir-equivalent geolocation errors in meters.
     threshold_m : float
-        Threshold in metres.
+        Threshold in meters.
 
     Returns
     -------
@@ -561,7 +561,7 @@ class ErrorStatsProcessor:
         Parameters
         ----------
         nadir_equiv_errors_m : np.ndarray
-            Array of nadir-equivalent geolocation errors in metres.
+            Array of nadir-equivalent geolocation errors in meters.
 
         Returns
         -------

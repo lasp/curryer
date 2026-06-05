@@ -102,6 +102,10 @@ class DataConfig(BaseModel):
         seconds to uGPS; ``1.0`` means the file already contains uGPS.
         The time column name is taken from :attr:`GeolocationConfig.time_field`
         (single source of truth).
+    position_columns
+        Explicit column name mappings for telemetry spacecraft-position data,
+        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  ``None`` means use
+        mission defaults from the geolocation configuration.
     """
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
@@ -364,7 +368,7 @@ class PSFSamplingConfig:
 
 @dataclass
 class SearchConfig:
-    """Parameters controlling the image-matching search grid.
+    """Configuration for the image-matching correlation search grid.
 
     Default values are tuned for Landsat 30 m GCPs. Override all fields
     for instruments with different ground resolution.
@@ -587,6 +591,26 @@ class CorrectionConfig(BaseModel):
     # TODO(#151): Add Requirement model with evaluate_all() for multi-metric requirements.
     _image_matching_override: Any = PrivateAttr(default=None)
 
+    # OUTPUT CONFIGURATION
+    netcdf: NetCDFConfig | None = None
+    output_filename: str | None = None
+
+    # CALIBRATION CONFIGURATION
+    calibration_dir: Path | None = None
+    calibration_file_names: dict[str, str] | None = None
+    # Direct calibration file paths (alternative to calibration_dir + calibration_file_names)
+    psf_file: Path | None = None
+    los_vectors_file: Path | None = None
+
+    # MISSION-SPECIFIC NAMING
+    spacecraft_position_name: str = "sc_position"
+    boresight_name: str = "boresight"
+    transformation_matrix_name: str = "t_inst2ref"
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
     @property
     def image_matching_func(self) -> Any:
         """Deprecated — use ``_image_matching_override`` for test injection.
@@ -611,21 +635,9 @@ class CorrectionConfig(BaseModel):
         )
         self._image_matching_override = value
 
-    # OUTPUT CONFIGURATION
-    netcdf: NetCDFConfig | None = None
-    output_filename: str | None = None
-
-    # CALIBRATION CONFIGURATION
-    calibration_dir: Path | None = None
-    calibration_file_names: dict[str, str] | None = None
-    # Direct calibration file paths (alternative to calibration_dir + calibration_file_names)
-    psf_file: Path | None = None
-    los_vectors_file: Path | None = None
-
-    # MISSION-SPECIFIC NAMING
-    spacecraft_position_name: str = "sc_position"
-    boresight_name: str = "boresight"
-    transformation_matrix_name: str = "t_inst2ref"
+    # ------------------------------------------------------------------
+    # Validators
+    # ------------------------------------------------------------------
 
     @model_validator(mode="after")
     def _validate_search_strategy(self) -> "CorrectionConfig":
@@ -636,6 +648,10 @@ class CorrectionConfig(BaseModel):
                     f"SearchStrategy.{self.search_strategy.name} requires at least one parameter in `parameters`."
                 )
         return self
+
+    # ------------------------------------------------------------------
+    # Methods
+    # ------------------------------------------------------------------
 
     def get_calibration_file(self, file_type: str, default: str = None) -> str:
         """Get calibration filename for given type with fallback to default."""

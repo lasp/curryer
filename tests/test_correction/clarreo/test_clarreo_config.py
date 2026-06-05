@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 from clarreo_config import create_clarreo_correction_config
 
 from curryer.correction import correction
 from curryer.correction.config import DataConfig
-
-logger = logging.getLogger(__name__)
 
 
 def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_generic_dir):
