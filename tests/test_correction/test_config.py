@@ -487,18 +487,6 @@ class TestCorrectionConfig:
             )
         assert "n_iterations" in str(exc_info.value)
 
-    def test_validate_method_passes_for_valid_config(self, minimal_config):
-        minimal_config.validate()  # must not raise
-
-    def test_validate_method_accepts_legacy_check_loaders_kwarg(self, minimal_config):
-        """check_loaders is accepted for backward compat but has no effect."""
-        minimal_config.validate(check_loaders=False)  # must not raise
-        minimal_config.validate(check_loaders=True)  # must also not raise
-
-    def test_validate_method_is_noop(self, minimal_config):
-        """validate() is now a lightweight method that just emits a debug log."""
-        minimal_config.validate()  # must not raise regardless of field values
-
     def test_pydantic_rejects_bad_n_iterations_at_construction(self, geo, param_constant):
         """Pydantic enforces n_iterations > 0 at construction time."""
         with pytest.raises(ValidationError) as exc_info:

@@ -37,7 +37,6 @@ def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_ge
     reloaded = correction.load_config_from_json(output_path)
     assert reloaded.n_iterations == config.n_iterations
     assert len(reloaded.parameters) == len(config.parameters)
-    reloaded.validate()
 
     # Verify each reloaded parameter has the expected ptype, config_file (for
     # kernel-based params), and data.field (for OFFSET_KERNEL / OFFSET_TIME),
@@ -74,7 +73,6 @@ class TestClarreoConfiguration:
     def test_config_validates(self):
         config = create_clarreo_correction_config(self.data_dir, self.generic_dir)
         config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-        config.validate()
         assert config.geo.instrument_name == "CPRS_HYSICS"
         assert config.seed == 42
 

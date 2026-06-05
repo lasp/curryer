@@ -226,7 +226,6 @@ def run_downstream_pipeline(
         transformation_matrix_name=base_config.transformation_matrix_name,
     )
     config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config.validate()
 
     # --- STEP 4: iterate ---
     netcdf_data = correction._build_netcdf_structure(config, n_iterations, n_gcp_pairs)

@@ -238,10 +238,6 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         param_name = param.config_file.name if param.config_file else "time_correction"
         logger.info(f"  {i + 1}. {param_name} ({param.ptype.name})")
 
-    # Validate configuration
-    config.validate()
-    logger.info("✓ Configuration validation passed")
-
     # Save configuration to file if path is provided
     if config_output_path is not None:
         config_output_path = Path(config_output_path)
