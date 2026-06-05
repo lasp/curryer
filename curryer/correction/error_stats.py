@@ -22,7 +22,7 @@ etc.) directly.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import NamedTuple, Union
 
 import numpy as np
 import xarray as xr
@@ -33,6 +33,20 @@ logger = logging.getLogger(__name__)
 
 # WGS84 Earth radius in meters – single source of truth from curryer.compute.constants.
 _EARTH_RADIUS_M: float = constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0
+
+
+class ViewPlaneVectors(NamedTuple):
+    """Unit vectors spanning the view plane in UEN coordinates."""
+
+    v_uen: np.ndarray
+    x_uen: np.ndarray
+
+
+class ScalingFactors(NamedTuple):
+    """Scaling factors for nadir-equivalent error projection."""
+
+    vp_factor: float
+    xvp_factor: float
 
 
 def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
@@ -414,7 +428,7 @@ class ErrorStatsProcessor:
 
         return t_ctrs2uen
 
-    def _calculate_view_plane_vectors(self, bhat_uen: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _calculate_view_plane_vectors(self, bhat_uen: np.ndarray) -> ViewPlaneVectors:
         """Calculate view-plane and cross-view-plane unit vectors in UEN coordinates."""
         # Calculate normalization factor for horizontal components
         norm_factor = np.sqrt(bhat_uen[1] ** 2 + bhat_uen[2] ** 2)
@@ -425,9 +439,9 @@ class ErrorStatsProcessor:
         # Cross-view-plane direction (perpendicular to view-plane in horizontal)
         x_uen = np.array([0, bhat_uen[2], -bhat_uen[1]]) / norm_factor
 
-        return v_uen, x_uen
+        return ViewPlaneVectors(v_uen=v_uen, x_uen=x_uen)
 
-    def _calculate_scaling_factors(self, riss_ctrs: np.ndarray, theta: float) -> tuple[float, float]:
+    def _calculate_scaling_factors(self, riss_ctrs: np.ndarray, theta: float) -> ScalingFactors:
         """Calculate scaling factors for nadir-equivalent transformation."""
         r_magnitude = np.linalg.norm(riss_ctrs)
         f = r_magnitude / _EARTH_RADIUS_M
@@ -455,7 +469,7 @@ class ErrorStatsProcessor:
         # Cross-view-plane scaling factor
         xvp_factor = h / _EARTH_RADIUS_M / np.cos(theta) / (f * np.cos(theta) - temp1)
 
-        return vp_factor, xvp_factor
+        return ScalingFactors(vp_factor=vp_factor, xvp_factor=xvp_factor)
 
     def _create_output_dataset(self, input_data: xr.Dataset, results: dict[str, np.ndarray]) -> xr.Dataset:
         """Create output Xarray Dataset with processing results."""
