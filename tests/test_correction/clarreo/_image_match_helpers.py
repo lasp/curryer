@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from curryer.correction.data_structures import ImageGrid, PSFSamplingConfig, SearchConfig
+from curryer.correction.config import PSFSamplingConfig, SearchConfig
+from curryer.correction.grid_types import ImageGrid
 from curryer.correction.image_io import (
     load_image_grid,
     load_los_vectors,
