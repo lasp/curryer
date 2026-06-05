@@ -805,7 +805,9 @@ def _extract_parameter_values(params):
         if param_config.config_file:
             param_name = param_config.config_file.stem
         else:
-            param_name = param_config.data.get("name") or param_config.data.get("field") or param_config.ptype.name.lower()
+            param_name = (
+                param_config.spec.get("name") or param_config.spec.get("field") or param_config.ptype.name.lower()
+            )
 
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
             # Extract roll, pitch, yaw from DataFrame

@@ -97,7 +97,7 @@ def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_p
 
     # Add overall performance metrics (1D: parameter_set_id)
     # Use dynamic threshold metric name
-    threshold_metric = config.netcdf.get_threshold_metric_name()
+    threshold_metric = config.netcdf.threshold_metric_name
     overall_metrics = {
         threshold_metric: f"Percentage of pairs with error < {config.performance_threshold_m}m",
         "mean_rms_all_pairs": "Mean RMS error across all GCP pairs",
@@ -184,8 +184,8 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
                 ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes
-    standard_attrs = config.netcdf.get_standard_attributes()
-    threshold_metric = config.netcdf.get_threshold_metric_name()
+    standard_attrs = config.netcdf.standard_attributes_dict
+    threshold_metric = config.netcdf.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
         "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",
@@ -347,10 +347,10 @@ def _save_netcdf_results(netcdf_data, output_file, config):
                 ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes from config (allows mission overrides)
-    standard_attrs = config.netcdf.get_standard_attributes()
+    standard_attrs = config.netcdf.standard_attributes_dict
 
     # Add dynamic threshold metric
-    threshold_metric = config.netcdf.get_threshold_metric_name()
+    threshold_metric = config.netcdf.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
         "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",

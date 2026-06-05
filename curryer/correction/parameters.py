@@ -100,7 +100,7 @@ def _make_ck_dataframe(angle_vals: list[float]) -> pd.DataFrame:
 
 
 def _scalar_current_value(param: ParameterConfig) -> float:
-    """Return ``param.data.current_value`` as a scalar float.
+    """Return ``param.spec.current_value`` as a scalar float.
 
     Raises
     ------
@@ -108,7 +108,7 @@ def _scalar_current_value(param: ParameterConfig) -> float:
         If ``current_value`` is not a scalar numeric type. This helps surface
         misconfigured parameters early instead of silently coercing them to 0.0.
     """
-    cv = param.data.current_value
+    cv = param.spec.current_value
     if isinstance(cv, (int, float, np.number)):
         return float(cv)
 
@@ -132,8 +132,8 @@ def _get_nominal_value(param: ParameterConfig) -> typing.Any:
     equal to the ``current_value`` in radians.  For ``OFFSET_KERNEL`` /
     ``OFFSET_TIME``, returns a float in radians / seconds respectively.
     """
-    units = param.data.get("units")
-    current_value = param.data.current_value
+    units = param.spec.get("units")
+    current_value = param.spec.current_value
 
     if param.ptype == ParameterType.CONSTANT_KERNEL:
         if isinstance(current_value, list) and len(current_value) == 3:
@@ -184,9 +184,9 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
         List of *n_points* values; each element matches what the pipeline
         expects for that parameter type (DataFrame or float).
     """
-    units = param.data.get("units")
-    bounds = param.data.bounds
-    current_value = param.data.current_value
+    units = param.spec.get("units")
+    bounds = param.spec.bounds
+    current_value = param.spec.current_value
 
     if param.ptype == ParameterType.CONSTANT_KERNEL:
         bounds_rad = _bounds_to_rad(bounds, units)
@@ -233,48 +233,48 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
         logger.debug(f"Generating parameter set {ith + 1}/{config.n_iterations}")
 
         for param_idx, param in enumerate(config.parameters):
-            current_value = param.data.current_value
-            bounds = param.data.bounds
+            current_value = param.spec.current_value
+            bounds = param.spec.bounds
 
             if param.ptype == ParameterType.CONSTANT_KERNEL:
                 if isinstance(current_value, list) and len(current_value) == 3:
                     param_vals = []
                     for i, current_val in enumerate(current_value):
-                        if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
-                            if param.data.get("units") == "arcseconds":
-                                sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
+                        if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
+                            if param.spec.get("units") == "arcseconds":
+                                sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                                 bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                             else:
-                                sigma_rad = param.data["sigma"]
+                                sigma_rad = param.spec["sigma"]
                                 current_val_rad = current_val
                                 bounds_rad = bounds
                             offset = np.random.normal(0, sigma_rad)
                             offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                             param_vals.append(current_val_rad + offset)
                         else:
-                            if "sigma" not in param.data or param.data["sigma"] is None:
+                            if "sigma" not in param.spec or param.spec["sigma"] is None:
                                 logger.debug(
                                     f"  Parameter {param_idx} axis {i}: No sigma specified, using fixed current_value"
                                 )
-                            elif param.data["sigma"] == 0:
+                            elif param.spec["sigma"] == 0:
                                 logger.debug(f"  Parameter {param_idx} axis {i}: sigma=0, using fixed current_value")
-                            if param.data.get("units") == "arcseconds":
+                            if param.spec.get("units") == "arcseconds":
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                             else:
                                 current_val_rad = current_val
                             param_vals.append(current_val_rad)
                 else:
                     param_vals = [0.0, 0.0, 0.0]
-                    if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
-                        if param.data.get("units") == "arcseconds":
-                            sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
+                    if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
+                        if param.spec.get("units") == "arcseconds":
+                            sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
                             bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                             current_val_rad = (
                                 np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                             )
                         else:
-                            sigma_rad = param.data["sigma"]
+                            sigma_rad = param.spec["sigma"]
                             bounds_rad = bounds
                             current_val_rad = current_value
                         for i in range(3):
@@ -282,11 +282,11 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                             offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                             param_vals[i] = current_val_rad + offset
                     else:
-                        if "sigma" not in param.data or param.data["sigma"] is None:
+                        if "sigma" not in param.spec or param.spec["sigma"] is None:
                             logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                        elif param.data["sigma"] == 0:
+                        elif param.spec["sigma"] == 0:
                             logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                        if param.data.get("units") == "arcseconds":
+                        if param.spec.get("units") == "arcseconds":
                             current_val_rad = (
                                 np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                             )
@@ -301,24 +301,24 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                 )
 
             elif param.ptype == ParameterType.OFFSET_KERNEL:
-                if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
-                    if param.data.get("units") == "arcseconds":
-                        sigma_rad = np.deg2rad(param.data["sigma"] / 3600.0)
+                if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
+                    if param.spec.get("units") == "arcseconds":
+                        sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                         bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                     else:
-                        sigma_rad = param.data["sigma"]
+                        sigma_rad = param.spec["sigma"]
                         current_val_rad = current_value
                         bounds_rad = bounds
                     offset = np.random.normal(0, sigma_rad)
                     offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                     param_vals = current_val_rad + offset
                 else:
-                    if "sigma" not in param.data or param.data["sigma"] is None:
+                    if "sigma" not in param.spec or param.spec["sigma"] is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.data["sigma"] == 0:
+                    elif param.spec["sigma"] == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                    if param.data.get("units") == "arcseconds":
+                    if param.spec.get("units") == "arcseconds":
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                     else:
                         current_val_rad = current_value
@@ -326,34 +326,34 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                 logger.debug(f"  OFFSET_KERNEL {param_idx}: {param_vals:.6e} rad")
 
             elif param.ptype == ParameterType.OFFSET_TIME:
-                if "sigma" in param.data and param.data["sigma"] is not None and param.data["sigma"] > 0:
-                    if param.data.get("units") == "seconds":
-                        sigma_time = param.data["sigma"]
+                if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
+                    if param.spec.get("units") == "seconds":
+                        sigma_time = param.spec["sigma"]
                         current_val_time = current_value
                         bounds_time = bounds
-                    elif param.data.get("units") == "milliseconds":
-                        sigma_time = param.data["sigma"] / 1000.0
+                    elif param.spec.get("units") == "milliseconds":
+                        sigma_time = param.spec["sigma"] / 1000.0
                         current_val_time = current_value / 1000.0
                         bounds_time = [bounds[0] / 1000.0, bounds[1] / 1000.0]
-                    elif param.data.get("units") == "microseconds":
-                        sigma_time = param.data["sigma"] / 1000000.0
+                    elif param.spec.get("units") == "microseconds":
+                        sigma_time = param.spec["sigma"] / 1000000.0
                         current_val_time = current_value / 1000000.0
                         bounds_time = [bounds[0] / 1000000.0, bounds[1] / 1000000.0]
                     else:
-                        sigma_time = param.data["sigma"]
+                        sigma_time = param.spec["sigma"]
                         current_val_time = current_value
                         bounds_time = bounds
                     offset = np.random.normal(0, sigma_time)
                     offset = np.clip(offset, bounds_time[0], bounds_time[1])
                     param_vals = current_val_time + offset
                 else:
-                    if "sigma" not in param.data or param.data["sigma"] is None:
+                    if "sigma" not in param.spec or param.spec["sigma"] is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.data["sigma"] == 0:
+                    elif param.spec["sigma"] == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                    if param.data.get("units") == "milliseconds":
+                    if param.spec.get("units") == "milliseconds":
                         current_val_time = current_value / 1000.0
-                    elif param.data.get("units") == "microseconds":
+                    elif param.spec.get("units") == "microseconds":
                         current_val_time = current_value / 1000000.0
                     else:
                         current_val_time = current_value
@@ -462,7 +462,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
     for param_set_idx, param_set in enumerate(output):
         logger.debug(f"  Set {param_set_idx}:")
         for param_idx, (param, param_vals) in enumerate(param_set):
-            field_name = param.data.get("field", "unknown")
+            field_name = param.spec.get("field", "unknown")
             ptype_name = param.ptype.name
 
             if param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -479,7 +479,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
                 else:
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
             elif param.ptype == ParameterType.OFFSET_KERNEL:
-                units = param.data.get("units", "")
+                units = param.spec.get("units", "")
                 if units == "arcseconds":
                     param_arcsec = np.rad2deg(param_vals) * 3600.0
                     logger.debug(
@@ -488,7 +488,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
                 else:
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
             elif param.ptype == ParameterType.OFFSET_TIME:
-                units = param.data.get("units", "")
+                units = param.spec.get("units", "")
                 if units == "milliseconds":
                     param_ms = param_vals * 1000.0
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_ms:+10.3f} ms ({param_vals:+.9f} s)")
@@ -536,12 +536,12 @@ def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig
     )
     for i, param in enumerate(config.parameters):
         param_name = param.config_file.name if param.config_file else f"param_{i}"
-        current_value = param.data.current_value
-        bounds = param.data.bounds
+        current_value = param.spec.current_value
+        bounds = param.spec.bounds
         logger.info(
             f"  {i + 1}. {param_name} ({param.ptype.name}): "
-            f"current_value={current_value}, sigma={param.data.get('sigma', 'N/A')}, "
-            f"bounds={bounds}, units={param.data.get('units', 'N/A')}"
+            f"current_value={current_value}, sigma={param.spec.get('sigma', 'N/A')}, "
+            f"bounds={bounds}, units={param.spec.get('units', 'N/A')}"
         )
 
     if strategy == SearchStrategy.RANDOM:

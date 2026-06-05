@@ -91,8 +91,9 @@ class NetCDFConfig(BaseModel):
     parameter_metadata: dict[str, NetCDFParameterMetadata] | None = None
     standard_attributes: dict[str, dict[str, str]] | None = None
 
-    def get_threshold_metric_name(self) -> str:
-        """Generate metric name dynamically from threshold."""
+    @property
+    def threshold_metric_name(self) -> str:
+        """Threshold-derived metric variable name, e.g. ``"percent_under_250m"``."""
         threshold_m = int(self.performance_threshold_m)
         return f"percent_under_{threshold_m}m"
 
@@ -103,10 +104,6 @@ class NetCDFConfig(BaseModel):
             return self.standard_attributes
         return DEFAULT_NETCDF_ATTRIBUTES.copy()
 
-    def get_standard_attributes(self) -> dict[str, dict[str, str]]:
-        """Get standard variable attributes, using mission overrides if provided."""
-        return self.standard_attributes_dict
-
     def get_parameter_netcdf_metadata(
         self, param_config: "ParameterConfig", angle_type: str | None = None
     ) -> "NetCDFParameterMetadata":
@@ -116,9 +113,7 @@ class NetCDFConfig(BaseModel):
             lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
         else:
             identity = (
-                param_config.data.get("name")
-                or param_config.data.get("field")
-                or param_config.ptype.name.lower()
+                param_config.spec.get("name") or param_config.spec.get("field") or param_config.ptype.name.lower()
             )
             lookup_key = identity
 
@@ -143,8 +138,8 @@ class NetCDFConfig(BaseModel):
             units = "unknown"
 
         # Use declared units field (replaces old isinstance(data, dict) check)
-        if param_config.data.units is not None:
-            units = param_config.data.units
+        if param_config.spec.units is not None:
+            units = param_config.spec.units
 
         var_name = base_key.replace(".", "_").replace("-", "_")
         if not var_name.startswith("param_"):
@@ -152,7 +147,11 @@ class NetCDFConfig(BaseModel):
 
         if param_config.config_file:
             file_stem = param_config.config_file.stem
-            # Strip version suffixes and format extensions to produce a human-readable long_name
+            # Cosmetic only: strip kernel version suffixes (``_v01``/``_v02``) and the
+            # ``.attitude.ck`` format tag so the NetCDF ``long_name`` reads cleanly
+            # (e.g. ``cprs_hysics_v01.attitude.ck`` -> "Cprs Hysics correction").
+            # These tokens are conventional in mission kernel filenames; unmatched
+            # names simply pass through unchanged, so this is safe for any mission.
             clean_name = file_stem.replace("_v01", "").replace("_v02", "").replace(".attitude.ck", "")
             clean_name = clean_name.replace("_", " ").title()
             if angle_type:

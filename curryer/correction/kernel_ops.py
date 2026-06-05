@@ -35,7 +35,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     Returns:
         Modified copy of input_data with parameter offsets applied
     """
-    logger.info(f"Applying {config.ptype.name} offset to {config.data.get('field', 'unknown field')}")
+    logger.info(f"Applying {config.ptype.name} offset to {config.spec.get('field', 'unknown field')}")
 
     # Make a copy to avoid modifying the original
     if isinstance(input_data, pd.DataFrame):
@@ -48,7 +48,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
         # OFFSET_KERNEL is ONLY for angle biases, not time offsets
         # Valid units: "arcseconds" (converted to radians) or None (radians assumed)
         # For time offsets, use OFFSET_TIME instead
-        field_name = config.data.get("field")
+        field_name = config.spec.get("field")
         if not field_name:
             raise ValueError("OFFSET_KERNEL parameter requires 'field' to be specified in config")
 
@@ -57,7 +57,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             # OFFSET_KERNEL is for angle biases only (azimuth/elevation angles)
             offset_value = param_data
             original_value = offset_value
-            if config.data.get("units") == "arcseconds":
+            if config.spec.get("units") == "arcseconds":
                 # Convert arcseconds to radians for application
                 offset_value = np.deg2rad(param_data / 3600.0)
                 logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
@@ -86,7 +86,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     elif config.ptype == ParameterType.OFFSET_TIME:
         # Apply time offset to science frame timing
         # NOTE: param_data is in seconds while target field (e.g., corrected_timestamp) is typically in microseconds
-        field_name = config.data.get("field", "corrected_timestamp")
+        field_name = config.spec.get("field", "corrected_timestamp")
         if hasattr(modified_data, "__getitem__") and field_name in modified_data:
             # param_data is already in seconds (converted by load_param_sets)
             # Convert seconds to microseconds for the timestamp field
@@ -94,7 +94,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             offset_value_us = param_data * 1000000.0  # seconds to microseconds
 
             logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
-            units = config.data.get("units", "seconds")
+            units = config.spec.get("units", "seconds")
             if units == "milliseconds":
                 logger.info(f"  Offset: {offset_value_seconds * 1000.0:.6f} ms (configured) = {offset_value_us:.6f} µs")
             elif units == "microseconds":
@@ -245,17 +245,17 @@ def _create_parameter_kernels(
     logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Log parameter details
-        param_name = a_param.data.get("field", "unknown")
+        param_name = a_param.spec.get("field", "unknown")
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
             logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            units = a_param.data.get("units", "")
+            units = a_param.spec.get("units", "")
             logger.info(
                 f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
                 f"(internal units; configured units: {units or 'unspecified'})"
             )
         elif a_param.ptype == ParameterType.OFFSET_TIME:
-            units = a_param.data.get("units", "")
+            units = a_param.spec.get("units", "")
             logger.info(
                 f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
                 f"(internal units; configured units: {units or 'unspecified'})"
