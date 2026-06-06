@@ -15,15 +15,24 @@ import pytest
 from pydantic import ValidationError
 
 from curryer.correction.config import (
+    CalibrationFiles,
     CorrectionConfig,
     DataConfig,
     GeolocationConfig,
+    GeolocationSetup,
     NetCDFConfig,
     NetCDFParameterMetadata,
+    OutputConfig,
     ParameterConfig,
     ParameterSpec,
     ParameterType,
+    RequirementsConfig,
+    SearchStrategy,
+    Sweep,
+    load_config_files,
     load_config_from_json,
+    load_setup_from_json,
+    load_sweep_from_json,
 )
 
 # ---------------------------------------------------------------------------
@@ -789,3 +798,168 @@ class TestCorrectionInput:
 
         call_args = mock_loop.call_args
         assert call_args[0][2] == tuples
+
+
+class TestSetupSweepOutput:
+    """The redesigned config surface: GeolocationSetup / Sweep / OutputConfig."""
+
+    def _geo(self) -> GeolocationConfig:
+        return GeolocationConfig(
+            meta_kernel_file=Path("tests/data/test.kernels.tm.json"),
+            generic_kernel_dir=Path("data/generic"),
+            instrument_name="CPRS_HYSICS",
+            time_field="corrected_timestamp",
+        )
+
+    def _setup(self) -> GeolocationSetup:
+        return GeolocationSetup(
+            geo=self._geo(),
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
+            data_config=DataConfig(file_format="netcdf", time_scale_factor=1.0),
+            calibration=CalibrationFiles(psf_file=Path("psf.mat"), los_vectors_file=Path("los.mat")),
+            spacecraft_position_name="riss_ctrs",
+            boresight_name="bhat_hs",
+            transformation_matrix_name="t_hs2ctrs",
+        )
+
+    def _sweep(self) -> Sweep:
+        return Sweep(
+            parameters=[
+                ParameterConfig(
+                    ptype=ParameterType.CONSTANT_KERNEL,
+                    config_file=Path("k.json"),
+                    spec={
+                        "current_value": [0.0, 0.0, 0.0],
+                        "bounds": [-300.0, 300.0],
+                        "sigma": 30.0,
+                        "units": "arcseconds",
+                    },
+                )
+            ],
+            search_strategy=SearchStrategy.RANDOM,
+            n_iterations=5,
+            seed=42,
+        )
+
+    def test_setup_construction_and_defaults(self):
+        setup = GeolocationSetup(
+            geo=self._geo(),
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
+        )
+        assert setup.spacecraft_position_name == "sc_position"
+        assert setup.boresight_name == "boresight"
+        assert setup.transformation_matrix_name == "t_inst2ref"
+        assert setup.calibration is None
+        assert setup.image_matching_func is None
+
+    def test_setup_requires_geo_and_requirements(self):
+        with pytest.raises(ValidationError):
+            GeolocationSetup(geo=self._geo())  # missing requirements
+
+    def test_setup_json_round_trip_excludes_callable(self):
+        setup = self._setup()
+        setup.image_matching_func = lambda *a, **k: None  # callable hook
+        json_str = setup.model_dump_json()
+        assert "image_matching_func" not in json_str
+        restored = GeolocationSetup.model_validate_json(json_str)
+        assert restored.geo.instrument_name == "CPRS_HYSICS"
+        assert restored.requirements.performance_threshold_m == 250.0
+        assert restored.spacecraft_position_name == "riss_ctrs"
+        assert restored.calibration.psf_file == Path("psf.mat")
+
+    def test_sweep_defaults_and_round_trip(self):
+        sweep = self._sweep()
+        assert sweep.search_strategy is SearchStrategy.RANDOM
+        assert sweep.n_iterations == 5
+        assert sweep.grid_points_per_param == 10
+        restored = Sweep.model_validate_json(sweep.model_dump_json())
+        assert len(restored.parameters) == 1
+        assert restored.seed == 42
+
+    def test_sweep_requires_at_least_one_parameter(self):
+        with pytest.raises(ValidationError):
+            Sweep(parameters=[])
+
+    def test_output_config_filename_default_and_override(self):
+        assert OutputConfig().get_output_filename() == "correction_results.nc"
+        assert OutputConfig(output_filename="run.nc").get_output_filename() == "run.nc"
+
+    def test_load_config_files_from_json(self, tmp_path):
+        """load_config_files() parses setup/sweep/output sections of one JSON file."""
+        import json
+
+        cfg = {
+            "setup": {
+                "geo": {
+                    "meta_kernel_file": "m.json",
+                    "generic_kernel_dir": "data/generic",
+                    "instrument_name": "CPRS_HYSICS",
+                    "time_field": "corrected_timestamp",
+                },
+                "requirements": {"performance_threshold_m": 250.0, "performance_spec_percent": 39.0},
+                "data_config": {"file_format": "netcdf", "time_scale_factor": 1.0},
+                "calibration": {"psf_file": "psf.mat", "los_vectors_file": "los.mat"},
+                "spacecraft_position_name": "riss_ctrs",
+            },
+            "sweep": {
+                "search_strategy": "grid",
+                "grid_points_per_param": 7,
+                "parameters": [
+                    {
+                        "ptype": "CONSTANT_KERNEL",
+                        "config_file": "frame.attitude.ck.json",
+                        "spec": {
+                            "current_value": [0.0, 0.0, 0.0],
+                            "bounds": [-300.0, 300.0],
+                            "sigma": 30.0,
+                            "units": "arcseconds",
+                        },
+                    },
+                    {
+                        "ptype": "OFFSET_TIME",
+                        "config_file": None,
+                        "spec": {
+                            "field": "corrected_timestamp",
+                            "current_value": 0.0,
+                            "bounds": [-50.0, 50.0],
+                            "sigma": 7.0,
+                            "units": "milliseconds",
+                        },
+                    },
+                ],
+            },
+            "output": {"output_filename": "results.nc"},
+        }
+        path = tmp_path / "cfg.json"
+        path.write_text(json.dumps(cfg))
+
+        setup, sweep, output = load_config_files(path)
+        assert setup.geo.instrument_name == "CPRS_HYSICS"
+        assert setup.requirements.performance_threshold_m == 250.0
+        assert setup.spacecraft_position_name == "riss_ctrs"
+        assert setup.calibration.psf_file == Path("psf.mat")
+        assert sweep.search_strategy is SearchStrategy.GRID_SEARCH
+        assert sweep.grid_points_per_param == 7
+        assert len(sweep.parameters) == 2
+        assert sweep.parameters[1].ptype is ParameterType.OFFSET_TIME
+        assert output.get_output_filename() == "results.nc"
+
+    def test_load_setup_and_sweep_separately(self, tmp_path):
+        import json
+
+        cfg = {
+            "setup": {
+                "geo": {
+                    "meta_kernel_file": "m.json",
+                    "generic_kernel_dir": "g",
+                    "instrument_name": "X",
+                    "time_field": "t",
+                },
+                "requirements": {"performance_threshold_m": 100.0, "performance_spec_percent": 50.0},
+            },
+            "sweep": {"parameters": [{"ptype": "OFFSET_TIME", "spec": {"field": "t"}}]},
+        }
+        path = tmp_path / "cfg.json"
+        path.write_text(json.dumps(cfg))
+        assert load_setup_from_json(path).geo.instrument_name == "X"
+        assert load_sweep_from_json(path).parameters[0].ptype is ParameterType.OFFSET_TIME

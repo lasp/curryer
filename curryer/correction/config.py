@@ -71,8 +71,9 @@ Typical construction::
 import json
 import logging
 import warnings
+from collections.abc import Callable  # noqa: E402  (kept adjacent to other stdlib usage)
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
@@ -165,11 +166,12 @@ class DataConfig(BaseModel):
 # ============================================================================
 
 
-class ParameterType(Enum):
+class ParameterType(str, Enum):
     """Parameter types used in the correction configuration.
 
     Specifies how a parameter is applied during geolocation analysis:
     whether as a constant kernel value, a kernel offset, or a time offset.
+    String-valued so JSON configs use readable names (``"OFFSET_TIME"``).
 
     Attributes
     ----------
@@ -181,9 +183,9 @@ class ParameterType(Enum):
         Modify input timetags by an offset.
     """
 
-    CONSTANT_KERNEL = auto()  # Set a specific value.
-    OFFSET_KERNEL = auto()  # Modify input kernel data by an offset.
-    OFFSET_TIME = auto()  # Modify input timetags by an offset
+    CONSTANT_KERNEL = "CONSTANT_KERNEL"  # Set a specific value.
+    OFFSET_KERNEL = "OFFSET_KERNEL"  # Modify input kernel data by an offset.
+    OFFSET_TIME = "OFFSET_TIME"  # Modify input timetags by an offset
 
 
 class SearchStrategy(str, Enum):
@@ -545,6 +547,143 @@ class RegridConfig(BaseModel):
         if has_bounds and has_size:
             raise ValueError("Cannot specify both output_bounds and output_grid_size")
         return self
+
+
+# ============================================================================
+# Setup / Sweep / Output — redesigned config surface
+# ============================================================================
+#
+# ``GeolocationSetup`` holds the durable, mission-specific setup (built once);
+# ``Sweep`` is the lightweight experiment varied between runs; ``OutputConfig``
+# holds output settings.  Together they replace the monolithic
+# ``CorrectionConfig`` (kept temporarily during the migration).
+
+
+class CalibrationFiles(BaseModel):
+    """Direct paths to instrument calibration inputs.
+
+    Both fields are optional and interim: real line-of-sight vectors and
+    spacecraft geometry will be SPICE-derived from telemetry rather than loaded
+    from files, so nothing in the pipeline *requires* these.
+
+    Attributes
+    ----------
+    los_vectors_file
+        Per-detector line-of-sight unit vectors (instrument frame).
+    psf_file
+        Optical point-spread-function calibration.
+    """
+
+    los_vectors_file: Path | None = None
+    psf_file: Path | None = None
+
+
+class GeolocationSetup(BaseModel):
+    """Durable, mission-specific setup for geolocation correction/verification.
+
+    Built once per mission and reused across many :class:`Sweep` runs.  Holds
+    everything that does *not* change when you vary which parameters are swept:
+    SPICE kernels and instrument identity (:class:`GeolocationConfig`), the
+    pass/fail :class:`RequirementsConfig`, how input data is read
+    (:class:`DataConfig`), static instrument calibration
+    (:class:`CalibrationFiles`), the science-Dataset variable names, and an
+    optional custom image-matching implementation.
+
+    Attributes
+    ----------
+    geo
+        SPICE kernels, instrument name, and science time field.
+    requirements
+        Pass/fail thresholds used by verification and the correction verdict.
+    data_config
+        How telemetry/science files are read.  ``None`` uses CSV defaults.
+    calibration
+        Optional direct calibration file paths.  ``None`` when geometry is
+        supplied another way (e.g. SPICE-derived).
+    spacecraft_position_name, boresight_name, transformation_matrix_name
+        Variable names for the spacecraft-state fields in the image-matching
+        ``xr.Dataset`` (mission-configurable; generic defaults).
+    image_matching_func
+        Optional custom image-matching callable.  ``None`` uses the built-in
+        :func:`~curryer.correction.verification.image_matching`.  Excluded from
+        JSON serialisation because callables are not serialisable.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    geo: GeolocationConfig
+    requirements: RequirementsConfig
+    data_config: DataConfig | None = None
+    calibration: CalibrationFiles | None = None
+
+    spacecraft_position_name: str = "sc_position"
+    boresight_name: str = "boresight"
+    transformation_matrix_name: str = "t_inst2ref"
+
+    image_matching_func: Callable | None = Field(default=None, exclude=True)
+
+
+class Sweep(BaseModel):
+    """A parameter-variation experiment run against a :class:`GeolocationSetup`.
+
+    Lightweight and cheap to copy, so a setup can be held fixed while rapidly
+    trying parameter variations.
+
+    Attributes
+    ----------
+    parameters
+        The parameters to vary (at least one).
+    search_strategy
+        How parameter sets are generated (RANDOM / GRID_SEARCH / SINGLE_OFFSET).
+    n_iterations
+        Iterations for RANDOM and values-per-parameter for SINGLE_OFFSET;
+        ignored by GRID_SEARCH.
+    seed
+        Random seed for reproducible RANDOM sweeps.
+    grid_points_per_param
+        Evenly-spaced points per parameter for GRID_SEARCH.
+    max_grid_sets
+        Safety cap on total GRID_SEARCH parameter sets.
+    """
+
+    parameters: list[ParameterConfig] = Field(min_length=1)
+    search_strategy: SearchStrategy = SearchStrategy.RANDOM
+    n_iterations: int = Field(default=10, gt=0)
+    seed: int | None = None
+    grid_points_per_param: int = Field(default=10, ge=2)
+    max_grid_sets: int = Field(default=100_000, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_search_strategy(self) -> "Sweep":
+        """Ensure strategy-specific settings are consistent."""
+        if self.search_strategy in (SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET):
+            if not self.parameters:
+                raise ValueError(
+                    f"SearchStrategy.{self.search_strategy.name} requires at least one parameter in `parameters`."
+                )
+        return self
+
+
+class OutputConfig(BaseModel):
+    """Output settings for a correction run.
+
+    Attributes
+    ----------
+    netcdf
+        NetCDF structure/metadata config.  ``None`` is auto-populated by
+        :func:`~curryer.correction.pipeline.run_correction` from the setup's
+        performance threshold.
+    output_filename
+        Output NetCDF filename.  ``None`` falls back to the default in
+        :meth:`get_output_filename`.
+    """
+
+    netcdf: NetCDFConfig | None = None
+    output_filename: str | None = None
+
+    def get_output_filename(self, default: str = "correction_results.nc") -> str:
+        """Return :attr:`output_filename` if set, otherwise *default*."""
+        return self.output_filename or default
 
 
 # ============================================================================
@@ -1006,30 +1145,84 @@ class CorrectionInput(BaseModel):
     Replaces the positional tuple ``(telemetry_path, science_path, gcp_path)``
     with named fields for clarity and IDE autocomplete.
 
+    The reader for each file is chosen by :attr:`DataConfig.file_format`, so the
+    inputs are format-agnostic.  The first-class real-data path is a NetCDF
+    image observation (radiance as the science variable) carrying telemetry,
+    metadata, and science times; ``.mat`` files are interim test scaffolding.
+
     Parameters
     ----------
     telemetry_file : Path
-        Path to the telemetry CSV (or NetCDF/HDF5) file.
+        Telemetry observation file (NetCDF for real data; CSV/HDF5 also read).
     science_file : Path
-        Path to the science/timing CSV (or NetCDF/HDF5) file.
+        Science/timing observation file (NetCDF for real data; CSV/HDF5 also read).
     gcp_file : Path
-        Path to the GCP reference image (``.mat`` file).
+        GCP reference-image file (NetCDF or ``.mat``).
 
     Examples
     --------
-    >>> from curryer.correction import CorrectionInput, run_correction
+    >>> from curryer.correction import CorrectionInput
     >>> inputs = [
     ...     CorrectionInput(
-    ...         telemetry_file="data/tlm_20240317.csv",
-    ...         science_file="data/sci_20240317.csv",
-    ...         gcp_file="gcps/landsat_chip_001.mat",
+    ...         telemetry_file="data/obs_20240317.nc",
+    ...         science_file="data/obs_20240317.nc",
+    ...         gcp_file="gcps/landsat_chip_001.nc",
     ...     )
     ... ]
-    >>> result = run_correction(config, work_dir, inputs)
-    >>> results = result.results
-    >>> netcdf_data = result.netcdf_data
     """
 
     telemetry_file: Path
     science_file: Path
     gcp_file: Path
+
+
+# ============================================================================
+# Setup / Sweep / Output JSON loading
+# ============================================================================
+
+
+def _read_config_json(config_path: Path) -> dict:
+    """Read and parse a JSON config file, raising clear errors on failure."""
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in config file {config_path}: {e}") from e
+
+
+def load_setup_from_json(config_path: Path) -> GeolocationSetup:
+    """Load a :class:`GeolocationSetup` from the ``"setup"`` section of a JSON file."""
+    data = _read_config_json(config_path)
+    if "setup" not in data:
+        raise KeyError(f"Missing required 'setup' section in {config_path}")
+    return GeolocationSetup.model_validate(data["setup"])
+
+
+def load_sweep_from_json(config_path: Path) -> Sweep:
+    """Load a :class:`Sweep` from the ``"sweep"`` section of a JSON file."""
+    data = _read_config_json(config_path)
+    if "sweep" not in data:
+        raise KeyError(f"Missing required 'sweep' section in {config_path}")
+    return Sweep.model_validate(data["sweep"])
+
+
+def load_config_files(config_path: Path) -> tuple[GeolocationSetup, Sweep, OutputConfig]:
+    """Load ``(GeolocationSetup, Sweep, OutputConfig)`` from one JSON file.
+
+    The file has three top-level sections — ``"setup"``, ``"sweep"``, and an
+    optional ``"output"`` — each validated directly against its model.  The
+    ``"sweep".parameters`` entries mirror :class:`ParameterConfig` (``ptype`` /
+    ``config_file`` / ``spec``); rotation frames are authored as a single
+    ``CONSTANT_KERNEL`` parameter with ``spec.current_value = [roll, pitch, yaw]``.
+    """
+    data = _read_config_json(config_path)
+    for section in ("setup", "sweep"):
+        if section not in data:
+            raise KeyError(f"Missing required '{section}' section in {config_path}")
+    setup = GeolocationSetup.model_validate(data["setup"])
+    sweep = Sweep.model_validate(data["sweep"])
+    output = OutputConfig.model_validate(data.get("output", {}))
+    return setup, sweep, output
