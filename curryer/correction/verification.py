@@ -265,7 +265,7 @@ def _run_error_stats(
         Processed dataset with ``nadir_equiv_total_error_m`` and related
         intermediate variables.
     """
-    error_config = ErrorStatsConfig.from_correction_config(config)
+    error_config = ErrorStatsConfig.from_setup(config)
     processor = ErrorStatsProcessor(config=error_config)
     return processor.process_geolocation_errors(aggregated)
 
