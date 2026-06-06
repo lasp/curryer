@@ -1,7 +1,7 @@
 # Correction & Verification User Guide
 
 The `curryer.correction` package provides two workflows that share the same
-configuration object and image-matching infrastructure.
+configuration models and image-matching infrastructure.
 
 ## Architecture Overview
 
@@ -29,37 +29,61 @@ correction loop
 └── aggregate results → CorrectionResult
 ```
 
-Both `run_correction()` and `verify()` accept the same `CorrectionConfig`.
+Both `run_correction()` and `verify()` take the same `GeolocationSetup` as
+their first argument.
+
+## The config surface: Setup / Sweep / Output
+
+Configuration is split into three focused Pydantic models so that the durable,
+mission-specific parts are built once and the parts you vary between runs stay
+lightweight:
+
+- **`GeolocationSetup`** — the durable setup, built **once** per mission and
+  reused across many runs. Holds `geo` (a `GeolocationConfig`: SPICE kernels,
+  instrument, `time_field`), `requirements` (a `RequirementsConfig`), optional
+  `data_config` (a `DataConfig`), optional `calibration` (a `CalibrationFiles`
+  with direct `los_vectors_file` / `psf_file` paths), the science-Dataset
+  variable names (`spacecraft_position_name` / `boresight_name` /
+  `transformation_matrix_name`), and an optional `image_matching_func` hook.
+- **`Sweep`** — the lightweight experiment you **vary** between runs: the
+  `parameters` to sweep, the `search_strategy`, `n_iterations`, `seed`, and
+  grid settings. Cheap to copy; see `with_strategy()` / `update_param()` below.
+- **`OutputConfig`** — output settings (`netcdf` and `output_filename`).
+  Optional; `run_correction()` auto-populates NetCDF metadata from the setup's
+  performance threshold when omitted.
+
+A run is `run_correction(setup, sweep, inputs, work_dir, output=None)`.
 
 ---
 
 ## New Mission Checklist
 
-To use correction or verification on a new mission, provide these values in
-your `CorrectionConfig` (or JSON config file):
+To use correction or verification on a new mission, provide these values when
+building your `GeolocationSetup` / `Sweep` (or in the JSON config file):
 
 1. **SPICE kernels** — set `GeolocationConfig.meta_kernel_file`,
    `generic_kernel_dir`, and `dynamic_kernels` to your mission's kernel
-   JSON files.
+   JSON files (on `setup.geo`).
 2. **Instrument name** — set `GeolocationConfig.instrument_name` to the
    NAIF instrument name defined in your Instrument Kernel (IK), e.g.
    `"CPRS_HYSICS"`.
 3. **Parameters to vary** (correction only) — define one `ParameterConfig`
-   per adjustable frame offset or timing correction. Each entry points to a
-   SPICE kernel JSON template (`config_file`) and specifies bounds, sigma,
-   and units.
+   per adjustable frame offset or timing correction in `sweep.parameters`.
+   Each entry points to a SPICE kernel JSON template (`config_file`) and a
+   `ParameterSpec` (`spec`) with bounds, sigma, and units.
 4. **Telemetry field names** — set `GeolocationConfig.time_field` to the
    column holding uGPS timestamps. Set `DataConfig.time_scale_factor` if
    your timestamps need scaling (e.g. GPS seconds → uGPS: `1e6`).
 5. **Spacecraft variable names** — set `spacecraft_position_name`,
-   `boresight_name`, and `transformation_matrix_name` to match the variable
-   names in your image-matching output `xr.Dataset`.
-6. **Performance requirements** — set `performance_threshold_m`
+   `boresight_name`, and `transformation_matrix_name` on the setup to match
+   the variable names in your image-matching output `xr.Dataset`.
+6. **Performance requirements** — set `RequirementsConfig.performance_threshold_m`
    (per-measurement nadir-error limit in metres) and
-   `performance_spec_percent` (minimum % of measurements that must pass).
+   `performance_spec_percent` (minimum % of measurements that must pass) on
+   `setup.requirements`.
 7. **Image-matching function** (verification with raw geolocated data only)
-   — attach a callable to `config._image_matching_override` that accepts
-   `xr.Dataset` and returns `xr.Dataset` with `lat_error_deg`,
+   — attach a callable to `setup.image_matching_func` that accepts an
+   `xr.Dataset` and returns an `xr.Dataset` with `lat_error_deg`,
    `lon_error_deg`, spacecraft state variables, and GCP coordinates.
 
 **Annotated examples:**
@@ -74,12 +98,16 @@ your `CorrectionConfig` (or JSON config file):
 
 | Concept              | Description                                                                                  |
 | -------------------- | -------------------------------------------------------------------------------------------- |
-| `CorrectionConfig`   | Top-level config; passed to `run_correction()`, `loop()`, and `verify()`                     |
-| `GeolocationConfig`  | SPICE kernel paths and instrument identity                                                   |
+| `GeolocationSetup`   | Durable, mission-specific setup; first argument to `run_correction()`, `loop()`, `verify()`  |
+| `Sweep`              | The parameter-variation experiment you vary between runs                                     |
+| `OutputConfig`       | Output settings (`netcdf` metadata + `output_filename`)                                      |
+| `GeolocationConfig`  | SPICE kernel paths and instrument identity (`setup.geo`)                                     |
 | `ParameterConfig`    | One parameter to vary (kernel offset or timing correction)                                   |
+| `ParameterSpec`      | Sampling spec for one parameter (`current_value`, `bounds`, `sigma`, `units`, `field`)       |
 | `ParameterType`      | `CONSTANT_KERNEL`, `OFFSET_KERNEL`, or `OFFSET_TIME`                                         |
 | `SearchStrategy`     | `RANDOM`, `GRID_SEARCH`, or `SINGLE_OFFSET`                                                  |
 | `RequirementsConfig` | Verification thresholds (`performance_threshold_m`, `performance_spec_percent`)              |
+| `CalibrationFiles`   | Direct (interim) `los_vectors_file` / `psf_file` paths on `setup.calibration`                |
 | `CorrectionInput`    | Typed alternative to a raw `(telemetry, science, gcp)` tuple; accepted by `run_correction()` |
 | `DataConfig`         | Declarative file-loading specification (format, time scale factor)                           |
 | `VerificationResult` | Output of `verify()`: pass/fail flag, per-GCP errors, summary table                          |
@@ -97,27 +125,21 @@ pipeline. This is the path used by weekly automated checks.
 import xarray as xr
 from pathlib import Path
 from curryer.correction import (
-    CorrectionConfig, GeolocationConfig, ParameterConfig,
-    ParameterType, verify,
+    GeolocationSetup, GeolocationConfig, RequirementsConfig, verify,
 )
 
-# 1. Build config (or load from JSON — see below)
-config = CorrectionConfig(
-    n_iterations=1,
-    parameters=[
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            data={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
-        )
-    ],
+# 1. Build the mission setup (or load from JSON — see below)
+setup = GeolocationSetup(
     geo=GeolocationConfig(
         meta_kernel_file=Path("path/to/mission.kernels.tm.json"),
         generic_kernel_dir=Path("data/generic"),
         instrument_name="YOUR_INSTRUMENT",
         time_field="corrected_timestamp",
     ),
-    performance_threshold_m=250.0,           # per-measurement error limit (m)
-    performance_spec_percent=39.0,           # % of measurements required to pass
+    requirements=RequirementsConfig(
+        performance_threshold_m=250.0,       # per-measurement error limit (m)
+        performance_spec_percent=39.0,       # % of measurements required to pass
+    ),
     spacecraft_position_name="sc_position",  # variable name in your xr.Dataset
     boresight_name="boresight",
     transformation_matrix_name="t_inst2ref",
@@ -127,7 +149,7 @@ config = CorrectionConfig(
 image_matching_results = [xr.open_dataset("matching_result_001.nc")]
 
 # 3. Run verification — no SPICE kernel loading required for this path
-result = verify(config, image_matching_results=image_matching_results)
+result = verify(setup, image_matching_results=image_matching_results)
 
 # 4. Inspect result
 print(result.summary_table)
@@ -137,16 +159,19 @@ print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 
 ### `verify()` Input Modes
 
-| Mode                         | Argument                                | Notes                                                      |
-| ---------------------------- | --------------------------------------- | ---------------------------------------------------------- |
-| Pre-computed image matching  | `image_matching_results=`               | **Recommended** for production and automated checks        |
-| Run image matching on demand | `geolocated_data=`                      | Calls `config._image_matching_override(data)`; must be set |
-| Explicit file-path pairs     | `gcp_pairs=`                            | Supported                                                  |
-| Auto-paired paths            | `observation_paths=` + `gcp_directory=` | Supported                                                  |
+`verify()` takes `setup` as its only positional argument; all input modes are
+keyword-only (first match wins, in the order below):
+
+| Mode                         | Argument                                 | Notes                                                |
+| ---------------------------- | ---------------------------------------- | ---------------------------------------------------- |
+| Pre-computed image matching  | `image_matching_results=`                | **Recommended** for production and automated checks  |
+| Run image matching on demand | `geolocated_data=`                       | Calls `setup.image_matching_func(data)`; must be set |
+| Explicit file-path pairs     | `gcp_pairs=` (+ `los_file=`/`psf_file=`) | Supported                                            |
+| Auto-paired paths            | `observation_paths=` + `gcp_directory=`  | Supported (+ `los_file=`/`psf_file=`)                |
 
 The `geolocated_data` path does **not** include a built-in image-matching
 algorithm. `verify()` calls whatever callable you attach to
-`config._image_matching_override`. If that attribute is not set, the call
+`setup.image_matching_func`. If that attribute is not set, the call
 raises `ValueError`. Use `image_matching_results=`, `gcp_pairs=`, or
 `observation_paths=` + `gcp_directory=` for other supported cases.
 
@@ -163,29 +188,26 @@ recommendation, and a summary table.
 ```python
 import pathlib
 from curryer.correction import (
-    CorrectionInput, load_config_from_json,
-    SearchStrategy, run_correction,
+    CorrectionInput, load_config_files, run_correction,
 )
 
-# Option A: Load config from JSON (recommended for production)
-config = load_config_from_json("examples/correction/clarreo_config.json")
-
-# Option B: Override settings at runtime without modifying the JSON
-config = config.model_copy(update={"search_strategy": SearchStrategy.RANDOM, "n_iterations": 50})
+# Load setup + sweep (+ output) from one JSON file (recommended for production)
+setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
 
 # Each CorrectionInput maps one telemetry + science + GCP triplet.
 # Raw (str, str, str) tuples are also accepted.
 # S3 URIs ("s3://...") are accepted when boto3 is installed.
 inputs = [
     CorrectionInput(
-        telemetry_file=pathlib.Path("data/tlm_20240317.csv"),
-        science_file=pathlib.Path("data/sci_20240317.csv"),
-        gcp_file=pathlib.Path("data/gcp/GCP_scene_001_resampled.mat"),
+        telemetry_file=pathlib.Path("data/obs_20240317.nc"),
+        science_file=pathlib.Path("data/obs_20240317.nc"),
+        gcp_file=pathlib.Path("data/gcp/landsat_chip_001.nc"),
     )
 ]
 
 work_dir = pathlib.Path("workdir_correction")
-result = run_correction(config, work_dir, inputs)
+# NOTE: inputs come before work_dir; output is optional.
+result = run_correction(setup, sweep, inputs, work_dir, output=output)
 
 print(result.summary_table)
 print("Passed:", result.passed)
@@ -195,16 +217,36 @@ best = min(result.results, key=lambda r: r["rms_error_m"])
 print(f"Best RMS: {best['rms_error_m']:.2f} m  (parameters: {best['parameters']})")
 ```
 
+### Build setup once, vary the sweep rapidly
+
+The setup is durable, so build it once and re-run with cheap, re-validated
+sweep variations. `with_strategy()` and `update_param()` return copies and
+validate eagerly, so typos or out-of-spec values raise immediately rather than
+deep inside a run:
+
+```python
+# Same setup, switch to a deterministic grid search
+grid = sweep.with_strategy("grid", grid_points_per_param=5)
+result_grid = run_correction(setup, grid, inputs, work_dir)
+
+# Same setup, widen one parameter's bounds (selector = index, spec.field, or
+# config_file stem) and re-seed a reproducible random sweep
+wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+repro = wider.with_strategy("random", seed=7, n_iterations=200)
+result_repro = run_correction(setup, repro, inputs, work_dir)
+```
+
 ### Low-level alternative: `loop()`
 
 `loop()` returns the raw `(results, netcdf_data)` tuple and only accepts
-plain `(str, str, str)` tuples (not `CorrectionInput`):
+plain `(str, str, str)` tuples (not `CorrectionInput`). Note its argument
+order: `work_dir` comes **before** the inputs list.
 
 ```python
 from curryer.correction import loop
 
-inputs = [("data/tlm.csv", "data/sci.csv", "data/gcp.mat")]
-results, netcdf_data = loop(config, work_dir, inputs)
+inputs = [("data/obs.nc", "data/obs.nc", "data/gcp.nc")]
+results, netcdf_data = loop(setup, sweep, work_dir, inputs)
 ```
 
 A workflow template: `examples/correction/example_run_correction.py`
@@ -214,49 +256,61 @@ A workflow template: `examples/correction/example_run_correction.py`
 ## Loading Config from JSON
 
 ```python
-from curryer.correction import load_config_from_json
-config = load_config_from_json("examples/correction/clarreo_config.json")
+from curryer.correction import load_config_files
+setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
 ```
 
-The JSON file must contain three top-level sections: `mission_config`,
-`correction`, and `geolocation`. A missing section raises a `KeyError`.
+`load_config_files()` returns `(GeolocationSetup, Sweep, OutputConfig)`. The
+file has three top-level sections — `"setup"`, `"sweep"`, and an optional
+`"output"`. Missing `"setup"` or `"sweep"` raises a `KeyError`; `"output"`
+defaults to an empty `OutputConfig`. To load just one model, use
+`load_setup_from_json()` or `load_sweep_from_json()`.
 
 **Minimal schema:**
 
 ```json
 {
-  "mission_config": {
-    "mission_name": "YOUR_MISSION",
-    "instrument_name": "YOUR_INSTRUMENT",
-    "kernel_mappings": {
-      "constant_kernel": { "frame_a": "path/to/frame_a.attitude.ck.json" }
-    }
+  "setup": {
+    "geo": {
+      "meta_kernel_file": "path/to/mission.kernels.tm.json",
+      "generic_kernel_dir": "data/generic",
+      "instrument_name": "YOUR_INSTRUMENT",
+      "time_field": "corrected_timestamp",
+      "dynamic_kernels": []
+    },
+    "requirements": {
+      "performance_threshold_m": 250.0,
+      "performance_spec_percent": 39.0
+    },
+    "spacecraft_position_name": "sc_position",
+    "boresight_name": "boresight",
+    "transformation_matrix_name": "t_inst2ref"
   },
-  "correction": {
+  "sweep": {
+    "search_strategy": "random",
     "n_iterations": 50,
     "seed": 42,
-    "performance_threshold_m": 250.0,
-    "performance_spec_percent": 39.0,
     "parameters": [
       {
-        "name": "frame_a_roll",
-        "parameter_type": "CONSTANT_KERNEL",
-        "initial_value": 0.0,
-        "bounds": [-300.0, 300.0],
-        "sigma": 50.0,
-        "units": "arcseconds"
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "current_value": [0.0, 0.0, 0.0],
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds"
+        }
       }
     ]
   },
-  "geolocation": {
-    "meta_kernel_file": "path/to/mission.kernels.tm.json",
-    "generic_kernel_dir": "data/generic",
-    "instrument_name": "YOUR_INSTRUMENT",
-    "time_field": "corrected_timestamp",
-    "dynamic_kernels": []
+  "output": {
+    "output_filename": "correction_results.nc"
   }
 }
 ```
+
+A frame rotation is authored as a single `CONSTANT_KERNEL` parameter whose
+`spec.current_value` is the `[roll, pitch, yaw]` triplet.
 
 A fully populated mission example: `examples/correction/clarreo_config.json`
 A generic annotated template: `examples/correction/example_config.json`
@@ -265,24 +319,49 @@ A generic annotated template: `examples/correction/example_config.json`
 
 ## Configuration Reference
 
-### `CorrectionConfig`
+### `GeolocationSetup`
 
-| Field                        | Type                    | Notes                                                                |
-| ---------------------------- | ----------------------- | -------------------------------------------------------------------- |
-| `n_iterations`               | `int`                   | Number of parameter sets to evaluate                                 |
-| `seed`                       | `int \| None`           | Random seed for reproducibility                                      |
-| `parameters`                 | `list[ParameterConfig]` | Parameters to vary                                                   |
-| `search_strategy`            | `SearchStrategy`        | `RANDOM` / `GRID_SEARCH` / `SINGLE_OFFSET`                           |
-| `grid_points_per_param`      | `int`                   | Points per parameter when `GRID_SEARCH` is used                      |
-| `max_grid_sets`              | `int`                   | Upper bound on total grid-search parameter sets                      |
-| `geo`                        | `GeolocationConfig`     | SPICE kernel paths and instrument identity                           |
-| `performance_threshold_m`    | `float`                 | **Required.** Per-measurement nadir-error limit in metres            |
-| `performance_spec_percent`   | `float`                 | **Required.** Minimum percentage of measurements that must pass      |
-| `data`                       | `DataConfig \| None`    | File-loading specification (format, time scale factor)               |
-| `netcdf`                     | `NetCDFConfig \| None`  | NetCDF output metadata                                               |
-| `spacecraft_position_name`   | `str`                   | Variable name in the image-matching `xr.Dataset` for SC position     |
-| `boresight_name`             | `str`                   | Variable name in the image-matching `xr.Dataset` for boresight       |
-| `transformation_matrix_name` | `str`                   | Variable name in the image-matching `xr.Dataset` for rotation matrix |
+The durable, mission-specific setup (built once, reused across sweeps).
+
+| Field                        | Type                       | Notes                                                                |
+| ---------------------------- | -------------------------- | -------------------------------------------------------------------- |
+| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity             |
+| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                   |
+| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                 |
+| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)             |
+| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position     |
+| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight       |
+| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix |
+| `image_matching_func`        | `Callable \| None`         | Optional custom image-matching callable; excluded from JSON          |
+
+### `Sweep`
+
+The lightweight parameter-variation experiment, varied between runs. Use
+`sweep.with_strategy(strategy, **changes)` and
+`sweep.update_param(selector, **spec_changes)` for cheap, re-validated copies.
+
+| Field                   | Type                    | Notes                                           |
+| ----------------------- | ----------------------- | ----------------------------------------------- |
+| `parameters`            | `list[ParameterConfig]` | **Required** (at least one). Parameters to vary |
+| `search_strategy`       | `SearchStrategy`        | `RANDOM` / `GRID_SEARCH` / `SINGLE_OFFSET`      |
+| `n_iterations`          | `int`                   | Iterations (RANDOM / values-per-param SINGLE)   |
+| `seed`                  | `int \| None`           | Random seed for reproducible `RANDOM` sweeps    |
+| `grid_points_per_param` | `int`                   | Points per parameter when `GRID_SEARCH` is used |
+| `max_grid_sets`         | `int`                   | Safety cap on total grid-search parameter sets  |
+
+### `OutputConfig`
+
+| Field             | Type                   | Notes                                                     |
+| ----------------- | ---------------------- | --------------------------------------------------------- |
+| `netcdf`          | `NetCDFConfig \| None` | NetCDF metadata; `None` auto-populated from the threshold |
+| `output_filename` | `str \| None`          | Output NetCDF filename; `None` uses the default           |
+
+### `RequirementsConfig`
+
+| Field                      | Type    | Notes                                                     |
+| -------------------------- | ------- | --------------------------------------------------------- |
+| `performance_threshold_m`  | `float` | **Required.** Per-measurement nadir-error limit in metres |
+| `performance_spec_percent` | `float` | **Required.** Minimum % of measurements that must pass    |
 
 ### `GeolocationConfig`
 
@@ -301,11 +380,12 @@ A generic annotated template: `examples/correction/example_config.json`
 | -------------------- | ---------------------- | ------------------------------------------------------------------- |
 | `ptype`              | `ParameterType`        | `CONSTANT_KERNEL`, `OFFSET_KERNEL`, or `OFFSET_TIME`                |
 | `config_file`        | `Path \| None`         | Path to the SPICE kernel JSON template; required for kernel types   |
-| `data.current_value` | `float \| list[float]` | Baseline value(s). For `CONSTANT_KERNEL`: `[roll, pitch, yaw]`      |
-| `data.bounds`        | `[min, max]`           | Offset limits in the same units as `sigma`                          |
-| `data.sigma`         | `float \| None`        | Sampling standard deviation for the `RANDOM` strategy               |
-| `data.units`         | `str \| None`          | Physical units string, e.g. `"arcseconds"` or `"milliseconds"`      |
-| `data.field`         | `str \| None`          | Telemetry column name; required for `OFFSET_KERNEL` / `OFFSET_TIME` |
+| `spec`               | `ParameterSpec`        | Sampling specification (see below)                                  |
+| `spec.current_value` | `float \| list[float]` | Baseline value(s). For `CONSTANT_KERNEL`: `[roll, pitch, yaw]`      |
+| `spec.bounds`        | `[min, max]`           | Offset limits in the same units as `sigma`                          |
+| `spec.sigma`         | `float \| None`        | Sampling standard deviation for the `RANDOM` strategy               |
+| `spec.units`         | `str \| None`          | Physical units string, e.g. `"arcseconds"` or `"milliseconds"`      |
+| `spec.field`         | `str \| None`          | Telemetry column name; required for `OFFSET_KERNEL` / `OFFSET_TIME` |
 
 ### `ParameterType`
 
@@ -325,19 +405,64 @@ A generic annotated template: `examples/correction/example_config.json`
 
 ### `CorrectionInput`
 
-| Field            | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `telemetry_file` | Path to preprocessed telemetry CSV/NetCDF     |
-| `science_file`   | Path to science timing CSV/NetCDF             |
-| `gcp_file`       | Path to GCP reference image (`.mat` or `.nc`) |
+A `CorrectionInput` is format-neutral: each field is just a path, and the
+reader is chosen by `DataConfig.file_format`. The first-class real-data path is
+a **NetCDF image observation** (radiance as the science variable) that carries
+telemetry, metadata, and science times — enough for curryer/SPICE to compute
+the geometry — so the same file commonly serves as both the telemetry and
+science input. See [Inputs & Data Formats](#inputs--data-formats) below.
+
+| Field            | Description                                                    |
+| ---------------- | -------------------------------------------------------------- |
+| `telemetry_file` | Telemetry observation file (NetCDF first-class; CSV/HDF5 read) |
+| `science_file`   | Science/timing observation file (NetCDF first-class; CSV/HDF5) |
+| `gcp_file`       | GCP reference-image file (NetCDF; `.mat` interim)              |
+
+### `CalibrationFiles`
+
+Direct calibration file paths on `setup.calibration`. Both fields are optional
+and **interim** — real line-of-sight vectors and spacecraft geometry will be
+SPICE-derived from telemetry, so nothing in the pipeline requires these.
+
+| Field              | Description                                          |
+| ------------------ | ---------------------------------------------------- |
+| `los_vectors_file` | Per-detector line-of-sight unit vectors (instrument) |
+| `psf_file`         | Optical point-spread-function calibration            |
 
 ### `DataConfig`
 
 | Field               | Description                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------- |
-| `file_format`       | `"csv"`, `"netcdf"`, or `"hdf5"`                                                       |
+| `file_format`       | `"csv"`, `"netcdf"`, or `"hdf5"` — drives the reader for telemetry/science             |
 | `time_scale_factor` | Multiply science timestamps by this factor to obtain uGPS (e.g. `1e6` for GPS seconds) |
 | `position_columns`  | Optional list of spacecraft-position column names in the telemetry DataFrame           |
+
+---
+
+## Inputs & Data Formats
+
+The config and API are **format-agnostic**: the internal contract is an
+`ImageGrid` / `xr.Dataset`, and `DataConfig.file_format` selects the reader.
+Two distinct input families exist, and it is worth being explicit about which
+is which:
+
+- **NetCDF image observations (first-class, intended real-data path).** A
+  NetCDF observation carries the radiance as its science variable plus the
+  telemetry, metadata, and science times needed for curryer/SPICE to compute
+  the line-of-sight and spacecraft geometry. This is the direction the package
+  is built toward, and the recommended format for new missions.
+- **`.mat` / file-based LOS & PSF (interim test scaffolding).** The code was
+  developed against interim `.mat` test fixtures — fake image arrays and
+  standalone `.mat` line-of-sight / PSF files supplied via
+  `CalibrationFiles.los_vectors_file` / `psf_file` (or `verify(..., los_file=,
+psf_file=)`). These are convenience inputs for testing without SPICE-derived
+  geometry; they are never required and will be superseded as LOS/spacecraft
+  geometry becomes SPICE-derived.
+
+Real-data NetCDF ingestion (deriving geometry from observation telemetry) is
+the intended direction, not a claim that it is fully implemented today. Frame
+new work around the NetCDF-observation path and treat `.mat`/file-based LOS/PSF
+as interim.
 
 ---
 
@@ -345,7 +470,7 @@ A generic annotated template: `examples/correction/example_config.json`
 
 The `image_matching_results` passed to `verify()` must be a list of
 `xr.Dataset` objects with a `measurement` dimension. Spacecraft-state
-variable names are configured via `CorrectionConfig`.
+variable names are configured on `GeolocationSetup`.
 
 | Variable                       | Dimension(s)                      | Description                                              |
 | ------------------------------ | --------------------------------- | -------------------------------------------------------- |
@@ -358,7 +483,7 @@ variable names are configured via `CorrectionConfig`.
 | `<boresight_name>`             | `[measurement, xyz]`              | Instrument boresight unit vector in the instrument frame |
 | `<transformation_matrix_name>` | `[measurement, xyz_from, xyz_to]` | Rotation matrix from instrument frame to CTRS            |
 
-`<spacecraft_position_name>` corresponds to `CorrectionConfig.spacecraft_position_name`
+`<spacecraft_position_name>` corresponds to `GeolocationSetup.spacecraft_position_name`
 (and similarly for the other two). For CLARREO these are `"riss_ctrs"`,
 `"bhat_hs"`, and `"t_hs2ctrs"` respectively.
 
@@ -375,7 +500,7 @@ default.
 ### Verification
 
 ```python
-result = verify(config, image_matching_results=datasets)
+result = verify(setup, image_matching_results=datasets)
 
 print(result.summary_table)         # ASCII table: per-GCP pass/fail
 print("Passed:", result.passed)
@@ -394,15 +519,15 @@ result.aggregate_stats.to_netcdf("verification_stats.nc")
 ```python
 from curryer.correction import compare_results
 
-before = verify(config, image_matching_results=pre_datasets)
-after  = verify(config, image_matching_results=post_datasets)
+before = verify(setup, image_matching_results=pre_datasets)
+after  = verify(setup, image_matching_results=post_datasets)
 print(compare_results(before, after))
 ```
 
 ### Correction Loop
 
 ```python
-result = run_correction(config, work_dir, inputs)
+result = run_correction(setup, sweep, inputs, work_dir)
 
 print(result.summary_table)
 print("Passed:", result.passed)
@@ -444,19 +569,21 @@ works with local `Path` objects only.
 
 ## Troubleshooting
 
-**`KeyError: Missing required 'correction' section`**
-The JSON config is missing one of the three required top-level sections
-(`mission_config`, `correction`, `geolocation`).
+**`KeyError: Missing required 'sweep' section`**
+The JSON config is missing a required top-level section. `load_config_files()`
+requires `"setup"` and `"sweep"`; `"output"` is optional.
 
-**`KeyError: Missing required 'performance_threshold_m'`**
-The `correction` section must contain `performance_threshold_m` and
+**`ValidationError` on `requirements`**
+The setup's `requirements` block must contain `performance_threshold_m` and
 `performance_spec_percent`. These encode the mission's geolocation requirement
 and cannot be omitted.
 
-**`ValidationError` on `CorrectionConfig` construction**
+**`ValidationError` on `GeolocationSetup` / `Sweep` construction**
 Pydantic will identify the offending field. Common causes: wrong types
-(`sigma` must be `float`, not a string) or missing required fields
-(`n_iterations` is required).
+(`sigma` must be `float`, not a string), missing required fields (`geo` and
+`requirements` are required on the setup), or an out-of-spec value passed to
+`Sweep.update_param()` (its `ParameterSpec` is `extra="forbid"`, so unknown
+field names raise immediately).
 
 **`SPICE(PATHTOOLONG)` kernel path error**
 SPICE enforces an 80-character kernel path limit. Curryer works around this
@@ -466,10 +593,10 @@ automatically. Override the temp directory if `/tmp` is unavailable:
 export CURRYER_TEMP_DIR=/tmp
 ```
 
-**`geolocated_data was provided but config._image_matching_override is not set`**
-`verify()` does not include a built-in image matcher. Attach a callable to
-`config._image_matching_override` before calling `verify()`, or pass
-pre-computed results via `image_matching_results=` instead.
+**`geolocated_data was provided but setup.image_matching_func is not set`**
+The `geolocated_data` path needs an image-matching callable. Attach one to
+`setup.image_matching_func` before calling `verify()`, or pass pre-computed
+results via `image_matching_results=` instead.
 
 **NaN values in `nadir_equiv_total_error_m`**
 The nadir-equivalent conversion requires valid spacecraft geometry. A
