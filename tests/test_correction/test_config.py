@@ -121,6 +121,21 @@ def minimal_config(geo, param_constant) -> CorrectionConfig:
 
 
 @pytest.fixture
+def minimal_setup(geo) -> GeolocationSetup:
+    """Minimal GeolocationSetup with no calibration/loaders."""
+    return GeolocationSetup(
+        geo=geo,
+        requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
+    )
+
+
+@pytest.fixture
+def minimal_sweep(param_constant) -> Sweep:
+    """Minimal Sweep with a single parameter."""
+    return Sweep(seed=42, n_iterations=5, parameters=[param_constant])
+
+
+@pytest.fixture
 def full_config(geo, param_constant, param_offset_kernel, param_offset_time, netcdf_cfg) -> CorrectionConfig:
     """Full CorrectionConfig with all optional fields populated."""
     return CorrectionConfig(
@@ -728,7 +743,7 @@ class TestCorrectionInput:
         assert isinstance(inp.science_file, Path)
         assert isinstance(inp.gcp_file, Path)
 
-    def test_run_correction_accepts_correction_input(self, minimal_config, tmp_path):
+    def test_run_correction_accepts_correction_input(self, minimal_setup, minimal_sweep, tmp_path):
         """run_correction() normalises CorrectionInput to tuples before calling loop()."""
         from unittest.mock import patch
 
@@ -743,11 +758,12 @@ class TestCorrectionInput:
 
         with patch("curryer.correction.pipeline.loop") as mock_loop:
             mock_loop.return_value = ([], {})
-            run_correction(minimal_config, tmp_path, [inp])
+            run_correction(minimal_setup, minimal_sweep, [inp], tmp_path)
 
         mock_loop.assert_called_once()
         call_args = mock_loop.call_args
-        normalized_inputs = call_args[0][2]  # third positional arg
+        # loop(setup, sweep, work_dir, normalized_inputs, output, resume) — inputs is the 4th positional arg.
+        normalized_inputs = call_args[0][3]
         assert len(normalized_inputs) == 1
         assert normalized_inputs[0] == (
             str(tmp_path / "tlm.csv"),
@@ -755,7 +771,7 @@ class TestCorrectionInput:
             str(tmp_path / "gcp.mat"),
         )
 
-    def test_run_correction_accepts_legacy_tuples(self, minimal_config, tmp_path):
+    def test_run_correction_accepts_legacy_tuples(self, minimal_setup, minimal_sweep, tmp_path):
         """run_correction() passes legacy tuples through unchanged."""
         from unittest.mock import patch
 
@@ -765,10 +781,10 @@ class TestCorrectionInput:
 
         with patch("curryer.correction.pipeline.loop") as mock_loop:
             mock_loop.return_value = ([], {})
-            run_correction(minimal_config, tmp_path, tuples)
+            run_correction(minimal_setup, minimal_sweep, tuples, tmp_path)
 
         call_args = mock_loop.call_args
-        assert call_args[0][2] == tuples
+        assert call_args[0][3] == tuples
 
 
 class TestSetupSweepOutput:

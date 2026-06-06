@@ -12,13 +12,16 @@ This module creates and applies parameter-specific SPICE kernels:
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from curryer.correction.config import CorrectionConfig, ParameterConfig, ParameterType
+from curryer.correction.config import ParameterConfig, ParameterType
 from curryer.kernels import create
+
+if TYPE_CHECKING:
+    from curryer.correction.config import GeolocationSetup
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +142,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
 
 def _create_dynamic_kernels(
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     work_dir: Path,
     tlm_dataset: pd.DataFrame,
     creator: "create.KernelCreator",
@@ -152,8 +155,8 @@ def _create_dynamic_kernels(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Configuration with geo settings and dynamic_kernels list
+    setup : GeolocationSetup
+        Setup with geo settings and dynamic_kernels list
     work_dir : Path
         Working directory for kernel files
     tlm_dataset : pd.DataFrame
@@ -178,7 +181,7 @@ def _create_dynamic_kernels(
     """
     logger.info("    Creating dynamic kernels from telemetry...")
     dynamic_kernels = []
-    for kernel_config in config.geo.dynamic_kernels:
+    for kernel_config in setup.geo.dynamic_kernels:
         dynamic_kernels.append(
             creator.write_from_json(
                 kernel_config,
@@ -196,7 +199,7 @@ def _create_parameter_kernels(
     tlm_dataset: pd.DataFrame,
     sci_dataset: pd.DataFrame,
     ugps_times: Any,
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     creator: "create.KernelCreator",
 ) -> tuple[list[Path], Any]:
     """Create parameter-specific SPICE kernels and apply time offsets.
@@ -217,8 +220,8 @@ def _create_parameter_kernels(
         Science frame time data (may be modified for OFFSET_TIME), may include optional measurement columns
     ugps_times : array-like
         Original time array from science dataset
-    config : CorrectionConfig
-        Configuration with geo settings
+    setup : GeolocationSetup
+        Setup with geo settings
     creator : create.KernelCreator
         KernelCreator instance for writing kernels
 
@@ -232,7 +235,7 @@ def _create_parameter_kernels(
     Examples
     --------
     >>> param_kernels, times = _create_parameter_kernels(
-    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, setup, creator
     ... )
     >>> # Use in SPICE context with dynamic kernels
     >>> with sp.ext.load_kernel([dynamic_kernels, param_kernels]):
@@ -288,7 +291,7 @@ def _create_parameter_kernels(
         elif a_param.ptype == ParameterType.OFFSET_TIME:
             # Aka: Frame-times...
             sci_dataset_alt = apply_offset(a_param, p_data, sci_dataset)
-            ugps_times_modified = sci_dataset_alt[config.geo.time_field].values
+            ugps_times_modified = sci_dataset_alt[setup.geo.time_field].values
 
         else:
             raise NotImplementedError(a_param.ptype)

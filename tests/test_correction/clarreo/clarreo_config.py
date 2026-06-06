@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLARREO-specific Correction configuration generation — **test fixture**.
+"""CLARREO-specific correction configuration generation — **test fixture**.
 
 This module is a **test infrastructure helper**. It is not part of the
 public API and is not intended as a user-facing example.
@@ -10,95 +10,50 @@ For user-facing examples and documentation, see:
   - ``examples/correction/example_verification.py`` — runnable demo
   - ``docs/source/correction_user_guide.md``     — full reference
 
-This module creates the CLARREO CorrectionConfig used by integration tests.
-All CLARREO-specific values (kernel names, parameters, instruments) are
-defined here and injected into tests via fixtures.
+This module builds the CLARREO ``GeolocationSetup`` / ``Sweep`` / ``OutputConfig``
+used by integration tests.  All CLARREO-specific values (kernel names,
+parameters, instruments) are defined here and injected into tests via fixtures.
 
-Usage:
-    from tests.test_correction.clarreo_config import create_clarreo_correction_config
+Usage::
+
+    from clarreo_config import create_clarreo_setup_sweep
 
     data_dir = Path('tests/data/clarreo/gcs')
     generic_dir = Path('data/generic')
-    config = create_clarreo_correction_config(data_dir, generic_dir)
-
-    # Optionally save to JSON
-    config_path = Path('tests/test_correction/configs/clarreo_correction_config.json')
-    create_clarreo_correction_config(data_dir, generic_dir, config_output_path=config_path)
-
-Author: Matthew Maclay
-Date: October 27, 2025
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
 """
 
-import json
 import logging
-from pathlib import Path
 
 from curryer.correction import correction
 
 logger = logging.getLogger(__name__)
 
 
-def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=None):
-    """
-    Create the CLARREO Correction configuration with all 12 parameters.
+def create_clarreo_setup_sweep(data_dir, generic_dir):
+    """Create the CLARREO ``(GeolocationSetup, Sweep, OutputConfig)`` test fixture.
 
-    This is mission-specific configuration. It defines all CLARREO-specific
-    kernel files, parameter ranges, and iteration settings.
+    Defines all 12 CLARREO geolocation-correction parameters (9 CONSTANT_KERNEL,
+    2 OFFSET_KERNEL, 1 OFFSET_TIME), the SPICE/instrument setup, the pass/fail
+    requirements, and the NetCDF output metadata.
 
-    USER CONFIGURATION: This is the main place to adjust Correction parameters.
-    You can modify:
-    - current_value: Starting parameter values
-    - bounds: Limits for parameter variation
-    - sigma: Standard deviation for random sampling
-    - n_iterations: Number of parameter sets to test
+    Parameters
+    ----------
+    data_dir : Path
+        Path to the CLARREO GCS data directory.
+    generic_dir : Path
+        Path to the generic SPICE kernels directory.
 
-    This configuration defines:
-    - 9 CONSTANT_KERNEL parameters (3 frames × 3 attitudes each)
-    - 2 OFFSET_KERNEL parameters (azimuth and elevation biases)
-    - 1 OFFSET_TIME parameter (timing correction)
-
-    Returns:
-        CorrectionConfig: THE single config object containing all CLARREO settings.
-
-    IMPORTANT - Config-Centric Design:
-        This function creates the base CorrectionConfig with all CLARREO-specific
-        parameters and settings.
-
-        After creation, attach a :class:`~curryer.correction.config.DataConfig`
-        and (optionally) an ``_image_matching_override`` for test injection::
-
-            config = create_clarreo_correction_config(data_dir, generic_dir)
-            config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-            config._image_matching_override = your_matching_func  # optional (tests only)
-            results = correction.loop(config, work_dir, data_sets)
-
-    Args:
-        data_dir: Path to the CLARREO GCS data directory
-        generic_dir: Path to the generic SPICE kernels directory
-        config_output_path: Optional path to save the configuration as JSON file
-
-    Returns:
-        CorrectionConfig object (you must add loaders before calling correction.loop())
-
-    Example:
-        config = create_clarreo_correction_config(data_dir, generic_dir)
-
-        # Attach data loading config
-        from curryer.correction.config import DataConfig
-        config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-
-        # Optionally override image matching (tests only)
-        config._image_matching_override = synthetic_image_matching
-
-        # Now ready to use
-        results = correction.loop(config, work_dir, data_sets)
+    Returns
+    -------
+    tuple
+        ``(GeolocationSetup, Sweep, OutputConfig)``.
     """
     logger.info("=== CREATING CLARREO CORRECTION CONFIGURATION ===")
 
     # Define the 12 parameters for CLARREO geolocation correction
     parameters = [
         # ===== CONSTANT_KERNEL Parameters (9 total) =====
-        # These are fixed attitude corrections for instrument frames
         # BASE frame corrections (roll, pitch, yaw)
         correction.ParameterConfig(
             ptype=correction.ParameterType.CONSTANT_KERNEL,
@@ -142,7 +97,6 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
             ),
         ),
         # ===== OFFSET_KERNEL Parameters (2 total) =====
-        # These are dynamic angle biases applied to telemetry
         # Azimuth angle bias correction
         correction.ParameterConfig(
             ptype=correction.ParameterType.OFFSET_KERNEL,
@@ -174,7 +128,6 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
             ),
         ),
         # ===== OFFSET_TIME Parameters (1 total) =====
-        # Timing corrections for science frames
         # Science frame timing correction
         correction.ParameterConfig(
             ptype=correction.ParameterType.OFFSET_TIME,
@@ -203,7 +156,7 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         time_field="corrected_timestamp",
     )
 
-    # NetCDF output configuration (NEW - Phase 1)
+    # NetCDF output configuration
     netcdf_config = correction.NetCDFConfig(
         title="CLARREO Pathfinder Geolocation Correction Analysis",
         description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
@@ -211,99 +164,29 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
         parameter_metadata=None,  # Auto-generate from parameters
     )
 
-    # Create complete Correction configuration
-    config = correction.CorrectionConfig(
-        seed=42,  # For reproducible results
-        n_iterations=5,  # Number of parameter sets to test
-        parameters=parameters,
+    setup = correction.GeolocationSetup(
         geo=geo_config,
-        # Performance metrics (CLARREO requirements)
-        performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
-        performance_spec_percent=39.0,  # CLARREO requirement: 39% of measurements under threshold
-        # NetCDF output configuration
-        netcdf=netcdf_config,
-        # Calibration file names (CLARREO/HySICS specific)
-        calibration_file_names={
-            "los_vectors": "b_HS.mat",  # HySICS boresight vectors
-            "optical_psf": "optical_PSF_675nm_upsampled.mat",  # 675nm wavelength PSF
-        },
+        requirements=correction.RequirementsConfig(
+            performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
+            performance_spec_percent=39.0,  # 39% of measurements under threshold
+        ),
         # Coordinate variable names (ISS/HySICS specific for backward compatibility)
         spacecraft_position_name="riss_ctrs",  # ISS position in CTRS frame
         boresight_name="bhat_hs",  # HySICS boresight
         transformation_matrix_name="t_hs2ctrs",  # HySICS to CTRS transformation
     )
 
+    sweep = correction.Sweep(
+        seed=42,  # For reproducible results
+        n_iterations=5,  # Number of parameter sets to test
+        parameters=parameters,
+    )
+
+    output = correction.OutputConfig(netcdf=netcdf_config)
+
     logger.info(f"CLARREO configuration created with {len(parameters)} parameters:")
     for i, param in enumerate(parameters):
         param_name = param.config_file.name if param.config_file else "time_correction"
         logger.info(f"  {i + 1}. {param_name} ({param.ptype.name})")
 
-    # Save configuration to file if path is provided
-    if config_output_path is not None:
-        config_output_path = Path(config_output_path)
-        logger.info(f"Saving CLARREO configuration to: {config_output_path}")
-
-        # Convert configuration to JSON-serializable format
-        config_dict = {
-            "mission_config": {
-                "mission_name": "CLARREO_Pathfinder",
-                "instrument_name": "CPRS_HYSICS",
-                "kernel_mappings": {
-                    "constant_kernel": {
-                        "hysics": "cprs_hysics_v01.attitude.ck.json",
-                        "yoke": "cprs_yoke_v01.attitude.ck.json",
-                        "base": "cprs_base_v01.attitude.ck.json",
-                    },
-                    "offset_kernel": {
-                        "azimuth": "cprs_az_v01.attitude.ck.json",
-                        "elevation": "cprs_el_v01.attitude.ck.json",
-                    },
-                },
-            },
-            "correction": {
-                "seed": config.seed,
-                "n_iterations": config.n_iterations,
-                "performance_threshold_m": config.performance_threshold_m,
-                "performance_spec_percent": config.performance_spec_percent,
-                "parameters": [],
-            },
-            "geolocation": {
-                "meta_kernel_file": str(config.geo.meta_kernel_file),
-                "generic_kernel_dir": str(config.geo.generic_kernel_dir),
-                "dynamic_kernels": [str(k) for k in config.geo.dynamic_kernels],
-                "instrument_name": config.geo.instrument_name,
-                "time_field": config.geo.time_field,
-            },
-        }
-
-        # Convert parameters to JSON format
-        for i, param in enumerate(config.parameters):
-            param_dict = {
-                "name": param.config_file.name if param.config_file else f"time_correction_{i}",
-                "parameter_type": param.ptype.name,
-                "config_file": str(param.config_file) if param.config_file else None,
-                "current_value": param.spec.current_value,
-                "bounds": param.spec.bounds,
-                "sigma": param.spec.sigma,
-                "units": param.spec.units,
-                "distribution": param.spec.distribution,
-                "field": param.spec.field,
-            }
-
-            # Add optional fields if they exist
-            if param.spec.transformation_type is not None:
-                param_dict["transformation_type"] = param.spec.transformation_type
-            if param.spec.coordinate_frames is not None:
-                param_dict["coordinate_frames"] = param.spec.coordinate_frames
-
-            config_dict["correction"]["parameters"].append(param_dict)
-
-        # Write to file
-        config_output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_output_path, "w") as f:
-            json.dump(config_dict, f, indent=2)
-
-        logger.info(f"Configuration saved to: {config_output_path}")
-        logger.info(f"File size: {config_output_path.stat().st_size / 1024:.1f} KB")
-
-    return config
+    return setup, sweep, output

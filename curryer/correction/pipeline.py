@@ -41,11 +41,14 @@ from curryer import spicierpy as sp
 from curryer.compute import spatial
 from curryer.correction.config import (
     CalibrationData,
-    CorrectionConfig,
     CorrectionInput,
+    GeolocationSetup,
     ImageMatchingContext,
     KernelContext,
+    NetCDFConfig,
+    OutputConfig,
     ParameterType,
+    Sweep,
 )
 from curryer.correction.dataio import (
     validate_science_output,
@@ -90,14 +93,14 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
-def call_error_stats_module(image_matching_results, correction_config: "CorrectionConfig"):
+def call_error_stats_module(image_matching_results, setup: "GeolocationSetup"):
     """
     Call the error_stats module with image matching output.
 
     Args:
         image_matching_results: Either a single image matching result (xarray.Dataset)
                               or a list of image matching results from multiple GCP pairs
-        correction_config: CorrectionConfig with all configuration (REQUIRED)
+        setup: GeolocationSetup with variable names and thresholds (REQUIRED)
 
     Returns:
         Aggregate error statistics dataset
@@ -111,8 +114,8 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
 
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
-        # Create error stats config directly from Correction config (single source of truth)
-        error_config = ErrorStatsConfig.from_setup(correction_config)
+        # Create error stats config directly from the geolocation setup (single source of truth)
+        error_config = ErrorStatsConfig.from_setup(setup)
 
         processor = ErrorStatsProcessor(config=error_config)
 
@@ -121,7 +124,7 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
             error_results = processor.process_geolocation_errors(image_matching_results[0])
         else:
             # Multiple GCP pairs - aggregate the data first
-            aggregated_data = _aggregate_image_matching_results(image_matching_results, correction_config)
+            aggregated_data = _aggregate_image_matching_results(image_matching_results, setup)
             error_results = processor.process_geolocation_errors(aggregated_data)
 
         return error_results
@@ -172,7 +175,7 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
 def _resolve_gcp_pairs(
     sci_key: str,
     gcp_key: str,
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
 ) -> list[tuple[str, str]]:
     """Return the ``[(sci_key, gcp_key)]`` pair, validating that ``gcp_key`` is set.
 
@@ -183,7 +186,7 @@ def _resolve_gcp_pairs(
     gcp_key : str
         GCP ``.mat`` file path supplied as the third element of the
         ``tlm_sci_gcp_sets`` tuple.  Must be non-empty.
-    config : CorrectionConfig
+    setup : GeolocationSetup
         Unused directly; reserved for future extension.
 
     Returns
@@ -259,68 +262,60 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
 # These functions extract reusable logic from the main loop to simplify the structure
 
 
-def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
-    """Load LOS vectors and optical PSF if calibration_dir is configured.
+def _load_calibration_data(setup: "GeolocationSetup") -> CalibrationData:
+    """Load LOS vectors and optical PSF when ``setup.calibration`` is configured.
 
     This function centralizes calibration data loading, which is now called once
     per GCP pair in the optimized implementation (previously called once per parameter set).
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Configuration with calibration_dir and calibration settings
+    setup : GeolocationSetup
+        Setup carrying optional :class:`~curryer.correction.config.CalibrationFiles`
+        with direct ``los_vectors_file`` / ``psf_file`` paths.
 
     Returns
     -------
     CalibrationData
-        NamedTuple containing (los_vectors, optical_psfs), or (None, None) if
-        no calibration directory configured
+        NamedTuple containing (los_vectors, optical_psfs), or (None, None) when
+        no calibration files are configured.
 
     Raises
     ------
     FileNotFoundError
-        If calibration directory is configured but files don't exist
+        If a calibration file is configured but does not exist.
     ValueError
-        If calibration files exist but fail to load properly
+        If a calibration file exists but fails to load properly.
 
     Note
     ----
-    Supports three resolution strategies (in priority order):
-
-    1. ``config.los_vectors_file`` / ``config.psf_file`` — direct file paths
-       (set in PR 1 via ``CorrectionConfig``).
-    2. ``config.calibration_dir`` + ``config.calibration_file_names`` — legacy
-       directory-based lookup.
-    3. Neither configured — returns ``CalibrationData(None, None)`` so that
-       missions without calibration files still work.
+    Calibration files are optional and interim: real LOS/spacecraft geometry will
+    be SPICE-derived.  When ``setup.calibration`` is ``None`` (or both file fields
+    are ``None``), returns ``CalibrationData(None, None)`` so that missions without
+    calibration files still work.
 
     Examples
     --------
-    >>> calib_data = _load_calibration_data(config)
+    >>> calib_data = _load_calibration_data(setup)
     >>> if calib_data.los_vectors is not None:
     ...     # Use calibration data in image matching
     ...     pass
     """
-    has_direct = config.los_vectors_file is not None or config.psf_file is not None
-    has_dir = bool(config.calibration_dir)
-
-    if not has_direct and not has_dir:
+    calibration = setup.calibration
+    if calibration is None or (calibration.los_vectors_file is None and calibration.psf_file is None):
         return CalibrationData(los_vectors=None, optical_psfs=None)
 
     logger.info("Loading calibration data...")
 
     # ---- LOS vectors ----
-    if config.los_vectors_file is not None:
-        los_file = Path(config.los_vectors_file)
-    elif config.calibration_dir is not None:
-        los_filename = config.get_calibration_file("los_vectors", default="b_HS.mat")
-        los_file = config.calibration_dir / los_filename
-    else:
-        raise ValueError("No LOS vectors source configured. Set config.los_vectors_file or config.calibration_dir.")
+    if calibration.los_vectors_file is None:
+        raise ValueError("No LOS vectors source configured. Set setup.calibration.los_vectors_file.")
+    los_file = Path(calibration.los_vectors_file)
 
     if not los_file.exists():
         raise FileNotFoundError(
-            f"LOS vectors calibration file not found: {los_file}\nSet config.los_vectors_file to the correct path."
+            f"LOS vectors calibration file not found: {los_file}\n"
+            f"Set setup.calibration.los_vectors_file to the correct path."
         )
 
     los_vectors_cached = load_los_vectors(los_file)
@@ -331,17 +326,13 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
         )
 
     # ---- Optical PSF ----
-    if config.psf_file is not None:
-        psf_file = Path(config.psf_file)
-    elif config.calibration_dir is not None:
-        psf_filename = config.get_calibration_file("optical_psf", default="optical_PSF_675nm_upsampled.mat")
-        psf_file = config.calibration_dir / psf_filename
-    else:
-        raise ValueError("No PSF source configured. Set config.psf_file or config.calibration_dir.")
+    if calibration.psf_file is None:
+        raise ValueError("No PSF source configured. Set setup.calibration.psf_file.")
+    psf_file = Path(calibration.psf_file)
 
     if not psf_file.exists():
         raise FileNotFoundError(
-            f"Optical PSF calibration file not found: {psf_file}\nSet config.psf_file to the correct path."
+            f"Optical PSF calibration file not found: {psf_file}\nSet setup.calibration.psf_file to the correct path."
         )
 
     optical_psfs_cached = load_optical_psf(psf_file)
@@ -360,7 +351,7 @@ def _load_calibration_data(config: "CorrectionConfig") -> CalibrationData:
 def _load_image_pair_data(
     tlm_key: str,
     sci_key: str,
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
 ) -> tuple[pd.DataFrame, pd.DataFrame, Any]:
     """Load telemetry and science data for an image pair from files.
 
@@ -370,9 +361,9 @@ def _load_image_pair_data(
         Path to the telemetry data file.
     sci_key : str
         Path to the science frame timing file.
-    config : CorrectionConfig
-        Configuration containing geolocation settings, file format, and
-        time-scaling options (via ``config.data_config``).
+    setup : GeolocationSetup
+        Setup containing geolocation settings, file format, and
+        time-scaling options (via ``setup.data_config``).
 
     Returns
     -------
@@ -393,31 +384,31 @@ def _load_image_pair_data(
     file_format = "csv"
     time_scale_factor = 1.0
 
-    if config.data_config is not None:
-        file_format = config.data_config.file_format
-        time_scale_factor = config.data_config.time_scale_factor
+    if setup.data_config is not None:
+        file_format = setup.data_config.file_format
+        time_scale_factor = setup.data_config.time_scale_factor
 
     # Load telemetry from file
     tlm_dataset = _load_file(tlm_key, file_format)
-    validate_telemetry_output(tlm_dataset, config)
+    validate_telemetry_output(tlm_dataset, setup)
 
     # Load science from file
     sci_dataset = _load_file(sci_key, file_format)
 
     # Apply time scale factor to convert to uGPS if needed
-    time_field = config.geo.time_field
+    time_field = setup.geo.time_field
     if time_field in sci_dataset.columns and time_scale_factor != 1.0:
         sci_dataset = sci_dataset.copy()
         sci_dataset[time_field] = sci_dataset[time_field] * time_scale_factor
 
-    validate_science_output(sci_dataset, config)
+    validate_science_output(sci_dataset, setup)
     ugps_times = sci_dataset[time_field]
 
     return tlm_dataset, sci_dataset, ugps_times
 
 
 def _geolocate_and_match(
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     kernel_ctx: KernelContext,
     ugps_times_modified: Any,
     tlm_dataset: pd.DataFrame,
@@ -433,8 +424,8 @@ def _geolocate_and_match(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Configuration with geo and image matching settings
+    setup : GeolocationSetup
+        Setup with geo and image matching settings
     kernel_ctx : KernelContext
         NamedTuple containing:
         - mkrn: MetaKernel instance with SDS and mission kernels
@@ -471,7 +462,7 @@ def _geolocate_and_match(
     >>> calibration = CalibrationData(los_vectors, optical_psfs)
     >>> match_ctx = ImageMatchingContext(gcp_pairs, params, 0, "sci_001")
     >>> geo, matching = _geolocate_and_match(
-    ...     config, kernel_ctx, times, tlm_dataset,
+    ...     setup, kernel_ctx, times, tlm_dataset,
     ...     calibration, integrated_image_match, match_ctx
     ... )
     """
@@ -484,7 +475,7 @@ def _geolocate_and_match(
             kernel_ctx.param_kernels,
         ]
     ):
-        geoloc_inst = spatial.Geolocate(config.geo.instrument_name)
+        geoloc_inst = spatial.Geolocate(setup.geo.instrument_name)
         geo_dataset = geoloc_inst(ugps_times_modified)
 
         # === IMAGE MATCHING MODULE ===
@@ -498,9 +489,8 @@ def _geolocate_and_match(
             geolocated_data=geo_dataset,
             gcp_reference_file=gcp_file,
             telemetry=tlm_dataset,
-            calibration_dir=config.calibration_dir,
             params_info=match_ctx.params,
-            config=config,
+            setup=setup,
             los_vectors_cached=calibration.los_vectors,
             optical_psfs_cached=calibration.optical_psfs,
         )
@@ -516,10 +506,17 @@ def _geolocate_and_match(
     return geo_dataset, image_matching_output
 
 
+def _resolve_netcdf_config(setup: "GeolocationSetup", output: "OutputConfig") -> "NetCDFConfig":
+    """Return ``output.netcdf``, defaulting from the setup's performance threshold."""
+    return output.netcdf or NetCDFConfig(performance_threshold_m=setup.requirements.performance_threshold_m)
+
+
 def loop(
-    config: CorrectionConfig,
+    setup: GeolocationSetup,
+    sweep: Sweep,
     work_dir: Path,
     tlm_sci_gcp_sets: list[tuple[str, str, str]],
+    output: OutputConfig | None = None,
     resume_from_checkpoint: bool = False,
 ):
     """
@@ -527,15 +524,14 @@ def loop(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        The single configuration containing all settings:
-        - Required: parameters, iterations, thresholds, geo config
-        - Data loading: ``data`` (:class:`~curryer.correction.config.DataConfig`)
-          specifying file format and time scaling
-        - Optional: ``_image_matching_override`` override on ``config``
-          (test injection only)
-        - Calibration: `calibration_dir` (if the image-matching override uses calibration)
-        - Output: netcdf, output_filename
+    setup : GeolocationSetup
+        Durable mission setup: SPICE kernels/instrument (``geo``), pass/fail
+        ``requirements``, ``data_config`` (file format + time scaling), optional
+        ``calibration`` files, mission variable names, and an optional
+        ``image_matching_func`` override.
+    sweep : Sweep
+        The parameter-variation experiment: ``parameters``, ``search_strategy``,
+        ``n_iterations``, ``seed``, and grid settings.
     work_dir : Path
         Working directory for temporary files.
     tlm_sci_gcp_sets : list of (str, str, str)
@@ -543,6 +539,9 @@ def loop(
         File paths are expected to be local. S3 URIs (``s3://…``) are also
         accepted as a convenience when ``boto3`` is installed; see
         :func:`~curryer.correction.io.resolve_path`.
+    output : OutputConfig or None, optional
+        Output settings (NetCDF metadata + filename).  ``None`` uses defaults
+        derived from ``setup.requirements``.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
@@ -559,24 +558,15 @@ def loop(
     - Outer loop: GCP pairs (load data once per image)
     - Inner loop: Parameter sets (reuse loaded data)
     This reduces file I/O and centralizes mission-specific behavior through the
-    `config` object.
+    ``setup`` object.
 
     Examples
     --------
     Correction mode (parameter optimization)::
 
-        from curryer.correction.config import CorrectionConfig, DataConfig
+        from curryer.correction.config import DataConfig
 
-        config = CorrectionConfig(
-            seed=42,
-            n_iterations=100,
-            parameters=parameters,
-            geo=geo_config,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
-            data=DataConfig(file_format="csv", time_scale_factor=1e6),
-        )
-        results, netcdf_data = loop(config, work_dir, tlm_sci_gcp_sets)
+        results, netcdf_data = loop(setup, sweep, work_dir, tlm_sci_gcp_sets)
 
     Where each element of ``tlm_sci_gcp_sets`` is a tuple of file paths::
 
@@ -584,14 +574,17 @@ def loop(
             ("telemetry.csv", "science.csv", "landsat_chip_001.mat"),
         ]
     """
+    output = output or OutputConfig()
+    netcdf_config = _resolve_netcdf_config(setup, output)
+
     logger.info("=== CORRECTION PIPELINE ===")
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
     # Use injected image matching function override, or fall back to built-in implementation
-    image_matching_func = getattr(config, "_image_matching_override", None) or image_matching
+    image_matching_func = setup.image_matching_func or image_matching
 
     # Initialize parameter sets
-    params_set = load_param_sets(config)
+    params_set = load_param_sets(sweep)
     logger.info(f"  Parameter sets: {len(params_set)} (inner loop)")
 
     # Build NetCDF data structure
@@ -599,21 +592,21 @@ def loop(
     n_gcp_pairs = len(tlm_sci_gcp_sets)
 
     # Try to load checkpoint if resuming
-    output_file = work_dir / config.get_output_filename()
+    output_file = work_dir / output.get_output_filename()
     start_pair_idx = 0
     # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
     # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
     if resume_from_checkpoint:
-        checkpoint_data, completed_pairs = _load_checkpoint(output_file, config)
+        checkpoint_data, completed_pairs = _load_checkpoint(output_file)
         if checkpoint_data is not None:
             netcdf_data = checkpoint_data
             start_pair_idx = completed_pairs
             logger.info(f"Resuming from checkpoint: starting at GCP pair {start_pair_idx + 1}/{n_gcp_pairs}")
         else:
-            netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+            netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_param_sets, n_gcp_pairs)
             logger.info("No valid checkpoint found, starting from beginning")
     else:
-        netcdf_data = _build_netcdf_structure(config, n_param_sets, n_gcp_pairs)
+        netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_param_sets, n_gcp_pairs)
 
     # Initialize results dict with (param_idx, pair_idx) keys
     # This avoids nested search complexity when aggregating statistics
@@ -621,17 +614,17 @@ def loop(
 
     # Prepare SPICE environment
     mkrn = meta.MetaKernel.from_json(
-        config.geo.meta_kernel_file,
+        setup.geo.meta_kernel_file,
         relative=True,
-        sds_dir=config.geo.generic_kernel_dir,
+        sds_dir=setup.geo.generic_kernel_dir,
     )
     creator = create.KernelCreator(overwrite=True, append=False)
 
     # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
-    calibration_data = _load_calibration_data(config)
+    calibration_data = _load_calibration_data(setup)
 
-    # Create error stats processor once (config is constant; processor is stateless)
-    error_config = ErrorStatsConfig.from_setup(config)
+    # Create error stats processor once (setup is constant; processor is stateless)
+    error_config = ErrorStatsConfig.from_setup(setup)
     error_processor = ErrorStatsProcessor(config=error_config)
 
     # Store parameter values once (before loops)
@@ -649,10 +642,10 @@ def loop(
         logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
 
         # Load image pair data once (internal file-based loading)
-        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(tlm_key, sci_key, config)
+        tlm_dataset, sci_dataset, ugps_times = _load_image_pair_data(tlm_key, sci_key, setup)
 
         # Create dynamic kernels once (these don't change with parameters)
-        dynamic_kernels = _create_dynamic_kernels(config, work_dir, tlm_dataset, creator)
+        dynamic_kernels = _create_dynamic_kernels(setup, work_dir, tlm_dataset, creator)
 
         # Use gcp_key directly as the GCP file path — no pairing function needed.
         # Users specify exactly which GCP file pairs with each science file in
@@ -666,7 +659,7 @@ def loop(
 
             # Create parameter-specific kernels (these change with parameters)
             param_kernels, ugps_times_modified = _create_parameter_kernels(
-                params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+                params, work_dir, tlm_dataset, sci_dataset, ugps_times, setup, creator
             )
 
             # Prepare context objects for cleaner function call
@@ -675,7 +668,7 @@ def loop(
 
             # Geolocate and perform image matching
             geo_dataset, image_matching_output = _geolocate_and_match(
-                config,
+                setup,
                 kernel_ctx,
                 ugps_times_modified,
                 tlm_dataset,
@@ -749,7 +742,7 @@ def loop(
 
         # Save checkpoint after each pair completes
         if resume_from_checkpoint:
-            _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx)
+            _save_netcdf_checkpoint(netcdf_data, output_file, setup, sweep, netcdf_config, pair_idx)
 
     # Compute aggregate statistics for each parameter set (after all pairs complete)
     logger.info("=== Computing aggregate statistics for all parameter sets ===")
@@ -762,12 +755,14 @@ def loop(
                 param_image_matching_results.append(result["image_matching"])
 
         # Compute aggregate statistics
-        aggregate_stats = call_error_stats_module(param_image_matching_results, correction_config=config)
+        aggregate_stats = call_error_stats_module(param_image_matching_results, setup)
         aggregate_error_metrics = _extract_error_metrics(aggregate_stats)
 
         # Extract pair errors for threshold calculation
         pair_errors = [netcdf_data["rms_error_m"][param_idx, pair_idx] for pair_idx in range(n_gcp_pairs)]
-        _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=config.performance_threshold_m)
+        _compute_parameter_set_metrics(
+            netcdf_data, param_idx, pair_errors, threshold_m=setup.requirements.performance_threshold_m
+        )
 
         logger.info(f"  Parameter set {param_idx + 1}: Aggregate RMS = {aggregate_error_metrics['rms_error_m']:.2f}m")
 
@@ -782,7 +777,7 @@ def loop(
     results = [results_dict[key] for key in sorted(results_dict.keys(), key=lambda k: results_dict[k]["iteration"])]
 
     # Save final NetCDF results
-    _save_netcdf_results(netcdf_data, output_file, config)
+    _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
 
     # Clean up checkpoint file after successful completion
     if resume_from_checkpoint:
@@ -923,9 +918,11 @@ def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshol
 
 
 def run_correction(
-    config: CorrectionConfig,
-    work_dir: Path,
+    setup: GeolocationSetup,
+    sweep: Sweep,
     inputs: Sequence[CorrectionInput | tuple[str, str, str]],
+    work_dir: Path,
+    output: OutputConfig | None = None,
     resume_from_checkpoint: bool = False,
 ) -> "CorrectionResult":
     """Run the correction parameter sweep.
@@ -939,10 +936,10 @@ def run_correction(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Full correction configuration.
-    work_dir : Path
-        Working directory for temporary files.
+    setup : GeolocationSetup
+        Durable mission setup (kernels, requirements, calibration, names).
+    sweep : Sweep
+        The parameter-variation experiment to run against *setup*.
     inputs : list of CorrectionInput or list of (str, str, str)
         Each element is either a :class:`~curryer.correction.config.CorrectionInput`
         (named fields) or a legacy ``(telemetry_key, science_key, gcp_key)`` tuple.
@@ -950,6 +947,11 @@ def run_correction(
         File paths are expected to be local. S3 URIs (``s3://…``) are also
         accepted as a convenience when ``boto3`` is installed; see
         :func:`~curryer.correction.io.resolve_path`.
+    work_dir : Path
+        Working directory for temporary files.
+    output : OutputConfig or None, optional
+        Output settings (NetCDF metadata + filename).  ``None`` uses defaults
+        derived from ``setup.requirements``.
     resume_from_checkpoint : bool, optional
         If True, resume from an existing checkpoint.
 
@@ -964,6 +966,8 @@ def run_correction(
     from curryer.correction.results import build_correction_result
 
     run_start = time.time()
+    output = output or OutputConfig()
+    netcdf_config = _resolve_netcdf_config(setup, output)
 
     normalized: list[tuple[str, str, str]] = []
     for inp in inputs:
@@ -972,12 +976,14 @@ def run_correction(
         else:
             normalized.append(inp)
 
-    results, netcdf_data = loop(config, work_dir, normalized, resume_from_checkpoint)
+    results, netcdf_data = loop(setup, sweep, work_dir, normalized, output, resume_from_checkpoint)
     elapsed = time.time() - run_start
-    netcdf_path = work_dir / config.get_output_filename()
+    netcdf_path = work_dir / output.get_output_filename()
 
     correction_result = build_correction_result(
-        config=config,
+        setup=setup,
+        sweep=sweep,
+        netcdf_config=netcdf_config,
         results=results,
         netcdf_data=netcdf_data,
         netcdf_path=netcdf_path,
@@ -990,7 +996,7 @@ def run_correction(
     return correction_result
 
 
-def compute_error_stats(image_matching_results, correction_config: "CorrectionConfig"):
+def compute_error_stats(image_matching_results, setup: "GeolocationSetup"):
     """Compute error statistics from image matching results.
 
     This is the preferred name for :func:`call_error_stats_module`.
@@ -1000,24 +1006,23 @@ def compute_error_stats(image_matching_results, correction_config: "CorrectionCo
     ----------
     image_matching_results : xr.Dataset or list of xr.Dataset
         Output from image matching, either a single dataset or a list.
-    correction_config : CorrectionConfig
-        Correction configuration used to initialise the error stats processor.
+    setup : GeolocationSetup
+        Geolocation setup used to initialise the error stats processor.
 
     Returns
     -------
     xr.Dataset
         Aggregate error statistics dataset.
     """
-    return call_error_stats_module(image_matching_results, correction_config)
+    return call_error_stats_module(image_matching_results, setup)
 
 
 def run_image_matching(
     geolocated_data: "xr.Dataset",
     gcp_reference_file: Path,
     telemetry: "pd.DataFrame",
-    calibration_dir: Path,
     params_info: list,
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     los_vectors_cached: "np.ndarray | None" = None,
     optical_psfs_cached: "list | None" = None,
 ) -> "xr.Dataset":
@@ -1034,12 +1039,10 @@ def run_image_matching(
         Path to the GCP reference image (.mat file).
     telemetry : pd.DataFrame
         Telemetry DataFrame with spacecraft state.
-    calibration_dir : Path
-        Directory containing calibration files.
     params_info : list
         Parameter information for the current iteration.
-    config : CorrectionConfig
-        Full correction configuration.
+    setup : GeolocationSetup
+        Geolocation setup (calibration paths, variable names, instrument name).
     los_vectors_cached : np.ndarray or None, optional
         Pre-loaded LOS vectors; loaded from disk if None.
     optical_psfs_cached : list or None, optional
@@ -1054,9 +1057,8 @@ def run_image_matching(
         geolocated_data,
         gcp_reference_file,
         telemetry,
-        calibration_dir,
         params_info,
-        config,
+        setup,
         los_vectors_cached,
         optical_psfs_cached,
     )

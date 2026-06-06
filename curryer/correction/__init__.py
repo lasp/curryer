@@ -80,12 +80,15 @@ from . import (
 
 # Key public names lifted to package level
 from .config import (
+    CalibrationFiles,
     CorrectionConfig,
     CorrectionInput,
     DataConfig,
     GeolocationConfig,
+    GeolocationSetup,
     NetCDFConfig,
     NetCDFParameterMetadata,
+    OutputConfig,
     ParameterConfig,
     ParameterSpec,
     ParameterType,
@@ -94,7 +97,11 @@ from .config import (
     RequirementsConfig,
     SearchConfig,
     SearchStrategy,
+    Sweep,
+    load_config_files,
     load_config_from_json,
+    load_setup_from_json,
+    load_sweep_from_json,
 )
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .grid_types import ImageGrid, PSFGrid
@@ -136,18 +143,25 @@ __all__ = [
     "search",
     "verification",
     # Config
+    "CalibrationFiles",
     "CorrectionConfig",
     "CorrectionInput",
     "DataConfig",
     "GeolocationConfig",
+    "GeolocationSetup",
     "NetCDFConfig",
     "NetCDFParameterMetadata",
+    "OutputConfig",
     "ParameterConfig",
     "ParameterSpec",
     "ParameterType",
     "RequirementsConfig",
     "SearchStrategy",
+    "Sweep",
+    "load_config_files",
     "load_config_from_json",
+    "load_setup_from_json",
+    "load_sweep_from_json",
     # Pipeline entry points
     "loop",
     "run_correction",

@@ -30,6 +30,7 @@ from curryer.correction.config import (
     ParameterConfig,
     ParameterType,
     SearchStrategy,
+    Sweep,
 )
 from curryer.correction.parameters import (
     _get_grid_values,
@@ -122,16 +123,14 @@ def _make_config(
     n_iterations: int = 5,
     seed: int | None = 0,
     grid_points_per_param: int = 4,
-) -> CorrectionConfig:
-    return CorrectionConfig(
+) -> Sweep:
+    # `geo` is retained for call-site readability but is not part of a Sweep.
+    return Sweep(
         seed=seed,
         n_iterations=n_iterations,
         parameters=params,
         search_strategy=strategy,
         grid_points_per_param=grid_points_per_param,
-        geo=geo,
-        performance_threshold_m=250.0,
-        performance_spec_percent=39.0,
     )
 
 
@@ -570,23 +569,23 @@ class TestConfigValidation:
             )
 
     def test_json_round_trip_random(self, geo, param_offset_time):
-        """RANDOM config survives model_dump_json / model_validate_json round-trip."""
+        """RANDOM sweep survives model_dump_json / model_validate_json round-trip."""
         config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.RANDOM)
         json_str = config.model_dump_json()
-        restored = CorrectionConfig.model_validate_json(json_str)
+        restored = Sweep.model_validate_json(json_str)
         assert restored.search_strategy == SearchStrategy.RANDOM
         assert restored.n_iterations == config.n_iterations
 
     def test_json_round_trip_grid(self, geo, param_offset_time):
         config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=7)
-        restored = CorrectionConfig.model_validate_json(config.model_dump_json())
+        restored = Sweep.model_validate_json(config.model_dump_json())
         assert restored.search_strategy == SearchStrategy.GRID_SEARCH
         assert restored.grid_points_per_param == 7
         assert restored.max_grid_sets == config.max_grid_sets
 
     def test_json_round_trip_single_offset(self, geo, param_offset_time):
         config = _make_config(geo, [param_offset_time], strategy=SearchStrategy.SINGLE_OFFSET, n_iterations=12)
-        restored = CorrectionConfig.model_validate_json(config.model_dump_json())
+        restored = Sweep.model_validate_json(config.model_dump_json())
         assert restored.search_strategy == SearchStrategy.SINGLE_OFFSET
         assert restored.n_iterations == 12
 

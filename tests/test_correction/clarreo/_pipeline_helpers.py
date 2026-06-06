@@ -32,11 +32,11 @@ logger = logging.getLogger(__name__)
 
 def _load_clarreo_loaders():
     from _image_match_helpers import discover_test_image_match_cases, run_image_matching_with_applied_errors
-    from clarreo_config import create_clarreo_correction_config
+    from clarreo_config import create_clarreo_setup_sweep
     from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
     return (
-        create_clarreo_correction_config,
+        create_clarreo_setup_sweep,
         load_clarreo_telemetry,
         load_clarreo_science,
         discover_test_image_match_cases,
@@ -64,7 +64,7 @@ def run_upstream_pipeline(
     from _synthetic_helpers import synthetic_image_matching
 
     (
-        create_clarreo_correction_config,
+        create_clarreo_setup_sweep,
         load_clarreo_telemetry,
         load_clarreo_science,
         _,
@@ -85,9 +85,9 @@ def run_upstream_pipeline(
     else:
         work_dir.mkdir(parents=True, exist_ok=True)
 
-    config = create_clarreo_correction_config(data_dir, generic_dir)
-    config.n_iterations = n_iterations
-    config.output_filename = "upstream_results.nc"
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    sweep.n_iterations = n_iterations
+    output.output_filename = "upstream_results.nc"
 
     tlm_df = load_clarreo_telemetry(data_dir)
     sci_df = load_clarreo_science(data_dir)
@@ -97,15 +97,15 @@ def run_upstream_pipeline(
     tlm_df.to_csv(tlm_csv)
     sci_df.to_csv(sci_csv)
 
-    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config._image_matching_override = synthetic_image_matching
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.image_matching_func = synthetic_image_matching
 
     tlm_sci_gcp_sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
 
     logger.info("Executing Correction upstream workflow (%d iterations)…", n_iterations)
-    results, netcdf_data = correction.loop(config, work_dir, tlm_sci_gcp_sets)
+    results, netcdf_data = correction.loop(setup, sweep, work_dir, tlm_sci_gcp_sets, output)
 
-    output_file = work_dir / config.get_output_filename()
+    output_file = work_dir / output.get_output_filename()
     logger.info("Upstream pipeline complete. Output: %s", output_file)
 
     summary = {
@@ -137,7 +137,7 @@ def run_downstream_pipeline(
     (results_list, results_summary_dict, output_file_path)
     """
     from _image_match_helpers import discover_test_image_match_cases, run_image_matching_with_applied_errors
-    from clarreo_config import create_clarreo_correction_config
+    from clarreo_config import create_clarreo_setup_sweep
 
     from curryer.correction.grid_types import NamedImageGrid
     from curryer.correction.image_io import load_image_grid
@@ -199,8 +199,9 @@ def run_downstream_pipeline(
     logger.info("Pairing complete: %d valid pairs", n_gcp_pairs)
 
     # --- STEP 3: build config ---
-    base_config = create_clarreo_correction_config(data_dir, generic_dir)
-    config = correction.CorrectionConfig(
+    setup, _base_sweep, base_output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    netcdf_config = base_output.netcdf
+    sweep = correction.Sweep(
         seed=42,
         n_iterations=n_iterations,
         parameters=[
@@ -216,20 +217,12 @@ def run_downstream_pipeline(
                 },
             )
         ],
-        geo=base_config.geo,
-        performance_threshold_m=base_config.performance_threshold_m,
-        performance_spec_percent=base_config.performance_spec_percent,
-        netcdf=base_config.netcdf,
-        calibration_file_names=base_config.calibration_file_names,
-        spacecraft_position_name=base_config.spacecraft_position_name,
-        boresight_name=base_config.boresight_name,
-        transformation_matrix_name=base_config.transformation_matrix_name,
     )
-    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
 
     # --- STEP 4: iterate ---
-    netcdf_data = correction._build_netcdf_structure(config, n_iterations, n_gcp_pairs)
-    threshold_metric = config.netcdf.threshold_metric_name
+    netcdf_data = correction._build_netcdf_structure(setup, sweep, netcdf_config, n_iterations, n_gcp_pairs)
+    threshold_metric = netcdf_config.threshold_metric_name
     image_match_cache: dict[str, xr.Dataset] = {}
 
     for param_idx in range(n_iterations):
@@ -265,7 +258,7 @@ def run_downstream_pipeline(
 
         valid = np.array([e for e in pair_errors if not np.isnan(e)])
         if len(valid) > 0:
-            pct = (valid < config.performance_threshold_m).sum() / len(valid) * 100
+            pct = (valid < setup.requirements.performance_threshold_m).sum() / len(valid) * 100
             netcdf_data[threshold_metric][param_idx] = pct
             netcdf_data["mean_rms_all_pairs"][param_idx] = np.mean(valid)
             netcdf_data["best_pair_rms"][param_idx] = np.min(valid)
@@ -273,11 +266,11 @@ def run_downstream_pipeline(
 
     # --- STEP 5: error statistics ---
     image_matching_results = list(image_match_cache.values())
-    correction.call_error_stats_module(image_matching_results, correction_config=config)
+    correction.call_error_stats_module(image_matching_results, setup)
 
     # --- STEP 6: save ---
     output_file = work_dir / "downstream_results.nc"
-    correction._save_netcdf_results(netcdf_data, output_file, config)
+    correction._save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
 
     logger.info("Downstream pipeline complete. Output: %s", output_file)
     summary = {"mode": "downstream", "iterations": n_iterations, "test_pairs": n_gcp_pairs, "status": "complete"}

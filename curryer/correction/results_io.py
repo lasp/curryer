@@ -15,20 +15,28 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from curryer.correction.config import CorrectionConfig, ParameterType
+from curryer.correction.config import GeolocationSetup, NetCDFConfig, ParameterType, Sweep
 
 logger = logging.getLogger(__name__)
 
 
-def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_pairs: int) -> dict:
+def _build_netcdf_structure(
+    setup: GeolocationSetup,
+    sweep: Sweep,
+    netcdf_config: NetCDFConfig,
+    n_param_sets: int,
+    n_gcp_pairs: int,
+) -> dict:
     """
-    Build NetCDF data structure dynamically from configuration.
+    Build NetCDF data structure dynamically from the sweep + output config.
 
     This creates the netcdf_data dictionary with proper variable names based on
-    the parameters defined in the configuration, avoiding hardcoded mission-specific names.
+    the parameters defined in the sweep, avoiding hardcoded mission-specific names.
 
     Args:
-        config: CorrectionConfig with parameters and optional NetCDF config
+        setup: GeolocationSetup (performance threshold for metric naming)
+        sweep: Sweep with the parameters to vary
+        netcdf_config: Resolved NetCDFConfig with metadata
         n_param_sets: Number of parameter sets (iterations)
         n_gcp_pairs: Number of GCP pairs
 
@@ -37,35 +45,32 @@ def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_p
     """
     logger.info(f"Building NetCDF data structure for {n_param_sets} parameter sets × {n_gcp_pairs} GCP pairs")
 
-    # Ensure NetCDFConfig exists
-    config.ensure_netcdf_config()
-
     # Start with coordinate dimensions
     netcdf_data = {
         "parameter_set_id": np.arange(n_param_sets),
         "gcp_pair_id": np.arange(n_gcp_pairs),
     }
 
-    # Add parameter variables dynamically based on config.parameters
+    # Add parameter variables dynamically based on sweep.parameters
     param_count = 0
-    for param in config.parameters:
+    for param in sweep.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
             # CONSTANT_KERNEL parameters have roll, pitch, yaw components
             for angle in ["roll", "pitch", "yaw"]:
-                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
                 var_name = metadata.variable_name
                 netcdf_data[var_name] = np.full(n_param_sets, np.nan)
                 logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
                 param_count += 1
         else:
             # OFFSET_KERNEL and OFFSET_TIME are single values
-            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
             var_name = metadata.variable_name
             netcdf_data[var_name] = np.full(n_param_sets, np.nan)
             logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
             param_count += 1
 
-    logger.info(f"  Created {param_count} parameter variables from {len(config.parameters)} parameter configs")
+    logger.info(f"  Created {param_count} parameter variables from {len(sweep.parameters)} parameter configs")
 
     # Add standard error statistics (2D: parameter_set_id × gcp_pair_id)
     error_metrics = {
@@ -97,9 +102,9 @@ def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_p
 
     # Add overall performance metrics (1D: parameter_set_id)
     # Use dynamic threshold metric name
-    threshold_metric = config.netcdf.threshold_metric_name
+    threshold_metric = netcdf_config.threshold_metric_name
     overall_metrics = {
-        threshold_metric: f"Percentage of pairs with error < {config.performance_threshold_m}m",
+        threshold_metric: f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
         "mean_rms_all_pairs": "Mean RMS error across all GCP pairs",
         "worst_pair_rms": "Worst performing GCP pair RMS error",
         "best_pair_rms": "Best performing GCP pair RMS error",
@@ -114,7 +119,7 @@ def _build_netcdf_structure(config: CorrectionConfig, n_param_sets: int, n_gcp_p
     return netcdf_data
 
 
-def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed):
+def _save_netcdf_checkpoint(netcdf_data, output_file, setup, sweep, netcdf_config, pair_idx_completed):
     """
     Save NetCDF checkpoint with partial results after each GCP pair completes.
 
@@ -124,14 +129,13 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     Args:
         netcdf_data: Dictionary with current NetCDF data
         output_file: Path to final output file (checkpoint uses .checkpoint.nc suffix)
-        config: CorrectionConfig with metadata
+        setup: GeolocationSetup (performance threshold for metric naming)
+        sweep: Sweep with parameters/iterations/seed
+        netcdf_config: Resolved NetCDFConfig with metadata
         pair_idx_completed: Index of the last completed GCP pair (for pair-outer loop)
     """
 
     checkpoint_file = output_file.parent / f"{output_file.stem}_checkpoint.nc"
-
-    # Ensure NetCDFConfig exists
-    config.ensure_netcdf_config()
 
     # Create coordinate arrays
     coords = {
@@ -155,13 +159,13 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     # Add regular metadata
     ds.attrs.update(
         {
-            "title": config.netcdf.title,
-            "description": config.netcdf.description,
+            "title": netcdf_config.title,
+            "description": netcdf_config.description,
             "created": pd.Timestamp.now().isoformat(),
-            "correction_iterations": config.n_iterations,
-            "performance_threshold_m": config.netcdf.performance_threshold_m,
-            "parameter_count": len(config.parameters),
-            "random_seed": str(config.seed) if config.seed is not None else "None",
+            "correction_iterations": sweep.n_iterations,
+            "performance_threshold_m": netcdf_config.performance_threshold_m,
+            "parameter_count": len(sweep.parameters),
+            "random_seed": str(sweep.seed) if sweep.seed is not None else "None",
         }
     )
 
@@ -172,23 +176,23 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     ds.attrs["checkpoint_timestamp"] = pd.Timestamp.now().isoformat()
 
     # Add parameter variable attributes from config
-    for param in config.parameters:
+    for param in sweep.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
             for angle in ["roll", "pitch", "yaw"]:
-                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
                 if metadata.variable_name in ds.data_vars:
                     ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
         else:
-            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
             if metadata.variable_name in ds.data_vars:
                 ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes
-    standard_attrs = config.netcdf.standard_attributes_dict
-    threshold_metric = config.netcdf.threshold_metric_name
+    standard_attrs = netcdf_config.standard_attributes_dict
+    threshold_metric = netcdf_config.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
-        "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",
+        "long_name": f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
     }
     for var, attrs in standard_attrs.items():
         if var in ds.data_vars:
@@ -202,13 +206,12 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, config, pair_idx_completed
     logger.info(f"  Checkpoint saved: {pair_idx_completed + 1}/{len(netcdf_data['gcp_pair_id'])} GCP pairs complete")
 
 
-def _load_checkpoint(output_file, config):
+def _load_checkpoint(output_file):
     """
     Load checkpoint if it exists and convert back to netcdf_data dict.
 
     Args:
         output_file: Path to final output file (will check for .checkpoint.nc)
-        config: CorrectionConfig for structure information
 
     Returns:
         Tuple of (netcdf_data dict, start_idx) or (None, 0) if no checkpoint
@@ -276,7 +279,7 @@ def _cleanup_checkpoint(output_file):
             logger.warning(f"Failed to remove checkpoint file: {e}")
 
 
-def _save_netcdf_results(netcdf_data, output_file, config):
+def _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config):
     """
     Save results to NetCDF file using config-driven metadata.
 
@@ -287,13 +290,12 @@ def _save_netcdf_results(netcdf_data, output_file, config):
     Args:
         netcdf_data: Dictionary with all NetCDF variables and data
         output_file: Path to output NetCDF file
-        config: CorrectionConfig with NetCDF metadata
+        setup: GeolocationSetup (performance threshold for metric naming)
+        sweep: Sweep with parameters/iterations/seed
+        netcdf_config: Resolved NetCDFConfig with metadata
     """
 
     logger.info(f"Saving NetCDF results to: {output_file}")
-
-    # Ensure NetCDFConfig exists
-    config.ensure_netcdf_config()
 
     # Create coordinate arrays
     coords = {
@@ -322,38 +324,38 @@ def _save_netcdf_results(netcdf_data, output_file, config):
     # Add global metadata from config
     ds.attrs.update(
         {
-            "title": config.netcdf.title,
-            "description": config.netcdf.description,
+            "title": netcdf_config.title,
+            "description": netcdf_config.description,
             "created": pd.Timestamp.now().isoformat(),
-            "correction_iterations": config.n_iterations,
-            "performance_threshold_m": config.netcdf.performance_threshold_m,
-            "parameter_count": len(config.parameters),
-            "random_seed": str(config.seed) if config.seed is not None else "None",
+            "correction_iterations": sweep.n_iterations,
+            "performance_threshold_m": netcdf_config.performance_threshold_m,
+            "parameter_count": len(sweep.parameters),
+            "random_seed": str(sweep.seed) if sweep.seed is not None else "None",
         }
     )
 
     # Add parameter variable attributes from config
-    for param in config.parameters:
+    for param in sweep.parameters:
         if param.ptype == ParameterType.CONSTANT_KERNEL:
             # Add metadata for roll, pitch, yaw components
             for angle in ["roll", "pitch", "yaw"]:
-                metadata = config.netcdf.get_parameter_netcdf_metadata(param, angle)
+                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
                 if metadata.variable_name in ds.data_vars:
                     ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
         else:
             # Add metadata for single-value parameters
-            metadata = config.netcdf.get_parameter_netcdf_metadata(param)
+            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
             if metadata.variable_name in ds.data_vars:
                 ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes from config (allows mission overrides)
-    standard_attrs = config.netcdf.standard_attributes_dict
+    standard_attrs = netcdf_config.standard_attributes_dict
 
     # Add dynamic threshold metric
-    threshold_metric = config.netcdf.threshold_metric_name
+    threshold_metric = netcdf_config.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
-        "long_name": f"Percentage of pairs with error < {config.performance_threshold_m}m",
+        "long_name": f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
     }
 
     for var, attrs in standard_attrs.items():

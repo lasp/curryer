@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 from _synthetic_helpers import synthetic_image_matching
-from clarreo_config import create_clarreo_correction_config
+from clarreo_config import create_clarreo_setup_sweep
 from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 from curryer.correction import correction
@@ -36,7 +36,8 @@ from curryer.correction.verification import _extract_spacecraft_position_midfram
 def clarreo_cfg(root_dir):
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
     generic_dir = root_dir / "data" / "generic"
-    return create_clarreo_correction_config(data_dir, generic_dir)
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    return setup, sweep, output
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
@@ -124,9 +125,10 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     sci_csv = tmp_path / "sci.csv"
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
-    cfg = clarreo_cfg.model_copy(deep=True)
-    cfg.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), cfg)
+    setup, _sweep, _output = clarreo_cfg
+    setup = setup.model_copy(deep=True)
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), setup)
     assert isinstance(tlm_ds, pd.DataFrame)
     assert isinstance(sci_ds, pd.DataFrame)
     assert ugps is not None
@@ -137,23 +139,23 @@ def test_loop_optimized(root_dir, tmp_path):
     """loop() produces correct result structure. Requires GMTED – ``--run-extra``."""
     data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
     generic_dir = root_dir / "data" / "generic"
-    config = create_clarreo_correction_config(data_dir, generic_dir)
-    config.n_iterations = 2
-    config.output_filename = "test_loop.nc"
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    sweep.n_iterations = 2
+    output.output_filename = "test_loop.nc"
     work = tmp_path / "loop"
     work.mkdir()
     tlm_csv, sci_csv = work / "tlm.csv", work / "sci.csv"
     load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
     load_clarreo_science(data_dir).to_csv(sci_csv)
-    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    config._image_matching_override = synthetic_image_matching
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.image_matching_func = synthetic_image_matching
     sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
     np.random.seed(42)
-    results, nc = correction.loop(config, work, sets, resume_from_checkpoint=False)
+    results, nc = correction.loop(setup, sweep, work, sets, output=output, resume_from_checkpoint=False)
     assert isinstance(results, list)
     assert len(results) > 0
-    assert len(results) == config.n_iterations * len(sets)
-    assert nc["rms_error_m"].shape == (config.n_iterations, len(sets))
+    assert len(results) == sweep.n_iterations * len(sets)
+    assert nc["rms_error_m"].shape == (sweep.n_iterations, len(sets))
     for r in results:
         assert "param_index" in r
         assert "pair_index" in r
@@ -191,7 +193,7 @@ class TestExtractSpacecraftPositionMidframe:
         config = MagicMock()
         config.data_config = DataConfig(position_columns=["my_x", "my_y", "my_z"])
 
-        result = _extract_spacecraft_position_midframe(telemetry, config=config)
+        result = _extract_spacecraft_position_midframe(telemetry, setup=config)
 
         np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])  # mid_idx = 1
 
@@ -201,7 +203,7 @@ class TestExtractSpacecraftPositionMidframe:
         config = MagicMock()
         config.data_config = DataConfig(position_columns=["a", "b", "c"])
 
-        result = _extract_spacecraft_position_midframe(telemetry, config=config)
+        result = _extract_spacecraft_position_midframe(telemetry, setup=config)
 
         assert result.shape == (3,)
         assert result.dtype == np.float64
@@ -213,7 +215,7 @@ class TestExtractSpacecraftPositionMidframe:
         config.data_config = DataConfig(position_columns=["x", "y"])
 
         with pytest.raises(ValueError, match="exactly 3 entries"):
-            _extract_spacecraft_position_midframe(telemetry, config=config)
+            _extract_spacecraft_position_midframe(telemetry, setup=config)
 
     def test_position_columns_missing_column_raises_valueerror(self):
         """position_columns referencing nonexistent columns should raise ValueError."""
@@ -222,7 +224,7 @@ class TestExtractSpacecraftPositionMidframe:
         config.data_config = DataConfig(position_columns=["x", "y", "MISSING"])
 
         with pytest.raises(ValueError, match="not found in telemetry"):
-            _extract_spacecraft_position_midframe(telemetry, config=config)
+            _extract_spacecraft_position_midframe(telemetry, setup=config)
 
     def test_no_position_columns_falls_back_with_warning(self, caplog):
         """When position_columns is None, fall back to pattern-guessing with warning."""
@@ -231,7 +233,7 @@ class TestExtractSpacecraftPositionMidframe:
         config.data_config = None  # position_columns not configured
 
         with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
-            result = _extract_spacecraft_position_midframe(telemetry, config=config)
+            result = _extract_spacecraft_position_midframe(telemetry, setup=config)
 
         assert "position_columns not configured" in caplog.text
         np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
@@ -241,7 +243,7 @@ class TestExtractSpacecraftPositionMidframe:
         telemetry = _make_telemetry()
 
         with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
-            result = _extract_spacecraft_position_midframe(telemetry, config=None)
+            result = _extract_spacecraft_position_midframe(telemetry, setup=None)
 
         assert "position_columns not configured" in caplog.text
         np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])

@@ -12,7 +12,7 @@ Covers
 - :func:`verify` – end-to-end with pre-computed ``image_matching_results``
 - :func:`verify` – error paths (empty list, missing inputs, missing func)
 
-All ``CorrectionConfig`` fixtures avoid deleted fields (``telemetry_loader``,
+All ``GeolocationSetup`` fixtures avoid deleted fields (``telemetry_loader``,
 ``science_loader``, ``gcp_loader``, ``gcp_pairing_func``).
 """
 
@@ -28,10 +28,8 @@ import xarray as xr
 from pydantic import ValidationError
 
 from curryer.correction.config import (
-    CorrectionConfig,
     GeolocationConfig,
-    ParameterConfig,
-    ParameterType,
+    GeolocationSetup,
 )
 from curryer.correction.verification import (
     GCPError,
@@ -62,31 +60,31 @@ def _make_geo() -> GeolocationConfig:
     )
 
 
-def _make_config(**overrides) -> CorrectionConfig:
-    """Return a minimal CorrectionConfig suitable for verification tests.
+def _make_setup(**overrides) -> GeolocationSetup:
+    """Return a minimal GeolocationSetup suitable for verification tests.
 
     Provides CLARREO-style variable name mappings and does **not** set any
     deleted fields (``telemetry_loader``, ``science_loader``, ``gcp_loader``,
     ``gcp_pairing_func``).
+
+    ``performance_threshold_m`` / ``performance_spec_percent`` overrides are
+    folded into the nested :class:`RequirementsConfig`.
     """
+    threshold_m = overrides.pop("performance_threshold_m", _THRESHOLD_M)
+    spec_percent = overrides.pop("performance_spec_percent", _SPEC_PCT)
     defaults = dict(
-        n_iterations=1,
-        parameters=[
-            ParameterConfig(
-                ptype=ParameterType.CONSTANT_KERNEL,
-                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
-            )
-        ],
         geo=_make_geo(),
-        performance_threshold_m=_THRESHOLD_M,
-        performance_spec_percent=_SPEC_PCT,
+        requirements=RequirementsConfig(
+            performance_threshold_m=threshold_m,
+            performance_spec_percent=spec_percent,
+        ),
         # CLARREO-style names so the 13-case dataset validates cleanly
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
         transformation_matrix_name="t_hs2ctrs",
     )
     defaults.update(overrides)
-    return CorrectionConfig(**defaults)
+    return GeolocationSetup(**defaults)
 
 
 def _make_aggregate_stats_dataset(nadir_errors_m: list[float]) -> xr.Dataset:
@@ -499,8 +497,8 @@ class TestVerify:
     """End-to-end tests for :func:`verify` using synthetic image-matching data."""
 
     @pytest.fixture
-    def config(self) -> CorrectionConfig:
-        return _make_config()
+    def setup(self) -> GeolocationSetup:
+        return _make_setup()
 
     @pytest.fixture
     def image_matching_dataset(self) -> xr.Dataset:
@@ -522,12 +520,12 @@ class TestVerify:
     # Happy path – single GCP pair
     # -------------------------------------------------------------------
 
-    def test_returns_verification_result(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_returns_verification_result(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert isinstance(result, VerificationResult)
 
-    def test_result_has_all_fields(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_result_has_all_fields(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert isinstance(result.passed, bool)
         assert isinstance(result.per_gcp_errors, list)
         assert isinstance(result.aggregate_stats, xr.Dataset)
@@ -536,39 +534,39 @@ class TestVerify:
         assert isinstance(result.warnings, list)
         assert isinstance(result.timestamp, datetime)
 
-    def test_per_gcp_errors_count_matches_measurements(self, config, image_matching_dataset, tmp_path):
+    def test_per_gcp_errors_count_matches_measurements(self, setup, image_matching_dataset, tmp_path):
         n = image_matching_dataset.sizes["measurement"]
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert len(result.per_gcp_errors) == n
 
-    def test_all_per_gcp_have_nadir_error(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_all_per_gcp_have_nadir_error(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         for err in result.per_gcp_errors:
             assert err.nadir_equiv_error_m is not None
             assert err.nadir_equiv_error_m >= 0.0
 
-    def test_passed_flag_consistent_with_percent(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_passed_flag_consistent_with_percent(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         if result.passed:
-            assert result.percent_within_threshold >= config.performance_spec_percent
+            assert result.percent_within_threshold >= setup.requirements.performance_spec_percent
         else:
-            assert result.percent_within_threshold < config.performance_spec_percent
+            assert result.percent_within_threshold < setup.requirements.performance_spec_percent
 
-    def test_summary_table_is_non_empty_string(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_summary_table_is_non_empty_string(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert len(result.summary_table) > 0
         assert "Verification Summary" in result.summary_table
 
-    def test_warnings_empty_when_passed(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_warnings_empty_when_passed(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         if result.passed:
             assert result.warnings == []
 
-    def test_warnings_non_empty_when_failed(self, config, tmp_path):
+    def test_warnings_non_empty_when_failed(self, setup, tmp_path):
         """Force a FAILED result by using a very tight spec (100 %)."""
-        strict_config = _make_config(performance_spec_percent=100.0)
+        strict_setup = _make_setup(performance_spec_percent=100.0)
         ds = _make_full_image_matching_dataset(n=13, seed=0)
-        result = verify(strict_config, image_matching_results=[ds], work_dir=tmp_path)
+        result = verify(strict_setup, image_matching_results=[ds], work_dir=tmp_path)
         # With 100 % required, any imperfect measurement causes failure
         if not result.passed:
             assert len(result.warnings) >= 1
@@ -578,60 +576,57 @@ class TestVerify:
     # Happy path – multiple GCP pairs
     # -------------------------------------------------------------------
 
-    def test_multi_pair_aggregates_all_measurements(self, config, multi_pair_results, tmp_path):
+    def test_multi_pair_aggregates_all_measurements(self, setup, multi_pair_results, tmp_path):
         total = sum(ds.sizes["measurement"] for ds in multi_pair_results)
-        result = verify(config, image_matching_results=multi_pair_results, work_dir=tmp_path)
+        result = verify(setup, image_matching_results=multi_pair_results, work_dir=tmp_path)
         assert len(result.per_gcp_errors) == total
 
-    def test_multi_pair_science_keys_from_attrs(self, config, multi_pair_results, tmp_path):
-        result = verify(config, image_matching_results=multi_pair_results, work_dir=tmp_path)
+    def test_multi_pair_science_keys_from_attrs(self, setup, multi_pair_results, tmp_path):
+        result = verify(setup, image_matching_results=multi_pair_results, work_dir=tmp_path)
         sci_keys = {e.science_key for e in result.per_gcp_errors}
         assert "scene_A" in sci_keys
         assert "scene_B" in sci_keys
 
-    def test_requirements_reflect_config(self, config, image_matching_dataset, tmp_path):
-        result = verify(config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+    def test_requirements_reflect_config(self, setup, image_matching_dataset, tmp_path):
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert result.requirements.performance_threshold_m == _THRESHOLD_M
         assert result.requirements.performance_spec_percent == _SPEC_PCT
 
-    def test_work_dir_created_if_missing(self, config, image_matching_dataset, tmp_path):
+    def test_work_dir_created_if_missing(self, setup, image_matching_dataset, tmp_path):
         new_dir = tmp_path / "nonexistent" / "subdir"
         assert not new_dir.exists()
-        verify(config, image_matching_results=[image_matching_dataset], work_dir=new_dir)
+        verify(setup, image_matching_results=[image_matching_dataset], work_dir=new_dir)
         assert new_dir.exists()
 
     # -------------------------------------------------------------------
-    # RequirementsConfig override via config.verification
+    # RequirementsConfig override via setup.requirements
     # -------------------------------------------------------------------
 
     def test_custom_requirements_override_used(self, image_matching_dataset, tmp_path):
-        """Attach RequirementsConfig to config.verification; verify() should use it."""
-        base_config = _make_config()
+        """Set setup.requirements directly; verify() should use it."""
+        setup = _make_setup()
         # Inject a very lenient requirement so it almost certainly passes
-        req = RequirementsConfig(performance_threshold_m=1_000_000.0, performance_spec_percent=0.0)
-        # Monkeypatch the config object (verification is not a declared field but
-        # _build_requirements uses getattr with a fallback)
-        object.__setattr__(base_config, "verification", req)
-        result = verify(base_config, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
+        setup.requirements = RequirementsConfig(performance_threshold_m=1_000_000.0, performance_spec_percent=0.0)
+        result = verify(setup, image_matching_results=[image_matching_dataset], work_dir=tmp_path)
         assert result.requirements.performance_threshold_m == 1_000_000.0
 
     # -------------------------------------------------------------------
     # Error paths
     # -------------------------------------------------------------------
 
-    def test_empty_image_matching_list_raises(self, config, tmp_path):
+    def test_empty_image_matching_list_raises(self, setup, tmp_path):
         with pytest.raises(ValueError, match="must not be empty"):
-            verify(config, image_matching_results=[], work_dir=tmp_path)
+            verify(setup, image_matching_results=[], work_dir=tmp_path)
 
-    def test_neither_input_raises_value_error(self, config, tmp_path):
+    def test_neither_input_raises_value_error(self, setup, tmp_path):
         with pytest.raises(ValueError, match="Neither image_matching_results nor geolocated_data"):
-            verify(config, work_dir=tmp_path)
+            verify(setup, work_dir=tmp_path)
 
-    def test_geolocated_data_without_func_raises(self, config, tmp_path):
+    def test_geolocated_data_without_func_raises(self, setup, tmp_path):
         """geolocated_data without gcp_directory/los_file/psf_file raises ValueError."""
         dummy_ds = xr.Dataset({"dummy": (["x"], [1, 2, 3])})
         with pytest.raises(ValueError, match="gcp_directory"):
-            verify(config, geolocated_data=dummy_ds, work_dir=tmp_path)
+            verify(setup, geolocated_data=dummy_ds, work_dir=tmp_path)
 
     def test_geolocated_data_primary_mode(self, image_matching_dataset, tmp_path):
         """Primary mode: geolocated_data + gcp_directory + los_file + psf_file auto-pairs and matches."""
@@ -641,7 +636,7 @@ class TestVerify:
 
         import numpy as np
 
-        config = _make_config()
+        setup = _make_setup()
 
         # Build a minimal dataset with lat/lon so the footprint filter runs.
         lat = np.linspace(38.0, 39.0, 5)
@@ -688,7 +683,7 @@ class TestVerify:
                 ),
             ):
                 result = verify(
-                    config,
+                    setup,
                     geolocated_data=dummy_geolocated,
                     gcp_directory=gcp_dir,
                     los_file=tmp_path / "los.mat",
@@ -706,34 +701,43 @@ class TestVerify:
         assert result.passed
 
     def test_geolocated_data_with_func_called(self, image_matching_dataset, tmp_path):
-        """_image_matching_override should be called when geolocated_data is supplied."""
+        """setup.image_matching_func should be called when geolocated_data is supplied."""
         called = {"count": 0}
 
-        def mock_matching_func(data):
+        def mock_matching_func(
+            geolocated_data,
+            gcp_reference_file=None,
+            telemetry=None,
+            params_info=None,
+            setup=None,
+            los_vectors_cached=None,
+            optical_psfs_cached=None,
+            r_iss_midframe=None,
+        ):
             called["count"] += 1
             return [image_matching_dataset]
 
-        config = _make_config()
-        config._image_matching_override = mock_matching_func
+        setup = _make_setup()
+        setup.image_matching_func = mock_matching_func
         dummy_geolocated = xr.Dataset({"placeholder": (["x"], [1, 2])})
-        result = verify(config, geolocated_data=dummy_geolocated, work_dir=tmp_path)
+        result = verify(setup, geolocated_data=dummy_geolocated, work_dir=tmp_path)
         assert called["count"] == 1
         assert isinstance(result, VerificationResult)
 
-    def test_gcp_pairs_raises_without_los_psf(self, config, tmp_path):
+    def test_gcp_pairs_raises_without_los_psf(self, setup, tmp_path):
         """gcp_pairs mode raises ValueError when los_file or psf_file is missing."""
         with pytest.raises(ValueError, match="los_file"):
-            verify(config, gcp_pairs=[("obs.mat", "gcp.mat")], work_dir=tmp_path)
+            verify(setup, gcp_pairs=[("obs.mat", "gcp.mat")], work_dir=tmp_path)
 
-    def test_observation_paths_raises_without_los_psf(self, config, tmp_path):
+    def test_observation_paths_raises_without_los_psf(self, setup, tmp_path):
         """observation_paths + gcp_directory mode raises ValueError when los_file/psf_file missing."""
         with pytest.raises(ValueError, match="los_file"):
-            verify(config, observation_paths=["obs.mat"], gcp_directory=tmp_path, work_dir=tmp_path)
+            verify(setup, observation_paths=["obs.mat"], gcp_directory=tmp_path, work_dir=tmp_path)
 
-    def test_gcp_directory_alone_raises_value_error(self, config, tmp_path):
+    def test_gcp_directory_alone_raises_value_error(self, setup, tmp_path):
         """gcp_directory without observation_paths raises ValueError."""
         with pytest.raises(ValueError, match="observation_paths and gcp_directory"):
-            verify(config, gcp_directory=tmp_path, work_dir=tmp_path)
+            verify(setup, gcp_directory=tmp_path, work_dir=tmp_path)
 
 
 # ===========================================================================
