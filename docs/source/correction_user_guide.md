@@ -54,6 +54,31 @@ lightweight:
 
 A run is `run_correction(setup, sweep, inputs, work_dir, output=None)`.
 
+### Where setup & sweep are specified
+
+A mission specifies its setup and sweep in one of two equivalent forms — a
+**JSON config** (preferred for production/reproducibility) or a **Python
+factory** (handier for building configs dynamically or varying a `Sweep` in
+code). Both produce the same `(GeolocationSetup, Sweep, OutputConfig)` triple.
+
+| Form                | File                                              | How it's consumed                                                       |
+| ------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
+| JSON (full example) | `examples/correction/clarreo_config.json`         | `setup, sweep, output = load_config_files(path)`                        |
+| JSON (template)     | `examples/correction/example_config.json`         | Minimal 3-parameter starting point in the same schema                   |
+| Python factory      | `examples/correction/clarreo_config.py`           | `create_clarreo_config(data_dir, generic_dir) → (setup, sweep, output)` |
+| Test fixture        | `tests/test_correction/clarreo/clarreo_config.py` | `create_clarreo_setup_sweep(...)` — test infra, not public API          |
+
+The JSON file has three top-level sections — `"setup"`, `"sweep"`, and an
+optional `"output"` — each validated directly against its model (see
+[Loading Config from JSON](#loading-config-from-json)). To copy a config for a
+new mission, start from `clarreo_config.json` (or `clarreo_config.py`) and edit
+the values.
+
+The models, validators, and loaders themselves are all defined in
+**`curryer/correction/config.py`** (`GeolocationSetup`, `Sweep`, `OutputConfig`,
+`RequirementsConfig`, `CalibrationFiles`, `ParameterConfig` / `ParameterSpec`,
+and `load_config_files` / `load_setup_from_json` / `load_sweep_from_json`).
+
 ---
 
 ## New Mission Checklist
