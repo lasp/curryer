@@ -391,7 +391,7 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
             f"{sweep.max_grid_sets:,}. "
             f"To proceed, either:\n"
             f"  • reduce grid_points_per_param (currently {n}) or the number of parameters,\n"
-            f"  • increase max_grid_sets on CorrectionConfig (set deliberately), or\n"
+            f"  • increase max_grid_sets on the Sweep (set deliberately), or\n"
             f"  • use SearchStrategy.SINGLE_OFFSET for high-dimensional sweeps."
         )
 

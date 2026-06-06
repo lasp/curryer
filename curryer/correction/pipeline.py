@@ -6,8 +6,6 @@ functions it calls:
 
 - Adapter functions that bridge between the geolocation/image-matching
   sub-modules and the correction loop.
-- :func:`load_config_from_json` -- build a :class:`CorrectionConfig` from
-  a JSON file.
 - :func:`_load_file` -- internal helper that reads CSV/NetCDF/HDF5 files
   into DataFrames, replacing the old mission-specific loader callables.
 - :func:`_load_image_pair_data`, :func:`_load_calibration_data`,

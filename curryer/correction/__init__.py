@@ -6,12 +6,12 @@ against ground control points, PSF modelling, and error statistics.
 Sub-module layout
 -----------------
 config
-    Config dataclasses (``CorrectionConfig``, ``ParameterConfig``, etc.)
-    and the ``ParameterType`` enum.
+    Config models (``GeolocationSetup``, ``Sweep``, ``OutputConfig``,
+    ``ParameterConfig``, etc.) and the ``ParameterType`` enum.
 io_config
     NetCDF output configuration and standard attribute definitions
     (:class:`NetCDFConfig`, :class:`NetCDFParameterMetadata`,
-    :data:`DEFAULT_NETCDF_ATTRIBUTES`, :data:`STANDARD_VAR_NAMES`).
+    :data:`DEFAULT_NETCDF_ATTRIBUTES`).
 parameters
     Random parameter-set generation (:func:`load_param_sets`).
 kernel_ops
@@ -26,8 +26,6 @@ pipeline
 correction
     Thin re-export shim -- keeps all existing
     ``from curryer.correction import correction`` import paths working.
-correction_config
-    Utilities for reading and validating JSON config files.
 grid_types
     Pure grid data containers (``ImageGrid``, ``PSFGrid``, ...).
 dataio
@@ -58,7 +56,6 @@ verification
 from . import (
     config,
     correction,
-    correction_config,
     dataio,
     error_stats,
     grid_types,
@@ -81,7 +78,6 @@ from . import (
 # Key public names lifted to package level
 from .config import (
     CalibrationFiles,
-    CorrectionConfig,
     CorrectionInput,
     DataConfig,
     GeolocationConfig,
@@ -99,7 +95,6 @@ from .config import (
     SearchStrategy,
     Sweep,
     load_config_files,
-    load_config_from_json,
     load_setup_from_json,
     load_sweep_from_json,
 )
@@ -124,7 +119,6 @@ __all__ = [
     # Sub-modules
     "config",
     "correction",
-    "correction_config",
     "dataio",
     "error_stats",
     "grid_types",
@@ -144,7 +138,6 @@ __all__ = [
     "verification",
     # Config
     "CalibrationFiles",
-    "CorrectionConfig",
     "CorrectionInput",
     "DataConfig",
     "GeolocationConfig",
@@ -159,7 +152,6 @@ __all__ = [
     "SearchStrategy",
     "Sweep",
     "load_config_files",
-    "load_config_from_json",
     "load_setup_from_json",
     "load_sweep_from_json",
     # Pipeline entry points

@@ -35,7 +35,7 @@ def validate_telemetry_output(df: pd.DataFrame, config) -> None:
 
     Args:
         df: DataFrame returned by telemetry loader
-        config: CorrectionConfig object
+        config: GeolocationSetup object
 
     Raises:
         TypeError: If not a DataFrame
@@ -60,7 +60,7 @@ def validate_science_output(df: pd.DataFrame, config) -> None:
 
     Args:
         df: DataFrame returned by science loader
-        config: CorrectionConfig object
+        config: GeolocationSetup object
 
     Raises:
         TypeError: If not a DataFrame

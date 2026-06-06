@@ -36,27 +36,6 @@ DEFAULT_NETCDF_ATTRIBUTES = {
 }
 
 
-# ============================================================================
-# Standard Data Variable Names (Mission-Agnostic Keys)
-# ============================================================================
-
-# Standard variable names that should be present in image matching results.
-# Used for extracting data from xarray.Dataset objects.
-STANDARD_VAR_NAMES = {
-    # Error measurements (required)
-    "lat_error_deg": "lat_error_deg",
-    "lon_error_deg": "lon_error_deg",
-    # Spacecraft state (configurable names)
-    "spacecraft_position": "sc_position",  # Generic default
-    "boresight": "boresight",  # Generic default
-    "transformation_matrix": "t_inst2ref",  # Generic default
-    # Control point location (optional)
-    "gcp_lat_deg": "gcp_lat_deg",
-    "gcp_lon_deg": "gcp_lon_deg",
-    "gcp_alt": "gcp_alt",
-}
-
-
 class NetCDFParameterMetadata(BaseModel):
     """NetCDF metadata for a single output parameter variable."""
 
@@ -79,7 +58,7 @@ class NetCDFConfig(BaseModel):
         Global description attribute for the output NetCDF file.
     parameter_metadata
         Optional mapping of parameter key → :class:`NetCDFParameterMetadata`.
-        Auto-generated from ``CorrectionConfig.parameters`` when ``None``.
+        Auto-generated from the sweep's ``parameters`` when ``None``.
     standard_attributes
         Optional mission-specific attribute overrides.  Falls back to the
         module-level :data:`DEFAULT_NETCDF_ATTRIBUTES` when ``None``.

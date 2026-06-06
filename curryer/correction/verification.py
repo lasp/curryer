@@ -973,26 +973,6 @@ def match_geolocated_to_gcp_files(
     return matched
 
 
-def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | None = None) -> None:
-    """Log a human-readable GCP pairing summary.
-
-    Parameters
-    ----------
-    pairs : list of (Path, Path)
-        Successfully paired (observation, gcp) paths.
-    unpaired : list of Path or None, optional
-        Observation paths for which no matching GCP was found.
-    """
-    lines = ["GCP Pairing Summary:"]
-    for obs, gcp in pairs:
-        lines.append(f"  ✓ {obs.name} → {gcp.name}")
-    if unpaired:
-        for obs in unpaired:
-            lines.append(f"  ✗ {obs.name} → No matching GCP found")
-    lines.append(f"Proceeding with {len(pairs)} observation(s).")
-    logger.info("\n".join(lines))
-
-
 # ============================================================================
 # Public API
 # ============================================================================

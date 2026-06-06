@@ -25,7 +25,6 @@ import pytest
 from pydantic import ValidationError
 
 from curryer.correction.config import (
-    CorrectionConfig,
     GeolocationConfig,
     ParameterConfig,
     ParameterType,
@@ -544,16 +543,13 @@ class TestConfigValidation:
         errors = exc_info.value.errors()
         assert any("grid_points_per_param" in err.get("loc", ()) for err in errors)
 
-    def test_search_strategy_default_is_random(self, geo, param_offset_time):
-        config = CorrectionConfig(
+    def test_search_strategy_default_is_random(self, param_offset_time):
+        sweep = Sweep(
             seed=0,
             n_iterations=3,
             parameters=[param_offset_time],
-            geo=geo,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
         )
-        assert config.search_strategy == SearchStrategy.RANDOM
+        assert sweep.search_strategy == SearchStrategy.RANDOM
 
     def test_search_strategy_enum_values(self):
         assert SearchStrategy("random") is SearchStrategy.RANDOM

@@ -16,10 +16,8 @@ All implementation has been split into focused sub-modules:
 # Config dataclasses, enums, and JSON loader
 from curryer.correction.config import (
     DEFAULT_NETCDF_ATTRIBUTES,
-    STANDARD_VAR_NAMES,
     CalibrationData,
     CalibrationFiles,
-    CorrectionConfig,
     DataConfig,
     GeolocationConfig,
     GeolocationSetup,
@@ -35,7 +33,6 @@ from curryer.correction.config import (
     SearchStrategy,
     Sweep,
     load_config_files,
-    load_config_from_json,
     load_setup_from_json,
     load_sweep_from_json,
 )
@@ -89,10 +86,8 @@ from curryer.correction.verification import (
 __all__ = [
     # Config
     "DEFAULT_NETCDF_ATTRIBUTES",
-    "STANDARD_VAR_NAMES",
     "CalibrationData",
     "CalibrationFiles",
-    "CorrectionConfig",
     "DataConfig",
     "GeolocationConfig",
     "GeolocationSetup",
@@ -108,7 +103,6 @@ __all__ = [
     "SearchStrategy",
     "Sweep",
     "load_config_files",
-    "load_config_from_json",
     "load_setup_from_json",
     "load_sweep_from_json",
     # Parameters
