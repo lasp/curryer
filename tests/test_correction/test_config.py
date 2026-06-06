@@ -222,49 +222,20 @@ class TestParameterSpec:
         assert pd.units is None
         assert pd.distribution == "normal"
 
-    # -- dict-style backward compat -------------------------------------------
+    # -- strict validation + metadata -----------------------------------------
 
-    def test_get_returns_value(self):
-        pd = ParameterSpec(sigma=30.0, units="arcseconds")
-        assert pd.get("sigma") == 30.0
-        assert pd.get("units") == "arcseconds"
+    def test_unknown_field_rejected(self):
+        """extra='forbid' surfaces typos as a ValidationError."""
+        with pytest.raises(ValidationError):
+            ParameterSpec(boundes=[-1.0, 1.0])  # typo for 'bounds'
 
-    def test_get_returns_default_for_none_field(self):
-        pd = ParameterSpec()  # sigma=None by default
-        assert pd.get("sigma", "N/A") == "N/A"
-        assert pd.get("sigma") is None
+    def test_metadata_holds_mission_extras(self):
+        pd = ParameterSpec(metadata={"name": "az_bias", "source": "vendor"})
+        assert pd.metadata["name"] == "az_bias"
+        assert pd.metadata["source"] == "vendor"
 
-    def test_get_nonexistent_key_returns_default(self):
-        pd = ParameterSpec()
-        assert pd.get("no_such_key", "MISSING") == "MISSING"
-
-    def test_contains_true_for_non_none_field(self):
-        pd = ParameterSpec(sigma=30.0)
-        assert "sigma" in pd
-
-    def test_contains_false_for_none_field(self):
-        pd = ParameterSpec()  # sigma=None
-        assert "sigma" not in pd
-
-    def test_contains_true_for_zero_sigma(self):
-        """sigma=0.0 is explicitly set and must be found by 'in'."""
-        pd = ParameterSpec(sigma=0.0)
-        assert "sigma" in pd
-
-    def test_getitem_returns_value(self):
-        pd = ParameterSpec(sigma=5.0)
-        assert pd["sigma"] == 5.0
-
-    def test_getitem_raises_keyerror_for_missing_key(self):
-        pd = ParameterSpec()
-        with pytest.raises(KeyError):
-            _ = pd["totally_missing"]
-
-    def test_extra_fields_allowed_and_accessible(self):
-        pd = ParameterSpec(my_custom_field="hello")
-        assert pd.get("my_custom_field") == "hello"
-        assert "my_custom_field" in pd
-        assert pd["my_custom_field"] == "hello"
+    def test_metadata_defaults_empty(self):
+        assert ParameterSpec().metadata == {}
 
     def test_validation_error_for_non_numeric_sigma(self):
         with pytest.raises(ValidationError) as exc_info:

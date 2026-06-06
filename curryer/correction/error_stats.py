@@ -105,29 +105,29 @@ class ErrorStatsConfig:
     variable_names: dict[str, str] | None = None  # If None, uses generic defaults
 
     @classmethod
-    def from_correction_config(cls, correction_config) -> "ErrorStatsConfig":
-        """Create an :class:`ErrorStatsConfig` from a :class:`CorrectionConfig`.
+    def from_setup(cls, setup) -> "ErrorStatsConfig":
+        """Create an :class:`ErrorStatsConfig` from a :class:`GeolocationSetup`.
 
-        This is the preferred way to create this config — it extracts all
-        settings from the single source of truth (:class:`CorrectionConfig`).
+        Extracts the science-Dataset variable names and ``minimum_correlation``
+        from the setup, the single source of truth for those settings.
 
         Parameters
         ----------
-        correction_config : CorrectionConfig
-            Top-level correction configuration.
+        setup : GeolocationSetup
+            The geolocation setup (variable names + geo settings).
 
         Returns
         -------
         ErrorStatsConfig
         """
         variable_names = {
-            "spacecraft_position": correction_config.spacecraft_position_name,
-            "boresight": correction_config.boresight_name,
-            "transformation_matrix": correction_config.transformation_matrix_name,
+            "spacecraft_position": setup.spacecraft_position_name,
+            "boresight": setup.boresight_name,
+            "transformation_matrix": setup.transformation_matrix_name,
         }
 
         return cls(
-            minimum_correlation=correction_config.geo.minimum_correlation,
+            minimum_correlation=setup.geo.minimum_correlation,
             variable_names=variable_names,
         )
 
@@ -153,7 +153,7 @@ class ErrorStatsConfig:
         if self.variable_names is None:
             raise ValueError(
                 f"ErrorStatsConfig.variable_names is None. "
-                f"Use ErrorStatsConfig.from_correction_config() to create config with proper variable names."
+                f"Use ErrorStatsConfig.from_setup() to create config with proper variable names."
             )
 
         if semantic_name not in self.variable_names:
@@ -176,13 +176,11 @@ class ErrorStatsProcessor:
         ----------
         config : ErrorStatsConfig
             Configuration for error statistics processing. Use
-            ``ErrorStatsConfig.from_correction_config()`` to create from
-            CorrectionConfig.
+            ``ErrorStatsConfig.from_setup()`` to create from a
+            GeolocationSetup.
         """
         if config is None:
-            raise ValueError(
-                "ErrorStatsConfig is required. Use ErrorStatsConfig.from_correction_config(correction_config) to create."
-            )
+            raise ValueError("ErrorStatsConfig is required. Use ErrorStatsConfig.from_setup(setup) to create.")
         self.config = config
 
     def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:

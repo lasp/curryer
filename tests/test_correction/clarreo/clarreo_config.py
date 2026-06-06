@@ -282,19 +282,19 @@ def create_clarreo_correction_config(data_dir, generic_dir, config_output_path=N
                 "name": param.config_file.name if param.config_file else f"time_correction_{i}",
                 "parameter_type": param.ptype.name,
                 "config_file": str(param.config_file) if param.config_file else None,
-                "current_value": param.spec.get("current_value"),
-                "bounds": param.spec.get("bounds"),
-                "sigma": param.spec.get("sigma"),
-                "units": param.spec.get("units"),
-                "distribution": param.spec.get("distribution"),
-                "field": param.spec.get("field"),
+                "current_value": param.spec.current_value,
+                "bounds": param.spec.bounds,
+                "sigma": param.spec.sigma,
+                "units": param.spec.units,
+                "distribution": param.spec.distribution,
+                "field": param.spec.field,
             }
 
             # Add optional fields if they exist
-            if "transformation_type" in param.spec:
-                param_dict["transformation_type"] = param.spec["transformation_type"]
-            if "coordinate_frames" in param.spec:
-                param_dict["coordinate_frames"] = param.spec["coordinate_frames"]
+            if param.spec.transformation_type is not None:
+                param_dict["transformation_type"] = param.spec.transformation_type
+            if param.spec.coordinate_frames is not None:
+                param_dict["coordinate_frames"] = param.spec.coordinate_frames
 
             config_dict["correction"]["parameters"].append(param_dict)
 

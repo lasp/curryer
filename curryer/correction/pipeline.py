@@ -112,7 +112,7 @@ def call_error_stats_module(image_matching_results, correction_config: "Correcti
         logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
         # Create error stats config directly from Correction config (single source of truth)
-        error_config = ErrorStatsConfig.from_correction_config(correction_config)
+        error_config = ErrorStatsConfig.from_setup(correction_config)
 
         processor = ErrorStatsProcessor(config=error_config)
 
@@ -631,7 +631,7 @@ def loop(
     calibration_data = _load_calibration_data(config)
 
     # Create error stats processor once (config is constant; processor is stateless)
-    error_config = ErrorStatsConfig.from_correction_config(config)
+    error_config = ErrorStatsConfig.from_setup(config)
     error_processor = ErrorStatsProcessor(config=error_config)
 
     # Store parameter values once (before loops)
@@ -806,7 +806,7 @@ def _extract_parameter_values(params):
             param_name = param_config.config_file.stem
         else:
             param_name = (
-                param_config.spec.get("name") or param_config.spec.get("field") or param_config.ptype.name.lower()
+                param_config.spec.metadata.get("name") or param_config.spec.field or param_config.ptype.name.lower()
             )
 
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:

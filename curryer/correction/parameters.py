@@ -33,7 +33,7 @@ import typing
 import numpy as np
 import pandas as pd
 
-from curryer.correction.config import CorrectionConfig, ParameterConfig, ParameterType, SearchStrategy
+from curryer.correction.config import ParameterConfig, ParameterType, SearchStrategy, Sweep
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def _get_nominal_value(param: ParameterConfig) -> typing.Any:
     equal to the ``current_value`` in radians.  For ``OFFSET_KERNEL`` /
     ``OFFSET_TIME``, returns a float in radians / seconds respectively.
     """
-    units = param.spec.get("units")
+    units = param.spec.units
     current_value = param.spec.current_value
 
     if param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -184,7 +184,7 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
         List of *n_points* values; each element matches what the pipeline
         expects for that parameter type (DataFrame or float).
     """
-    units = param.spec.get("units")
+    units = param.spec.units
     bounds = param.spec.bounds
     current_value = param.spec.current_value
 
@@ -220,19 +220,19 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
 # ============================================================================
 
 
-def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfig, typing.Any]]]:
+def _generate_random(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate random parameter sets – exact current behaviour preserved."""
-    if config.seed is not None:
-        np.random.seed(config.seed)
-        logger.info(f"Set random seed to {config.seed} for reproducible parameter generation")
+    if sweep.seed is not None:
+        np.random.seed(sweep.seed)
+        logger.info(f"Set random seed to {sweep.seed} for reproducible parameter generation")
 
     output = []
 
-    for ith in range(config.n_iterations):
+    for ith in range(sweep.n_iterations):
         out_set = []
-        logger.debug(f"Generating parameter set {ith + 1}/{config.n_iterations}")
+        logger.debug(f"Generating parameter set {ith + 1}/{sweep.n_iterations}")
 
-        for param_idx, param in enumerate(config.parameters):
+        for param_idx, param in enumerate(sweep.parameters):
             current_value = param.spec.current_value
             bounds = param.spec.bounds
 
@@ -240,41 +240,41 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                 if isinstance(current_value, list) and len(current_value) == 3:
                     param_vals = []
                     for i, current_val in enumerate(current_value):
-                        if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
-                            if param.spec.get("units") == "arcseconds":
-                                sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
+                        if param.spec.sigma is not None and param.spec.sigma > 0:
+                            if param.spec.units == "arcseconds":
+                                sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                                 bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                             else:
-                                sigma_rad = param.spec["sigma"]
+                                sigma_rad = param.spec.sigma
                                 current_val_rad = current_val
                                 bounds_rad = bounds
                             offset = np.random.normal(0, sigma_rad)
                             offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                             param_vals.append(current_val_rad + offset)
                         else:
-                            if "sigma" not in param.spec or param.spec["sigma"] is None:
+                            if param.spec.sigma is None:
                                 logger.debug(
                                     f"  Parameter {param_idx} axis {i}: No sigma specified, using fixed current_value"
                                 )
-                            elif param.spec["sigma"] == 0:
+                            elif param.spec.sigma == 0:
                                 logger.debug(f"  Parameter {param_idx} axis {i}: sigma=0, using fixed current_value")
-                            if param.spec.get("units") == "arcseconds":
+                            if param.spec.units == "arcseconds":
                                 current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
                             else:
                                 current_val_rad = current_val
                             param_vals.append(current_val_rad)
                 else:
                     param_vals = [0.0, 0.0, 0.0]
-                    if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
-                        if param.spec.get("units") == "arcseconds":
-                            sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
+                    if param.spec.sigma is not None and param.spec.sigma > 0:
+                        if param.spec.units == "arcseconds":
+                            sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
                             bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                             current_val_rad = (
                                 np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                             )
                         else:
-                            sigma_rad = param.spec["sigma"]
+                            sigma_rad = param.spec.sigma
                             bounds_rad = bounds
                             current_val_rad = current_value
                         for i in range(3):
@@ -282,11 +282,11 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                             offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                             param_vals[i] = current_val_rad + offset
                     else:
-                        if "sigma" not in param.spec or param.spec["sigma"] is None:
+                        if param.spec.sigma is None:
                             logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                        elif param.spec["sigma"] == 0:
+                        elif param.spec.sigma == 0:
                             logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                        if param.spec.get("units") == "arcseconds":
+                        if param.spec.units == "arcseconds":
                             current_val_rad = (
                                 np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                             )
@@ -301,24 +301,24 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                 )
 
             elif param.ptype == ParameterType.OFFSET_KERNEL:
-                if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
-                    if param.spec.get("units") == "arcseconds":
-                        sigma_rad = np.deg2rad(param.spec["sigma"] / 3600.0)
+                if param.spec.sigma is not None and param.spec.sigma > 0:
+                    if param.spec.units == "arcseconds":
+                        sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                         bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
                     else:
-                        sigma_rad = param.spec["sigma"]
+                        sigma_rad = param.spec.sigma
                         current_val_rad = current_value
                         bounds_rad = bounds
                     offset = np.random.normal(0, sigma_rad)
                     offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
                     param_vals = current_val_rad + offset
                 else:
-                    if "sigma" not in param.spec or param.spec["sigma"] is None:
+                    if param.spec.sigma is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.spec["sigma"] == 0:
+                    elif param.spec.sigma == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                    if param.spec.get("units") == "arcseconds":
+                    if param.spec.units == "arcseconds":
                         current_val_rad = np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
                     else:
                         current_val_rad = current_value
@@ -326,34 +326,34 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
                 logger.debug(f"  OFFSET_KERNEL {param_idx}: {param_vals:.6e} rad")
 
             elif param.ptype == ParameterType.OFFSET_TIME:
-                if "sigma" in param.spec and param.spec["sigma"] is not None and param.spec["sigma"] > 0:
-                    if param.spec.get("units") == "seconds":
-                        sigma_time = param.spec["sigma"]
+                if param.spec.sigma is not None and param.spec.sigma > 0:
+                    if param.spec.units == "seconds":
+                        sigma_time = param.spec.sigma
                         current_val_time = current_value
                         bounds_time = bounds
-                    elif param.spec.get("units") == "milliseconds":
-                        sigma_time = param.spec["sigma"] / 1000.0
+                    elif param.spec.units == "milliseconds":
+                        sigma_time = param.spec.sigma / 1000.0
                         current_val_time = current_value / 1000.0
                         bounds_time = [bounds[0] / 1000.0, bounds[1] / 1000.0]
-                    elif param.spec.get("units") == "microseconds":
-                        sigma_time = param.spec["sigma"] / 1000000.0
+                    elif param.spec.units == "microseconds":
+                        sigma_time = param.spec.sigma / 1000000.0
                         current_val_time = current_value / 1000000.0
                         bounds_time = [bounds[0] / 1000000.0, bounds[1] / 1000000.0]
                     else:
-                        sigma_time = param.spec["sigma"]
+                        sigma_time = param.spec.sigma
                         current_val_time = current_value
                         bounds_time = bounds
                     offset = np.random.normal(0, sigma_time)
                     offset = np.clip(offset, bounds_time[0], bounds_time[1])
                     param_vals = current_val_time + offset
                 else:
-                    if "sigma" not in param.spec or param.spec["sigma"] is None:
+                    if param.spec.sigma is None:
                         logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                    elif param.spec["sigma"] == 0:
+                    elif param.spec.sigma == 0:
                         logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                    if param.spec.get("units") == "milliseconds":
+                    if param.spec.units == "milliseconds":
                         current_val_time = current_value / 1000.0
-                    elif param.spec.get("units") == "microseconds":
+                    elif param.spec.units == "microseconds":
                         current_val_time = current_value / 1000000.0
                     else:
                         current_val_time = current_value
@@ -366,7 +366,7 @@ def _generate_random(config: CorrectionConfig) -> list[list[tuple[ParameterConfi
     return output
 
 
-def _generate_grid_search(config: CorrectionConfig) -> list[list[tuple[ParameterConfig, typing.Any]]]:
+def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate parameter sets via deterministic cartesian-product grid sweep.
 
     Produces ``grid_points_per_param ^ len(parameters)`` parameter sets.
@@ -375,61 +375,61 @@ def _generate_grid_search(config: CorrectionConfig) -> list[list[tuple[Parameter
     Raises
     ------
     ValueError
-        If the total number of parameter sets would exceed ``config.max_grid_sets``.
+        If the total number of parameter sets would exceed ``sweep.max_grid_sets``.
         Increase ``max_grid_sets`` deliberately, reduce ``grid_points_per_param`` or
         the number of parameters, or use ``SearchStrategy.SINGLE_OFFSET`` instead.
     """
-    n = config.grid_points_per_param
-    n_params = len(config.parameters)
+    n = sweep.grid_points_per_param
+    n_params = len(sweep.parameters)
     total = n**n_params
     logger.info(f"GRID_SEARCH: {n} points × {n_params} parameter(s) = {total} total parameter sets")
 
-    if total > config.max_grid_sets:
+    if total > sweep.max_grid_sets:
         raise ValueError(
             f"GRID_SEARCH would produce {total:,} parameter sets "
             f"({n} points ^ {n_params} parameters), which exceeds the safety limit of "
-            f"{config.max_grid_sets:,}. "
+            f"{sweep.max_grid_sets:,}. "
             f"To proceed, either:\n"
             f"  • reduce grid_points_per_param (currently {n}) or the number of parameters,\n"
             f"  • increase max_grid_sets on CorrectionConfig (set deliberately), or\n"
             f"  • use SearchStrategy.SINGLE_OFFSET for high-dimensional sweeps."
         )
 
-    per_param_values = [_get_grid_values(param, n) for param in config.parameters]
+    per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
 
     output = []
     for combo in itertools.product(*per_param_values):
-        out_set = list(zip(config.parameters, combo))
+        out_set = list(zip(sweep.parameters, combo))
         output.append(out_set)
 
     logger.info(f"GRID_SEARCH: generated {len(output)} parameter sets")
     return output
 
 
-def _generate_single_offset(config: CorrectionConfig) -> list[list[tuple[ParameterConfig, typing.Any]]]:
+def _generate_single_offset(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate parameter sets by sweeping one parameter at a time.
 
-    For each parameter in ``config.parameters``:
+    For each parameter in ``sweep.parameters``:
     - ``n_iterations`` evenly-spaced values are generated spanning the
       parameter's full ``bounds`` offset range.
     - All other parameters are held at their nominal ``current_value``.
 
     Total parameter sets produced: ``len(parameters) × n_iterations``.
     """
-    n = config.n_iterations
-    n_params = len(config.parameters)
+    n = sweep.n_iterations
+    n_params = len(sweep.parameters)
     logger.info(f"SINGLE_OFFSET: {n_params} parameter(s) × {n} values each = {n_params * n} total parameter sets")
 
-    nominals = [_get_nominal_value(param) for param in config.parameters]
+    nominals = [_get_nominal_value(param) for param in sweep.parameters]
 
     output = []
-    for sweep_idx, sweep_param in enumerate(config.parameters):
+    for sweep_idx, sweep_param in enumerate(sweep.parameters):
         sweep_values = _get_grid_values(sweep_param, n)
         param_name = sweep_param.config_file.name if sweep_param.config_file else f"param_{sweep_idx}"
         logger.debug(f"  SINGLE_OFFSET: sweeping parameter {sweep_idx} ({param_name}) with {len(sweep_values)} values")
         for val in sweep_values:
             out_set = []
-            for param_idx, param in enumerate(config.parameters):
+            for param_idx, param in enumerate(sweep.parameters):
                 out_set.append((param, val if param_idx == sweep_idx else nominals[param_idx]))
             output.append(out_set)
 
@@ -462,7 +462,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
     for param_set_idx, param_set in enumerate(output):
         logger.debug(f"  Set {param_set_idx}:")
         for param_idx, (param, param_vals) in enumerate(param_set):
-            field_name = param.spec.get("field", "unknown")
+            field_name = param.spec.field or "unknown"
             ptype_name = param.ptype.name
 
             if param.ptype == ParameterType.CONSTANT_KERNEL:
@@ -479,7 +479,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
                 else:
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
             elif param.ptype == ParameterType.OFFSET_KERNEL:
-                units = param.spec.get("units", "")
+                units = param.spec.units or ""
                 if units == "arcseconds":
                     param_arcsec = np.rad2deg(param_vals) * 3600.0
                     logger.debug(
@@ -488,7 +488,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
                 else:
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_vals:+.9f} {units}")
             elif param.ptype == ParameterType.OFFSET_TIME:
-                units = param.spec.get("units", "")
+                units = param.spec.units or ""
                 if units == "milliseconds":
                     param_ms = param_vals * 1000.0
                     logger.debug(f"    {ptype_name:16s} {field_name:25s}: {param_ms:+10.3f} ms ({param_vals:+.9f} s)")
@@ -502,11 +502,11 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
 # ============================================================================
 
 
-def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig, typing.Any]]]:
+def load_param_sets(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate parameter sets for correction iterations.
 
     Dispatches to the appropriate generator based on
-    ``config.search_strategy``:
+    ``sweep.search_strategy``:
 
     - :attr:`~SearchStrategy.RANDOM` – Monte Carlo random walk (default).
     - :attr:`~SearchStrategy.GRID_SEARCH` – deterministic cartesian-product
@@ -516,8 +516,8 @@ def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Complete correction configuration including parameters, strategy, and
+    sweep : Sweep
+        The parameter-variation experiment: parameters, search strategy, and
         sampling settings.
 
     Returns
@@ -529,27 +529,27 @@ def load_param_sets(config: CorrectionConfig) -> list[list[tuple[ParameterConfig
         ``CONSTANT_KERNEL`` and a ``float`` for ``OFFSET_KERNEL`` /
         ``OFFSET_TIME``.
     """
-    strategy = config.search_strategy
+    strategy = sweep.search_strategy
 
     logger.info(
-        f"Generating parameter sets for {len(config.parameters)} parameter(s) using strategy: {strategy.value!r}"
+        f"Generating parameter sets for {len(sweep.parameters)} parameter(s) using strategy: {strategy.value!r}"
     )
-    for i, param in enumerate(config.parameters):
+    for i, param in enumerate(sweep.parameters):
         param_name = param.config_file.name if param.config_file else f"param_{i}"
         current_value = param.spec.current_value
         bounds = param.spec.bounds
         logger.info(
             f"  {i + 1}. {param_name} ({param.ptype.name}): "
-            f"current_value={current_value}, sigma={param.spec.get('sigma', 'N/A')}, "
-            f"bounds={bounds}, units={param.spec.get('units', 'N/A')}"
+            f"current_value={current_value}, sigma={(param.spec.sigma if param.spec.sigma is not None else 'N/A')}, "
+            f"bounds={bounds}, units={(param.spec.units if param.spec.units is not None else 'N/A')}"
         )
 
     if strategy == SearchStrategy.RANDOM:
-        output = _generate_random(config)
+        output = _generate_random(sweep)
     elif strategy == SearchStrategy.GRID_SEARCH:
-        output = _generate_grid_search(config)
+        output = _generate_grid_search(sweep)
     elif strategy == SearchStrategy.SINGLE_OFFSET:
-        output = _generate_single_offset(config)
+        output = _generate_single_offset(sweep)
     else:
         raise ValueError(f"Unknown SearchStrategy: {strategy!r}. Valid values are: {[s.value for s in SearchStrategy]}")
 

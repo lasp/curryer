@@ -220,9 +220,9 @@ class SearchStrategy(str, Enum):
 class ParameterSpec(BaseModel):
     """Typed sampling specification for a single correction parameter.
 
-    Supports dict-style access (``get``, ``__getitem__``, ``__contains__``)
-    for backward compatibility with code written against the old ``dict``-based
-    ``ParameterConfig.spec`` API.
+    Strict by design (``extra="forbid"``): unknown fields raise a
+    ``ValidationError`` so typos surface immediately.  Mission-specific extras
+    that the pipeline does not interpret go in :attr:`metadata`.
 
     Attributes
     ----------
@@ -247,9 +247,12 @@ class ParameterSpec(BaseModel):
         ``"dcm_rotation"`` or ``"angle_bias"``).
     coordinate_frames
         Optional list of SPICE frame names affected by this parameter.
+    metadata
+        Free-form mission-specific extras not interpreted by the pipeline
+        (e.g. a display ``"name"``, provenance, calibration date).
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     current_value: float | list[float] = 0.0
     bounds: list[float] = Field(default_factory=lambda: [-1.0, 1.0])
@@ -259,40 +262,7 @@ class ParameterSpec(BaseModel):
     field: str | None = None
     transformation_type: str | None = None
     coordinate_frames: list[str] | None = None
-
-    # ------------------------------------------------------------------
-    # Backward-compatible dict-style access
-    # ------------------------------------------------------------------
-
-    def _get_raw(self, key: str) -> Any:
-        """Return the raw value for *key* from declared fields or extra fields."""
-        if key in type(self).model_fields:
-            return getattr(self, key, None)
-        extra = self.__pydantic_extra__ or {}
-        return extra.get(key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """``dict.get()`` shim for backward compatibility.
-
-        Returns *default* when the value is ``None`` (i.e. field was not
-        explicitly set), mirroring ``dict.get`` on a mapping that only
-        contains keys with non-``None`` values.
-        """
-        val = self._get_raw(key)
-        return default if val is None else val
-
-    def __contains__(self, key: str) -> bool:
-        """``key in data`` shim – ``True`` when the value is not ``None``."""
-        return self._get_raw(key) is not None
-
-    def __getitem__(self, key: str) -> Any:
-        """``data[key]`` shim for backward compatibility."""
-        if key in type(self).model_fields:
-            return getattr(self, key)
-        extra = self.__pydantic_extra__ or {}
-        if key in extra:
-            return extra[key]
-        raise KeyError(key)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ParameterConfig(BaseModel):
