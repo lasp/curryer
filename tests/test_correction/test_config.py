@@ -602,3 +602,77 @@ class TestSetupSweepOutput:
         path.write_text(json.dumps(cfg))
         assert load_setup_from_json(path).geo.instrument_name == "X"
         assert load_sweep_from_json(path).parameters[0].ptype is ParameterType.OFFSET_TIME
+
+
+# ---------------------------------------------------------------------------
+# Sweep ergonomics — with_strategy / update_param
+# ---------------------------------------------------------------------------
+
+
+class TestSweepErgonomics:
+    """Cheap, re-validated copies for rapid parameter experimentation."""
+
+    def _sweep(self) -> Sweep:
+        return Sweep(
+            seed=1,
+            n_iterations=10,
+            parameters=[
+                ParameterConfig(
+                    ptype=ParameterType.OFFSET_KERNEL,
+                    config_file=Path("cprs_az_v01.attitude.ck.json"),
+                    spec={"field": "hps.az_ang_nonlin", "bounds": [-300.0, 300.0], "sigma": 30.0},
+                ),
+                ParameterConfig(
+                    ptype=ParameterType.OFFSET_TIME,
+                    config_file=None,
+                    spec={"field": "corrected_timestamp", "bounds": [-50.0, 50.0], "sigma": 7.0},
+                ),
+            ],
+        )
+
+    def test_with_strategy_changes_strategy_and_leaves_original(self):
+        sweep = self._sweep()
+        grid = sweep.with_strategy("grid", grid_points_per_param=5)
+        assert grid.search_strategy is SearchStrategy.GRID_SEARCH
+        assert grid.grid_points_per_param == 5
+        # Original untouched
+        assert sweep.search_strategy is SearchStrategy.RANDOM
+        assert sweep.grid_points_per_param == 10
+
+    def test_with_strategy_accepts_enum(self):
+        sweep = self._sweep()
+        repro = sweep.with_strategy(SearchStrategy.SINGLE_OFFSET, n_iterations=200, seed=7)
+        assert repro.search_strategy is SearchStrategy.SINGLE_OFFSET
+        assert repro.n_iterations == 200
+        assert repro.seed == 7
+
+    def test_with_strategy_revalidates(self):
+        with pytest.raises(ValidationError):
+            self._sweep().with_strategy("random", n_iterations=0)
+
+    def test_update_param_by_field(self):
+        sweep = self._sweep()
+        wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+        assert wider.parameters[0].spec.bounds == [-100.0, 100.0]
+        # Original untouched
+        assert sweep.parameters[0].spec.bounds == [-300.0, 300.0]
+
+    def test_update_param_by_index(self):
+        wider = self._sweep().update_param(0, sigma=5.0)
+        assert wider.parameters[0].spec.sigma == 5.0
+
+    def test_update_param_by_config_file_stem(self):
+        updated = self._sweep().update_param("cprs_az_v01.attitude.ck", units="arcseconds")
+        assert updated.parameters[0].spec.units == "arcseconds"
+
+    def test_update_param_unknown_field_rejected(self):
+        with pytest.raises(ValidationError):
+            self._sweep().update_param("hps.az_ang_nonlin", bogus_field=1)
+
+    def test_update_param_unknown_selector_rejected(self):
+        with pytest.raises(KeyError):
+            self._sweep().update_param("no.such.field")
+
+    def test_update_param_index_out_of_range_rejected(self):
+        with pytest.raises(IndexError):
+            self._sweep().update_param(99, sigma=1.0)

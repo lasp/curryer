@@ -628,6 +628,66 @@ class Sweep(BaseModel):
                 )
         return self
 
+    # ------------------------------------------------------------------
+    # Ergonomics — cheap, re-validated copies for rapid experimentation
+    # ------------------------------------------------------------------
+
+    def with_strategy(self, strategy: "SearchStrategy | str", **sweep_changes: Any) -> "Sweep":
+        """Return a copy of this sweep using a different search strategy.
+
+        Additional sweep-level fields (``n_iterations``, ``seed``,
+        ``grid_points_per_param``, ``max_grid_sets``) may be overridden via
+        keyword arguments.  The result is re-validated, so typos and
+        strategy-inconsistent settings fail eagerly.
+
+        Examples
+        --------
+        >>> grid = sweep.with_strategy("grid", grid_points_per_param=5)
+        >>> repro = sweep.with_strategy(SearchStrategy.RANDOM, seed=7, n_iterations=200)
+        """
+        data = self.model_dump()
+        data["search_strategy"] = strategy.value if isinstance(strategy, SearchStrategy) else strategy
+        data.update(sweep_changes)
+        return Sweep.model_validate(data)
+
+    def update_param(self, selector: "int | str", **spec_changes: Any) -> "Sweep":
+        """Return a copy of this sweep with one parameter's :class:`ParameterSpec` changed.
+
+        *selector* is either an integer index into :attr:`parameters`, or a
+        string matched against each parameter's ``spec.field`` or its
+        ``config_file`` stem.  The changed spec is re-validated against
+        :class:`ParameterSpec` (which is ``extra="forbid"``), so out-of-spec
+        values or unknown field names raise immediately rather than being
+        silently swallowed.
+
+        Examples
+        --------
+        >>> wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+        >>> tighter = sweep.update_param(0, sigma=5.0)
+        """
+        idx = self._resolve_param_index(selector)
+        data = self.model_dump()
+        spec_dict = {**data["parameters"][idx]["spec"], **spec_changes}
+        # Validate eagerly so unknown fields / bad values fail here, not deep in a run.
+        ParameterSpec.model_validate(spec_dict)
+        data["parameters"][idx]["spec"] = spec_dict
+        return Sweep.model_validate(data)
+
+    def _resolve_param_index(self, selector: "int | str") -> int:
+        """Resolve *selector* (index, ``spec.field``, or ``config_file`` stem) to an index."""
+        if isinstance(selector, int):
+            if not -len(self.parameters) <= selector < len(self.parameters):
+                raise IndexError(f"Parameter index {selector} out of range (have {len(self.parameters)}).")
+            return selector
+        for i, p in enumerate(self.parameters):
+            if p.spec.field == selector:
+                return i
+            if p.config_file is not None and p.config_file.stem == selector:
+                return i
+        raise KeyError(
+            f"No parameter matches selector {selector!r}. Use an index, a spec.field, or a config_file stem."
+        )
+
 
 class OutputConfig(BaseModel):
     """Output settings for a correction run.
