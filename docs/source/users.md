@@ -67,7 +67,7 @@ against mission requirements. Two entry points:
 **5-line quickstart (verification):**
 
 ```python
-from curryer.correction import GeolocationSetup, verify
+from curryer.correction import GeolocationSetup, load_setup_from_json, verify
 import xarray as xr
 
 setup = GeolocationSetup(...)           # or load_setup_from_json("config.json")

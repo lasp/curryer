@@ -104,7 +104,7 @@ def _build_netcdf_structure(
     # Use dynamic threshold metric name
     threshold_metric = netcdf_config.threshold_metric_name
     overall_metrics = {
-        threshold_metric: f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
+        threshold_metric: f"Percentage of pairs with error < {netcdf_config.performance_threshold_m}m",
         "mean_rms_all_pairs": "Mean RMS error across all GCP pairs",
         "worst_pair_rms": "Worst performing GCP pair RMS error",
         "best_pair_rms": "Best performing GCP pair RMS error",
@@ -192,7 +192,7 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, setup, sweep, netcdf_confi
     threshold_metric = netcdf_config.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
-        "long_name": f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
+        "long_name": f"Percentage of pairs with error < {netcdf_config.performance_threshold_m}m",
     }
     for var, attrs in standard_attrs.items():
         if var in ds.data_vars:
@@ -355,7 +355,7 @@ def _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config):
     threshold_metric = netcdf_config.threshold_metric_name
     standard_attrs[threshold_metric] = {
         "units": "percent",
-        "long_name": f"Percentage of pairs with error < {setup.requirements.performance_threshold_m}m",
+        "long_name": f"Percentage of pairs with error < {netcdf_config.performance_threshold_m}m",
     }
 
     for var, attrs in standard_attrs.items():

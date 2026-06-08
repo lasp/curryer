@@ -9,14 +9,14 @@ Typical use-cases
 Weekly automated check (CLARREO)
     Pass pre-computed ``image_matching_results`` (the most common path):
 
-    >>> result = verify(setup, work_dir, image_matching_results=weekly_datasets)
+    >>> result = verify(setup, image_matching_results=weekly_datasets, work_dir=work_dir)
     >>> if not result.passed:
     ...     send_alert(result.summary_table)
 
 Post-correction validation
     After a full GCS run, verify the optimised parameter set:
 
-    >>> result = verify(setup, work_dir, image_matching_results=post_correction_datasets)
+    >>> result = verify(setup, image_matching_results=post_correction_datasets, work_dir=work_dir)
 
 One-off compliance check with in-memory geolocated data
     Supply an already-geolocated dataset together with a GCP chip directory and
