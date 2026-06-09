@@ -72,6 +72,19 @@ class TestResolvePathS3:
         finally:
             result.unlink(missing_ok=True)
 
+    def test_s3_uri_as_path_object_is_recognised(self):
+        # Path() collapses "s3://" to "s3:/"; resolve_path must still route to S3.
+        mock_client = self._make_client("downloaded content")
+
+        result = resolve_path(Path("s3://my-bucket/path/to/file.mat"), s3_client=mock_client)
+
+        try:
+            assert result.exists()
+            assert result.read_text() == "downloaded content"
+            mock_client.download_file.assert_called_once_with("my-bucket", "path/to/file.mat", str(result))
+        finally:
+            result.unlink(missing_ok=True)
+
     def test_s3_uri_no_key_raises_valueerror(self):
         mock_client = MagicMock()
         with pytest.raises(ValueError, match="must include an object key"):
