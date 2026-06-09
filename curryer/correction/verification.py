@@ -1133,8 +1133,10 @@ def verify(
     ----------------------------------
     1. *image_matching_results* — pre-computed outputs from image matching;
        the most common entry point for weekly automated checks.
-    2. *geolocated_data* — raw geolocated data; requires
-       ``setup.image_matching_func`` to be set.
+    2. *geolocated_data* — raw geolocated data.  Either set
+       ``setup.image_matching_func`` for a custom matcher, or supply
+       *gcp_directory*, *los_file*, and *psf_file* to run built-in spatial
+       pairing + image matching.
     3. *gcp_pairs* — explicit ``(observation_path, gcp_path)`` file-path pairs.
        Requires *los_file* and *psf_file*.
     4. *observation_paths* + *gcp_directory* — auto-paired via spatial overlap.
@@ -1173,7 +1175,9 @@ def verify(
     image_matching_results : list[xr.Dataset] or None
         Pre-computed image-matching datasets, one per GCP pair.
     geolocated_data : xr.Dataset or None
-        Already-geolocated data; requires ``setup.image_matching_func``.
+        Already-geolocated data.  Matched either via ``setup.image_matching_func``
+        (custom override) or, when *gcp_directory*, *los_file*, and *psf_file* are
+        supplied, via built-in spatial pairing + image matching.
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
 
