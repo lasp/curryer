@@ -27,15 +27,25 @@ Public API (9 functions)
 
 from __future__ import annotations
 
+import datetime
 import logging
+import warnings
 from pathlib import Path
 
+import h5py
 import numpy as np
 import xarray as xr
+from netCDF4 import Dataset
+from scipy.io import loadmat, savemat
 
 from curryer.correction.io import resolve_path
+from curryer.correction.psf import resolve_spacecraft_ecef
 
 from .grid_types import ImageGrid, NamedImageGrid, OpticalPSFEntry
+
+# pyhdf and rasterio are optional (undeclared) dependencies, imported lazily
+# inside the functions that need them so the module stays importable without
+# them; see load_gcp_chip_from_hdf and _save_to_geotiff.
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +78,6 @@ def _load_mat_image_grid(filepath: Path, key: str) -> ImageGrid:
     KeyError
         If *key* is not present in the file.
     """
-    from scipy.io import loadmat
 
     filepath = resolve_path(filepath)
     mat_data = loadmat(str(filepath), squeeze_me=True, struct_as_record=False)
@@ -161,7 +170,6 @@ def load_optical_psf(mat_file: str | Path, key: str = "PSF_struct_675nm") -> lis
     ValueError
         If PSF entries missing field angle attribute.
     """
-    from scipy.io import loadmat
 
     mat_file = resolve_path(mat_file)
     # resolve_path already validated existence / downloaded from S3.
@@ -229,7 +237,6 @@ def load_los_vectors(mat_file: str | Path, key: str = "b_HS") -> np.ndarray:
     KeyError
         If no LOS vectors found with common key names.
     """
-    from scipy.io import loadmat
 
     mat_file = resolve_path(mat_file)
     # resolve_path already validated existence / downloaded from S3.
@@ -294,8 +301,6 @@ def _load_netcdf_image_grid(
     KeyError
         If a required variable (band, lat, or lon) is not found.
     """
-    import xarray as xr
-
     # resolve_path validates local existence and downloads S3 URIs.
     filepath = resolve_path(filepath)
 
@@ -346,8 +351,15 @@ def _save_to_netcdf(
     image_grid: ImageGrid,
     metadata: dict[str, str] | None = None,
     compression: bool = True,
+    band_units: str = "DN",
+    band_long_name: str = "regridded_radiance",
 ) -> None:
     """Save *image_grid* to a CF-1.8 NetCDF file (private — called from :func:`save_image_grid`).
+
+    The coordinate (lat/lon/h) and CRS attributes are fixed CF-1.8 / WGS84
+    standards and are not configurable.  The band variable describes the data
+    itself, so its ``units`` and ``long_name`` are overridable; file-level
+    attributes are set via *metadata*.
 
     Parameters
     ----------
@@ -355,17 +367,15 @@ def _save_to_netcdf(
         Output NetCDF file path.
     image_grid : ImageGrid
     metadata : dict, optional
-        Additional global attributes.
+        Additional global attributes (override the defaults, e.g. ``"title"``).
     compression : bool, default=True
         Enable zlib compression.
+    band_units : str, default="DN"
+        ``units`` attribute for the band data variable (e.g. ``"W m-2 sr-1 um-1"``
+        for calibrated radiance).
+    band_long_name : str, default="regridded_radiance"
+        ``long_name`` attribute for the band data variable.
     """
-    try:
-        import datetime
-
-        from netCDF4 import Dataset
-    except ImportError as e:
-        raise ImportError("netCDF4 is required to save NetCDF files. Install with: pip install netCDF4") from e
-
     filepath = Path(filepath)
     logger.info(f"Saving ImageGrid to NetCDF: {filepath}")
 
@@ -433,8 +443,8 @@ def _save_to_netcdf(
         # Create data variable
         data_var = nc.createVariable("band_data", "f8", ("y", "x"), fill_value=np.nan, **comp_kwargs)
         data_var[:] = image_grid.data
-        data_var.long_name = "regridded_radiance"
-        data_var.units = "DN"
+        data_var.long_name = band_long_name
+        data_var.units = band_units
         data_var.coordinates = "lat lon"
         data_var.grid_mapping = "crs"
 
@@ -567,8 +577,6 @@ def load_gcp_chip_from_hdf(
 
     # Try HDF5 if HDF4 failed or pyhdf not available
     try:
-        import h5py
-
         with h5py.File(filepath, "r") as hdf:
             # Load band data
             if band_name not in hdf:
@@ -621,6 +629,8 @@ def save_image_grid(
     image_grid: ImageGrid,
     metadata: dict | None = None,
     compression: bool = True,
+    band_units: str = "DN",
+    band_long_name: str = "regridded_radiance",
 ) -> None:
     """Save an :class:`ImageGrid` to file.
 
@@ -641,6 +651,10 @@ def save_image_grid(
     compression : bool, optional
         Enable compression for NetCDF output (default ``True``).
         Ignored for other formats.
+    band_units, band_long_name : str, optional
+        ``units`` / ``long_name`` for the band data variable in NetCDF output
+        (defaults describe a regridded Landsat GCP chip in digital numbers).
+        Ignored for other formats.
 
     Raises
     ------
@@ -654,7 +668,7 @@ def save_image_grid(
     """
     suffix = Path(filepath).suffix.lower()
     if suffix in _NC_EXTS:
-        _save_to_netcdf(filepath, image_grid, metadata, compression)
+        _save_to_netcdf(filepath, image_grid, metadata, compression, band_units, band_long_name)
     elif suffix in _MAT_EXTS:
         _save_to_mat(filepath, image_grid, metadata)
     elif suffix in _TIFF_EXTS:
@@ -669,7 +683,6 @@ def save_image_grid(
 
 def _save_to_mat(filepath: Path, image_grid: ImageGrid, metadata: dict | None) -> None:
     """Save ImageGrid to MATLAB .mat file (private helper)."""
-    from scipy.io import savemat
 
     # Prepare data structure
     mat_dict = {
@@ -833,8 +846,6 @@ def load_observation_file(
     ImportError
         If *filepath* is an S3 URI and ``boto3`` is not installed.
     """
-    import xarray as xr
-
     # Extract the suffix from the original path *before* resolving so that S3
     # URIs (whose temp-file names may differ) dispatch correctly.
     suffix = Path(str(filepath)).suffix.lower()
@@ -842,8 +853,6 @@ def load_observation_file(
     local_filepath = resolve_path(filepath)
 
     if suffix == ".mat":
-        from scipy.io import loadmat  # noqa: PLC0415
-
         grid = load_image_grid(local_filepath, mat_key=mat_key)
         mat_raw = loadmat(str(local_filepath), squeeze_me=True)
         r_sc_m = np.asarray(mat_raw["R_ISS_midframe"]).ravel() if "R_ISS_midframe" in mat_raw else None
@@ -871,14 +880,12 @@ def infer_spacecraft_state(
     default_altitude_m: float = 400_000.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Deprecated — use ``resolve_spacecraft_ecef`` from ``curryer.correction.psf`` instead."""
-    import warnings
 
     warnings.warn(
         "infer_spacecraft_state is deprecated. Use curryer.correction.psf.resolve_spacecraft_ecef instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    from curryer.correction.psf import resolve_spacecraft_ecef
 
     return resolve_spacecraft_ecef(grid, r_spacecraft_m, default_altitude_m)
 
