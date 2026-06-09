@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -26,7 +27,8 @@ from clarreo_config import create_clarreo_setup_sweep
 from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 from curryer.correction import correction
-from curryer.correction.config import DataConfig
+from curryer.correction.config import CalibrationData, DataConfig
+from curryer.correction.pipeline import _require_image_matching_inputs
 from curryer.correction.verification import _extract_spacecraft_position_midframe
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
@@ -116,6 +118,29 @@ def test_compute_parameter_set_metrics():
     assert nc["percent_under_250m"][0] > 0
     assert nc["best_pair_rms"][0] == 100.0
     assert nc["worst_pair_rms"][0] == 300.0
+
+
+class TestRequireImageMatchingInputs:
+    """_require_image_matching_inputs fail-fast guard for the built-in matcher."""
+
+    def test_builtin_matcher_without_calibration_raises(self):
+        """No override + no calibration -> clear early ValueError."""
+        setup = SimpleNamespace(image_matching_func=None)
+        calibration = CalibrationData(los_vectors=None, optical_psfs=None)
+        with pytest.raises(ValueError, match="no calibration data is configured"):
+            _require_image_matching_inputs(setup, calibration)
+
+    def test_override_without_calibration_allowed(self):
+        """A custom override may legitimately need no calibration."""
+        setup = SimpleNamespace(image_matching_func=lambda **_: None)
+        calibration = CalibrationData(los_vectors=None, optical_psfs=None)
+        _require_image_matching_inputs(setup, calibration)  # no raise
+
+    def test_builtin_matcher_with_calibration_allowed(self):
+        """No override but calibration present -> built-in matcher can run."""
+        setup = SimpleNamespace(image_matching_func=None)
+        calibration = CalibrationData(los_vectors=np.zeros((4, 3)), optical_psfs=[object()])
+        _require_image_matching_inputs(setup, calibration)  # no raise
 
 
 def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
