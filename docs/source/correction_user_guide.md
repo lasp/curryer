@@ -187,18 +187,18 @@ print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 `verify()` takes `setup` as its only positional argument; all input modes are
 keyword-only (first match wins, in the order below):
 
-| Mode                         | Argument                                 | Notes                                                |
-| ---------------------------- | ---------------------------------------- | ---------------------------------------------------- |
-| Pre-computed image matching  | `image_matching_results=`                | **Recommended** for production and automated checks  |
-| Run image matching on demand | `geolocated_data=`                       | Calls `setup.image_matching_func(data)`; must be set |
-| Explicit file-path pairs     | `gcp_pairs=` (+ `los_file=`/`psf_file=`) | Supported                                            |
-| Auto-paired paths            | `observation_paths=` + `gcp_directory=`  | Supported (+ `los_file=`/`psf_file=`)                |
+| Mode                         | Argument                                 | Notes                                                                                                              |
+| ---------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Pre-computed image matching  | `image_matching_results=`                | **Recommended** for production and automated checks                                                                |
+| Run image matching on demand | `geolocated_data=`                       | Custom `setup.image_matching_func`, **or** built-in pairing+matching with `gcp_directory=`/`los_file=`/`psf_file=` |
+| Explicit file-path pairs     | `gcp_pairs=` (+ `los_file=`/`psf_file=`) | Supported                                                                                                          |
+| Auto-paired paths            | `observation_paths=` + `gcp_directory=`  | Supported (+ `los_file=`/`psf_file=`)                                                                              |
 
-The `geolocated_data` path does **not** include a built-in image-matching
-algorithm. `verify()` calls whatever callable you attach to
-`setup.image_matching_func`. If that attribute is not set, the call
-raises `ValueError`. Use `image_matching_results=`, `gcp_pairs=`, or
-`observation_paths=` + `gcp_directory=` for other supported cases.
+The `geolocated_data` path matches in one of two ways. If you attach a callable
+to `setup.image_matching_func`, `verify()` calls it. Otherwise, supply
+`gcp_directory=`, `los_file=`, and `psf_file=` and `verify()` runs built-in
+spatial pairing + image matching. If neither the override nor that trio is
+provided, the call raises `ValueError`.
 
 A runnable example using real test data: `examples/correction/example_verification.py`
 
