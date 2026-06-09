@@ -28,7 +28,8 @@ from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
 from curryer.correction import correction
 from curryer.correction.config import CalibrationData, DataConfig
-from curryer.correction.pipeline import _require_image_matching_inputs
+from curryer.correction.io_config import NetCDFConfig
+from curryer.correction.pipeline import _require_image_matching_inputs, _resolve_netcdf_config
 from curryer.correction.verification import _extract_spacecraft_position_midframe
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
@@ -141,6 +142,26 @@ class TestRequireImageMatchingInputs:
         setup = SimpleNamespace(image_matching_func=None)
         calibration = CalibrationData(los_vectors=np.zeros((4, 3)), optical_psfs=[object()])
         _require_image_matching_inputs(setup, calibration)  # no raise
+
+
+class TestResolveNetcdfConfig:
+    """_resolve_netcdf_config pins the output threshold to the requirement."""
+
+    def test_defaults_threshold_from_requirements(self):
+        setup = SimpleNamespace(requirements=SimpleNamespace(performance_threshold_m=300.0))
+        output = SimpleNamespace(netcdf=None)
+        resolved = _resolve_netcdf_config(setup, output)
+        assert resolved.performance_threshold_m == 300.0
+
+    def test_pins_threshold_over_caller_override(self):
+        """A divergent output.netcdf threshold is pinned to the requirement, so the
+        written variable name/metadata match the computed threshold; other fields stay."""
+        setup = SimpleNamespace(requirements=SimpleNamespace(performance_threshold_m=300.0))
+        output = SimpleNamespace(netcdf=NetCDFConfig(performance_threshold_m=250.0, title="Custom"))
+        resolved = _resolve_netcdf_config(setup, output)
+        assert resolved.performance_threshold_m == 300.0
+        assert resolved.threshold_metric_name == "percent_under_300m"
+        assert resolved.title == "Custom"
 
 
 def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
