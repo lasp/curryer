@@ -14,9 +14,8 @@ For user-facing examples and documentation, see:
     :class:`~curryer.correction.config.DataConfig`.
 
     This file is kept as a shim so existing ``from clarreo_data_loaders import …``
-    imports in tests continue to resolve.  New code should call
-    :mod:`scripts.clarreo_preprocess` directly and pass preprocessed CSV file
-    paths to the pipeline.
+    imports in tests continue to resolve. New code should use mission-specific
+    preprocessing scripts directly and pass preprocessed CSV file paths to the pipeline.
 """
 
 from __future__ import annotations
