@@ -8,14 +8,17 @@ for a correction analysis run, including:
 - ``ParameterConfig`` – assembles a parameter's type, kernel file, and sampling spec
 - ``GeolocationConfig`` – SPICE kernel paths and instrument settings
 - ``NetCDFParameterMetadata`` / ``NetCDFConfig`` – NetCDF output metadata (re-exported from io_config)
-- ``CorrectionConfig`` – the single top-level config object passed to ``pipeline.loop()``
+- ``GeolocationSetup`` – durable, mission-specific setup (built once, reused across sweeps)
+- ``Sweep`` – the lightweight, frequently-varied parameter experiment
+- ``OutputConfig`` – output settings (NetCDF metadata + filename)
 - ``KernelContext``, ``CalibrationData``, ``ImageMatchingContext`` – lightweight NamedTuples
   used to pass state between pipeline helper functions
-- ``load_config_from_json`` – build a ``CorrectionConfig`` from a JSON file
+- ``load_setup_from_json`` / ``load_sweep_from_json`` / ``load_config_files`` – build the
+  ``setup`` / ``sweep`` / ``output`` models from a JSON file
 
 All mission-specific values (kernel filenames, parameter ranges, instrument names)
 live in mission configuration modules (e.g. ``tests/test_correction/clarreo_config.py``)
-and are injected via ``CorrectionConfig``.
+and are injected via ``GeolocationSetup`` / ``Sweep``.
 
 All config objects are ``pydantic.BaseModel`` subclasses which provide:
 - Automatic type validation and clear ``ValidationError`` messages on construction
@@ -70,23 +73,20 @@ Typical construction::
 
 import json
 import logging
-import warnings
+from collections.abc import Callable  # noqa: E402  (kept adjacent to other stdlib usage)
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
-
-import curryer.correction.correction_config as _correction_config
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from curryer import meta
 
 from curryer.correction.io_config import (  # noqa: E402, F401
     DEFAULT_NETCDF_ATTRIBUTES,
-    STANDARD_VAR_NAMES,
     NetCDFConfig,
     NetCDFParameterMetadata,
 )
@@ -165,11 +165,12 @@ class DataConfig(BaseModel):
 # ============================================================================
 
 
-class ParameterType(Enum):
+class ParameterType(str, Enum):
     """Parameter types used in the correction configuration.
 
     Specifies how a parameter is applied during geolocation analysis:
     whether as a constant kernel value, a kernel offset, or a time offset.
+    String-valued so JSON configs use readable names (``"OFFSET_TIME"``).
 
     Attributes
     ----------
@@ -181,9 +182,9 @@ class ParameterType(Enum):
         Modify input timetags by an offset.
     """
 
-    CONSTANT_KERNEL = auto()  # Set a specific value.
-    OFFSET_KERNEL = auto()  # Modify input kernel data by an offset.
-    OFFSET_TIME = auto()  # Modify input timetags by an offset
+    CONSTANT_KERNEL = "CONSTANT_KERNEL"  # Set a specific value.
+    OFFSET_KERNEL = "OFFSET_KERNEL"  # Modify input kernel data by an offset.
+    OFFSET_TIME = "OFFSET_TIME"  # Modify input timetags by an offset
 
 
 class SearchStrategy(str, Enum):
@@ -196,7 +197,7 @@ class SearchStrategy(str, Enum):
         independent sample from a normal distribution centred on the
         parameter's ``current_value`` with the specified ``sigma``, clipped
         to ``bounds``.  Requires ``seed`` and ``n_iterations`` on
-        :class:`CorrectionConfig`.
+        :class:`Sweep`.
     GRID_SEARCH
         Deterministic cartesian-product sweep.  For every parameter,
         ``grid_points_per_param`` evenly-spaced values are generated across
@@ -218,9 +219,9 @@ class SearchStrategy(str, Enum):
 class ParameterSpec(BaseModel):
     """Typed sampling specification for a single correction parameter.
 
-    Supports dict-style access (``get``, ``__getitem__``, ``__contains__``)
-    for backward compatibility with code written against the old ``dict``-based
-    ``ParameterConfig.spec`` API.
+    Strict by design (``extra="forbid"``): unknown fields raise a
+    ``ValidationError`` so typos surface immediately.  Mission-specific extras
+    that the pipeline does not interpret go in :attr:`metadata`.
 
     Attributes
     ----------
@@ -245,9 +246,12 @@ class ParameterSpec(BaseModel):
         ``"dcm_rotation"`` or ``"angle_bias"``).
     coordinate_frames
         Optional list of SPICE frame names affected by this parameter.
+    metadata
+        Free-form mission-specific extras not interpreted by the pipeline
+        (e.g. a display ``"name"``, provenance, calibration date).
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     current_value: float | list[float] = 0.0
     bounds: list[float] = Field(default_factory=lambda: [-1.0, 1.0])
@@ -257,40 +261,7 @@ class ParameterSpec(BaseModel):
     field: str | None = None
     transformation_type: str | None = None
     coordinate_frames: list[str] | None = None
-
-    # ------------------------------------------------------------------
-    # Backward-compatible dict-style access
-    # ------------------------------------------------------------------
-
-    def _get_raw(self, key: str) -> Any:
-        """Return the raw value for *key* from declared fields or extra fields."""
-        if key in type(self).model_fields:
-            return getattr(self, key, None)
-        extra = self.__pydantic_extra__ or {}
-        return extra.get(key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """``dict.get()`` shim for backward compatibility.
-
-        Returns *default* when the value is ``None`` (i.e. field was not
-        explicitly set), mirroring ``dict.get`` on a mapping that only
-        contains keys with non-``None`` values.
-        """
-        val = self._get_raw(key)
-        return default if val is None else val
-
-    def __contains__(self, key: str) -> bool:
-        """``key in data`` shim – ``True`` when the value is not ``None``."""
-        return self._get_raw(key) is not None
-
-    def __getitem__(self, key: str) -> Any:
-        """``data[key]`` shim for backward compatibility."""
-        if key in type(self).model_fields:
-            return getattr(self, key)
-        extra = self.__pydantic_extra__ or {}
-        if key in extra:
-            return extra[key]
-        raise KeyError(key)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ParameterConfig(BaseModel):
@@ -365,12 +336,9 @@ class GeolocationConfig(BaseModel):
 class RequirementsConfig(BaseModel):
     """Verification requirements / thresholds.
 
-    Can be attached as an optional ``verification`` field on
-    :class:`CorrectionConfig`, or passed directly to
-    :func:`~curryer.correction.verification.verify`.  When neither is supplied,
-    :func:`~curryer.correction.verification.verify` falls back to
-    :attr:`CorrectionConfig.performance_threshold_m` and
-    :attr:`CorrectionConfig.performance_spec_percent`.
+    Held as the required ``requirements`` field on :class:`GeolocationSetup`
+    and consumed by :func:`~curryer.correction.verification.verify` and the
+    correction verdict.
 
     Attributes
     ----------
@@ -548,159 +516,110 @@ class RegridConfig(BaseModel):
 
 
 # ============================================================================
-# Top-Level Correction Configuration
+# Setup / Sweep / Output — the config surface
 # ============================================================================
+#
+# ``GeolocationSetup`` holds the durable, mission-specific setup (built once);
+# ``Sweep`` is the lightweight experiment varied between runs; ``OutputConfig``
+# holds output settings.  A run is ``run_correction(setup, sweep, inputs, work_dir)``.
 
 
-class CorrectionConfig(BaseModel):
-    """The configuration object for geolocation correction analysis.
+class CalibrationFiles(BaseModel):
+    """Direct paths to instrument calibration inputs.
 
-    This config contains everything needed for a Correction run:
-    - What parameters to vary (parameters list)
-    - How to vary them (seed, n_iterations)
-    - How to load data (telemetry_loader, science_loader)
-    - How to process data (gcp_pairing_func, image_matching_func)
-    - Geolocation settings (geo: GeolocationConfig)
-    - Success criteria (performance_threshold_m, performance_spec_percent)
-    - Output configuration (netcdf: NetCDFConfig, output_filename)
+    Both fields are optional and interim: real line-of-sight vectors and
+    spacecraft geometry will be SPICE-derived from telemetry rather than loaded
+    from files, so nothing in the pipeline *requires* these.
 
-    Create one CorrectionConfig object and pass it to pipeline.loop() to run.
-
-    Serialisation
-    -------------
-    ``model_dump_json()`` / ``model_validate_json()`` provide lossless
-    JSON round-trips for all typed fields.  Callable fields (loaders,
-    pairing/matching functions) are **excluded** from serialisation because
-    they cannot be represented as JSON; re-attach them after deserialising.
-
-    Parameters
+    Attributes
     ----------
-    CORE CORRECTION SETTINGS:
-        seed : int | None
-            Random seed for reproducibility, or None for non-reproducible runs.
-        n_iterations : int
-            Number of parameter set iterations.
-        parameters : list[ParameterConfig]
-            Parameters to vary (defines sensitivity analysis).
+    los_vectors_file
+        Per-detector line-of-sight unit vectors (instrument frame).
+    psf_file
+        Optical point-spread-function calibration.
+    """
 
-    GEOLOCATION & PERFORMANCE REQUIREMENTS:
-        geo : GeolocationConfig
-        performance_threshold_m : float
-        performance_spec_percent : float
+    los_vectors_file: Path | None = None
+    psf_file: Path | None = None
 
-    DATA LOADING CONFIGURATION:
-        data_config : DataConfig | None
-            Specifies file format, time field, scale factor, and optional GCP
-            discovery settings.  When provided, telemetry and science files are
-            read internally by the pipeline from the paths supplied in
-            ``tlm_sci_gcp_sets``.
 
-    PROCESSING FUNCTION (optional override):
-        image_matching_func
-            Defaults to the built-in ``pipeline.image_matching`` when ``None``.
-            Override only for missions with fundamentally different matching.
+class GeolocationSetup(BaseModel):
+    """Durable, mission-specific setup for geolocation correction/verification.
 
-    OUTPUT CONFIGURATION:
-        netcdf : NetCDFConfig | None
-        output_filename : str | None
+    Built once per mission and reused across many :class:`Sweep` runs.  Holds
+    everything that does *not* change when you vary which parameters are swept:
+    SPICE kernels and instrument identity (:class:`GeolocationConfig`), the
+    pass/fail :class:`RequirementsConfig`, how input data is read
+    (:class:`DataConfig`), static instrument calibration
+    (:class:`CalibrationFiles`), the science-Dataset variable names, and an
+    optional custom image-matching implementation.
 
-    CALIBRATION CONFIGURATION:
-        calibration_dir : Path | None
-        calibration_file_names : dict[str, str] | None
-
-    MISSION-SPECIFIC NAMING:
-        spacecraft_position_name, boresight_name, transformation_matrix_name
+    Attributes
+    ----------
+    geo
+        SPICE kernels, instrument name, and science time field.
+    requirements
+        Pass/fail thresholds used by verification and the correction verdict.
+    data_config
+        How telemetry/science files are read.  ``None`` uses CSV defaults.
+    calibration
+        Optional direct calibration file paths.  ``None`` when geometry is
+        supplied another way (e.g. SPICE-derived).
+    spacecraft_position_name, boresight_name, transformation_matrix_name
+        Variable names for the spacecraft-state fields in the image-matching
+        ``xr.Dataset`` (mission-configurable; generic defaults).
+    image_matching_func
+        Optional custom image-matching callable.  ``None`` uses the built-in
+        :func:`~curryer.correction.verification.image_matching`.  Excluded from
+        JSON serialisation because callables are not serialisable.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # CORE CORRECTION SETTINGS
-    seed: int | None = None
-    n_iterations: int = Field(gt=0)
-    parameters: list[ParameterConfig] = Field(min_length=1)
-
-    # SEARCH STRATEGY
-    search_strategy: SearchStrategy = SearchStrategy.RANDOM
-    grid_points_per_param: int = Field(
-        default=10,
-        ge=2,
-        description="Number of evenly-spaced grid points per parameter for GRID_SEARCH strategy.",
-    )
-    max_grid_sets: int = Field(
-        default=100_000,
-        ge=1,
-        description=(
-            "Hard upper bound on the total number of parameter sets that GRID_SEARCH may materialise. "
-            "Prevents accidental out-of-memory runs caused by large cartesian products "
-            "(e.g. 10 points × 6 params = 1,000,000 sets). "
-            "Raise this value deliberately, or switch to SINGLE_OFFSET for high-dimensional sweeps."
-        ),
-    )
-
-    # GEOLOCATION & PERFORMANCE REQUIREMENTS
     geo: GeolocationConfig
-    performance_threshold_m: float = Field(gt=0)
-    performance_spec_percent: float = Field(ge=0, le=100)
-
-    # DATA LOADING CONFIGURATION (config-driven; replaces mission-specific loader callables)
+    requirements: RequirementsConfig
     data_config: DataConfig | None = None
+    calibration: CalibrationFiles | None = None
 
-    # Private test-injection override for image matching.
-    # Not part of the public API; not serialised to JSON (PrivateAttr is always excluded).
-    # Usage: config._image_matching_override = your_func
-    # TODO(#151): Add Requirement model with evaluate_all() for multi-metric requirements.
-    _image_matching_override: Any = PrivateAttr(default=None)
-
-    # OUTPUT CONFIGURATION
-    netcdf: NetCDFConfig | None = None
-    output_filename: str | None = None
-
-    # CALIBRATION CONFIGURATION
-    calibration_dir: Path | None = None
-    calibration_file_names: dict[str, str] | None = None
-    # Direct calibration file paths (alternative to calibration_dir + calibration_file_names)
-    psf_file: Path | None = None
-    los_vectors_file: Path | None = None
-
-    # MISSION-SPECIFIC NAMING
     spacecraft_position_name: str = "sc_position"
     boresight_name: str = "boresight"
     transformation_matrix_name: str = "t_inst2ref"
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
+    image_matching_func: Callable | None = Field(default=None, exclude=True)
 
-    @property
-    def image_matching_func(self) -> Any:
-        """Deprecated — use ``_image_matching_override`` for test injection.
 
-        .. deprecated::
-            Set ``config._image_matching_override = func`` instead.
-            This property will be removed in a future release.
-        """
-        warnings.warn(
-            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._image_matching_override
+class Sweep(BaseModel):
+    """A parameter-variation experiment run against a :class:`GeolocationSetup`.
 
-    @image_matching_func.setter
-    def image_matching_func(self, value: Any) -> None:
-        warnings.warn(
-            "image_matching_func is deprecated. Use config._image_matching_override = func for test injection.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._image_matching_override = value
+    Lightweight and cheap to copy, so a setup can be held fixed while rapidly
+    trying parameter variations.
 
-    # ------------------------------------------------------------------
-    # Validators
-    # ------------------------------------------------------------------
+    Attributes
+    ----------
+    parameters
+        The parameters to vary (at least one).
+    search_strategy
+        How parameter sets are generated (RANDOM / GRID_SEARCH / SINGLE_OFFSET).
+    n_iterations
+        Iterations for RANDOM and values-per-parameter for SINGLE_OFFSET;
+        ignored by GRID_SEARCH.
+    seed
+        Random seed for reproducible RANDOM sweeps.
+    grid_points_per_param
+        Evenly-spaced points per parameter for GRID_SEARCH.
+    max_grid_sets
+        Safety cap on total GRID_SEARCH parameter sets.
+    """
+
+    parameters: list[ParameterConfig] = Field(min_length=1)
+    search_strategy: SearchStrategy = SearchStrategy.RANDOM
+    n_iterations: int = Field(default=10, gt=0)
+    seed: int | None = None
+    grid_points_per_param: int = Field(default=10, ge=2)
+    max_grid_sets: int = Field(default=100_000, ge=1)
 
     @model_validator(mode="after")
-    def _validate_search_strategy(self) -> "CorrectionConfig":
+    def _validate_search_strategy(self) -> "Sweep":
         """Ensure strategy-specific settings are consistent."""
         if self.search_strategy in (SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET):
             if not self.parameters:
@@ -709,290 +628,87 @@ class CorrectionConfig(BaseModel):
                 )
         return self
 
-    @model_validator(mode="after")
-    def _populate_netcdf_config(self) -> "CorrectionConfig":
-        """Auto-populate :attr:`netcdf` with defaults when it is not supplied.
-
-        Guarantees ``config.netcdf`` is always a usable :class:`NetCDFConfig`,
-        so downstream result/IO code can read it without a ``None`` guard.  The
-        default threshold is inherited from :attr:`performance_threshold_m`.
-        """
-        if self.netcdf is None:
-            self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
-        return self
-
     # ------------------------------------------------------------------
-    # Methods
+    # Ergonomics — cheap, re-validated copies for rapid experimentation
     # ------------------------------------------------------------------
 
-    def get_calibration_file(self, file_type: str, default: str | None = None) -> str:
-        """Return the configured calibration filename for *file_type*.
+    def with_strategy(self, strategy: "SearchStrategy | str", **sweep_changes: Any) -> "Sweep":
+        """Return a copy of this sweep using a different search strategy.
 
-        Parameters
-        ----------
-        file_type : str
-            Calibration file key (e.g. ``"psf"`` or ``"los_vectors"``) to look
-            up in :attr:`calibration_file_names`.
-        default : str, optional
-            Filename returned when *file_type* is not present in
-            :attr:`calibration_file_names`.
+        Additional sweep-level fields (``n_iterations``, ``seed``,
+        ``grid_points_per_param``, ``max_grid_sets``) may be overridden via
+        keyword arguments.  The result is re-validated, so typos and
+        strategy-inconsistent settings fail eagerly.
 
-        Raises
-        ------
-        ValueError
-            If *file_type* is unconfigured and no *default* is given.
+        Examples
+        --------
+        >>> grid = sweep.with_strategy("grid", grid_points_per_param=5)
+        >>> repro = sweep.with_strategy(SearchStrategy.RANDOM, seed=7, n_iterations=200)
         """
-        if self.calibration_file_names and file_type in self.calibration_file_names:
-            return self.calibration_file_names[file_type]
-        if default:
-            return default
-        raise ValueError(f"No calibration file configured for type: {file_type}")
+        data = self.model_dump()
+        data["search_strategy"] = strategy.value if isinstance(strategy, SearchStrategy) else strategy
+        data.update(sweep_changes)
+        return Sweep.model_validate(data)
 
-    def ensure_netcdf_config(self):
-        """Ensure :attr:`netcdf` exists, creating it with defaults if needed.
+    def update_param(self, selector: "int | str", **spec_changes: Any) -> "Sweep":
+        """Return a copy of this sweep with one parameter's :class:`ParameterSpec` changed.
 
-        Retained for backward compatibility.  As of the ``_populate_netcdf_config``
-        model validator, :attr:`netcdf` is auto-populated at construction, so this
-        is normally a no-op; it still guards against ``netcdf`` being reset to
-        ``None`` after construction.
+        *selector* is either an integer index into :attr:`parameters`, or a
+        string matched against each parameter's ``spec.field`` or its
+        ``config_file`` stem.  The changed spec is re-validated against
+        :class:`ParameterSpec` (which is ``extra="forbid"``), so out-of-spec
+        values or unknown field names raise immediately rather than being
+        silently swallowed.
+
+        Examples
+        --------
+        >>> wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+        >>> tighter = sweep.update_param(0, sigma=5.0)
         """
-        if self.netcdf is None:
-            self.netcdf = NetCDFConfig(performance_threshold_m=self.performance_threshold_m)
+        idx = self._resolve_param_index(selector)
+        data = self.model_dump()
+        spec_dict = {**data["parameters"][idx]["spec"], **spec_changes}
+        # Validate eagerly so unknown fields / bad values fail here, not deep in a run.
+        ParameterSpec.model_validate(spec_dict)
+        data["parameters"][idx]["spec"] = spec_dict
+        return Sweep.model_validate(data)
+
+    def _resolve_param_index(self, selector: "int | str") -> int:
+        """Resolve *selector* (index, ``spec.field``, or ``config_file`` stem) to an index."""
+        if isinstance(selector, int):
+            if not -len(self.parameters) <= selector < len(self.parameters):
+                raise IndexError(f"Parameter index {selector} out of range (have {len(self.parameters)}).")
+            return selector
+        for i, p in enumerate(self.parameters):
+            if p.spec.field == selector:
+                return i
+            if p.config_file is not None and p.config_file.stem == selector:
+                return i
+        raise KeyError(
+            f"No parameter matches selector {selector!r}. Use an index, a spec.field, or a config_file stem."
+        )
+
+
+class OutputConfig(BaseModel):
+    """Output settings for a correction run.
+
+    Attributes
+    ----------
+    netcdf
+        NetCDF structure/metadata config.  ``None`` is auto-populated by
+        :func:`~curryer.correction.pipeline.run_correction` from the setup's
+        performance threshold.
+    output_filename
+        Output NetCDF filename.  ``None`` falls back to the default in
+        :meth:`get_output_filename`.
+    """
+
+    netcdf: NetCDFConfig | None = None
+    output_filename: str | None = None
 
     def get_output_filename(self, default: str = "correction_results.nc") -> str:
-        """Get output filename with optional auto-generation."""
-        if self.output_filename:
-            return self.output_filename
-        return default
-
-    @staticmethod
-    def generate_timestamped_filename(prefix: str = "correction", suffix: str = "") -> str:
-        """Generate a timestamped output filename for production use."""
-        import datetime
-
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        if suffix:
-            return f"{prefix}_{timestamp}_{suffix}.nc"
-        return f"{prefix}_{timestamp}.nc"
-
-
-# ============================================================================
-# JSON Config Loading
-# ============================================================================
-
-
-def load_config_from_json(config_path: Path) -> "CorrectionConfig":
-    """Load correction configuration from a JSON file.
-
-    Args:
-        config_path: Path to the JSON configuration file (e.g., gcs_config.json)
-
-    Returns:
-        CorrectionConfig object populated from the JSON file
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config file format is invalid
-        KeyError: If required config sections are missing
-    """
-    config_path = Path(config_path)
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
-
-    logger.info(f"Loading Correction configuration from: {config_path}")
-
-    try:
-        with open(config_path) as f:
-            config_data = json.load(f)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in config file {config_path}: {e}")
-
-    # Extract mission configuration and kernel mappings
-    mission_config = _correction_config.extract_mission_config(config_data)
-    constant_kernel_map = _correction_config.get_kernel_mapping(config_data, "constant_kernel")
-    offset_kernel_map = _correction_config.get_kernel_mapping(config_data, "offset_kernel")
-
-    logger.debug(f"Mission: {mission_config.get('mission_name', 'UNKNOWN')}")
-    logger.debug(f"Constant kernel mappings: {constant_kernel_map}")
-    logger.debug(f"Offset kernel mappings: {offset_kernel_map}")
-
-    # Validate required sections exist
-    if "correction" not in config_data:
-        raise KeyError("Missing required 'correction' section in config file")
-    if "geolocation" not in config_data:
-        raise KeyError("Missing required 'geolocation' section in config file")
-
-    # Extract correction section
-    corr_config = config_data.get("correction", {})
-    geo_config = config_data.get("geolocation", {})
-
-    # Validate correction section
-    if "parameters" not in corr_config:
-        raise KeyError("Missing required 'parameters' in correction section")
-    if not isinstance(corr_config["parameters"], list):
-        raise ValueError("'parameters' must be a list")
-    if len(corr_config["parameters"]) == 0:
-        raise ValueError("No parameters defined in configuration")
-
-    # Parse parameters and group related ones together
-    parameters = []
-    param_groups = {}
-
-    # First pass: group parameters by their base name and type
-    for param_dict in corr_config.get("parameters", []):
-        param_name = param_dict.get("name", "")
-        ptype_str = param_dict.get("parameter_type", "CONSTANT_KERNEL")
-        ptype = ParameterType[ptype_str]
-
-        # Group CONSTANT_KERNEL parameters by their base frame name
-        if ptype == ParameterType.CONSTANT_KERNEL:
-            # Extract base name (e.g., "hysics_to_cradle" from "hysics_to_cradle_roll")
-            if param_name.endswith("_roll"):
-                base_name = param_name[:-5]
-                angle_type = "roll"
-            elif param_name.endswith("_pitch"):
-                base_name = param_name[:-6]
-                angle_type = "pitch"
-            elif param_name.endswith("_yaw"):
-                base_name = param_name[:-4]
-                angle_type = "yaw"
-            else:
-                base_name = param_name
-                angle_type = "single"
-
-            if base_name not in param_groups:
-                param_groups[base_name] = {"type": ptype, "angles": {}, "template": param_dict, "config_file": None}
-
-            param_groups[base_name]["angles"][angle_type] = param_dict.get("initial_value", 0.0)
-
-            # Determine config file based on kernel mapping from config
-            kernel_file = _correction_config.find_kernel_file(base_name, constant_kernel_map)
-            if kernel_file:
-                param_groups[base_name]["config_file"] = Path(kernel_file)
-                logger.debug(f"Mapped CONSTANT_KERNEL '{base_name}' → {kernel_file}")
-            else:
-                logger.warning(f"No kernel mapping found for CONSTANT_KERNEL parameter: {base_name}")
-
-        else:
-            # OFFSET_KERNEL and OFFSET_TIME parameters are individual
-            param_groups[param_name] = {"type": ptype, "param_dict": param_dict, "config_file": None}
-
-            if ptype == ParameterType.OFFSET_KERNEL:
-                kernel_file = _correction_config.find_kernel_file(param_name, offset_kernel_map)
-                if kernel_file:
-                    param_groups[param_name]["config_file"] = Path(kernel_file)
-                    logger.debug(f"Mapped OFFSET_KERNEL '{param_name}' → {kernel_file}")
-                elif param_dict.get("config_file"):
-                    param_groups[param_name]["config_file"] = Path(param_dict["config_file"])
-                    logger.debug(f"Using explicit config_file for OFFSET_KERNEL '{param_name}'")
-                else:
-                    logger.warning(f"No kernel mapping found for OFFSET_KERNEL parameter: {param_name}")
-
-    # Second pass: create ParameterConfig objects from groups
-    for group_name, group_data in param_groups.items():
-        if group_data["type"] == ParameterType.CONSTANT_KERNEL:
-            template = group_data["template"]
-            angles = group_data["angles"]
-            center_values = [angles.get("roll", 0.0), angles.get("pitch", 0.0), angles.get("yaw", 0.0)]
-            param_data = {
-                "current_value": center_values,
-                "bounds": template.get("bounds", [-100, 100]),
-                "sigma": template.get("sigma"),
-                "units": template.get("units", "arcseconds"),
-                "distribution": template.get("distribution_type", "normal"),
-                "field": template.get("application_target", {}).get("field_name", None),
-            }
-        else:
-            param_dict = group_data["param_dict"]
-            param_data = {
-                "current_value": param_dict.get("current_value", param_dict.get("initial_value", 0.0)),
-                "bounds": param_dict.get("bounds", [-100, 100]),
-                "sigma": param_dict.get("sigma"),
-                "units": param_dict.get("units", "radians"),
-                "distribution": param_dict.get("distribution_type", "normal"),
-                "field": (param_dict.get("field") or param_dict.get("application_target", {}).get("field_name", None)),
-            }
-
-        parameters.append(
-            ParameterConfig(ptype=group_data["type"], config_file=group_data["config_file"], spec=param_data)
-        )
-
-    logger.info(
-        f"Loaded {len(parameters)} parameter groups from {len(corr_config.get('parameters', []))} individual parameters"
-    )
-
-    # Parse geolocation configuration
-    default_instrument = mission_config.get("instrument_name")
-    instrument_name = geo_config.get("instrument_name", default_instrument)
-    if instrument_name is None:
-        raise ValueError("instrument_name must be specified in config (either in geolocation or mission section)")
-
-    time_field = geo_config.get("time_field")
-    if time_field is None:
-        raise ValueError("time_field must be specified in geolocation config")
-
-    if "meta_kernel_file" not in geo_config:
-        raise KeyError("Missing required 'meta_kernel_file' in geolocation config section.")
-    if "generic_kernel_dir" not in geo_config:
-        raise KeyError("Missing required 'generic_kernel_dir' in geolocation config section.")
-    geo = GeolocationConfig(
-        meta_kernel_file=Path(geo_config["meta_kernel_file"]),
-        generic_kernel_dir=Path(geo_config["generic_kernel_dir"]),
-        dynamic_kernels=[Path(k) for k in geo_config.get("dynamic_kernels", [])],
-        instrument_name=instrument_name,
-        time_field=time_field,
-    )
-
-    # Extract required mission-specific parameters from correction section
-    earth_radius_m = corr_config.get("earth_radius_m")
-    if earth_radius_m is not None:
-        logger.warning(
-            "earth_radius_m in config is deprecated and ignored. "
-            "The WGS84 value from curryer.compute.constants is used instead."
-        )
-
-    performance_threshold_m = corr_config.get("performance_threshold_m")
-    if performance_threshold_m is None:
-        raise KeyError(
-            "Missing required 'performance_threshold_m' in correction config section. "
-            "This must be specified for your mission (e.g., 250.0 meters for CLARREO)."
-        )
-
-    performance_spec_percent = corr_config.get("performance_spec_percent")
-    if performance_spec_percent is None:
-        raise KeyError(
-            "Missing required 'performance_spec_percent' in correction config section. "
-            "This must be specified for your mission (e.g., 39.0 percent for CLARREO)."
-        )
-
-    # Optional calibration paths (direct file paths or directory + filename map)
-    calibration_dir_raw = corr_config.get("calibration_dir")
-    calibration_dir = Path(calibration_dir_raw) if calibration_dir_raw else None
-    calibration_file_names = corr_config.get("calibration_file_names")
-    los_vectors_file_raw = corr_config.get("los_vectors_file")
-    los_vectors_file = Path(los_vectors_file_raw) if los_vectors_file_raw else None
-    psf_file_raw = corr_config.get("psf_file")
-    psf_file = Path(psf_file_raw) if psf_file_raw else None
-
-    config = CorrectionConfig(
-        seed=corr_config.get("seed"),
-        n_iterations=corr_config.get("n_iterations", 10),
-        parameters=parameters,
-        geo=geo,
-        performance_threshold_m=performance_threshold_m,
-        performance_spec_percent=performance_spec_percent,
-        calibration_dir=calibration_dir,
-        calibration_file_names=calibration_file_names,
-        los_vectors_file=los_vectors_file,
-        psf_file=psf_file,
-    )
-
-    logger.info(
-        f"Configuration loaded and validated: {config.n_iterations} iterations, "
-        f"{len(config.parameters)} parameter groups"
-    )
-    return config
+        """Return :attr:`output_filename` if set, otherwise *default*."""
+        return self.output_filename or default
 
 
 # ============================================================================
@@ -1006,30 +722,84 @@ class CorrectionInput(BaseModel):
     Replaces the positional tuple ``(telemetry_path, science_path, gcp_path)``
     with named fields for clarity and IDE autocomplete.
 
+    The reader for each file is chosen by :attr:`DataConfig.file_format`, so the
+    inputs are format-agnostic.  The first-class real-data path is a NetCDF
+    image observation (radiance as the science variable) carrying telemetry,
+    metadata, and science times; ``.mat`` files are interim test scaffolding.
+
     Parameters
     ----------
     telemetry_file : Path
-        Path to the telemetry CSV (or NetCDF/HDF5) file.
+        Telemetry observation file (NetCDF for real data; CSV/HDF5 also read).
     science_file : Path
-        Path to the science/timing CSV (or NetCDF/HDF5) file.
+        Science/timing observation file (NetCDF for real data; CSV/HDF5 also read).
     gcp_file : Path
-        Path to the GCP reference image (``.mat`` file).
+        GCP reference-image file (NetCDF or ``.mat``).
 
     Examples
     --------
-    >>> from curryer.correction import CorrectionInput, run_correction
+    >>> from curryer.correction import CorrectionInput
     >>> inputs = [
     ...     CorrectionInput(
-    ...         telemetry_file="data/tlm_20240317.csv",
-    ...         science_file="data/sci_20240317.csv",
-    ...         gcp_file="gcps/landsat_chip_001.mat",
+    ...         telemetry_file="data/obs_20240317.nc",
+    ...         science_file="data/obs_20240317.nc",
+    ...         gcp_file="gcps/landsat_chip_001.nc",
     ...     )
     ... ]
-    >>> result = run_correction(config, work_dir, inputs)
-    >>> results = result.results
-    >>> netcdf_data = result.netcdf_data
     """
 
     telemetry_file: Path
     science_file: Path
     gcp_file: Path
+
+
+# ============================================================================
+# Setup / Sweep / Output JSON loading
+# ============================================================================
+
+
+def _read_config_json(config_path: Path) -> dict:
+    """Read and parse a JSON config file, raising clear errors on failure."""
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in config file {config_path}: {e}") from e
+
+
+def load_setup_from_json(config_path: Path) -> GeolocationSetup:
+    """Load a :class:`GeolocationSetup` from the ``"setup"`` section of a JSON file."""
+    data = _read_config_json(config_path)
+    if "setup" not in data:
+        raise KeyError(f"Missing required 'setup' section in {config_path}")
+    return GeolocationSetup.model_validate(data["setup"])
+
+
+def load_sweep_from_json(config_path: Path) -> Sweep:
+    """Load a :class:`Sweep` from the ``"sweep"`` section of a JSON file."""
+    data = _read_config_json(config_path)
+    if "sweep" not in data:
+        raise KeyError(f"Missing required 'sweep' section in {config_path}")
+    return Sweep.model_validate(data["sweep"])
+
+
+def load_config_files(config_path: Path) -> tuple[GeolocationSetup, Sweep, OutputConfig]:
+    """Load ``(GeolocationSetup, Sweep, OutputConfig)`` from one JSON file.
+
+    The file has three top-level sections — ``"setup"``, ``"sweep"``, and an
+    optional ``"output"`` — each validated directly against its model.  The
+    ``"sweep".parameters`` entries mirror :class:`ParameterConfig` (``ptype`` /
+    ``config_file`` / ``spec``); rotation frames are authored as a single
+    ``CONSTANT_KERNEL`` parameter with ``spec.current_value = [roll, pitch, yaw]``.
+    """
+    data = _read_config_json(config_path)
+    for section in ("setup", "sweep"):
+        if section not in data:
+            raise KeyError(f"Missing required '{section}' section in {config_path}")
+    setup = GeolocationSetup.model_validate(data["setup"])
+    sweep = Sweep.model_validate(data["sweep"])
+    output = OutputConfig.model_validate(data.get("output", {}))
+    return setup, sweep, output

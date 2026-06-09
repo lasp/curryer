@@ -6,12 +6,12 @@ against ground control points, PSF modelling, and error statistics.
 Sub-module layout
 -----------------
 config
-    Config dataclasses (``CorrectionConfig``, ``ParameterConfig``, etc.)
-    and the ``ParameterType`` enum.
+    Config models (``GeolocationSetup``, ``Sweep``, ``OutputConfig``,
+    ``ParameterConfig``, etc.) and the ``ParameterType`` enum.
 io_config
     NetCDF output configuration and standard attribute definitions
     (:class:`NetCDFConfig`, :class:`NetCDFParameterMetadata`,
-    :data:`DEFAULT_NETCDF_ATTRIBUTES`, :data:`STANDARD_VAR_NAMES`).
+    :data:`DEFAULT_NETCDF_ATTRIBUTES`).
 parameters
     Random parameter-set generation (:func:`load_param_sets`).
 kernel_ops
@@ -23,11 +23,6 @@ pipeline
     Preferred-name aliases: :func:`run_correction`, :func:`run_image_matching`,
     :func:`compute_error_stats`.
     :func:`run_correction` also accepts :class:`CorrectionInput` objects.
-correction
-    Thin re-export shim -- keeps all existing
-    ``from curryer.correction import correction`` import paths working.
-correction_config
-    Utilities for reading and validating JSON config files.
 grid_types
     Pure grid data containers (``ImageGrid``, ``PSFGrid``, ...).
 dataio
@@ -57,8 +52,6 @@ verification
 # Sub-modules (ensure `curryer.correction.psf` etc. work as attributes)
 from . import (
     config,
-    correction,
-    correction_config,
     dataio,
     error_stats,
     grid_types,
@@ -80,12 +73,14 @@ from . import (
 
 # Key public names lifted to package level
 from .config import (
-    CorrectionConfig,
+    CalibrationFiles,
     CorrectionInput,
     DataConfig,
     GeolocationConfig,
+    GeolocationSetup,
     NetCDFConfig,
     NetCDFParameterMetadata,
+    OutputConfig,
     ParameterConfig,
     ParameterSpec,
     ParameterType,
@@ -94,7 +89,10 @@ from .config import (
     RequirementsConfig,
     SearchConfig,
     SearchStrategy,
-    load_config_from_json,
+    Sweep,
+    load_config_files,
+    load_setup_from_json,
+    load_sweep_from_json,
 )
 from .error_stats import ErrorStatsConfig, ErrorStatsProcessor, compute_percent_below
 from .grid_types import ImageGrid, PSFGrid
@@ -116,8 +114,6 @@ from .verification import GCPError, VerificationResult, compare_results, match_g
 __all__ = [
     # Sub-modules
     "config",
-    "correction",
-    "correction_config",
     "dataio",
     "error_stats",
     "grid_types",
@@ -136,18 +132,23 @@ __all__ = [
     "search",
     "verification",
     # Config
-    "CorrectionConfig",
+    "CalibrationFiles",
     "CorrectionInput",
     "DataConfig",
     "GeolocationConfig",
+    "GeolocationSetup",
     "NetCDFConfig",
     "NetCDFParameterMetadata",
+    "OutputConfig",
     "ParameterConfig",
     "ParameterSpec",
     "ParameterType",
     "RequirementsConfig",
     "SearchStrategy",
-    "load_config_from_json",
+    "Sweep",
+    "load_config_files",
+    "load_setup_from_json",
+    "load_sweep_from_json",
     # Pipeline entry points
     "loop",
     "run_correction",

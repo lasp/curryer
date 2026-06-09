@@ -33,10 +33,9 @@ import numpy as np
 import xarray as xr
 
 from curryer.correction import (
-    CorrectionConfig,
     GeolocationConfig,
-    ParameterConfig,
-    ParameterType,
+    GeolocationSetup,
+    RequirementsConfig,
     VerificationResult,
     compare_results,
     verify,
@@ -232,7 +231,7 @@ def _make_synthetic_matching_result(n: int = 50, seed: int = 42) -> xr.Dataset:
             # Geolocation errors ~0.002° ≈ 222 m — straddles the 250 m threshold
             "lat_error_deg": (["measurement"], rng.normal(0.0, 0.002, n)),
             "lon_error_deg": (["measurement"], rng.normal(0.0, 0.002, n)),
-            # Spacecraft state — variable names must match CorrectionConfig
+            # Spacecraft state — variable names must match the setup's name fields
             "riss_ctrs": (["measurement", "xyz"], positions),
             "bhat_hs": (["measurement", "xyz"], boresights),
             "t_hs2ctrs": (["measurement", "r", "c"], t_matrices),
@@ -251,8 +250,8 @@ def _make_synthetic_matching_result(n: int = 50, seed: int = 42) -> xr.Dataset:
 # ---------------------------------------------------------------------------
 
 
-def _make_config(use_clarreo_names: bool = True) -> CorrectionConfig:
-    """Build a ``CorrectionConfig`` for the verification example.
+def _make_setup() -> GeolocationSetup:
+    """Build a ``GeolocationSetup`` for the verification example.
 
     The ``geo`` config uses placeholder kernel paths — they are NOT accessed
     when ``verify()`` is called with ``image_matching_results=``.  What
@@ -261,26 +260,11 @@ def _make_config(use_clarreo_names: bool = True) -> CorrectionConfig:
     ``transformation_matrix_name``), which must match the variable names
     in the ``xr.Dataset``.
 
-    Parameters
-    ----------
-    use_clarreo_names : bool
-        When ``True`` (default), variable names match the CLARREO test dataset
-        (``riss_ctrs``, ``bhat_hs``, ``t_hs2ctrs``).  Set to ``False`` for
-        the synthetic-data path which uses the same names for consistency.
-
     Returns
     -------
-    CorrectionConfig
+    GeolocationSetup
     """
-    return CorrectionConfig(
-        n_iterations=1,  # Not used by verify(), but required by the model
-        parameters=[
-            # Nominal zero-offset parameter — no correction applied in this run
-            ParameterConfig(
-                ptype=ParameterType.CONSTANT_KERNEL,
-                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
-            )
-        ],
+    return GeolocationSetup(
         geo=GeolocationConfig(
             # Placeholder paths: NOT loaded when image_matching_results= is used.
             # Replace with real paths when running the full correction loop.
@@ -290,8 +274,10 @@ def _make_config(use_clarreo_names: bool = True) -> CorrectionConfig:
             time_field="corrected_timestamp",
         ),
         # CLARREO mission requirements
-        performance_threshold_m=250.0,  # Each measurement must be < 250 m nadir-equivalent error
-        performance_spec_percent=39.0,  # At least 39% of measurements must pass
+        requirements=RequirementsConfig(
+            performance_threshold_m=250.0,  # Each measurement must be < 250 m nadir-equivalent error
+            performance_spec_percent=39.0,  # At least 39% of measurements must pass
+        ),
         # Variable names in the xr.Dataset — must match what image matching produced
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
@@ -341,16 +327,28 @@ def main() -> int:
     # Step 2: Build config
     # ------------------------------------------------------------------
     print("\n[2/3] Building configuration…")
-    config = _make_config()
-    print(f"  Threshold    : {config.performance_threshold_m} m")
-    print(f"  Spec         : {config.performance_spec_percent}%")
-    print(f"  Instrument   : {config.geo.instrument_name}")
+    setup = _make_setup()
+
+    # Static instrument calibration and a custom image matcher are now attached
+    # directly to the setup via dedicated fields:
+    #
+    #   from curryer.correction import CalibrationFiles
+    #   setup.calibration = CalibrationFiles(
+    #       los_vectors_file="tests/data/clarreo/image_match/b_HS.mat",
+    #       psf_file="tests/data/clarreo/image_match/optical_PSF_675nm_upsampled.mat",
+    #   )
+    #   setup.image_matching_func = my_matcher  # signature: (geolocated_data, gcp_reference_file, ...)
+    #
+    # Not needed here because verify() is called with image_matching_results=.
+    print(f"  Threshold    : {setup.requirements.performance_threshold_m} m")
+    print(f"  Spec         : {setup.requirements.performance_spec_percent}%")
+    print(f"  Instrument   : {setup.geo.instrument_name}")
 
     # ------------------------------------------------------------------
     # Step 3: Run verification (the public API call)
     # ------------------------------------------------------------------
     print("\n[3/3] Running verify()…")
-    result: VerificationResult = verify(config, image_matching_results=image_matching_results)
+    result: VerificationResult = verify(setup, image_matching_results=image_matching_results)
 
     # ------------------------------------------------------------------
     # Display results
@@ -359,8 +357,8 @@ def main() -> int:
 
     print(f"\nOverall result : {'PASSED ✓' if result.passed else 'FAILED ✗'}")
     print(
-        f"Within {config.performance_threshold_m:.0f} m : {result.percent_within_threshold:.1f}%"
-        f" (required: ≥ {config.performance_spec_percent:.0f}%)"
+        f"Within {setup.requirements.performance_threshold_m:.0f} m : {result.percent_within_threshold:.1f}%"
+        f" (required: ≥ {setup.requirements.performance_spec_percent:.0f}%)"
     )
     print(f"Elapsed        : {result.elapsed_time_s:.2f} s" if result.elapsed_time_s else "")
 

@@ -1,23 +1,26 @@
 """
 clarreo_config.py — CLARREO correction configuration factory.
 
-This module provides a clean, public-API-only way to create a
-``CorrectionConfig`` for the CLARREO Pathfinder mission. Use this as a
-reference when creating your own mission configuration.
+This module is the public-API-only way to build the CLARREO Pathfinder
+correction configuration as the redesigned three-object surface:
+``GeolocationSetup`` (durable mission setup), ``Sweep`` (the parameter
+experiment you vary between runs), and ``OutputConfig`` (output settings).
+Use it as a reference when creating your own mission configuration.
 
 Prefer loading from JSON in production::
 
-    from curryer.correction import load_config_from_json
-    config = load_config_from_json("examples/correction/clarreo_config.json")
+    from curryer.correction import load_config_files
+    setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
 
-Use this Python script when you need to build the config programmatically
-or inject it into tests.
+Use this Python factory when you want to build the config programmatically
+or inject it into tests, and when you want to iterate quickly — hold ``setup``
+fixed and cheaply vary ``sweep`` with ``Sweep.with_strategy`` /
+``Sweep.update_param``.
 
 Note
 ----
-For the test fixture version (which also saves the config to JSON), see
-``tests/test_correction/clarreo/clarreo_config.py``. That file is a test
-infrastructure helper; this file is the user-facing example.
+For the test fixture version, see ``tests/test_correction/clarreo/clarreo_config.py``.
+That file is a test-infrastructure helper; this file is the user-facing example.
 """
 
 from __future__ import annotations
@@ -26,11 +29,14 @@ import logging
 from pathlib import Path
 
 from curryer.correction import (
-    CorrectionConfig,
     GeolocationConfig,
+    GeolocationSetup,
     NetCDFConfig,
+    OutputConfig,
     ParameterConfig,
     ParameterType,
+    RequirementsConfig,
+    Sweep,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,10 +49,10 @@ _DEFAULT_GENERIC_DIR = Path("data/generic")
 def create_clarreo_config(
     data_dir: Path | None = None,
     generic_dir: Path | None = None,
-) -> CorrectionConfig:
-    """Create the CLARREO Pathfinder geolocation correction configuration.
+) -> tuple[GeolocationSetup, Sweep, OutputConfig]:
+    """Create the CLARREO Pathfinder ``(GeolocationSetup, Sweep, OutputConfig)``.
 
-    Defines 6 CLARREO-specific ``ParameterConfig`` entries covering 12
+    The sweep defines 6 CLARREO-specific ``ParameterConfig`` entries covering 12
     underlying scalar correction values:
     - 3 CONSTANT_KERNEL entries (one per frame, each with a 3-angle attitude vector)
     - 2 OFFSET_KERNEL entries (azimuth and elevation angle biases)
@@ -64,23 +70,29 @@ def create_clarreo_config(
 
     Returns
     -------
-    CorrectionConfig
-        Validated configuration object ready to pass to ``run_correction()``
-        or ``verify()``.
+    tuple
+        ``(setup, sweep, output)`` — pass directly to
+        ``run_correction(setup, sweep, inputs, work_dir, output)`` or
+        ``verify(setup, ...)``.
 
     Examples
     --------
     >>> from examples.correction.clarreo_config import create_clarreo_config
-    >>> config = create_clarreo_config()
-    >>> print(config.performance_threshold_m)
+    >>> setup, sweep, output = create_clarreo_config()
+    >>> setup.requirements.performance_threshold_m
     250.0
-    >>> print(len(config.parameters))
+    >>> len(sweep.parameters)
     6
 
-    Or load from the JSON file (preferred for production):
+    Hold the setup fixed and try a different experiment cheaply:
 
-    >>> from curryer.correction import load_config_from_json
-    >>> config = load_config_from_json("examples/correction/clarreo_config.json")
+    >>> grid = sweep.with_strategy("grid", grid_points_per_param=5)
+    >>> wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+
+    Or load everything from the JSON file (preferred for production):
+
+    >>> from curryer.correction import load_config_files
+    >>> setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
     """
     data_dir = Path(data_dir) if data_dir is not None else _DEFAULT_DATA_DIR
     generic_dir = Path(generic_dir) if generic_dir is not None else _DEFAULT_GENERIC_DIR
@@ -194,31 +206,33 @@ def create_clarreo_config(
         time_field="corrected_timestamp",
     )
 
-    netcdf = NetCDFConfig(
-        title="CLARREO Pathfinder Geolocation Correction Analysis",
-        description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
-        performance_threshold_m=250.0,
-    )
-
-    config = CorrectionConfig(
-        seed=42,
-        n_iterations=5,
-        parameters=parameters,
+    # Durable, mission-specific setup — built once, reused across many sweeps.
+    setup = GeolocationSetup(
         geo=geo,
-        # CLARREO mission performance requirements
-        performance_threshold_m=250.0,  # Each measurement must be < 250 m nadir-equivalent
-        performance_spec_percent=39.0,  # At least 39% of measurements must pass
-        netcdf=netcdf,
-        # HySICS calibration files (relative to calibration_dir)
-        calibration_file_names={
-            "los_vectors": "b_HS.mat",
-            "optical_psf": "optical_PSF_675nm_upsampled.mat",
-        },
-        # Variable names in image-matching xr.Dataset output
+        requirements=RequirementsConfig(
+            performance_threshold_m=250.0,  # Each measurement must be < 250 m nadir-equivalent
+            performance_spec_percent=39.0,  # At least 39% of measurements must pass
+        ),
+        # Variable names in the image-matching xr.Dataset output (ISS/HySICS specific)
         spacecraft_position_name="riss_ctrs",
         boresight_name="bhat_hs",
         transformation_matrix_name="t_hs2ctrs",
     )
 
-    logger.info("CLARREO config created: %d parameters", len(config.parameters))
-    return config
+    # The lightweight experiment — vary this between runs.
+    sweep = Sweep(
+        seed=42,
+        n_iterations=5,
+        parameters=parameters,
+    )
+
+    output = OutputConfig(
+        netcdf=NetCDFConfig(
+            title="CLARREO Pathfinder Geolocation Correction Analysis",
+            description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
+            performance_threshold_m=250.0,
+        ),
+    )
+
+    logger.info("CLARREO config created: %d parameters", len(sweep.parameters))
+    return setup, sweep, output

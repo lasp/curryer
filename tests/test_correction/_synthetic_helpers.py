@@ -42,9 +42,8 @@ def synthetic_image_matching(
     geolocated_data,
     gcp_reference_file,
     telemetry,
-    calibration_dir,
     params_info,
-    config,
+    setup,
     los_vectors_cached=None,
     optical_psfs_cached=None,
 ):
@@ -54,12 +53,10 @@ def synthetic_image_matching(
     function so the pipeline loop can call it transparently.
     """
     logger.warning("USING SYNTHETIC IMAGE MATCHING - FAKE DATA!")
-    placeholder_cfg = (
-        config.placeholder if hasattr(config, "placeholder") and config.placeholder else _PlaceholderConfig()
-    )
-    sc_pos_name = getattr(config, "spacecraft_position_name", "sc_position")
-    boresight_name = getattr(config, "boresight_name", "boresight")
-    transform_name = getattr(config, "transformation_matrix_name", "t_inst2ref")
+    placeholder_cfg = setup.placeholder if hasattr(setup, "placeholder") and setup.placeholder else _PlaceholderConfig()
+    sc_pos_name = getattr(setup, "spacecraft_position_name", "sc_position")
+    boresight_name = getattr(setup, "boresight_name", "boresight")
+    transform_name = getattr(setup, "transformation_matrix_name", "t_inst2ref")
 
     valid_mask = ~np.isnan(geolocated_data["latitude"].values).any(axis=1)
     n_valid = int(valid_mask.sum())

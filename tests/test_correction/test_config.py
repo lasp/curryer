@@ -3,8 +3,8 @@
 Covers:
 - Construction and field validation for all BaseModel subclasses
 - ``DataConfig`` config-driven data loading configuration
-- ``ParameterSpec`` backward-compatible dict-style access
-- JSON round-trip: ``config == CorrectionConfig.model_validate_json(config.model_dump_json())``
+- ``GeolocationSetup`` / ``Sweep`` / ``OutputConfig`` — the config surface
+- JSON round-trip: ``model == Model.model_validate_json(model.model_dump_json())``
 - ``ValidationError`` raised with field-level messages for invalid inputs
 - Callable / loader fields excluded from JSON serialisation
 """
@@ -15,15 +15,22 @@ import pytest
 from pydantic import ValidationError
 
 from curryer.correction.config import (
-    CorrectionConfig,
+    CalibrationFiles,
     DataConfig,
     GeolocationConfig,
+    GeolocationSetup,
     NetCDFConfig,
     NetCDFParameterMetadata,
+    OutputConfig,
     ParameterConfig,
     ParameterSpec,
     ParameterType,
-    load_config_from_json,
+    RequirementsConfig,
+    SearchStrategy,
+    Sweep,
+    load_config_files,
+    load_setup_from_json,
+    load_sweep_from_json,
 )
 
 # ---------------------------------------------------------------------------
@@ -99,36 +106,18 @@ def netcdf_cfg() -> NetCDFConfig:
 
 
 @pytest.fixture
-def minimal_config(geo, param_constant) -> CorrectionConfig:
-    """Minimal CorrectionConfig with no loaders (fully serialisable)."""
-    return CorrectionConfig(
-        seed=42,
-        n_iterations=5,
-        parameters=[param_constant],
+def minimal_setup(geo) -> GeolocationSetup:
+    """Minimal GeolocationSetup with no calibration/loaders."""
+    return GeolocationSetup(
         geo=geo,
-        performance_threshold_m=250.0,
-        performance_spec_percent=39.0,
+        requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
     )
 
 
 @pytest.fixture
-def full_config(geo, param_constant, param_offset_kernel, param_offset_time, netcdf_cfg) -> CorrectionConfig:
-    """Full CorrectionConfig with all optional fields populated."""
-    return CorrectionConfig(
-        seed=0,
-        n_iterations=10,
-        parameters=[param_constant, param_offset_kernel, param_offset_time],
-        geo=geo,
-        performance_threshold_m=250.0,
-        performance_spec_percent=39.0,
-        netcdf=netcdf_cfg,
-        output_filename="test_results.nc",
-        calibration_dir=Path("tests/data/calibration"),
-        calibration_file_names={"los_vectors": "b_HS.mat", "optical_psf": "psf.mat"},
-        spacecraft_position_name="riss_ctrs",
-        boresight_name="bhat_hs",
-        transformation_matrix_name="t_hs2ctrs",
-    )
+def minimal_sweep(param_constant) -> Sweep:
+    """Minimal Sweep with a single parameter."""
+    return Sweep(seed=42, n_iterations=5, parameters=[param_constant])
 
 
 # ===========================================================================
@@ -157,32 +146,26 @@ class TestDataConfig:
         assert restored.file_format == "hdf5"
         assert restored.time_scale_factor == 1.0
 
-    def test_embedded_in_correction_config(self, geo, param_constant):
-        """DataConfig round-trips through CorrectionConfig serialisation."""
-        cfg = CorrectionConfig(
-            n_iterations=1,
-            parameters=[param_constant],
+    def test_embedded_in_setup(self, geo):
+        """DataConfig round-trips through GeolocationSetup serialisation."""
+        setup = GeolocationSetup(
             geo=geo,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
             data_config=DataConfig(file_format="csv", time_scale_factor=1e6),
         )
-        json_str = cfg.model_dump_json()
-        restored = CorrectionConfig.model_validate_json(json_str)
+        json_str = setup.model_dump_json()
+        restored = GeolocationSetup.model_validate_json(json_str)
         assert restored.data_config is not None
         assert restored.data_config.file_format == "csv"
         assert restored.data_config.time_scale_factor == 1e6
 
-    def test_none_data_field_is_valid(self, geo, param_constant):
-        """ParameterConfig.spec may be None (backward compat)."""
-        cfg = CorrectionConfig(
-            n_iterations=1,
-            parameters=[param_constant],
+    def test_none_data_field_is_valid(self, geo):
+        """GeolocationSetup.data_config defaults to None."""
+        setup = GeolocationSetup(
             geo=geo,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
         )
-        assert cfg.data_config is None
+        assert setup.data_config is None
 
 
 # ===========================================================================
@@ -213,49 +196,20 @@ class TestParameterSpec:
         assert pd.units is None
         assert pd.distribution == "normal"
 
-    # -- dict-style backward compat -------------------------------------------
+    # -- strict validation + metadata -----------------------------------------
 
-    def test_get_returns_value(self):
-        pd = ParameterSpec(sigma=30.0, units="arcseconds")
-        assert pd.get("sigma") == 30.0
-        assert pd.get("units") == "arcseconds"
+    def test_unknown_field_rejected(self):
+        """extra='forbid' surfaces typos as a ValidationError."""
+        with pytest.raises(ValidationError):
+            ParameterSpec(boundes=[-1.0, 1.0])  # typo for 'bounds'
 
-    def test_get_returns_default_for_none_field(self):
-        pd = ParameterSpec()  # sigma=None by default
-        assert pd.get("sigma", "N/A") == "N/A"
-        assert pd.get("sigma") is None
+    def test_metadata_holds_mission_extras(self):
+        pd = ParameterSpec(metadata={"name": "az_bias", "source": "vendor"})
+        assert pd.metadata["name"] == "az_bias"
+        assert pd.metadata["source"] == "vendor"
 
-    def test_get_nonexistent_key_returns_default(self):
-        pd = ParameterSpec()
-        assert pd.get("no_such_key", "MISSING") == "MISSING"
-
-    def test_contains_true_for_non_none_field(self):
-        pd = ParameterSpec(sigma=30.0)
-        assert "sigma" in pd
-
-    def test_contains_false_for_none_field(self):
-        pd = ParameterSpec()  # sigma=None
-        assert "sigma" not in pd
-
-    def test_contains_true_for_zero_sigma(self):
-        """sigma=0.0 is explicitly set and must be found by 'in'."""
-        pd = ParameterSpec(sigma=0.0)
-        assert "sigma" in pd
-
-    def test_getitem_returns_value(self):
-        pd = ParameterSpec(sigma=5.0)
-        assert pd["sigma"] == 5.0
-
-    def test_getitem_raises_keyerror_for_missing_key(self):
-        pd = ParameterSpec()
-        with pytest.raises(KeyError):
-            _ = pd["totally_missing"]
-
-    def test_extra_fields_allowed_and_accessible(self):
-        pd = ParameterSpec(my_custom_field="hello")
-        assert pd.get("my_custom_field") == "hello"
-        assert "my_custom_field" in pd
-        assert pd["my_custom_field"] == "hello"
+    def test_metadata_defaults_empty(self):
+        assert ParameterSpec().metadata == {}
 
     def test_validation_error_for_non_numeric_sigma(self):
         with pytest.raises(ValidationError) as exc_info:
@@ -409,313 +363,6 @@ class TestNetCDFConfig:
         assert "performance_threshold_m" in str(exc_info.value)
 
 
-# ===========================================================================
-# CorrectionConfig
-# ===========================================================================
-
-
-class TestCorrectionConfig:
-    def test_basic_construction(self, minimal_config):
-        assert minimal_config.n_iterations == 5
-        assert minimal_config.seed == 42
-        assert len(minimal_config.parameters) == 1
-
-    def test_callable_fields_default_none(self, minimal_config):
-        """_image_matching_override defaults to None."""
-        assert minimal_config._image_matching_override is None
-
-    def test_image_matching_override_can_be_set(self, minimal_config):
-        """_image_matching_override accepts any callable."""
-
-        def my_func(*args, **kwargs):
-            return None
-
-        minimal_config._image_matching_override = my_func
-        assert minimal_config._image_matching_override is my_func
-        minimal_config._image_matching_override = None
-
-    def test_image_matching_func_deprecated_getter(self, minimal_config):
-        """Accessing image_matching_func property emits DeprecationWarning."""
-        import warnings
-
-        minimal_config._image_matching_override = lambda: "x"
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            val = minimal_config.image_matching_func
-        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-        assert val is minimal_config._image_matching_override
-        minimal_config._image_matching_override = None
-
-    def test_image_matching_func_deprecated_setter(self, minimal_config):
-        """Setting image_matching_func via deprecated property emits DeprecationWarning."""
-        import warnings
-
-        def my_func(*args, **kwargs):
-            return None
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            minimal_config.image_matching_func = my_func
-        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-        assert minimal_config._image_matching_override is my_func
-        minimal_config._image_matching_override = None
-
-    def test_mutable_fields(self, minimal_config):
-        minimal_config.n_iterations = 99
-        assert minimal_config.n_iterations == 99
-        minimal_config.n_iterations = 5
-
-    def test_missing_required_field_raises(self, geo, param_constant):
-        with pytest.raises(ValidationError) as exc_info:
-            CorrectionConfig(
-                n_iterations=5,
-                parameters=[param_constant],
-                geo=geo,
-                # performance_threshold_m missing
-                performance_spec_percent=39.0,
-            )
-        assert "performance_threshold_m" in str(exc_info.value)
-
-    def test_invalid_n_iterations_type_raises(self, geo, param_constant):
-        with pytest.raises(ValidationError) as exc_info:
-            CorrectionConfig(
-                n_iterations="not-an-int",
-                parameters=[param_constant],
-                geo=geo,
-                performance_threshold_m=250.0,
-                performance_spec_percent=39.0,
-            )
-        assert "n_iterations" in str(exc_info.value)
-
-    def test_pydantic_rejects_bad_n_iterations_at_construction(self, geo, param_constant):
-        """Pydantic enforces n_iterations > 0 at construction time."""
-        with pytest.raises(ValidationError) as exc_info:
-            CorrectionConfig(
-                n_iterations=-1,
-                parameters=[param_constant],
-                geo=geo,
-                performance_threshold_m=250.0,
-                performance_spec_percent=39.0,
-            )
-        assert "n_iterations" in str(exc_info.value)
-
-    def test_correction_config_requires_no_earth_radius_m(self, geo, param_constant):
-        """CorrectionConfig constructs successfully without earth_radius_m (field removed)."""
-        config = CorrectionConfig(
-            n_iterations=5,
-            parameters=[param_constant],
-            geo=geo,
-            performance_threshold_m=250.0,
-            performance_spec_percent=39.0,
-        )
-        assert not hasattr(config, "earth_radius_m") or config.model_fields.get("earth_radius_m") is None
-
-    def test_ensure_netcdf_config_creates_default(self, minimal_config):
-        # netcdf is auto-populated at construction by the _populate_netcdf_config validator;
-        # ensure_netcdf_config() is then an idempotent no-op.
-        assert isinstance(minimal_config.netcdf, NetCDFConfig)
-        minimal_config.ensure_netcdf_config()
-        assert isinstance(minimal_config.netcdf, NetCDFConfig)
-        assert minimal_config.netcdf.performance_threshold_m == 250.0
-
-    def test_ensure_netcdf_config_idempotent(self, minimal_config):
-        minimal_config.ensure_netcdf_config()
-        first = minimal_config.netcdf
-        minimal_config.ensure_netcdf_config()
-        assert minimal_config.netcdf is first  # same object
-
-    def test_get_output_filename_default(self, minimal_config):
-        assert minimal_config.get_output_filename() == "correction_results.nc"
-
-    def test_get_output_filename_custom(self, minimal_config):
-        minimal_config.output_filename = "my_results.nc"
-        assert minimal_config.get_output_filename() == "my_results.nc"
-        minimal_config.output_filename = None
-
-    def test_get_calibration_file(self, full_config):
-        assert full_config.get_calibration_file("los_vectors") == "b_HS.mat"
-
-    def test_get_calibration_file_missing_raises(self, full_config):
-        with pytest.raises(ValueError, match="No calibration file configured"):
-            full_config.get_calibration_file("nonexistent_type")
-
-    def test_get_calibration_file_default_fallback(self, full_config):
-        assert full_config.get_calibration_file("nonexistent_type", default="fallback.mat") == "fallback.mat"
-
-
-# ===========================================================================
-# JSON Round-Trip (acceptance criterion)
-# ===========================================================================
-
-
-class TestJsonRoundTrip:
-    """config == CorrectionConfig.model_validate_json(config.model_dump_json())"""
-
-    def test_minimal_config_roundtrip(self, minimal_config):
-        json_str = minimal_config.model_dump_json()
-        reloaded = CorrectionConfig.model_validate_json(json_str)
-        assert minimal_config == reloaded
-
-    def test_full_config_roundtrip(self, full_config):
-        json_str = full_config.model_dump_json()
-        reloaded = CorrectionConfig.model_validate_json(json_str)
-        assert full_config == reloaded
-
-    def test_callable_fields_excluded_from_json(self, minimal_config):
-        """_image_matching_override (PrivateAttr) is always excluded from JSON serialisation."""
-        minimal_config._image_matching_override = lambda: None
-        json_str = minimal_config.model_dump_json()
-        assert "image_matching_func" not in json_str
-        assert "_image_matching_override" not in json_str
-        # clean up
-        minimal_config._image_matching_override = None
-
-    def test_json_contains_expected_keys(self, minimal_config):
-        import json
-
-        data = json.loads(minimal_config.model_dump_json())
-        assert "n_iterations" in data
-        assert "parameters" in data
-        assert "geo" in data
-        assert "performance_threshold_m" in data
-        assert "performance_spec_percent" in data
-        assert "earth_radius_m" not in data
-
-    def test_path_fields_survive_roundtrip(self, minimal_config):
-        reloaded = CorrectionConfig.model_validate_json(minimal_config.model_dump_json())
-        assert isinstance(reloaded.geo.meta_kernel_file, Path)
-        assert reloaded.geo.meta_kernel_file == minimal_config.geo.meta_kernel_file
-        assert reloaded.geo.generic_kernel_dir == minimal_config.geo.generic_kernel_dir
-
-    def test_parameter_type_enum_survives_roundtrip(self, full_config):
-        reloaded = CorrectionConfig.model_validate_json(full_config.model_dump_json())
-        for orig, reld in zip(full_config.parameters, reloaded.parameters):
-            assert orig.ptype == reld.ptype
-
-    def test_parameter_data_fields_survive_roundtrip(self, full_config):
-        reloaded = CorrectionConfig.model_validate_json(full_config.model_dump_json())
-        for orig, reld in zip(full_config.parameters, reloaded.parameters):
-            assert orig.spec.sigma == reld.spec.sigma
-            assert orig.spec.units == reld.spec.units
-            assert orig.spec.bounds == reld.spec.bounds
-            assert orig.spec.field == reld.spec.field
-
-    def test_netcdf_config_survives_roundtrip(self, full_config):
-        reloaded = CorrectionConfig.model_validate_json(full_config.model_dump_json())
-        assert reloaded.netcdf is not None
-        assert reloaded.netcdf.performance_threshold_m == full_config.netcdf.performance_threshold_m
-        assert reloaded.netcdf.title == full_config.netcdf.title
-
-    def test_geo_model_roundtrip_standalone(self, geo):
-        json_str = geo.model_dump_json()
-        reloaded = GeolocationConfig.model_validate_json(json_str)
-        assert geo == reloaded
-
-    def test_netcdf_config_roundtrip_standalone(self, netcdf_cfg):
-        json_str = netcdf_cfg.model_dump_json()
-        reloaded = NetCDFConfig.model_validate_json(json_str)
-        assert netcdf_cfg == reloaded
-
-    def test_parameter_config_roundtrip_standalone(self, param_constant):
-        json_str = param_constant.model_dump_json()
-        reloaded = ParameterConfig.model_validate_json(json_str)
-        assert param_constant == reloaded
-
-    def test_parameter_spec_roundtrip_standalone(self):
-        pd = ParameterSpec(
-            current_value=[1.0, 2.0, 3.0],
-            bounds=[-300.0, 300.0],
-            sigma=30.0,
-            units="arcseconds",
-            coordinate_frames=["F1", "F2"],
-        )
-        reloaded = ParameterSpec.model_validate_json(pd.model_dump_json())
-        assert pd == reloaded
-
-    def test_roundtrip_with_none_seed(self, geo, param_constant):
-        config = CorrectionConfig(
-            seed=None,
-            n_iterations=3,
-            parameters=[param_constant],
-            geo=geo,
-            performance_threshold_m=100.0,
-            performance_spec_percent=50.0,
-        )
-        reloaded = CorrectionConfig.model_validate_json(config.model_dump_json())
-        assert reloaded.seed is None
-        assert config == reloaded
-
-
-# ===========================================================================
-# load_config_from_json – earth_radius_m deprecation
-# ===========================================================================
-
-
-class TestLoadConfigFromJsonEarthRadius:
-    """Verify that earth_radius_m in JSON is accepted (with a warning) and ignored."""
-
-    def _minimal_json(self, tmp_path, *, include_earth_radius: bool) -> Path:
-        """Write a minimal valid correction config JSON to a temp file."""
-        import json
-
-        # Use the parameter format that load_config_from_json expects
-        # (name + parameter_type, not ptype).
-        payload = {
-            "mission_config": {
-                "mission_name": "TEST",
-                "kernel_mappings": {
-                    "constant_kernel": {},
-                    "offset_kernel": {},
-                },
-            },
-            "geolocation": {
-                "instrument_name": "TEST_INST",
-                "time_field": "ugps_time",
-                "meta_kernel_file": str(tmp_path / "test.kernels.tm.json"),
-                "generic_kernel_dir": str(tmp_path),
-            },
-            "correction": {
-                "n_iterations": 2,
-                "performance_threshold_m": 250.0,
-                "performance_spec_percent": 39.0,
-                "parameters": [
-                    {
-                        "name": "time_correction",
-                        "parameter_type": "OFFSET_TIME",
-                        "initial_value": 0.0,
-                        "bounds": [-50.0, 50.0],
-                        "sigma": 7.0,
-                        "units": "milliseconds",
-                        "field": "ugps_time",
-                    }
-                ],
-            },
-        }
-        if include_earth_radius:
-            payload["correction"]["earth_radius_m"] = 6_378_140.0
-
-        path = tmp_path / "config.json"
-        path.write_text(json.dumps(payload))
-        return path
-
-    def test_json_without_earth_radius_loads_fine(self, tmp_path):
-        """Config without earth_radius_m should load without error."""
-        config_path = self._minimal_json(tmp_path, include_earth_radius=False)
-        config = load_config_from_json(config_path)
-        assert config.performance_threshold_m == 250.0
-
-    def test_json_with_earth_radius_loads_with_warning(self, tmp_path, caplog):
-        """Config with legacy earth_radius_m loads but emits a deprecation warning."""
-        import logging
-
-        config_path = self._minimal_json(tmp_path, include_earth_radius=True)
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.config"):
-            config = load_config_from_json(config_path)
-
-        assert config.performance_threshold_m == 250.0
-        assert any("earth_radius_m" in msg and "deprecated" in msg for msg in caplog.messages)
-
-
 # ---------------------------------------------------------------------------
 # CorrectionInput
 # ---------------------------------------------------------------------------
@@ -748,7 +395,7 @@ class TestCorrectionInput:
         assert isinstance(inp.science_file, Path)
         assert isinstance(inp.gcp_file, Path)
 
-    def test_run_correction_accepts_correction_input(self, minimal_config, tmp_path):
+    def test_run_correction_accepts_correction_input(self, minimal_setup, minimal_sweep, tmp_path):
         """run_correction() normalises CorrectionInput to tuples before calling loop()."""
         from unittest.mock import patch
 
@@ -763,11 +410,12 @@ class TestCorrectionInput:
 
         with patch("curryer.correction.pipeline.loop") as mock_loop:
             mock_loop.return_value = ([], {})
-            run_correction(minimal_config, tmp_path, [inp])
+            run_correction(minimal_setup, minimal_sweep, [inp], tmp_path)
 
         mock_loop.assert_called_once()
         call_args = mock_loop.call_args
-        normalized_inputs = call_args[0][2]  # third positional arg
+        # loop(setup, sweep, work_dir, normalized_inputs, output, resume) — inputs is the 4th positional arg.
+        normalized_inputs = call_args[0][3]
         assert len(normalized_inputs) == 1
         assert normalized_inputs[0] == (
             str(tmp_path / "tlm.csv"),
@@ -775,7 +423,7 @@ class TestCorrectionInput:
             str(tmp_path / "gcp.mat"),
         )
 
-    def test_run_correction_accepts_legacy_tuples(self, minimal_config, tmp_path):
+    def test_run_correction_accepts_legacy_tuples(self, minimal_setup, minimal_sweep, tmp_path):
         """run_correction() passes legacy tuples through unchanged."""
         from unittest.mock import patch
 
@@ -785,7 +433,246 @@ class TestCorrectionInput:
 
         with patch("curryer.correction.pipeline.loop") as mock_loop:
             mock_loop.return_value = ([], {})
-            run_correction(minimal_config, tmp_path, tuples)
+            run_correction(minimal_setup, minimal_sweep, tuples, tmp_path)
 
         call_args = mock_loop.call_args
-        assert call_args[0][2] == tuples
+        assert call_args[0][3] == tuples
+
+
+class TestSetupSweepOutput:
+    """The redesigned config surface: GeolocationSetup / Sweep / OutputConfig."""
+
+    def _geo(self) -> GeolocationConfig:
+        return GeolocationConfig(
+            meta_kernel_file=Path("tests/data/test.kernels.tm.json"),
+            generic_kernel_dir=Path("data/generic"),
+            instrument_name="CPRS_HYSICS",
+            time_field="corrected_timestamp",
+        )
+
+    def _setup(self) -> GeolocationSetup:
+        return GeolocationSetup(
+            geo=self._geo(),
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
+            data_config=DataConfig(file_format="netcdf", time_scale_factor=1.0),
+            calibration=CalibrationFiles(psf_file=Path("psf.mat"), los_vectors_file=Path("los.mat")),
+            spacecraft_position_name="riss_ctrs",
+            boresight_name="bhat_hs",
+            transformation_matrix_name="t_hs2ctrs",
+        )
+
+    def _sweep(self) -> Sweep:
+        return Sweep(
+            parameters=[
+                ParameterConfig(
+                    ptype=ParameterType.CONSTANT_KERNEL,
+                    config_file=Path("k.json"),
+                    spec={
+                        "current_value": [0.0, 0.0, 0.0],
+                        "bounds": [-300.0, 300.0],
+                        "sigma": 30.0,
+                        "units": "arcseconds",
+                    },
+                )
+            ],
+            search_strategy=SearchStrategy.RANDOM,
+            n_iterations=5,
+            seed=42,
+        )
+
+    def test_setup_construction_and_defaults(self):
+        setup = GeolocationSetup(
+            geo=self._geo(),
+            requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
+        )
+        assert setup.spacecraft_position_name == "sc_position"
+        assert setup.boresight_name == "boresight"
+        assert setup.transformation_matrix_name == "t_inst2ref"
+        assert setup.calibration is None
+        assert setup.image_matching_func is None
+
+    def test_setup_requires_geo_and_requirements(self):
+        with pytest.raises(ValidationError):
+            GeolocationSetup(geo=self._geo())  # missing requirements
+
+    def test_setup_json_round_trip_excludes_callable(self):
+        setup = self._setup()
+        setup.image_matching_func = lambda *a, **k: None  # callable hook
+        json_str = setup.model_dump_json()
+        assert "image_matching_func" not in json_str
+        restored = GeolocationSetup.model_validate_json(json_str)
+        assert restored.geo.instrument_name == "CPRS_HYSICS"
+        assert restored.requirements.performance_threshold_m == 250.0
+        assert restored.spacecraft_position_name == "riss_ctrs"
+        assert restored.calibration.psf_file == Path("psf.mat")
+
+    def test_sweep_defaults_and_round_trip(self):
+        sweep = self._sweep()
+        assert sweep.search_strategy is SearchStrategy.RANDOM
+        assert sweep.n_iterations == 5
+        assert sweep.grid_points_per_param == 10
+        restored = Sweep.model_validate_json(sweep.model_dump_json())
+        assert len(restored.parameters) == 1
+        assert restored.seed == 42
+
+    def test_sweep_requires_at_least_one_parameter(self):
+        with pytest.raises(ValidationError):
+            Sweep(parameters=[])
+
+    def test_output_config_filename_default_and_override(self):
+        assert OutputConfig().get_output_filename() == "correction_results.nc"
+        assert OutputConfig(output_filename="run.nc").get_output_filename() == "run.nc"
+
+    def test_load_config_files_from_json(self, tmp_path):
+        """load_config_files() parses setup/sweep/output sections of one JSON file."""
+        import json
+
+        cfg = {
+            "setup": {
+                "geo": {
+                    "meta_kernel_file": "m.json",
+                    "generic_kernel_dir": "data/generic",
+                    "instrument_name": "CPRS_HYSICS",
+                    "time_field": "corrected_timestamp",
+                },
+                "requirements": {"performance_threshold_m": 250.0, "performance_spec_percent": 39.0},
+                "data_config": {"file_format": "netcdf", "time_scale_factor": 1.0},
+                "calibration": {"psf_file": "psf.mat", "los_vectors_file": "los.mat"},
+                "spacecraft_position_name": "riss_ctrs",
+            },
+            "sweep": {
+                "search_strategy": "grid",
+                "grid_points_per_param": 7,
+                "parameters": [
+                    {
+                        "ptype": "CONSTANT_KERNEL",
+                        "config_file": "frame.attitude.ck.json",
+                        "spec": {
+                            "current_value": [0.0, 0.0, 0.0],
+                            "bounds": [-300.0, 300.0],
+                            "sigma": 30.0,
+                            "units": "arcseconds",
+                        },
+                    },
+                    {
+                        "ptype": "OFFSET_TIME",
+                        "config_file": None,
+                        "spec": {
+                            "field": "corrected_timestamp",
+                            "current_value": 0.0,
+                            "bounds": [-50.0, 50.0],
+                            "sigma": 7.0,
+                            "units": "milliseconds",
+                        },
+                    },
+                ],
+            },
+            "output": {"output_filename": "results.nc"},
+        }
+        path = tmp_path / "cfg.json"
+        path.write_text(json.dumps(cfg))
+
+        setup, sweep, output = load_config_files(path)
+        assert setup.geo.instrument_name == "CPRS_HYSICS"
+        assert setup.requirements.performance_threshold_m == 250.0
+        assert setup.spacecraft_position_name == "riss_ctrs"
+        assert setup.calibration.psf_file == Path("psf.mat")
+        assert sweep.search_strategy is SearchStrategy.GRID_SEARCH
+        assert sweep.grid_points_per_param == 7
+        assert len(sweep.parameters) == 2
+        assert sweep.parameters[1].ptype is ParameterType.OFFSET_TIME
+        assert output.get_output_filename() == "results.nc"
+
+    def test_load_setup_and_sweep_separately(self, tmp_path):
+        import json
+
+        cfg = {
+            "setup": {
+                "geo": {
+                    "meta_kernel_file": "m.json",
+                    "generic_kernel_dir": "g",
+                    "instrument_name": "X",
+                    "time_field": "t",
+                },
+                "requirements": {"performance_threshold_m": 100.0, "performance_spec_percent": 50.0},
+            },
+            "sweep": {"parameters": [{"ptype": "OFFSET_TIME", "spec": {"field": "t"}}]},
+        }
+        path = tmp_path / "cfg.json"
+        path.write_text(json.dumps(cfg))
+        assert load_setup_from_json(path).geo.instrument_name == "X"
+        assert load_sweep_from_json(path).parameters[0].ptype is ParameterType.OFFSET_TIME
+
+
+# ---------------------------------------------------------------------------
+# Sweep ergonomics — with_strategy / update_param
+# ---------------------------------------------------------------------------
+
+
+class TestSweepErgonomics:
+    """Cheap, re-validated copies for rapid parameter experimentation."""
+
+    def _sweep(self) -> Sweep:
+        return Sweep(
+            seed=1,
+            n_iterations=10,
+            parameters=[
+                ParameterConfig(
+                    ptype=ParameterType.OFFSET_KERNEL,
+                    config_file=Path("cprs_az_v01.attitude.ck.json"),
+                    spec={"field": "hps.az_ang_nonlin", "bounds": [-300.0, 300.0], "sigma": 30.0},
+                ),
+                ParameterConfig(
+                    ptype=ParameterType.OFFSET_TIME,
+                    config_file=None,
+                    spec={"field": "corrected_timestamp", "bounds": [-50.0, 50.0], "sigma": 7.0},
+                ),
+            ],
+        )
+
+    def test_with_strategy_changes_strategy_and_leaves_original(self):
+        sweep = self._sweep()
+        grid = sweep.with_strategy("grid", grid_points_per_param=5)
+        assert grid.search_strategy is SearchStrategy.GRID_SEARCH
+        assert grid.grid_points_per_param == 5
+        # Original untouched
+        assert sweep.search_strategy is SearchStrategy.RANDOM
+        assert sweep.grid_points_per_param == 10
+
+    def test_with_strategy_accepts_enum(self):
+        sweep = self._sweep()
+        repro = sweep.with_strategy(SearchStrategy.SINGLE_OFFSET, n_iterations=200, seed=7)
+        assert repro.search_strategy is SearchStrategy.SINGLE_OFFSET
+        assert repro.n_iterations == 200
+        assert repro.seed == 7
+
+    def test_with_strategy_revalidates(self):
+        with pytest.raises(ValidationError):
+            self._sweep().with_strategy("random", n_iterations=0)
+
+    def test_update_param_by_field(self):
+        sweep = self._sweep()
+        wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0])
+        assert wider.parameters[0].spec.bounds == [-100.0, 100.0]
+        # Original untouched
+        assert sweep.parameters[0].spec.bounds == [-300.0, 300.0]
+
+    def test_update_param_by_index(self):
+        wider = self._sweep().update_param(0, sigma=5.0)
+        assert wider.parameters[0].spec.sigma == 5.0
+
+    def test_update_param_by_config_file_stem(self):
+        updated = self._sweep().update_param("cprs_az_v01.attitude.ck", units="arcseconds")
+        assert updated.parameters[0].spec.units == "arcseconds"
+
+    def test_update_param_unknown_field_rejected(self):
+        with pytest.raises(ValidationError):
+            self._sweep().update_param("hps.az_ang_nonlin", bogus_field=1)
+
+    def test_update_param_unknown_selector_rejected(self):
+        with pytest.raises(KeyError):
+            self._sweep().update_param("no.such.field")
+
+    def test_update_param_index_out_of_range_rejected(self):
+        with pytest.raises(IndexError):
+            self._sweep().update_param(99, sigma=1.0)

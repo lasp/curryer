@@ -54,10 +54,12 @@ import sys
 from pathlib import Path
 
 from curryer.correction import (
-    CorrectionConfig,
     CorrectionInput,
     CorrectionResult,
-    load_config_from_json,
+    GeolocationSetup,
+    OutputConfig,
+    Sweep,
+    load_config_files,
     run_correction,
 )
 
@@ -77,8 +79,8 @@ _GENERIC_DIR = _REPO_ROOT / "data" / "generic"
 # ---------------------------------------------------------------------------
 
 
-def _load_config(config_path: Path | None) -> CorrectionConfig:
-    """Load a :class:`CorrectionConfig` from JSON or via the CLARREO factory.
+def _load_config(config_path: Path | None) -> tuple[GeolocationSetup, Sweep, OutputConfig]:
+    """Load ``(setup, sweep, output)`` from JSON or via the CLARREO factory.
 
     Parameters
     ----------
@@ -88,11 +90,11 @@ def _load_config(config_path: Path | None) -> CorrectionConfig:
 
     Returns
     -------
-    CorrectionConfig
+    tuple of (GeolocationSetup, Sweep, OutputConfig)
     """
     if config_path is not None:
         print(f"  Loading config from: {config_path}")
-        return load_config_from_json(config_path)
+        return load_config_files(config_path)
 
     # Use the CLARREO factory — see examples/correction/clarreo_config.py for the
     # full parameter list and inline comments explaining each field.
@@ -188,23 +190,20 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
     # ------------------------------------------------------------------
     print("\n[1/3] Loading configuration…")
     try:
-        config = _load_config(config_path)
+        setup, sweep, output = _load_config(config_path)
     except Exception as exc:  # noqa: BLE001
         logger.error("Could not load config: %s", exc)
         return 1
 
-    print(f"  Iterations  : {config.n_iterations}")
-    print(f"  Strategy    : {config.search_strategy.value}")
-    print(f"  Parameters  : {len(config.parameters)}")
-    print(f"  Threshold   : {config.performance_threshold_m} m")
-    print(f"  Spec        : {config.performance_spec_percent}%")
+    print(f"  Iterations  : {sweep.n_iterations}")
+    print(f"  Strategy    : {sweep.search_strategy.value}")
+    print(f"  Parameters  : {len(sweep.parameters)}")
+    print(f"  Threshold   : {setup.requirements.performance_threshold_m} m")
+    print(f"  Spec        : {setup.requirements.performance_spec_percent}%")
 
-    # To override search strategy or iteration count at runtime:
-    #   from curryer.correction import SearchStrategy
-    #   config = config.model_copy(update={
-    #       "search_strategy": SearchStrategy.GRID_SEARCH,
-    #       "n_iterations": 100,
-    #   })
+    # The durable `setup` is held fixed; the lightweight `sweep` is what you
+    # vary between runs.  See the "varying a parameter between runs" snippet at
+    # the end of this file for the recommended re-run workflow.
 
     # ------------------------------------------------------------------
     # Step 2: define inputs
@@ -228,7 +227,8 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
     # Step 3: run the correction loop
     # ------------------------------------------------------------------
     print(f"\n[3/3] Running run_correction()…  (work_dir={work_dir})")
-    result: CorrectionResult = run_correction(config, work_dir, inputs)
+    # NOTE arg order: inputs BEFORE work_dir (run_correction differs from loop()).
+    result: CorrectionResult = run_correction(setup, sweep, inputs, work_dir, output)
 
     if not result.results:
         logger.error("No results produced — check logs for errors.")
@@ -244,6 +244,28 @@ def run(config_path: Path | None = None, work_dir: Path | None = None) -> int:
 
     if result.netcdf_path is not None:
         print(f"\n  Results saved: {result.netcdf_path}")
+
+    # ------------------------------------------------------------------
+    # Varying a ParameterSpec between runs
+    # ------------------------------------------------------------------
+    # The `setup` is durable — hold it fixed and only vary the lightweight
+    # `sweep` to explore a different experiment.  Both `Sweep.update_param`
+    # and `Sweep.with_strategy` return re-validated *copies*, so the original
+    # sweep is untouched and you can re-run run_correction() with the SAME
+    # setup and inputs.
+    print("\n  Re-running with a refined sweep (same setup, same inputs):")
+
+    # Tighten the search around the azimuth bias (narrower bounds + smaller sigma).
+    # update_param's selector is an index, a spec.field, or a config_file stem.
+    tighter = sweep.update_param("hps.az_ang_nonlin", bounds=[-100.0, 100.0], sigma=10.0)
+
+    # Or switch to a deterministic grid sweep instead of the random walk.
+    grid = sweep.with_strategy("grid", grid_points_per_param=5)
+
+    for label, refined in (("tighter random", tighter), ("grid", grid)):
+        print(f"    {label}: strategy={refined.search_strategy.value}, n_iterations={refined.n_iterations}")
+        # Re-run with the refined experiment — setup/inputs/output are unchanged:
+        #   run_correction(setup, refined, inputs, work_dir, output)
 
     print("\n" + "=" * 68)
     print("  Correction loop complete.")
@@ -274,7 +296,9 @@ def _print_dry_run_summary(missing_files: list[Path], missing_generic: bool) -> 
     print()
     print("    from curryer.correction import run_correction, CorrectionInput, CorrectionResult")
     print()
-    print("    result: CorrectionResult = run_correction(config, work_dir, inputs)")
+    print("    # setup, sweep, output = load_config_files(config_path)  (or the CLARREO factory)")
+    print("    # NOTE arg order: inputs BEFORE work_dir.")
+    print("    result: CorrectionResult = run_correction(setup, sweep, inputs, work_dir, output)")
     print()
     print("    # Inspect the best parameter set")
     print("    print('Best RMS (mean):', result.best_rms_m)")
@@ -282,6 +306,11 @@ def _print_dry_run_summary(missing_files: list[Path], missing_generic: bool) -> 
     print()
     print("    # NetCDF output is written by run_correction(); use its path")
     print("    print('NetCDF saved to:', result.netcdf_path)")
+    print()
+    print("    # Vary the experiment cheaply (returns a re-validated copy; setup unchanged):")
+    print("    tighter = sweep.update_param('hps.az_ang_nonlin', bounds=[-100.0, 100.0], sigma=10.0)")
+    print("    grid = sweep.with_strategy('grid', grid_points_per_param=5)")
+    print("    # run_correction(setup, tighter, inputs, work_dir, output)")
     print()
     print("  See also:")
     print("    examples/correction/example_verification.py  (fully runnable demo)")

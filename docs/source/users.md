@@ -67,11 +67,11 @@ against mission requirements. Two entry points:
 **5-line quickstart (verification):**
 
 ```python
-from curryer.correction import CorrectionConfig, verify
+from curryer.correction import GeolocationSetup, load_setup_from_json, verify
 import xarray as xr
 
-config = CorrectionConfig(...)          # or load_config_from_json("config.json")
-result = verify(config, image_matching_results=[xr.open_dataset("matching.nc")])
+setup = GeolocationSetup(...)           # or load_setup_from_json("config.json")
+result = verify(setup, image_matching_results=[xr.open_dataset("matching.nc")])
 print(result.summary_table)            # ASCII table with per-GCP pass/fail
 print("Passed:", result.passed)
 ```

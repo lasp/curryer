@@ -1,85 +1,77 @@
 {
-  "_comment": "Generic correction config template. Copy this file, replace all placeholders, and load with load_config_from_json().",
-  "mission_config": {
-    "mission_name": "YOUR_MISSION",
-    "_comment_instrument": "SPICE instrument name (e.g. CPRS_HYSICS). Used for geolocation.",
-    "instrument_name": "YOUR_INSTRUMENT",
-    "kernel_mappings": {
-      "_comment": "Maps parameter base-names to kernel JSON files via substring matching.",
-      "constant_kernel": {
-        "frame_a": "path/to/frame_a.attitude.ck.json",
-        "frame_b": "path/to/frame_b.attitude.ck.json"
-      },
-      "offset_kernel": {
-        "sensor_az": "path/to/sensor_az.attitude.ck.json"
-      }
-    }
+  "_comment": "Generic correction config template in the three-section schema (setup / sweep / output). Copy this file, replace the placeholder paths and parameter specs, then load with load_config_files(). Top-level keys starting with '_' are documentation only and are ignored by the loader.",
+  "setup": {
+    "geo": {
+      "meta_kernel_file": "path/to/your_mission.kernels.tm.json",
+      "generic_kernel_dir": "data/generic",
+      "instrument_name": "YOUR_INSTRUMENT",
+      "time_field": "YOUR_TIME_COLUMN",
+      "dynamic_kernels": [
+        "path/to/sc_ephemeris.spk.json",
+        "path/to/sc_attitude.ck.json"
+      ]
+    },
+    "requirements": {
+      "performance_threshold_m": 250.0,
+      "performance_spec_percent": 39.0
+    },
+    "data_config": {
+      "file_format": "csv",
+      "time_scale_factor": 1.0
+    },
+    "spacecraft_position_name": "sc_position",
+    "boresight_name": "boresight",
+    "transformation_matrix_name": "t_inst2ref"
   },
-  "correction": {
-    "_comment": "Core correction settings. n_iterations and seed control the parameter sweep.",
-    "n_iterations": 50,
+  "sweep": {
+    "search_strategy": "random",
     "seed": 42,
-    "_comment_threshold": "REQUIREMENTS: change when mission specs change.",
-    "performance_threshold_m": 250.0,
-    "performance_spec_percent": 39.0,
+    "n_iterations": 50,
     "parameters": [
       {
-        "_comment": "CONSTANT_KERNEL: vary a fixed attitude frame (roll/pitch/yaw together).",
-        "name": "frame_a_roll",
-        "parameter_type": "CONSTANT_KERNEL",
-        "initial_value": 0.0,
-        "bounds": [-300.0, 300.0],
-        "sigma": 50.0,
-        "units": "arcseconds"
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "current_value": [0.0, 0.0, 0.0],
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["FRAME_A_FROM", "FRAME_A_TO"]
+        }
       },
       {
-        "_comment": "Add _pitch and _yaw entries with the same base name to group them.",
-        "name": "frame_a_pitch",
-        "parameter_type": "CONSTANT_KERNEL",
-        "initial_value": 0.0,
-        "bounds": [-300.0, 300.0],
-        "sigma": 50.0,
-        "units": "arcseconds"
+        "ptype": "OFFSET_KERNEL",
+        "config_file": "path/to/sensor_az.attitude.ck.json",
+        "spec": {
+          "field": "YOUR_TELEMETRY_FIELD",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 30.0,
+          "units": "arcseconds",
+          "transformation_type": "angle_bias",
+          "coordinate_frames": ["SENSOR_AZIMUTH"]
+        }
       },
       {
-        "name": "frame_a_yaw",
-        "parameter_type": "CONSTANT_KERNEL",
-        "initial_value": 0.0,
-        "bounds": [-300.0, 300.0],
-        "sigma": 50.0,
-        "units": "arcseconds"
-      },
-      {
-        "_comment": "OFFSET_KERNEL: add a scalar bias to a telemetry column and regenerate kernel.",
-        "name": "sensor_az",
-        "parameter_type": "OFFSET_KERNEL",
-        "application_target": { "field_name": "YOUR_TELEMETRY_FIELD" },
-        "initial_value": 0.0,
-        "bounds": [-300.0, 300.0],
-        "sigma": 30.0,
-        "units": "arcseconds"
-      },
-      {
-        "_comment": "OFFSET_TIME: shift all science timestamps by a constant.",
-        "name": "time_correction",
-        "parameter_type": "OFFSET_TIME",
-        "application_target": { "field_name": "YOUR_TIME_FIELD" },
-        "initial_value": 0.0,
-        "bounds": [-50.0, 50.0],
-        "sigma": 7.0,
-        "units": "milliseconds"
+        "ptype": "OFFSET_TIME",
+        "config_file": null,
+        "spec": {
+          "field": "YOUR_TIME_FIELD",
+          "current_value": 0.0,
+          "bounds": [-50.0, 50.0],
+          "sigma": 7.0,
+          "units": "milliseconds"
+        }
       }
     ]
   },
-  "geolocation": {
-    "_comment": "SPICE kernel paths and instrument identity for geolocation.",
-    "meta_kernel_file": "path/to/your_mission.kernels.tm.json",
-    "generic_kernel_dir": "data/generic",
-    "instrument_name": "YOUR_INSTRUMENT",
-    "time_field": "YOUR_TIME_COLUMN",
-    "dynamic_kernels": [
-      "path/to/sc_ephemeris.spk.json",
-      "path/to/sc_attitude.ck.json"
-    ]
+  "output": {
+    "netcdf": {
+      "performance_threshold_m": 250.0,
+      "title": "Correction Geolocation Analysis Results",
+      "description": "Parameter sensitivity analysis"
+    },
+    "output_filename": "correction_results.nc"
   }
 }

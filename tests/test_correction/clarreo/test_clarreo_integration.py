@@ -25,7 +25,7 @@ from _synthetic_helpers import (
     _generate_synthetic_boresights,
     synthetic_gcp_pairing,
 )
-from clarreo_config import create_clarreo_correction_config
+from clarreo_config import create_clarreo_setup_sweep
 
 from curryer.correction.config import DataConfig
 
@@ -39,12 +39,12 @@ def work_dir(tmp_path):
 
 def test_upstream_configuration(clarreo_gcs_data_dir, clarreo_generic_dir):
     """Upstream configuration loads and validates correctly."""
-    config = create_clarreo_correction_config(clarreo_gcs_data_dir, clarreo_generic_dir)
-    config.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    assert config.geo.instrument_name == "CPRS_HYSICS"
-    assert len(config.parameters) > 0
-    assert config.seed == 42
-    assert config.data_config is not None
+    setup, sweep, _output = create_clarreo_setup_sweep(clarreo_gcs_data_dir, clarreo_generic_dir)
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    assert setup.geo.instrument_name == "CPRS_HYSICS"
+    assert len(sweep.parameters) > 0
+    assert sweep.seed == 42
+    assert setup.data_config is not None
 
 
 def test_downstream_test_case_discovery(clarreo_image_match_data_dir):

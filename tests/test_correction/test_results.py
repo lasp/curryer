@@ -24,12 +24,14 @@ import pytest
 import xarray as xr
 
 from curryer.correction.config import (
-    CorrectionConfig,
     GeolocationConfig,
+    GeolocationSetup,
     ParameterConfig,
     ParameterType,
     RequirementsConfig,
+    Sweep,
 )
+from curryer.correction.io_config import NetCDFConfig
 from curryer.correction.results import (
     CorrectionResult,
     ParameterSetResult,
@@ -59,21 +61,29 @@ def _make_geo() -> GeolocationConfig:
     )
 
 
-def _make_config(**overrides) -> CorrectionConfig:
-    defaults = dict(
-        n_iterations=3,
+def _make_setup_sweep(
+    performance_threshold_m: float = _THRESHOLD_M,
+    performance_spec_percent: float = _SPEC_PCT,
+    n_iterations: int = 3,
+) -> tuple[GeolocationSetup, Sweep, NetCDFConfig]:
+    setup = GeolocationSetup(
+        geo=_make_geo(),
+        requirements=RequirementsConfig(
+            performance_threshold_m=performance_threshold_m,
+            performance_spec_percent=performance_spec_percent,
+        ),
+    )
+    sweep = Sweep(
+        n_iterations=n_iterations,
         parameters=[
             ParameterConfig(
                 ptype=ParameterType.CONSTANT_KERNEL,
                 spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
             )
         ],
-        geo=_make_geo(),
-        performance_threshold_m=_THRESHOLD_M,
-        performance_spec_percent=_SPEC_PCT,
     )
-    defaults.update(overrides)
-    return CorrectionConfig(**defaults)
+    netcdf_config = NetCDFConfig(performance_threshold_m=performance_threshold_m)
+    return setup, sweep, netcdf_config
 
 
 def _make_netcdf_data(n_params: int = 3, n_pairs: int = 2, threshold_m: float = 250.0) -> dict:
@@ -339,9 +349,9 @@ class TestFormatCorrectionSummaryTable:
 
 class TestBuildCorrectionResult:
     def test_basic_construction(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data(n_params=3, n_pairs=2)
-        result = build_correction_result(config, [], nc, Path("/tmp/out.nc"), elapsed_time_s=1.5)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, Path("/tmp/out.nc"), elapsed_time_s=1.5)
 
         assert isinstance(result, CorrectionResult)
         assert result.n_parameter_sets == 3
@@ -350,68 +360,68 @@ class TestBuildCorrectionResult:
         assert result.netcdf_path == Path("/tmp/out.nc")
 
     def test_best_index_is_lowest_mean_rms(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data(n_params=3, n_pairs=2)
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         # Mean RMS values are 105, 155, 205 (from the helper); best is index 0
         assert result.best_index == 0
         assert result.best_rms_m < result.worst_rms_m
 
     def test_all_sets_sorted_ascending(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data(n_params=5, n_pairs=2)
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         rms_values = [ps.mean_rms_m for ps in result.all_parameter_sets]
         assert rms_values == sorted(rms_values)
 
     def test_met_threshold_true_when_all_pairs_below(self):
         """If all pair RMS < threshold, pct_below = 100% ≥ spec → met."""
         # Use very large threshold so all errors are "below"
-        config = _make_config(
+        setup, sweep, netcdf_config = _make_setup_sweep(
             performance_threshold_m=10_000.0,
             performance_spec_percent=39.0,
         )
         nc = _make_netcdf_data(n_params=2, n_pairs=2, threshold_m=10_000.0)
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert result.met_threshold is True
         assert "meets performance requirements" in result.recommendation
 
     def test_met_threshold_false_when_no_pairs_below(self):
         """If no pair RMS < threshold, pct_below = 0% < spec → not met."""
-        config = _make_config(
+        setup, sweep, netcdf_config = _make_setup_sweep(
             performance_threshold_m=0.001,  # impossibly tight
             performance_spec_percent=39.0,
         )
         nc = _make_netcdf_data(n_params=2, n_pairs=2, threshold_m=0)
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert result.met_threshold is False
         assert "No parameter set met performance requirements" in result.recommendation
 
     def test_all_nan_rms_does_not_crash(self):
         """Degenerate case: all RMS values are NaN — build should not raise."""
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data(n_params=2, n_pairs=2)
         nc["mean_rms_all_pairs"] = np.array([float("nan"), float("nan")])
         nc["rms_error_m"][:] = float("nan")
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert math.isnan(result.best_rms_m)
         assert math.isnan(result.worst_rms_m)
         # Table should still render without crash
         assert "┌" in result.summary_table
 
     def test_raw_data_preserved(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data()
         raw = [{"iteration": 0, "rms_error_m": 100.0}]
-        result = build_correction_result(config, raw, nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, raw, nc, None, 0.0)
         # Pydantic copies list/dict on model init; verify by value not identity
         assert result.results == raw
         assert set(result.netcdf_data.keys()) == set(nc.keys())
 
     def test_config_snapshot_contains_key_fields(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data()
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         snap = result.config_snapshot
         assert "n_iterations" in snap
         assert "performance_threshold_m" in snap
@@ -419,9 +429,9 @@ class TestBuildCorrectionResult:
         assert "search_strategy" in snap
 
     def test_summary_table_included(self):
-        config = _make_config()
+        setup, sweep, netcdf_config = _make_setup_sweep()
         nc = _make_netcdf_data()
-        result = build_correction_result(config, [], nc, None, 0.0)
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert "┌" in result.summary_table
         assert "Correction Sweep Summary" in result.summary_table
 

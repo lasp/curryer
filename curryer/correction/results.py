@@ -15,7 +15,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
-    from curryer.correction.config import CorrectionConfig
+    from curryer.correction.config import GeolocationSetup, NetCDFConfig, Sweep
 
 
 class ParameterSetResult(BaseModel):
@@ -55,7 +55,7 @@ class CorrectionResult(BaseModel):
     by default because they contain non-JSON-serialisable types (xr.Dataset,
     numpy arrays).  Access them directly on the object when raw data is needed::
 
-        result = run_correction(config, work_dir, inputs)
+        result = run_correction(setup, sweep, inputs, work_dir)
         result.best_parameter_set   # dict[str, float] — use this
         result.results              # raw per-iteration dicts — advanced use only
         result.netcdf_data          # raw numpy arrays — advanced use only
@@ -251,7 +251,9 @@ def _format_correction_summary_table(
 
 
 def build_correction_result(
-    config: CorrectionConfig,
+    setup: GeolocationSetup,
+    sweep: Sweep,
+    netcdf_config: NetCDFConfig,
     results: list,
     netcdf_data: dict,
     netcdf_path: Path | None,
@@ -261,8 +263,12 @@ def build_correction_result(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        The correction configuration used for the run.
+    setup : GeolocationSetup
+        The durable mission setup used for the run (requirements/thresholds).
+    sweep : Sweep
+        The parameter-variation experiment (parameters, search strategy, seed).
+    netcdf_config : NetCDFConfig
+        Resolved NetCDF metadata config (for parameter variable names).
     results : list
         Per-iteration result dicts from :func:`~curryer.correction.pipeline.loop`.
     netcdf_data : dict
@@ -301,19 +307,15 @@ def build_correction_result(
     from curryer.correction.config import ParameterType  # local import to avoid cycles
 
     param_keys: list[str] = []
-    for p in config.parameters:
+    for p in sweep.parameters:
         if p.ptype == ParameterType.CONSTANT_KERNEL:
             for angle in ("roll", "pitch", "yaw"):
-                param_keys.append(config.netcdf.get_parameter_netcdf_metadata(p, angle).variable_name)
+                param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p, angle).variable_name)
         else:
-            param_keys.append(config.netcdf.get_parameter_netcdf_metadata(p).variable_name)
+            param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
 
     # Keep only keys that are present and are 1-D arrays in netcdf_data
-    param_keys = [
-        k
-        for k in param_keys
-        if isinstance(netcdf_data.get(k), np.ndarray) and netcdf_data[k].ndim == 1
-    ]
+    param_keys = [k for k in param_keys if isinstance(netcdf_data.get(k), np.ndarray) and netcdf_data[k].ndim == 1]
 
     # Build per-set results
     all_sets: list[ParameterSetResult] = []
@@ -341,8 +343,9 @@ def build_correction_result(
         pair_errors = [float(rms_grid[best_idx, pi]) for pi in range(n_gcp_pairs)]
         valid_errors = [e for e in pair_errors if math.isfinite(e)]
         if valid_errors:
-            pct_below = sum(1 for e in valid_errors if e < config.performance_threshold_m) / len(valid_errors) * 100
-            met_threshold = pct_below >= config.performance_spec_percent
+            threshold_m = setup.requirements.performance_threshold_m
+            pct_below = sum(1 for e in valid_errors if e < threshold_m) / len(valid_errors) * 100
+            met_threshold = pct_below >= setup.requirements.performance_spec_percent
 
     # Human-readable recommendation
     if met_threshold:
@@ -361,13 +364,13 @@ def build_correction_result(
 
     summary_table = _format_correction_summary_table(all_sets[:10], n_param_sets, n_gcp_pairs, met_threshold)
 
-    search_strategy = config.search_strategy
+    search_strategy = sweep.search_strategy
     config_snapshot = {
-        "seed": config.seed,
-        "n_iterations": config.n_iterations,
+        "seed": sweep.seed,
+        "n_iterations": sweep.n_iterations,
         "search_strategy": search_strategy.value if hasattr(search_strategy, "value") else str(search_strategy),
-        "performance_threshold_m": config.performance_threshold_m,
-        "performance_spec_percent": config.performance_spec_percent,
+        "performance_threshold_m": setup.requirements.performance_threshold_m,
+        "performance_spec_percent": setup.requirements.performance_spec_percent,
     }
 
     return CorrectionResult(

@@ -12,13 +12,16 @@ This module creates and applies parameter-specific SPICE kernels:
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from curryer.correction.config import CorrectionConfig, ParameterConfig, ParameterType
+from curryer.correction.config import ParameterConfig, ParameterType
 from curryer.kernels import create
+
+if TYPE_CHECKING:
+    from curryer.correction.config import GeolocationSetup
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     Returns:
         Modified copy of input_data with parameter offsets applied
     """
-    logger.info(f"Applying {config.ptype.name} offset to {config.spec.get('field', 'unknown field')}")
+    logger.info(f"Applying {config.ptype.name} offset to {config.spec.field or 'unknown field'}")
 
     # Make a copy to avoid modifying the original
     if isinstance(input_data, pd.DataFrame):
@@ -48,7 +51,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
         # OFFSET_KERNEL is ONLY for angle biases, not time offsets
         # Valid units: "arcseconds" (converted to radians) or None (radians assumed)
         # For time offsets, use OFFSET_TIME instead
-        field_name = config.spec.get("field")
+        field_name = config.spec.field
         if not field_name:
             raise ValueError("OFFSET_KERNEL parameter requires 'field' to be specified in config")
 
@@ -57,7 +60,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             # OFFSET_KERNEL is for angle biases only (azimuth/elevation angles)
             offset_value = param_data
             original_value = offset_value
-            if config.spec.get("units") == "arcseconds":
+            if config.spec.units == "arcseconds":
                 # Convert arcseconds to radians for application
                 offset_value = np.deg2rad(param_data / 3600.0)
                 logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
@@ -86,7 +89,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
     elif config.ptype == ParameterType.OFFSET_TIME:
         # Apply time offset to science frame timing
         # NOTE: param_data is in seconds while target field (e.g., corrected_timestamp) is typically in microseconds
-        field_name = config.spec.get("field", "corrected_timestamp")
+        field_name = config.spec.field or "corrected_timestamp"
         if hasattr(modified_data, "__getitem__") and field_name in modified_data:
             # param_data is already in seconds (converted by load_param_sets)
             # Convert seconds to microseconds for the timestamp field
@@ -94,7 +97,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             offset_value_us = param_data * 1000000.0  # seconds to microseconds
 
             logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
-            units = config.spec.get("units", "seconds")
+            units = config.spec.units or "seconds"
             if units == "milliseconds":
                 logger.info(f"  Offset: {offset_value_seconds * 1000.0:.6f} ms (configured) = {offset_value_us:.6f} µs")
             elif units == "microseconds":
@@ -139,7 +142,7 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
 
 def _create_dynamic_kernels(
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     work_dir: Path,
     tlm_dataset: pd.DataFrame,
     creator: "create.KernelCreator",
@@ -152,8 +155,8 @@ def _create_dynamic_kernels(
 
     Parameters
     ----------
-    config : CorrectionConfig
-        Configuration with geo settings and dynamic_kernels list
+    setup : GeolocationSetup
+        Setup with geo settings and dynamic_kernels list
     work_dir : Path
         Working directory for kernel files
     tlm_dataset : pd.DataFrame
@@ -178,7 +181,7 @@ def _create_dynamic_kernels(
     """
     logger.info("    Creating dynamic kernels from telemetry...")
     dynamic_kernels = []
-    for kernel_config in config.geo.dynamic_kernels:
+    for kernel_config in setup.geo.dynamic_kernels:
         dynamic_kernels.append(
             creator.write_from_json(
                 kernel_config,
@@ -196,7 +199,7 @@ def _create_parameter_kernels(
     tlm_dataset: pd.DataFrame,
     sci_dataset: pd.DataFrame,
     ugps_times: Any,
-    config: "CorrectionConfig",
+    setup: "GeolocationSetup",
     creator: "create.KernelCreator",
 ) -> tuple[list[Path], Any]:
     """Create parameter-specific SPICE kernels and apply time offsets.
@@ -217,8 +220,8 @@ def _create_parameter_kernels(
         Science frame time data (may be modified for OFFSET_TIME), may include optional measurement columns
     ugps_times : array-like
         Original time array from science dataset
-    config : CorrectionConfig
-        Configuration with geo settings
+    setup : GeolocationSetup
+        Setup with geo settings
     creator : create.KernelCreator
         KernelCreator instance for writing kernels
 
@@ -232,7 +235,7 @@ def _create_parameter_kernels(
     Examples
     --------
     >>> param_kernels, times = _create_parameter_kernels(
-    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, config, creator
+    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, setup, creator
     ... )
     >>> # Use in SPICE context with dynamic kernels
     >>> with sp.ext.load_kernel([dynamic_kernels, param_kernels]):
@@ -245,17 +248,17 @@ def _create_parameter_kernels(
     logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Log parameter details
-        param_name = a_param.spec.get("field", "unknown")
+        param_name = a_param.spec.field or "unknown"
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
             logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            units = a_param.spec.get("units", "")
+            units = a_param.spec.units or ""
             logger.info(
                 f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
                 f"(internal units; configured units: {units or 'unspecified'})"
             )
         elif a_param.ptype == ParameterType.OFFSET_TIME:
-            units = a_param.spec.get("units", "")
+            units = a_param.spec.units or ""
             logger.info(
                 f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
                 f"(internal units; configured units: {units or 'unspecified'})"
@@ -288,7 +291,7 @@ def _create_parameter_kernels(
         elif a_param.ptype == ParameterType.OFFSET_TIME:
             # Aka: Frame-times...
             sci_dataset_alt = apply_offset(a_param, p_data, sci_dataset)
-            ugps_times_modified = sci_dataset_alt[config.geo.time_field].values
+            ugps_times_modified = sci_dataset_alt[setup.geo.time_field].values
 
         else:
             raise NotImplementedError(a_param.ptype)
