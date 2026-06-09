@@ -25,7 +25,16 @@ Usage::
 
 import logging
 
-from curryer.correction import correction
+from curryer.correction.config import (
+    GeolocationConfig,
+    GeolocationSetup,
+    NetCDFConfig,
+    OutputConfig,
+    ParameterConfig,
+    ParameterType,
+    RequirementsConfig,
+    Sweep,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +64,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
     parameters = [
         # ===== CONSTANT_KERNEL Parameters (9 total) =====
         # BASE frame corrections (roll, pitch, yaw)
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.CONSTANT_KERNEL,
+        ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_base_v01.attitude.ck.json",
             spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values in arcseconds
@@ -69,8 +78,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
             ),
         ),
         # YOKE frame corrections (roll, pitch, yaw)
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.CONSTANT_KERNEL,
+        ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
             spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
@@ -83,8 +92,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
             ),
         ),
         # HYSICS frame corrections (roll, pitch, yaw)
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.CONSTANT_KERNEL,
+        ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL,
             config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
             spec=dict(
                 current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
@@ -98,8 +107,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
         ),
         # ===== OFFSET_KERNEL Parameters (2 total) =====
         # Azimuth angle bias correction
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.OFFSET_KERNEL,
+        ParameterConfig(
+            ptype=ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_az_v01.attitude.ck.json",
             spec=dict(
                 field="hps.az_ang_nonlin",  # Telemetry field to modify
@@ -113,8 +122,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
             ),
         ),
         # Elevation angle bias correction
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.OFFSET_KERNEL,
+        ParameterConfig(
+            ptype=ParameterType.OFFSET_KERNEL,
             config_file=data_dir / "cprs_el_v01.attitude.ck.json",
             spec=dict(
                 field="hps.el_ang_nonlin",  # Telemetry field to modify
@@ -129,8 +138,8 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
         ),
         # ===== OFFSET_TIME Parameters (1 total) =====
         # Science frame timing correction
-        correction.ParameterConfig(
-            ptype=correction.ParameterType.OFFSET_TIME,
+        ParameterConfig(
+            ptype=ParameterType.OFFSET_TIME,
             config_file=None,  # No config file needed for time corrections
             spec=dict(
                 field="corrected_timestamp",  # Science timing field to modify
@@ -144,7 +153,7 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
     ]
 
     # Geolocation configuration
-    geo_config = correction.GeolocationConfig(
+    geo_config = GeolocationConfig(
         meta_kernel_file=data_dir / "cprs_v01.kernels.tm.json",
         generic_kernel_dir=generic_dir,
         dynamic_kernels=[
@@ -157,16 +166,16 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
     )
 
     # NetCDF output configuration
-    netcdf_config = correction.NetCDFConfig(
+    netcdf_config = NetCDFConfig(
         title="CLARREO Pathfinder Geolocation Correction Analysis",
         description="Parameter sensitivity analysis for CLARREO Pathfinder on ISS",
         performance_threshold_m=250.0,  # CLARREO requirement
         parameter_metadata=None,  # Auto-generate from parameters
     )
 
-    setup = correction.GeolocationSetup(
+    setup = GeolocationSetup(
         geo=geo_config,
-        requirements=correction.RequirementsConfig(
+        requirements=RequirementsConfig(
             performance_threshold_m=250.0,  # CLARREO accuracy requirement (meters)
             performance_spec_percent=39.0,  # 39% of measurements under threshold
         ),
@@ -176,13 +185,13 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
         transformation_matrix_name="t_hs2ctrs",  # HySICS to CTRS transformation
     )
 
-    sweep = correction.Sweep(
+    sweep = Sweep(
         seed=42,  # For reproducible results
         n_iterations=5,  # Number of parameter sets to test
         parameters=parameters,
     )
 
-    output = correction.OutputConfig(netcdf=netcdf_config)
+    output = OutputConfig(netcdf=netcdf_config)
 
     logger.info(f"CLARREO configuration created with {len(parameters)} parameters:")
     for i, param in enumerate(parameters):

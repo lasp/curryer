@@ -23,9 +23,6 @@ pipeline
     Preferred-name aliases: :func:`run_correction`, :func:`run_image_matching`,
     :func:`compute_error_stats`.
     :func:`run_correction` also accepts :class:`CorrectionInput` objects.
-correction
-    Thin re-export shim -- keeps all existing
-    ``from curryer.correction import correction`` import paths working.
 grid_types
     Pure grid data containers (``ImageGrid``, ``PSFGrid``, ...).
 dataio
@@ -55,7 +52,6 @@ verification
 # Sub-modules (ensure `curryer.correction.psf` etc. work as attributes)
 from . import (
     config,
-    correction,
     dataio,
     error_stats,
     grid_types,
@@ -118,7 +114,6 @@ from .verification import GCPError, VerificationResult, compare_results, match_g
 __all__ = [
     # Sub-modules
     "config",
-    "correction",
     "dataio",
     "error_stats",
     "grid_types",

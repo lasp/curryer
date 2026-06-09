@@ -20,8 +20,9 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from curryer.correction import correction
-from curryer.correction.config import DataConfig
+from curryer.correction.config import DataConfig, ParameterConfig, ParameterType, Sweep
+from curryer.correction.pipeline import call_error_stats_module, loop
+from curryer.correction.results_io import _build_netcdf_structure, _save_netcdf_results
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ def run_upstream_pipeline(
     tlm_sci_gcp_sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
 
     logger.info("Executing Correction upstream workflow (%d iterations)…", n_iterations)
-    results, netcdf_data = correction.loop(setup, sweep, work_dir, tlm_sci_gcp_sets, output)
+    results, netcdf_data = loop(setup, sweep, work_dir, tlm_sci_gcp_sets, output)
 
     output_file = work_dir / output.get_output_filename()
     logger.info("Upstream pipeline complete. Output: %s", output_file)
@@ -201,12 +202,12 @@ def run_downstream_pipeline(
     # --- STEP 3: build config ---
     setup, _base_sweep, base_output = create_clarreo_setup_sweep(data_dir, generic_dir)
     netcdf_config = base_output.netcdf
-    sweep = correction.Sweep(
+    sweep = Sweep(
         seed=42,
         n_iterations=n_iterations,
         parameters=[
-            correction.ParameterConfig(
-                ptype=correction.ParameterType.CONSTANT_KERNEL,
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 spec={
                     "current_value": [0.0, 0.0, 0.0],
@@ -221,7 +222,7 @@ def run_downstream_pipeline(
     setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
 
     # --- STEP 4: iterate ---
-    netcdf_data = correction._build_netcdf_structure(setup, sweep, netcdf_config, n_iterations, n_gcp_pairs)
+    netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_iterations, n_gcp_pairs)
     threshold_metric = netcdf_config.threshold_metric_name
     image_match_cache: dict[str, xr.Dataset] = {}
 
@@ -266,11 +267,11 @@ def run_downstream_pipeline(
 
     # --- STEP 5: error statistics ---
     image_matching_results = list(image_match_cache.values())
-    correction.call_error_stats_module(image_matching_results, setup)
+    call_error_stats_module(image_matching_results, setup)
 
     # --- STEP 6: save ---
     output_file = work_dir / "downstream_results.nc"
-    correction._save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
+    _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
 
     logger.info("Downstream pipeline complete. Output: %s", output_file)
     summary = {"mode": "downstream", "iterations": n_iterations, "test_pairs": n_gcp_pairs, "status": "complete"}
