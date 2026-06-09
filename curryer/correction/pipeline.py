@@ -346,6 +346,30 @@ def _load_calibration_data(setup: "GeolocationSetup") -> CalibrationData:
     return CalibrationData(los_vectors=los_vectors_cached, optical_psfs=optical_psfs_cached)
 
 
+def _require_image_matching_inputs(setup: "GeolocationSetup", calibration_data: CalibrationData) -> None:
+    """Fail fast when the built-in image matching has no calibration to run with.
+
+    When no ``setup.image_matching_func`` override is provided, the loop falls back
+    to the built-in :func:`~curryer.correction.verification.image_matching`, which
+    requires LOS/PSF calibration.  Raising here — before geolocation and kernel
+    creation — gives a clear, early error instead of a less contextual failure deep
+    inside the loop.  A custom override may legitimately need no calibration, so the
+    check only applies when no override is set.
+
+    Raises
+    ------
+    ValueError
+        If no override is set and no calibration data is configured.
+    """
+    if setup.image_matching_func is None and calibration_data.los_vectors is None:
+        raise ValueError(
+            "No setup.image_matching_func override is set, so the built-in image "
+            "matching is used, but no calibration data is configured. Set "
+            "setup.calibration (los_vectors_file and psf_file) or provide a custom "
+            "setup.image_matching_func."
+        )
+
+
 def _load_image_pair_data(
     tlm_key: str,
     sci_key: str,
@@ -620,17 +644,7 @@ def loop(
 
     # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
     calibration_data = _load_calibration_data(setup)
-
-    # The built-in image_matching() needs LOS/PSF calibration. When no override is
-    # supplied, fail fast with a clear message rather than deep inside the loop
-    # after geolocation and kernel creation have already run.
-    if setup.image_matching_func is None and calibration_data.los_vectors is None:
-        raise ValueError(
-            "No setup.image_matching_func override is set, so the built-in image "
-            "matching is used, but no calibration data is configured. Set "
-            "setup.calibration (los_vectors_file and psf_file) or provide a custom "
-            "setup.image_matching_func."
-        )
+    _require_image_matching_inputs(setup, calibration_data)
 
     # Create error stats processor once (setup is constant; processor is stateless)
     error_config = ErrorStatsConfig.from_setup(setup)
