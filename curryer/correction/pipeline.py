@@ -529,8 +529,18 @@ def _geolocate_and_match(
 
 
 def _resolve_netcdf_config(setup: "GeolocationSetup", output: "OutputConfig") -> "NetCDFConfig":
-    """Return ``output.netcdf``, defaulting from the setup's performance threshold."""
-    return output.netcdf or NetCDFConfig(performance_threshold_m=setup.requirements.performance_threshold_m)
+    """Return the output's NetCDFConfig with the threshold pinned to the requirement.
+
+    ``setup.requirements.performance_threshold_m`` is the single source of truth for
+    the threshold: it drives the computed pass-rate metric *and* the output variable's
+    name and metadata.  Pinning it here keeps the written NetCDF accurate to what is
+    actually computed, even when a caller supplies an ``OutputConfig.netcdf`` — whose
+    other fields (title, description, parameter metadata) are preserved.
+    """
+    threshold_m = setup.requirements.performance_threshold_m
+    if output.netcdf is None:
+        return NetCDFConfig(performance_threshold_m=threshold_m)
+    return output.netcdf.model_copy(update={"performance_threshold_m": threshold_m})
 
 
 def loop(
