@@ -285,7 +285,7 @@ class TestExtractSpacecraftPositionMidframe:
         config = MagicMock()
         config.data_config = None  # position_columns not configured
 
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
             result = _extract_spacecraft_position_midframe(telemetry, setup=config)
 
         assert "position_columns not configured" in caplog.text
