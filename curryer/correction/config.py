@@ -343,15 +343,15 @@ class RequirementsConfig(BaseModel):
     Attributes
     ----------
     performance_threshold_m : float
-        Per-measurement nadir-equivalent error limit in meters.
+        Per-measurement nadir-equivalent error limit in meters (must be > 0).
         A measurement *passes* when its error is **below** this value.
     performance_spec_percent : float
         Minimum fraction of measurements (0–100) that must pass for the
         overall verification to be considered successful.
     """
 
-    performance_threshold_m: float
-    performance_spec_percent: float
+    performance_threshold_m: float = Field(gt=0)
+    performance_spec_percent: float = Field(ge=0, le=100)
 
 
 # ============================================================================
