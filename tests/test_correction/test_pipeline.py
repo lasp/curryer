@@ -295,7 +295,7 @@ class TestExtractSpacecraftPositionMidframe:
         """When config=None entirely, pattern-guessing is used (backward compat)."""
         telemetry = _make_telemetry()
 
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.pipeline"):
+        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
             result = _extract_spacecraft_position_midframe(telemetry, setup=None)
 
         assert "position_columns not configured" in caplog.text
