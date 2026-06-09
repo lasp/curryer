@@ -78,9 +78,13 @@ class NetCDFConfig(BaseModel):
 
     @property
     def standard_attributes_dict(self) -> dict[str, dict[str, str]]:
-        """Standard variable attributes, with optional mission-specific overrides."""
+        """Standard variable attributes, with optional mission-specific overrides.
+
+        Returns a shallow copy so callers may add derived entries (e.g. the
+        threshold metric) without mutating the stored config.
+        """
         if self.standard_attributes is not None:
-            return self.standard_attributes
+            return dict(self.standard_attributes)
         return DEFAULT_NETCDF_ATTRIBUTES.copy()
 
     def get_parameter_netcdf_metadata(

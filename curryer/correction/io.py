@@ -92,6 +92,10 @@ def resolve_path(path: str | Path, *, s3_client=None) -> Path:
         If *path* is an S3 URI with no object key (e.g. ``s3://bucket``).
     """
     path_str = str(path)
+    # Path() collapses the "//" in "s3://bucket/key" to "s3:/bucket/key";
+    # restore it so a Path-wrapped S3 URI is still recognised.
+    if path_str.startswith("s3:/") and not path_str.startswith("s3://"):
+        path_str = "s3://" + path_str[len("s3:/") :]
     if path_str.startswith("s3://"):
         return _download_from_s3(path_str, s3_client=s3_client)
     local_path = Path(path)
