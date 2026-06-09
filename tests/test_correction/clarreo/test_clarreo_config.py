@@ -7,8 +7,7 @@ import json
 import pytest
 from clarreo_config import create_clarreo_setup_sweep
 
-from curryer.correction import correction
-from curryer.correction.config import DataConfig
+from curryer.correction.config import DataConfig, ParameterType, load_config_files
 
 
 def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_generic_dir):
@@ -38,33 +37,33 @@ def test_generate_clarreo_config_json(tmp_path, clarreo_gcs_data_dir, clarreo_ge
     assert config_data["setup"]["requirements"]["performance_threshold_m"] == 250.0
     assert config_data["setup"]["requirements"]["performance_spec_percent"] == 39.0
 
-    reloaded_setup, reloaded_sweep, _reloaded_output = correction.load_config_files(output_path)
+    reloaded_setup, reloaded_sweep, _reloaded_output = load_config_files(output_path)
     assert reloaded_setup.geo.instrument_name == "CPRS_HYSICS"
     assert reloaded_sweep.n_iterations == sweep.n_iterations
     assert len(reloaded_sweep.parameters) == len(sweep.parameters)
 
     # Verify each reloaded parameter has the expected ptype, config_file (for
     # kernel-based params), and data.field (for OFFSET_KERNEL / OFFSET_TIME),
-    # so this test will fail if the JSON can't be used to run correction.loop().
+    # so this test will fail if the JSON can't be used to run loop().
     valid_ptypes = {
-        correction.ParameterType.CONSTANT_KERNEL,
-        correction.ParameterType.OFFSET_KERNEL,
-        correction.ParameterType.OFFSET_TIME,
+        ParameterType.CONSTANT_KERNEL,
+        ParameterType.OFFSET_KERNEL,
+        ParameterType.OFFSET_TIME,
     }
     for param in reloaded_sweep.parameters:
         assert param.ptype in valid_ptypes, f"Unexpected ptype: {param.ptype}"
 
-        if param.ptype in (correction.ParameterType.CONSTANT_KERNEL, correction.ParameterType.OFFSET_KERNEL):
+        if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
             assert param.config_file is not None, f"{param.ptype.name} parameter must have a config_file, got None"
 
-        if param.ptype in (correction.ParameterType.OFFSET_KERNEL, correction.ParameterType.OFFSET_TIME):
+        if param.ptype in (ParameterType.OFFSET_KERNEL, ParameterType.OFFSET_TIME):
             assert param.spec.field is not None, f"{param.ptype.name} parameter must have spec.field set, got None"
 
     # Count parameters by type to ensure the expected composition is preserved.
     ptypes = [p.ptype for p in reloaded_sweep.parameters]
-    assert ptypes.count(correction.ParameterType.CONSTANT_KERNEL) >= 1
-    assert ptypes.count(correction.ParameterType.OFFSET_KERNEL) >= 1
-    assert ptypes.count(correction.ParameterType.OFFSET_TIME) >= 1
+    assert ptypes.count(ParameterType.CONSTANT_KERNEL) >= 1
+    assert ptypes.count(ParameterType.OFFSET_KERNEL) >= 1
+    assert ptypes.count(ParameterType.OFFSET_TIME) >= 1
 
 
 class TestClarreoConfiguration:

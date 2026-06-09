@@ -26,10 +26,19 @@ from _synthetic_helpers import synthetic_image_matching
 from clarreo_config import create_clarreo_setup_sweep
 from clarreo_data_loaders import load_clarreo_science, load_clarreo_telemetry
 
-from curryer.correction import correction
-from curryer.correction.config import CalibrationData, DataConfig
+from curryer.correction.config import CalibrationData, DataConfig, ParameterConfig, ParameterType
 from curryer.correction.io_config import NetCDFConfig
-from curryer.correction.pipeline import _require_image_matching_inputs, _resolve_netcdf_config
+from curryer.correction.pipeline import (
+    _compute_parameter_set_metrics,
+    _extract_error_metrics,
+    _extract_parameter_values,
+    _load_image_pair_data,
+    _require_image_matching_inputs,
+    _resolve_netcdf_config,
+    _store_gcp_pair_results,
+    _store_parameter_values,
+    loop,
+)
 from curryer.correction.verification import _extract_spacecraft_position_midframe
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
@@ -48,9 +57,7 @@ def clarreo_cfg(root_dir):
 
 def test_extract_parameter_values():
     """_extract_parameter_values returns roll/pitch/yaw keys."""
-    param_config = correction.ParameterConfig(
-        ptype=correction.ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), spec=None
-    )
+    param_config = ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), spec=None)
     param_data = pd.DataFrame(
         {
             "angle_x": [np.radians(1.0 / 3600)],
@@ -58,7 +65,7 @@ def test_extract_parameter_values():
             "angle_z": [np.radians(3.0 / 3600)],
         }
     )
-    result = correction._extract_parameter_values([(param_config, param_data)])
+    result = _extract_parameter_values([(param_config, param_data)])
     assert isinstance(result, dict)
     assert len(result) == 3
     assert "test_kernel_roll" in result
@@ -78,7 +85,7 @@ def test_extract_error_metrics():
             "total_measurements": 2,
         }
     )
-    m = correction._extract_error_metrics(ds)
+    m = _extract_error_metrics(ds)
     assert m["rms_error_m"] == 150.0
     assert m["n_measurements"] == 2
 
@@ -86,7 +93,7 @@ def test_extract_error_metrics():
 def test_store_parameter_values():
     """_store_parameter_values writes values at the correct index."""
     netcdf_data = {"parameter_set_id": np.zeros(3, dtype=int), "param_foo": np.zeros(3)}
-    correction._store_parameter_values(netcdf_data, param_idx=1, param_values={"foo": 2.5})
+    _store_parameter_values(netcdf_data, param_idx=1, param_values={"foo": 2.5})
     assert netcdf_data["param_foo"][1] == pytest.approx(2.5)
 
 
@@ -101,7 +108,7 @@ def test_store_gcp_pair_results():
         "std_error_m": 10.0,
         "n_measurements": 10,
     }
-    correction._store_gcp_pair_results(nc, param_idx=0, pair_idx=1, error_metrics=metrics)
+    _store_gcp_pair_results(nc, param_idx=0, pair_idx=1, error_metrics=metrics)
     assert nc["rms_error_m"][0, 1] == 150.0
     assert nc["std_error_m"][0, 1] == 10.0
     assert nc["n_measurements"][0, 1] == 10
@@ -115,7 +122,7 @@ def test_compute_parameter_set_metrics():
         "best_pair_rms": np.zeros(2),
         "worst_pair_rms": np.zeros(2),
     }
-    correction._compute_parameter_set_metrics(nc, param_idx=0, pair_errors=[100.0, 200.0, 300.0], threshold_m=250.0)
+    _compute_parameter_set_metrics(nc, param_idx=0, pair_errors=[100.0, 200.0, 300.0], threshold_m=250.0)
     assert nc["percent_under_250m"][0] > 0
     assert nc["best_pair_rms"][0] == 100.0
     assert nc["worst_pair_rms"][0] == 300.0
@@ -174,7 +181,7 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     setup, _sweep, _output = clarreo_cfg
     setup = setup.model_copy(deep=True)
     setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    tlm_ds, sci_ds, ugps = correction._load_image_pair_data(str(tlm_csv), str(sci_csv), setup)
+    tlm_ds, sci_ds, ugps = _load_image_pair_data(str(tlm_csv), str(sci_csv), setup)
     assert isinstance(tlm_ds, pd.DataFrame)
     assert isinstance(sci_ds, pd.DataFrame)
     assert ugps is not None
@@ -197,7 +204,7 @@ def test_loop_optimized(root_dir, tmp_path):
     setup.image_matching_func = synthetic_image_matching
     sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
     np.random.seed(42)
-    results, nc = correction.loop(setup, sweep, work, sets, output=output, resume_from_checkpoint=False)
+    results, nc = loop(setup, sweep, work, sets, output=output, resume_from_checkpoint=False)
     assert isinstance(results, list)
     assert len(results) > 0
     assert len(results) == sweep.n_iterations * len(sets)
