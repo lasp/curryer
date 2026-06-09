@@ -194,7 +194,7 @@ class SearchStrategy(str, Enum):
     ----------
     RANDOM
         Monte Carlo random walk (current default).  Each iteration draws an
-        independent sample from a normal distribution centred on the
+        independent sample from a normal distribution centered on the
         parameter's ``current_value`` with the specified ``sigma``, clipped
         to ``bounds``.  Requires ``seed`` and ``n_iterations`` on
         :class:`Sweep`.
@@ -343,7 +343,7 @@ class RequirementsConfig(BaseModel):
     Attributes
     ----------
     performance_threshold_m : float
-        Per-measurement nadir-equivalent error limit in metres.
+        Per-measurement nadir-equivalent error limit in meters.
         A measurement *passes* when its error is **below** this value.
     performance_spec_percent : float
         Minimum fraction of measurements (0–100) that must pass for the
@@ -371,9 +371,9 @@ class PSFSamplingConfig:
     Parameters
     ----------
     gcp_step_m : float, optional
-        Ground control point step size in metres. Default is 30.0.
+        Ground control point step size in meters. Default is 30.0.
     motion_convolution_step_m : float or None, optional
-        Step size for spacecraft motion convolution in metres.
+        Step size for spacecraft motion convolution in meters.
         If ``None`` (default), derived as ``gcp_step_m / 20.0`` in
         ``__post_init__``.
     psf_lat_sample_dist_deg : float, optional
@@ -407,12 +407,12 @@ class SearchConfig:
         Number of grid points per axis in the correlation search grid.
         Default 44 (Landsat-tuned).
     grid_span_km : float, optional
-        Half-width of the search grid in kilometres. Default 11.0.
+        Half-width of the search grid in kilometers. Default 11.0.
     reduction_factor : float, optional
         Multiplicative reduction applied to grid spacing each iteration.
         Default 0.8.
     spacing_limit_m : float, optional
-        Minimum grid spacing in metres; search stops when reached.
+        Minimum grid spacing in meters; search stops when reached.
         Default 10.0 (Landsat-tuned).
     """
 

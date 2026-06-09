@@ -480,7 +480,7 @@ def resolve_spacecraft_ecef(
 
     When *r_spacecraft_m* is provided it is used directly; the boresight is
     the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
-    grid centre lat/lon is used to build an approximate nadir position at
+    grid center lat/lon is used to build an approximate nadir position at
     *default_altitude_m* above the WGS-84 ellipsoid surface.
 
     The rotation matrix is always the ``3×3`` identity — the boresight is
@@ -490,22 +490,22 @@ def resolve_spacecraft_ecef(
     Parameters
     ----------
     grid : ImageGrid
-        Observation grid, used for the centre lat/lon when *r_spacecraft_m*
+        Observation grid, used for the center lat/lon when *r_spacecraft_m*
         is ``None``.
     r_spacecraft_m : ndarray of shape (3,) or None
-        Spacecraft ECEF position in metres.  Pass ``None`` to fall back to
+        Spacecraft ECEF position in meters.  Pass ``None`` to fall back to
         the nadir approximation.
     default_altitude_m : float, optional
-        Spacecraft altitude above the WGS-84 surface (metres) used when
+        Spacecraft altitude above the WGS-84 surface (meters) used when
         *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
         Override for other spacecraft (e.g. 505 000 m for CTIM).
 
     Returns
     -------
     r_spacecraft_m : ndarray, shape (3,)
-        ECEF spacecraft position in metres.
+        ECEF spacecraft position in meters.
     boresight : ndarray, shape (3,)
-        Nadir unit vector from spacecraft toward Earth centre.
+        Nadir unit vector from spacecraft toward Earth center.
     t_matrix : ndarray, shape (3, 3)
         Identity rotation matrix.
     """
@@ -516,7 +516,7 @@ def resolve_spacecraft_ecef(
         boresight = -r / np.linalg.norm(r)
         return r, boresight, np.eye(3)
 
-    # Approximate nadir from grid centre lat/lon
+    # Approximate nadir from grid center lat/lon
     mid_i, mid_j = grid.mid_indices
     lat = float(grid.lat[mid_i, mid_j])
     lon = float(grid.lon[mid_i, mid_j])
@@ -532,7 +532,7 @@ def resolve_spacecraft_ecef(
     r_approx = (WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
     logger.debug(
         "No spacecraft position in observation file — approximating nadir "
-        "from grid centre (lat=%.2f, lon=%.2f, alt=%.0f m)",
+        "from grid center (lat=%.2f, lon=%.2f, alt=%.0f m)",
         lat,
         lon,
         default_altitude_m,

@@ -28,11 +28,11 @@ class ParameterSetResult(BaseModel):
     parameter_values : dict[str, float]
         Parameter name → sampled value for this set.
     mean_rms_m : float
-        Mean RMS geolocation error across all GCP pairs (metres).
+        Mean RMS geolocation error across all GCP pairs (meters).
     best_pair_rms_m : float
-        RMS error of the best-performing GCP pair (metres).
+        RMS error of the best-performing GCP pair (meters).
     worst_pair_rms_m : float
-        RMS error of the worst-performing GCP pair (metres).
+        RMS error of the worst-performing GCP pair (meters).
     """
 
     index: int
@@ -65,13 +65,13 @@ class CorrectionResult(BaseModel):
     best_parameter_set : dict[str, float]
         Parameter values that produced the lowest aggregate RMS.
     best_rms_m : float
-        Best aggregate RMS achieved across all parameter sets (metres).
+        Best aggregate RMS achieved across all parameter sets (meters).
     best_index : int
         Index of the best parameter set (for cross-referencing with NetCDF output).
     worst_rms_m : float
-        Worst aggregate RMS across all parameter sets (metres).
+        Worst aggregate RMS across all parameter sets (meters).
     mean_rms_m : float
-        Mean of all aggregate RMS values (metres).
+        Mean of all aggregate RMS values (meters).
     n_parameter_sets : int
         Number of parameter sets tested in the sweep.
     n_gcp_pairs : int

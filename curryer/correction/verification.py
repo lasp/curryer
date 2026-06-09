@@ -93,7 +93,7 @@ class GCPError(BaseModel):
     lon_error_deg : float
         Longitude error in degrees (positive = eastward shift).
     nadir_equiv_error_m : float or None
-        Nadir-equivalent total geolocation error in metres, or ``None`` when
+        Nadir-equivalent total geolocation error in meters, or ``None`` when
         error-stats processing was not performed.
     correlation : float or None
         Image-matching correlation score, or ``None`` when not available.
@@ -600,7 +600,7 @@ def _extract_spacecraft_position_midframe(
     Returns
     -------
     np.ndarray
-        Shape ``(3,)`` — ``[x, y, z]`` position in metres (J2000 frame).
+        Shape ``(3,)`` — ``[x, y, z]`` position in meters (J2000 frame).
 
     Raises
     ------
@@ -685,7 +685,7 @@ def image_matching(
     optical_psfs_cached : list or None, optional
         Pre-loaded optical PSF entries.
     r_iss_midframe : np.ndarray of shape (3,) or None, optional
-        Spacecraft ECEF position in metres at mid-frame.  When provided,
+        Spacecraft ECEF position in meters at mid-frame.  When provided,
         *telemetry* is not consulted for position.
 
     Returns
@@ -713,7 +713,7 @@ def image_matching(
     gcp = load_image_grid(gcp_reference_file, mat_key="GCP")
     gcp_center_lat = float(gcp.lat[gcp.lat.shape[0] // 2, gcp.lat.shape[1] // 2])
     gcp_center_lon = float(gcp.lon[gcp.lon.shape[0] // 2, gcp.lon.shape[1] // 2])
-    logger.info("  GCP shape: %s, centre: (%.4f, %.4f)", gcp.data.shape, gcp_center_lat, gcp_center_lon)
+    logger.info("  GCP shape: %s, center: (%.4f, %.4f)", gcp.data.shape, gcp_center_lat, gcp_center_lon)
 
     # Calibration data
     if los_vectors_cached is not None and optical_psfs_cached is not None:
@@ -1003,7 +1003,7 @@ def _run_image_matching_for_pairs(
     setup : GeolocationSetup
         Used for spacecraft-state variable names.
     default_altitude_m : float, optional
-        Fallback spacecraft altitude in metres when the observation file does
+        Fallback spacecraft altitude in meters when the observation file does
         not contain position data.  Default 400 000 m (ISS nominal orbit).
 
     Returns
@@ -1164,12 +1164,12 @@ def verify(
         *observation_paths* is provided.
     max_distance_m : float, optional
         Spatial pairing margin for the auto-pair mode (default ``0.0`` —
-        GCP centre must be inside the observation footprint).
+        GCP center must be inside the observation footprint).
     gcp_pattern : str, optional
         Glob pattern used to discover GCP chips when *gcp_directory* is
         provided.  Defaults to ``"*_regridded.nc"``.
     default_altitude_m : float, optional
-        Fallback spacecraft altitude (metres) used when observation files do
+        Fallback spacecraft altitude (meters) used when observation files do
         not contain position data.  Default ``400_000.0`` (ISS nominal orbit).
         Override for other platforms (e.g. ``505_000.0`` for CTIM).
     image_matching_results : list[xr.Dataset] or None

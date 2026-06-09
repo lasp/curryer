@@ -542,11 +542,11 @@ def pair_geolocated_dataset_with_gcp_files(
     gcp_files : list[Path]
         GCP chip file paths to test for spatial overlap.
     max_distance_m : float, optional
-        Minimum signed margin (metres) required between the GCP chip centre
+        Minimum signed margin (meters) required between the GCP chip center
         and the nearest observation footprint edge.  ``0.0`` (default) means
-        the GCP centre must fall strictly inside the footprint;
-        negative values allow the centre to lie *outside* the footprint by up
-        to ``abs(max_distance_m)`` metres.
+        the GCP center must fall strictly inside the footprint;
+        negative values allow the center to lie *outside* the footprint by up
+        to ``abs(max_distance_m)`` meters.
     gcp_key : str, optional
         MATLAB struct key used when loading ``.mat`` GCP chips.  Defaults to
         ``"GCP"``.  Ignored for NetCDF files.
@@ -554,7 +554,7 @@ def pair_geolocated_dataset_with_gcp_files(
     Returns
     -------
     list[Path]
-        Subset of *gcp_files* whose centre-points overlap the observation
+        Subset of *gcp_files* whose center-points overlap the observation
         footprint, ordered by their original position in *gcp_files*.
         Empty when no overlap is found or when *gcp_files* is empty.
 

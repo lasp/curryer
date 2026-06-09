@@ -5,7 +5,7 @@ for correction analysis.  Three search strategies are supported:
 
 ``RANDOM`` (default)
     Monte Carlo random walk.  Each parameter is sampled from a normal
-    distribution centred on ``current_value`` with the configured ``sigma``,
+    distribution centered on ``current_value`` with the configured ``sigma``,
     clipped to ``bounds``.  Controlled by ``seed`` and ``n_iterations``.
 
 ``GRID_SEARCH``

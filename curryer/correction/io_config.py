@@ -50,7 +50,7 @@ class NetCDFConfig(BaseModel):
     Attributes
     ----------
     performance_threshold_m
-        Accuracy threshold in metres used to derive threshold-specific
+        Accuracy threshold in meters used to derive threshold-specific
         variable names (e.g. ``"percent_under_250m"``).
     title
         Global title attribute for the output NetCDF file.

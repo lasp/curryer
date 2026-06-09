@@ -328,7 +328,8 @@ def _load_netcdf_image_grid(
         lon = np.asarray(ds[lon_var].values, dtype=float)
         h = np.asarray(ds[height_var].values, dtype=float) if height_var in ds else None
 
-    # Broadcast 1-D coordinates to 2-D so ImageGrid shape invariants hold
+    # Broadcast 1-D coordinates to 2-D so ImageGrid shape invariants hold.
+    # If both are already 2-D, they pass through unchanged (the implicit else).
     if lat.ndim == 1 and lon.ndim == 1:
         lon, lat = np.meshgrid(lon, lat)
     elif lat.ndim == 1:
@@ -370,9 +371,9 @@ def _save_to_netcdf(
 
     # Create NetCDF file
     with Dataset(filepath, "w", format="NETCDF4") as nc:
-        # Global attributes
+        # Global attributes (mission-agnostic defaults; override any of these,
+        # e.g. "institution", via the ``metadata`` argument below).
         nc.setncattr("title", "Regridded GCP Chip")
-        nc.setncattr("institution", "NASA Langley Research Center")
         nc.setncattr("source", "Curryer GCP Regridding Module")
         nc.setncattr(
             "history", f"Created {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
@@ -380,7 +381,7 @@ def _save_to_netcdf(
         nc.setncattr("Conventions", "CF-1.8")
         nc.setncattr("grid_type", "regular_lat_lon")
 
-        # Add user-provided metadata
+        # Add user-provided metadata (overrides any default attribute above)
         if metadata:
             for key, value in metadata.items():
                 nc.setncattr(key, str(value))
@@ -454,7 +455,8 @@ def _save_to_netcdf(
             h_var.standard_name = "height_above_reference_ellipsoid"
             h_var.coordinates = "lat lon"
 
-        # Add CRS information (WGS84)
+        # CRS: the WGS84 / EPSG:4326 datum definition (a fixed standard, not a
+        # tunable output parameter). semi_major_axis is in meters.
         crs = nc.createVariable("crs", "i4")
         crs.grid_mapping_name = "latitude_longitude"
         crs.semi_major_axis = 6378137.0
@@ -779,30 +781,19 @@ def load_named_image_grid(filepath: Path | str, mat_key: str = "subimage") -> Na
     >>> gcp = load_named_image_grid(Path("GCP12055Dili_regridded.nc"))
     """
     name = str(filepath)
-    lower_name = name.lower()
-
-    if lower_name.endswith(".netcdf"):
-        suffix = ".netcdf"
-    elif lower_name.endswith(".nc4"):
-        suffix = ".nc4"
-    elif lower_name.endswith(".nc"):
-        suffix = ".nc"
-    elif lower_name.endswith(".mat"):
-        suffix = ".mat"
-    else:
-        suffix = ""
+    suffix = Path(name).suffix.lower()
 
     loader_filepath = filepath if isinstance(filepath, Path) else (name if "://" in name else Path(name))
 
-    if suffix == ".mat":
+    if suffix in _MAT_EXTS:
         result = _load_mat_image_grid(loader_filepath, key=mat_key)
         return NamedImageGrid(data=result.data, lat=result.lat, lon=result.lon, h=result.h, name=name)
 
-    if suffix in (".nc", ".netcdf", ".nc4"):
+    if suffix in _NC_EXTS:
         grid = _load_netcdf_image_grid(loader_filepath)
         return NamedImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon, h=grid.h, name=name)
 
-    raise ValueError(f"Unrecognised file extension '{suffix}' for {name}. Supported formats: .mat, .nc, .netcdf, .nc4")
+    raise ValueError(f"Unrecognised file extension '{suffix}' for {name}. Supported: {sorted(_MAT_EXTS | _NC_EXTS)}")
 
 
 def load_observation_file(
@@ -829,7 +820,7 @@ def load_observation_file(
     grid : ImageGrid
         Radiance data on a lat/lon grid.
     r_spacecraft_m : ndarray of shape (3,) or None
-        Spacecraft ECEF position in metres at the mid-frame, extracted from the
+        Spacecraft ECEF position in meters at the mid-frame, extracted from the
         file when available.  ``None`` when not present — caller should use
         :func:`infer_spacecraft_state` to approximate.
 
