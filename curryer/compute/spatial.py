@@ -908,7 +908,8 @@ def terrain_correct(
     gd_cur_xyz[:, 2] = np.zeros(npts)
 
     # 10) Terrain intersection.
-    gd_cur_h = elev.query(gd_cur_xyz[:, 0], gd_cur_xyz[:, 1])
+    gd_cur_h = np.full(npts, np.nan)
+    gd_cur_h[idx_ang_valid] = elev.query(gd_cur_xyz[idx_ang_valid, 0], gd_cur_xyz[idx_ang_valid, 1])
     gd_prev_h = gd_cur_h.copy()
 
     # Initialize to the max local height.
