@@ -182,6 +182,23 @@ class TestGeometryOrchestration:
         assert np.isfinite(df.iloc[0]).all()
         assert df.iloc[1].isna().all()
 
+    @pytest.mark.parametrize("field", list(geometry._FIELDS))
+    def test_nan_propagates_per_field(self, field):
+        # Fill contract: every field must NaN exactly the rows its inputs are
+        # missing and stay finite elsewhere, whichever provider feeds it. Both
+        # providers carry a NaN second row so the test is provider-agnostic.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        sun_pos = np.array([[1.5e8, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=[field])
+
+        columns = list(geometry._FIELDS[field].columns)
+        assert np.isfinite(df.iloc[0][columns]).all()
+        assert df.iloc[1][columns].isna().all()
+
 
 class GeometryIntegrationTestCase(unittest.TestCase):
     """End-to-end tests exercising the real SPICE provider paths.

@@ -35,6 +35,13 @@ code -- no spacecraft/instrument names are hardcoded.
 Frame contract: ``sc_position`` is emitted in ITRF93 (ECEF), explicit and
 non-overridable, so two fields can never be combined in mismatched reference
 frames.
+
+Fill contract: SPICE coverage gaps (and off-Earth samples) surface as NaN. The
+providers query with ``allow_nans`` (True by default), so an uncovered time
+yields a NaN provider row; the math-only leaves are pure and propagate NaN
+elementwise, so every field is NaN on exactly the rows its inputs are missing and
+finite elsewhere -- per time, per field. Downstream maps those NaNs onto the
+product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
 """
 
 import logging
@@ -311,7 +318,9 @@ class GeometryData(abstract.AbstractMissionData):
         -------
         pandas.DataFrame
             One row per time (index ``ugps``); vector fields expand to
-            per-field-prefixed columns (e.g. ``scx, scy, scz``).
+            per-field-prefixed columns (e.g. ``scx, scy, scz``). Times outside
+            SPICE coverage are NaN across that field's columns (see the module
+            Fill contract).
 
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
@@ -343,7 +352,8 @@ class GeometryData(abstract.AbstractMissionData):
         -------
         dict of {str: numpy.ndarray}
             Maps each field name to its ``(N, k)`` array. Vector fields
-            (e.g. ``sc_position``) are ``(N, 3)`` in ITRF93.
+            (e.g. ``sc_position``) are ``(N, 3)`` in ITRF93. Rows outside SPICE
+            coverage are NaN (see the module Fill contract).
 
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
