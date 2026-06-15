@@ -1,4 +1,4 @@
-"""Tests for the geometry data-field framework (Foundation: issues #58/#59/#60/#65/#67).
+"""Tests for the geometry data-field framework (Foundation fields).
 
 The pure-math leaves (in ``geometry``) are tested against known values and the
 ``GeometryData`` orchestration with fake providers, so the bulk of the suite

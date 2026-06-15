@@ -28,13 +28,12 @@ Two public accessors are exposed on :class:`GeometryData`:
   This is the seam the correction verification/image-matching path adapts onto.
 
 Mission genericity: the observing body is the only mission input (a constructor
-argument); the instrument frame and boresight are resolved from it and the loaded
-kernels. Only universal identifiers (``EARTH``, ``SUN``, ``ITRF93``) appear in
+argument). Only universal identifiers (``EARTH``, ``SUN``, ``ITRF93``) appear in
 code -- no spacecraft/instrument names are hardcoded.
 
-Frame contract: ``sc_position`` is emitted in ITRF93 (ECEF), explicit and
-non-overridable, so two fields can never be combined in mismatched reference
-frames.
+Frame contract: the Earth-fixed (ECEF) fields all share a single reference frame
+-- the ``earth_frame`` configured on :class:`GeometryData` (``ITRF93`` by
+default) -- so fields are never combined in mismatched reference frames.
 
 Fill contract: SPICE coverage gaps (and off-Earth samples) surface as NaN. The
 providers query with ``allow_nans`` (True by default), so an uncovered time
@@ -64,7 +63,7 @@ logger = logging.getLogger(__name__)
 def sc_radius(observer_position: np.ndarray) -> np.ndarray:
     """Distance of the observer from the body center (vectorized).
 
-    Implements the "radius of satellite from center of Earth" field (issue #65).
+    Implements the "radius of satellite from center of Earth" field.
 
     Parameters
     ----------
@@ -89,8 +88,7 @@ def colatitude(latitude: np.ndarray, degrees=True) -> np.ndarray:
 
     Colatitude is the complement of latitude (``90 - lat``), ranging from 0 at
     the north pole to 180 at the south pole. Implements the surface-point
-    colatitude field (issue #60); also reused by the sub-point fields (issues
-    #58, #59).
+    colatitude field; also reused by the sub-point fields.
 
     Parameters
     ----------
@@ -115,7 +113,7 @@ def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray
     The sub-observer point is the geodetic ground point directly beneath the
     observer; it shares the observer's geodetic latitude and longitude. Generic
     over the observing body: pass the spacecraft position for the sub-satellite
-    point (issue #58) or the Sun position for the sub-solar point (issue #59).
+    point or the Sun position for the sub-solar point.
 
     Parameters
     ----------
@@ -141,7 +139,7 @@ def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray
 def earth_sun_distance(earth_sun_position: np.ndarray, au=True) -> np.ndarray:
     """Distance between Earth and Sun (vectorized).
 
-    Implements the Earth-Sun distance field (issue #67). The input is the
+    Implements the Earth-Sun distance field. The input is the
     Earth-to-Sun position vector (any frame, since only the magnitude is used).
 
     Parameters
@@ -186,7 +184,8 @@ class _Field:
 # array. The observing body and frames come from the caller's ``GeometryData``.
 # ---------------------------------------------------------------------------
 def _provider_sc_position(ugps_times, ctx):
-    """Observer (spacecraft) position in ITRF93 (ECEF), shape (N, 3), km."""
+    """Observer (spacecraft) position in the configured Earth-fixed frame
+    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3), km."""
     state = spicierpy.ext.query_ephemeris(
         ugps_times,
         target=ctx.observer,
@@ -199,7 +198,8 @@ def _provider_sc_position(ugps_times, ctx):
 
 
 def _provider_sun_position(ugps_times, ctx):
-    """Earth-to-Sun position in ITRF93 (ECEF), shape (N, 3), km."""
+    """Earth-to-Sun position in the configured Earth-fixed frame
+    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3), km."""
     state = spicierpy.ext.query_ephemeris(
         ugps_times,
         target=ctx.sun,
@@ -352,8 +352,9 @@ class GeometryData(abstract.AbstractMissionData):
         -------
         dict of {str: numpy.ndarray}
             Maps each field name to its ``(N, k)`` array. Vector fields
-            (e.g. ``sc_position``) are ``(N, 3)`` in ITRF93. Rows outside SPICE
-            coverage are NaN (see the module Fill contract).
+            (e.g. ``sc_position``) are ``(N, 3)`` in the configured Earth-fixed
+            frame (``ITRF93`` by default). Rows outside SPICE coverage are NaN
+            (see the module Fill contract).
 
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
