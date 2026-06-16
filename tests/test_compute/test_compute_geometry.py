@@ -132,7 +132,9 @@ class TestGeometryOrchestration:
         """Fakes for every registered provider, sized to UGPS (N=2)."""
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
-        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        boresight = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+        surface = np.array([[0.0, 0.0, 700.0], [10.0, 20.0, 700.0]])
+        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight, surface=surface)
 
     def test_default_fields_are_all_registered(self):
         counter = {}
@@ -190,14 +192,32 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[0.0, 0.0, 1.0], [np.nan, np.nan, np.nan]])
+        surface = np.array([[0.0, 10.0, 700.0], [np.nan, np.nan, np.nan]])
         geo = self._build()
-        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight, surface=surface)
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
 
         columns = list(geometry._FIELDS[field].columns)
         assert np.isfinite(df.iloc[0][columns]).all()
         assert df.iloc[1][columns].isna().all()
+
+    def test_boresight_and_surface_colatitude(self):
+        # boresight is a passthrough of its provider; surface_colatitude is the
+        # colatitude (90 - lat) of the footprint's geodetic latitude (column 1
+        # of the [lon, lat, alt] surface provider).
+        counter = {}
+        boresight = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+        surface = np.array([[10.0, 30.0, 5.0], [-20.0, -45.0, 800.0]])  # lon, lat, alt
+        geo = self._build()
+        fakes = _fake_providers(counter, boresight=boresight, surface=surface)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["boresight", "surface_colatitude"])
+
+        npt.assert_allclose(df[["boresightx", "boresighty", "boresightz"]].values, boresight)
+        npt.assert_allclose(df["surfcolat"].values, [60.0, 135.0])
+        assert counter == {"boresight": 1, "surface": 1}
 
 
 class GeometryIntegrationTestCase(unittest.TestCase):
@@ -234,12 +254,41 @@ class GeometryIntegrationTestCase(unittest.TestCase):
 
         # These fields are all position-derived -> gap-free over covered times.
         self.assertFalse(df.isna().any().any(), msg=f"unexpected NaNs:\n{df.isna().sum()}")
+        # Position-derived fields are gap-free over covered times.
+        position_columns = [
+            "subsatlat",
+            "subsatlon",
+            "subsatcolat",
+            "subsollat",
+            "subsollon",
+            "subsolcolat",
+            "scradius",
+            "earthsundist",
+            "scx",
+            "scy",
+            "scz",
+        ]
+        self.assertFalse(
+            df[position_columns].isna().any().any(),
+            msg=f"unexpected NaNs:\n{df[position_columns].isna().sum()}",
+        )
 
         # Physical sanity ranges.
         self.assertTrue(df["subsatcolat"].between(0, 180).all())
         self.assertTrue(df["subsatlon"].between(-180, 180).all())
         self.assertTrue(df["scradius"].between(6500, 7500).all())  # ISS-class orbit.
         self.assertTrue(df["earthsundist"].between(0.97, 1.03).all())
+
+        # Boresight is a unit direction in ECEF where the attitude is available.
+        boresight = df[["boresightx", "boresighty", "boresightz"]].values
+        finite = np.isfinite(boresight).all(axis=1)
+        self.assertTrue(finite.any(), msg="boresight all-NaN over covered times")
+        npt.assert_allclose(np.linalg.norm(boresight[finite], axis=1), 1.0, atol=1e-6)
+
+        # Surface colatitude is in [0, 180] where the boresight hits the ellipsoid.
+        surfcolat = df["surfcolat"]
+        self.assertTrue(surfcolat.notna().any(), msg="surface colatitude all-NaN over covered times")
+        self.assertTrue(surfcolat.dropna().between(0, 180).all())
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)
