@@ -210,11 +210,10 @@ def _provider_sun_position(ugps_times, ctx):
     return state[list(spicierpy.ext.POSITION_COLUMNS)].values
 
 
-# The attitude-derived providers reuse the SPICE-geometry primitives in
-# ``spatial`` (which resolve the instrument frame from the body and handle the
-# data-gap -> NaN mapping). Unlike the ephemeris providers these loop internally,
-# since ``pxform`` has no vectorized override; the result is still one query set
-# per request.
+# The boresight provider reuses the SPICE-geometry primitive in ``spatial``
+# (which resolves the instrument frame from the body and handles the data-gap ->
+# NaN mapping). Unlike the ephemeris providers it loops internally, since
+# ``pxform`` has no vectorized override; the result is still one query per request.
 def _provider_boresight(ugps_times, ctx):
     """Instrument boresight unit vector in the configured Earth-fixed frame
     (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3)."""
@@ -229,25 +228,10 @@ def _provider_boresight(ugps_times, ctx):
     return pointing[["x", "y", "z"]].values
 
 
-def _provider_surface(ugps_times, ctx):
-    """Boresight ellipsoid intercept as geodetic ``[lon, lat, alt]`` (deg, km),
-    shape (N, 3)."""
-    hs_boresight = spicierpy.ext.instrument_boresight(ctx.observer)
-    surface, _, _ = spatial.compute_ellipsoid_intersection(
-        ugps_times,
-        ctx.observer,
-        custom_pointing_vectors=hs_boresight,
-        give_geodetic_output=True,
-        allow_nans=ctx.allow_nans,
-    )
-    return surface[["lon", "lat", "alt"]].values
-
-
 _PROVIDERS = {
     "sc_position": _provider_sc_position,
     "sun_position": _provider_sun_position,
     "boresight": _provider_boresight,
-    "surface": _provider_surface,
 }
 
 
@@ -283,9 +267,15 @@ _FIELDS = {
         evaluate=lambda p: p["boresight"],
     ),
     "surface_colatitude": _Field(
-        providers=frozenset({"surface"}),
+        # The footprint is where the boresight, cast from the S/C position, meets
+        # the ellipsoid -- both already queried for other fields, so the ray-cast
+        # is a math-only leaf and adds no SPICE. ``ray_intersect_ellipsoid``
+        # returns geodetic [lon, lat, alt]; column 1 is the latitude.
+        providers=frozenset({"boresight", "sc_position"}),
         columns=("surfcolat",),
-        evaluate=lambda p: colatitude(p["surface"][:, 1])[:, None],
+        evaluate=lambda p: colatitude(
+            spatial.ray_intersect_ellipsoid(p["boresight"], p["sc_position"], geodetic=True, degrees=True)[:, 1]
+        )[:, None],
     ),
 }
 

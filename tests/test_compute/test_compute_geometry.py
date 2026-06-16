@@ -132,9 +132,9 @@ class TestGeometryOrchestration:
         """Fakes for every registered provider, sized to UGPS (N=2)."""
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
-        boresight = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
-        surface = np.array([[0.0, 0.0, 700.0], [10.0, 20.0, 700.0]])
-        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight, surface=surface)
+        # Boresights point back toward Earth center so the footprint ray-cast hits.
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
 
     def test_default_fields_are_all_registered(self):
         counter = {}
@@ -192,10 +192,9 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [np.nan, np.nan, np.nan]])
-        boresight = np.array([[0.0, 0.0, 1.0], [np.nan, np.nan, np.nan]])
-        surface = np.array([[0.0, 10.0, 700.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         geo = self._build()
-        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight, surface=surface)
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
 
@@ -205,19 +204,21 @@ class TestGeometryOrchestration:
 
     def test_boresight_and_surface_colatitude(self):
         # boresight is a passthrough of its provider; surface_colatitude is the
-        # colatitude (90 - lat) of the footprint's geodetic latitude (column 1
-        # of the [lon, lat, alt] surface provider).
+        # colatitude (90 - lat) of where the boresight, cast from the S/C
+        # position, meets the ellipsoid. Both rows are equatorial intercepts
+        # (lat 0 -> colat 90); the differing longitudes guard against the field
+        # reading the longitude column instead of latitude.
         counter = {}
-        boresight = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
-        surface = np.array([[10.0, 30.0, 5.0], [-20.0, -45.0, 800.0]])  # lon, lat, alt
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         geo = self._build()
-        fakes = _fake_providers(counter, boresight=boresight, surface=surface)
+        fakes = _fake_providers(counter, boresight=boresight, sc_position=sc_pos)
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["boresight", "surface_colatitude"])
 
         npt.assert_allclose(df[["boresightx", "boresighty", "boresightz"]].values, boresight)
-        npt.assert_allclose(df["surfcolat"].values, [60.0, 135.0])
-        assert counter == {"boresight": 1, "surface": 1}
+        npt.assert_allclose(df["surfcolat"].values, [90.0, 90.0], atol=1e-9)
+        assert counter == {"boresight": 1, "sc_position": 1}
 
 
 class GeometryIntegrationTestCase(unittest.TestCase):
