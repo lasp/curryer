@@ -25,7 +25,6 @@ Two public accessors are exposed on :class:`GeometryData`:
   primary, tabular API. Vector fields expand to per-field-prefixed columns.
 - ``get_vectors(ugps_times, fields)`` -> ``{field: (N, k) ndarray}`` -- the typed
   sibling, addressed by field name rather than by string-built column prefixes.
-  This is the seam the correction verification/image-matching path adapts onto.
 
 Mission genericity: the observing body is the only mission input (a constructor
 argument). Only universal identifiers (``EARTH``, ``SUN``, ``ITRF93``) appear in
@@ -258,8 +257,8 @@ class GeometryData(abstract.AbstractMissionData):
     Parameters
     ----------
     observer : str or int or spicierpy.obj.Body
-        Observing body whose position (and, for later attitude-derived fields,
-        boresight) is queried -- typically the instrument or spacecraft.
+        Observing body whose position is queried -- typically the instrument or
+        spacecraft.
     microsecond_cadence : int, optional
         Default cadence for :meth:`get_times`, in microseconds.
     earth, sun : str or int or spicierpy.obj.Body, optional
@@ -338,8 +337,8 @@ class GeometryData(abstract.AbstractMissionData):
     def get_vectors(self, ugps_times, fields) -> dict:
         """Compute the requested fields as typed arrays.
 
-        The typed sibling of :meth:`get_geometry`, addressed by field name -- the
-        seam the correction verification/image-matching path adapts onto.
+        The typed sibling of :meth:`get_geometry`, addressed by field name rather
+        than by string-built column prefixes.
 
         Parameters
         ----------

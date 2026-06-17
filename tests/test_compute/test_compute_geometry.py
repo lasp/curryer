@@ -1,4 +1,4 @@
-"""Tests for the geometry data-field framework (Foundation fields).
+"""Tests for the geometry data-field framework.
 
 The pure-math leaves (in ``geometry``) are tested against known values and the
 ``GeometryData`` orchestration with fake providers, so the bulk of the suite
@@ -129,7 +129,7 @@ class TestGeometryOrchestration:
         npt.assert_allclose(vecs["sc_position"], sc_pos)
 
     def _full_fakes(self, counter):
-        """Fakes for every Foundation provider, sized to UGPS (N=2)."""
+        """Fakes for every registered provider, sized to UGPS (N=2)."""
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
         return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
@@ -173,7 +173,7 @@ class TestGeometryOrchestration:
 
     def test_nan_provider_row_propagates(self):
         # A data gap (NaN provider row) must surface as NaN, not crash, so
-        # downstream consumers can detect it; finite rows stay finite.
+        # callers can detect it; finite rows stay finite.
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         geo = self._build()
@@ -232,7 +232,7 @@ class GeometryIntegrationTestCase(unittest.TestCase):
             for column in geometry._FIELDS[field].columns:
                 self.assertIn(column, df.columns)
 
-        # Foundation fields are all position-derived -> gap-free over covered times.
+        # These fields are all position-derived -> gap-free over covered times.
         self.assertFalse(df.isna().any().any(), msg=f"unexpected NaNs:\n{df.isna().sum()}")
 
         # Physical sanity ranges.
