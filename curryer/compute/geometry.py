@@ -249,10 +249,22 @@ _PROVIDERS = {
 # Field-layer helpers: pure math over already-queried providers (no SPICE).
 # These compose the spatial leaves the surface-angle fields share.
 # ---------------------------------------------------------------------------
+_FOOTPRINT_KEY = "footprint"  # cache slot in the per-request providers dict
+
+
 def _footprint(providers):
     """ECEF point where the instrument boresight, cast from the S/C position,
-    meets the ellipsoid -- the shared surface point for the surface angles."""
-    return spatial.ray_intersect_ellipsoid(providers["boresight"], providers["sc_position"])
+    meets the ellipsoid -- the shared surface point for the surface angles.
+
+    Memoized into the per-request ``providers`` dict: every surface-angle field in
+    a request shares the same footprint, so the ray-cast runs once per request
+    rather than once per field.
+    """
+    footprint = providers.get(_FOOTPRINT_KEY)
+    if footprint is None:
+        footprint = spatial.ray_intersect_ellipsoid(providers["boresight"], providers["sc_position"])
+        providers[_FOOTPRINT_KEY] = footprint
+    return footprint
 
 
 def _relative_azimuth(providers):

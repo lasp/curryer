@@ -264,6 +264,26 @@ class TestGeometryOrchestration:
         npt.assert_allclose(df["relaz"].values, np.mod(exp_vaz - exp_saz, 360.0))
         assert counter == {"boresight": 1, "sc_position": 1, "sun_position": 1}
 
+    def test_footprint_memoized_across_surface_angle_fields(self):
+        # Every surface-angle field shares the boresight footprint; the memo on the
+        # per-request providers dict casts the ray once, not once per field.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "relative_azimuth"]
+        with (
+            patch.dict(geometry._PROVIDERS, fakes),
+            patch.object(geometry.spatial, "ray_intersect_ellipsoid", wraps=spatial.ray_intersect_ellipsoid) as m_ray,
+        ):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        assert m_ray.call_count == 1
+        assert np.isfinite(df.values).all()
+
     def test_relative_azimuth_is_lossless_not_folded(self):
         # relative_azimuth keeps the full [0, 360) range; a [0, 180] fold (e.g.
         # CERES) is the caller's to apply. Mirroring the Sun across the footprint's
