@@ -43,10 +43,11 @@ product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
 
 Angle convention: the surface angles share one documented convention, in degrees,
 over the same boresight ellipsoid footprint as their surface point. Azimuths
-(``viewing_azimuth`` and the components of ``relative_azimuth``) are measured
-clockwise from geodetic North in [0, 360); zeniths (``viewing_zenith``,
-``solar_zenith``) are geodetic, from the local surface normal. ``relative_azimuth``
-is the lossless ``viewing - solar`` difference wrapped to [0, 360). A mission
+(``viewing_azimuth``, and the viewing and solar azimuths from which
+``relative_azimuth`` is derived) are measured clockwise from geodetic North in
+[0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are geodetic, from the
+local surface normal. ``relative_azimuth`` is the lossless ``viewing - solar``
+difference wrapped to [0, 360). A mission
 needing a different wrap -- e.g. the CERES [0, 180] fold -- converts on its end;
 curryer deliberately keeps the unfolded value, since reference/wrap remaps are
 reversible but a fold is not, and only the unfolded form lets every consumer adapt.
