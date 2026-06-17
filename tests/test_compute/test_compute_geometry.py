@@ -306,6 +306,7 @@ class TestGeometryOrchestration:
         # to [0, 180] could produce neither.
         npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
         assert relaz.max() > 180.0
+
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider must rotate the IK boresight with pxform only --
         # no ephemeris query -- so it never duplicates the sc_position pass and a
