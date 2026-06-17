@@ -136,15 +136,25 @@ class TestGeometryOrchestration:
         boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
         return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
 
-    def test_default_fields_are_all_registered(self):
+    def test_default_fields_are_ephemeris_only(self):
+        # fields=None defaults to the ephemeris-only set (valid for any observer);
+        # attitude/instrument fields are opt-in, not in the default output, and
+        # the attitude provider is never queried by default.
         counter = {}
         geo = self._build()
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
             df = geo.get_geometry(self.UGPS)
 
-        for field in geometry.GeometryData.available_fields():
+        ephemeris_fields = [f for f in geometry._FIELDS if "boresight" not in geometry._FIELDS[f].providers]
+        attitude_fields = [f for f in geometry._FIELDS if "boresight" in geometry._FIELDS[f].providers]
+        assert attitude_fields  # guard: this test is meaningful only with some
+        for field in ephemeris_fields:
             for column in geometry._FIELDS[field].columns:
                 assert column in df.columns
+        for field in attitude_fields:
+            for column in geometry._FIELDS[field].columns:
+                assert column not in df.columns
+        assert "boresight" not in counter
 
     def test_subset_queries_only_needed_providers(self):
         counter = {}
@@ -245,6 +255,26 @@ class TestGeometryOrchestration:
         m_pxform.assert_called_with("INST_FRAME", "ITRF93", 20.0)
         assert m_pxform.call_count == 2  # one rotation per sample, no ephemeris pass
 
+    def test_boresight_provider_nan_fills_missing_fov(self):
+        # A body with no defined FOV makes instrument_boresight raise during the
+        # one-time pointing lookup. Under allow_nans the provider must NaN-fill
+        # (fill contract); without it, the SPICE error propagates.
+        geo = geometry.GeometryData("SPACECRAFT")  # no instrument FOV/IK
+        boom = geometry.spicierpy.SpiceyError("SPICE(NOFRAMECONNECT)")
+        with (
+            patch.object(geometry.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
+            patch.object(geometry.spicierpy.obj, "Body"),
+            patch.object(geometry.spicierpy.obj, "Frame"),
+            patch.object(geometry.spicierpy.ext, "instrument_boresight", side_effect=boom),
+        ):
+            out = geometry._provider_boresight(self.UGPS, geo)
+            assert out.shape == (2, 3)
+            assert np.isnan(out).all()
+
+            geo.allow_nans = False
+            with pytest.raises(geometry.spicierpy.SpiceyError):
+                geometry._provider_boresight(self.UGPS, geo)
+
 
 class GeometryIntegrationTestCase(unittest.TestCase):
     """End-to-end tests exercising the real SPICE provider paths.
@@ -271,10 +301,13 @@ class GeometryIntegrationTestCase(unittest.TestCase):
 
     def test_get_geometry_all_fields_real_kernels(self):
         geo = geometry.GeometryData(self.instrument)
+        # Request every field explicitly: the attitude fields are opt-in (the
+        # default set is ephemeris-only), and CPRS_HYSICS has an instrument FOV.
+        all_fields = geometry.GeometryData.available_fields()
         with self.mkrn.load():
-            df = geo.get_geometry(self.ugps)
+            df = geo.get_geometry(self.ugps, fields=all_fields)
 
-        for field in geometry.GeometryData.available_fields():
+        for field in all_fields:
             for column in geometry._FIELDS[field].columns:
                 self.assertIn(column, df.columns)
 

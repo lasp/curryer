@@ -215,15 +215,30 @@ def _provider_sun_position(ugps_times, ctx):
 # vectorized override, so it loops). It queries no ephemeris -- position comes from
 # the ``sc_position`` provider -- so requesting the boresight beside the position
 # fields costs one attitude pass plus one shared ephemeris pass, never a duplicate.
-# Mapping only the rotation through the SPICE-error guard also ties a NaN row to an
-# attitude gap alone, independent of position coverage.
+# The SPICE-error guard covers the lookup and the rotation (but no ephemeris), so a
+# NaN row tracks an attitude gap alone, independent of position coverage.
 def _provider_boresight(ugps_times, ctx):
     """Instrument boresight unit vector in the configured Earth-fixed frame
-    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3)."""
-    from_frame = spicierpy.obj.Body(ctx.observer, frame=True).frame.name
-    to_frame = spicierpy.obj.Frame(ctx.earth_frame).name
-    boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
+    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3).
+
+    Both the one-time pointing lookup (instrument frame / IK boresight, which
+    fails for a body with no defined FOV) and the per-sample rotation are guarded:
+    a recoverable SPICE failure NaN-fills under ``allow_nans`` and raises without
+    it, so the whole provider honors the module fill contract.
+    """
     et_times = spicetime.adapt(ugps_times, to="et")
+
+    @spicierpy.ext.spice_error_to_val(err_value=None, disable=not ctx.allow_nans)
+    def _resolve_pointing():
+        from_frame = spicierpy.obj.Body(ctx.observer, frame=True).frame.name
+        to_frame = spicierpy.obj.Frame(ctx.earth_frame).name
+        boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
+        return from_frame, to_frame, boresight
+
+    pointing, _ = _resolve_pointing()
+    if pointing is None:  # missing IK/FOV or frame -> NaN-fill (allow_nans only).
+        return np.full((et_times.size, 3), np.nan)
+    from_frame, to_frame, boresight = pointing
 
     @spicierpy.ext.spice_error_to_val(err_value=np.full(3, np.nan), disable=not ctx.allow_nans)
     def _rotate(sample_et):
@@ -283,6 +298,16 @@ _FIELDS = {
 }
 
 
+# Providers available for any observing body (queried from ephemeris alone).
+_EPHEMERIS_PROVIDERS = frozenset({"sc_position", "sun_position"})
+
+# Default field set for ``fields=None``: the fields needing only ephemeris, so
+# ``get_geometry()`` is valid for any observer and skips the per-sample attitude
+# loop. Attitude/instrument fields (needing the boresight provider, hence an
+# instrument FOV) are opt-in. Derived from the providers, so it self-maintains.
+_DEFAULT_FIELDS = tuple(name for name, field in _FIELDS.items() if field.providers <= _EPHEMERIS_PROVIDERS)
+
+
 class GeometryData(abstract.AbstractMissionData):
     """Selective geometric data-field server.
 
@@ -326,9 +351,9 @@ class GeometryData(abstract.AbstractMissionData):
         return tuple(_FIELDS)
 
     def _resolve_fields(self, fields):
-        """Validate the requested fields, defaulting to all registered."""
+        """Validate the requested fields, defaulting to the ephemeris-only set."""
         if fields is None:
-            return list(_FIELDS)
+            return list(_DEFAULT_FIELDS)
         unknown = [name for name in fields if name not in _FIELDS]
         if unknown:
             raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {self.available_fields()}")
@@ -349,7 +374,9 @@ class GeometryData(abstract.AbstractMissionData):
         ugps_times : array_like of int
             One or more times in GPS microseconds.
         fields : list of str, optional
-            Field names to compute. Default is all registered fields.
+            Field names to compute. Default is the ephemeris-only set (valid for
+            any observer); attitude/instrument fields (e.g. ``boresight``) must be
+            requested explicitly. See :meth:`available_fields` for the full list.
 
         Returns
         -------
