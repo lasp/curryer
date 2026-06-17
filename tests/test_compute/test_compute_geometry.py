@@ -253,9 +253,8 @@ class GeometryIntegrationTestCase(unittest.TestCase):
             for column in geometry._FIELDS[field].columns:
                 self.assertIn(column, df.columns)
 
-        # These fields are all position-derived -> gap-free over covered times.
-        self.assertFalse(df.isna().any().any(), msg=f"unexpected NaNs:\n{df.isna().sum()}")
-        # Position-derived fields are gap-free over covered times.
+        # Position-derived fields are gap-free over covered times (unlike the
+        # attitude-derived boresight/surfcolat, which may be NaN in attitude gaps).
         position_columns = [
             "subsatlat",
             "subsatlon",

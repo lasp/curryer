@@ -217,7 +217,7 @@ def _provider_sun_position(ugps_times, ctx):
 def _provider_boresight(ugps_times, ctx):
     """Instrument boresight unit vector in the configured Earth-fixed frame
     (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3)."""
-    hs_boresight = spicierpy.ext.instrument_boresight(ctx.observer)
+    hs_boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
     pointing, _, _ = spatial.instrument_pointing_state(
         ugps_times,
         ctx.observer,
