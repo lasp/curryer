@@ -306,6 +306,30 @@ class TestGeometryOrchestration:
         # to [0, 180] could produce neither.
         npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
         assert relaz.max() > 180.0
+    def test_boresight_provider_is_pure_attitude_transform(self):
+        # The boresight provider must rotate the IK boresight with pxform only --
+        # no ephemeris query -- so it never duplicates the sc_position pass and a
+        # position gap cannot null an otherwise-available attitude. Patch the SPICE
+        # pieces and fail loudly if it reaches for spkezr.
+        ctx = geometry.GeometryData("INST")
+        ik = np.array([0.0, 0.0, 1.0])
+        rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])  # +90 deg about Z
+        with (
+            patch.object(geometry.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
+            patch.object(geometry.spicierpy.obj, "Body") as m_body,
+            patch.object(geometry.spicierpy.obj, "Frame") as m_frame,
+            patch.object(geometry.spicierpy.ext, "instrument_boresight", return_value=ik) as m_bore,
+            patch.object(geometry.spicierpy, "pxform", return_value=rot) as m_pxform,
+            patch.object(geometry.spicierpy, "spkezr", side_effect=AssertionError("queried ephemeris")),
+        ):
+            m_body.return_value.frame.name = "INST_FRAME"
+            m_frame.return_value.name = "ITRF93"
+            out = geometry._provider_boresight(self.UGPS, ctx)
+
+        npt.assert_allclose(out, np.array([rot @ ik, rot @ ik]))
+        m_bore.assert_called_once_with("INST", norm=True)
+        m_pxform.assert_called_with("INST_FRAME", "ITRF93", 20.0)
+        assert m_pxform.call_count == 2  # one rotation per sample, no ephemeris pass
 
 
 class GeometryIntegrationTestCase(unittest.TestCase):

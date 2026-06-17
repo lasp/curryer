@@ -59,7 +59,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .. import spicierpy
+from .. import spicetime, spicierpy
 from . import abstract, constants, spatial
 
 logger = logging.getLogger(__name__)
@@ -220,22 +220,26 @@ def _provider_sun_position(ugps_times, ctx):
     return state[list(spicierpy.ext.POSITION_COLUMNS)].values
 
 
-# The boresight provider reuses the SPICE-geometry primitive in ``spatial``
-# (which resolves the instrument frame from the body and handles the data-gap ->
-# NaN mapping). Unlike the ephemeris providers it loops internally, since
-# ``pxform`` has no vectorized override; the result is still one query per request.
+# The boresight is a pure attitude quantity: the IK boresight rotated from the
+# instrument frame into ``earth_frame`` by ``pxform`` per sample (``pxform`` has no
+# vectorized override, so it loops). It queries no ephemeris -- position comes from
+# the ``sc_position`` provider -- so requesting the boresight beside the position
+# fields costs one attitude pass plus one shared ephemeris pass, never a duplicate.
+# Mapping only the rotation through the SPICE-error guard also ties a NaN row to an
+# attitude gap alone, independent of position coverage.
 def _provider_boresight(ugps_times, ctx):
     """Instrument boresight unit vector in the configured Earth-fixed frame
     (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3)."""
-    hs_boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
-    pointing, _, _ = spatial.instrument_pointing_state(
-        ugps_times,
-        ctx.observer,
-        boresight_vector=hs_boresight,
-        pointing_frame=ctx.earth_frame,
-        allow_nans=ctx.allow_nans,
-    )
-    return pointing[["x", "y", "z"]].values
+    from_frame = spicierpy.obj.Body(ctx.observer, frame=True).frame.name
+    to_frame = spicierpy.obj.Frame(ctx.earth_frame).name
+    boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
+    et_times = spicetime.adapt(ugps_times, to="et")
+
+    @spicierpy.ext.spice_error_to_val(err_value=np.full(3, np.nan), disable=not ctx.allow_nans)
+    def _rotate(sample_et):
+        return spicierpy.pxform(from_frame, to_frame, sample_et) @ boresight
+
+    return np.array([_rotate(sample_et)[0] for sample_et in et_times])
 
 
 _PROVIDERS = {
