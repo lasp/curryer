@@ -268,9 +268,8 @@ _FIELDS = {
     ),
     "surface_colatitude": _Field(
         # The footprint is where the boresight, cast from the S/C position, meets
-        # the ellipsoid -- both already queried for other fields, so the ray-cast
-        # is a math-only leaf and adds no SPICE. ``ray_intersect_ellipsoid``
-        # returns geodetic [lon, lat, alt]; column 1 is the latitude.
+        # the ellipsoid; ``ray_intersect_ellipsoid`` returns geodetic
+        # [lon, lat, alt], so column 1 is the latitude.
         providers=frozenset({"boresight", "sc_position"}),
         columns=("surfcolat",),
         evaluate=lambda p: colatitude(
