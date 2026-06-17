@@ -146,8 +146,8 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
             df = geo.get_geometry(self.UGPS)
 
-        ephemeris_fields = [f for f in geometry._FIELDS if "boresight" not in geometry._FIELDS[f].providers]
-        attitude_fields = [f for f in geometry._FIELDS if "boresight" in geometry._FIELDS[f].providers]
+        ephemeris_fields = list(geometry._DEFAULT_FIELDS)
+        attitude_fields = [f for f in geometry._FIELDS if f not in ephemeris_fields]
         assert attitude_fields  # guard: this test is meaningful only with some
         for field in ephemeris_fields:
             for column in geometry._FIELDS[field].columns:
@@ -155,7 +155,9 @@ class TestGeometryOrchestration:
         for field in attitude_fields:
             for column in geometry._FIELDS[field].columns:
                 assert column not in df.columns
-        assert "boresight" not in counter
+        # No attitude (non-ephemeris) provider was queried for the default set.
+        attitude_providers = set(geometry._PROVIDERS) - geometry._EPHEMERIS_PROVIDERS
+        assert attitude_providers.isdisjoint(counter)
 
     def test_subset_queries_only_needed_providers(self):
         counter = {}
