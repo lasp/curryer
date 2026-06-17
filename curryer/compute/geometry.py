@@ -40,6 +40,16 @@ yields a NaN provider row; the math-only leaves are pure and propagate NaN
 elementwise, so every field is NaN on exactly the rows its inputs are missing and
 finite elsewhere -- per time, per field. Downstream maps those NaNs onto the
 product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
+
+Angle convention: the surface angles share one documented convention, in degrees,
+over the same boresight ellipsoid footprint as their surface point. Azimuths
+(``viewing_azimuth`` and the components of ``relative_azimuth``) are measured
+clockwise from geodetic North in [0, 360); zeniths (``viewing_zenith``,
+``solar_zenith``) are geodetic, from the local surface normal. ``relative_azimuth``
+is the lossless ``viewing - solar`` difference wrapped to [0, 360). A mission
+needing a different wrap -- e.g. the CERES [0, 180] fold -- converts on its end;
+curryer deliberately keeps the unfolded value, since reference/wrap remaps are
+reversible but a fold is not, and only the unfolded form lets every consumer adapt.
 """
 
 import logging
@@ -235,6 +245,33 @@ _PROVIDERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Field-layer helpers: pure math over already-queried providers (no SPICE).
+# These compose the spatial leaves the surface-angle fields share.
+# ---------------------------------------------------------------------------
+def _footprint(providers):
+    """ECEF point where the instrument boresight, cast from the S/C position,
+    meets the ellipsoid -- the shared surface point for the surface angles."""
+    return spatial.ray_intersect_ellipsoid(providers["boresight"], providers["sc_position"])
+
+
+def _relative_azimuth(providers):
+    """Relative azimuth between the viewing and solar directions, in [0, 360).
+
+    Defined as ``viewing_azimuth - solar_azimuth`` (both measured clockwise from
+    geodetic North per ``spatial.calc_azimuth``) wrapped to [0, 360). This is the
+    lossless full-range form -- it retains which side of the principal plane the
+    geometry is on. The CERES BDS R3V4 convention folds this to [0, 180] via
+    ``min(raa, 360 - raa)`` (and may apply a principal-plane origin offset); apply
+    that downstream as the product requires. Curryer keeps the unfolded value so
+    the fold (which is not reversible) is always available to do, never undone.
+    """
+    footprint = _footprint(providers)
+    view_az = spatial.calc_azimuth(footprint, providers["sc_position"], degrees=True)
+    sun_az = spatial.calc_azimuth(footprint, providers["sun_position"], degrees=True)
+    return np.mod(view_az - sun_az, 360.0)
+
+
 _FIELDS = {
     "sc_radius": _Field(
         providers=frozenset({"sc_position"}),
@@ -275,6 +312,28 @@ _FIELDS = {
         evaluate=lambda p: colatitude(
             spatial.ray_intersect_ellipsoid(p["boresight"], p["sc_position"], geodetic=True, degrees=True)[:, 1]
         )[:, None],
+    ),
+    # Surface angles -- pure math over the boresight footprint and the shared
+    # ephemeris providers; see the module "Angle convention" note. No new SPICE.
+    "viewing_zenith": _Field(
+        providers=frozenset({"boresight", "sc_position"}),
+        columns=("viewzen",),
+        evaluate=lambda p: spatial.calc_zenith(_footprint(p), p["sc_position"], degrees=True)[:, None],
+    ),
+    "solar_zenith": _Field(
+        providers=frozenset({"boresight", "sc_position", "sun_position"}),
+        columns=("solzen",),
+        evaluate=lambda p: spatial.calc_zenith(_footprint(p), p["sun_position"], degrees=True)[:, None],
+    ),
+    "viewing_azimuth": _Field(
+        providers=frozenset({"boresight", "sc_position"}),
+        columns=("viewaz",),
+        evaluate=lambda p: spatial.calc_azimuth(_footprint(p), p["sc_position"], degrees=True)[:, None],
+    ),
+    "relative_azimuth": _Field(
+        providers=frozenset({"boresight", "sc_position", "sun_position"}),
+        columns=("relaz",),
+        evaluate=lambda p: _relative_azimuth(p)[:, None],
     ),
 }
 

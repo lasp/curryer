@@ -13,10 +13,11 @@ from unittest.mock import patch
 
 import numpy as np
 import numpy.testing as npt
+import pandas as pd
 import pytest
 
 from curryer import meta, spicetime, spicierpy, utils
-from curryer.compute import constants, geometry
+from curryer.compute import constants, geometry, spatial
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -220,6 +221,72 @@ class TestGeometryOrchestration:
         npt.assert_allclose(df["surfcolat"].values, [90.0, 90.0], atol=1e-9)
         assert counter == {"boresight": 1, "sc_position": 1}
 
+    def test_surface_angles_physical_nadir(self):
+        # Boresight cast straight down from an equatorial sub-satellite point: the
+        # satellite sits at the footprint's local zenith, so the viewing zenith is
+        # ~0. The Sun on +Y is on the local horizon of the +X footprint (zenith ~90,
+        # with a slight excess from finite-Sun parallax as the footprint is offset
+        # from the geocenter) and at the local zenith of the +Y footprint (zenith 0).
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sun_pos = np.array([[0.0, 1.5e8, 0.0], [0.0, 1.5e8, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["viewing_zenith", "solar_zenith"])
+
+        npt.assert_allclose(df["viewzen"].values, [0.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["solzen"].values, [90.0, 0.0], atol=0.05)
+
+    def test_surface_angles_compose_spatial_leaves(self):
+        # The fields must wire the documented spatial leaves over the boresight
+        # footprint. An off-nadir boresight makes the azimuths non-degenerate; the
+        # registry output must equal a direct leaf composition, and each provider
+        # is queried once across the four fields.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "relative_azimuth"]
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        footprint = spatial.ray_intersect_ellipsoid(boresight, sc_pos)
+        exp_vaz = spatial.calc_azimuth(footprint, sc_pos, degrees=True)
+        exp_saz = spatial.calc_azimuth(footprint, sun_pos, degrees=True)
+        npt.assert_allclose(df["viewzen"].values, spatial.calc_zenith(footprint, sc_pos, degrees=True))
+        npt.assert_allclose(df["solzen"].values, spatial.calc_zenith(footprint, sun_pos, degrees=True))
+        npt.assert_allclose(df["viewaz"].values, exp_vaz)
+        npt.assert_allclose(df["relaz"].values, np.mod(exp_vaz - exp_saz, 360.0))
+        assert counter == {"boresight": 1, "sc_position": 1, "sun_position": 1}
+
+    def test_relative_azimuth_is_lossless_not_folded(self):
+        # relative_azimuth keeps the full [0, 360) range; a [0, 180] fold (e.g.
+        # CERES) is the caller's to apply. Mirroring the Sun across the footprint's
+        # principal plane (sign-flipped East component) maps the relative azimuth to
+        # 360 - raa: a folded field would collapse the pair to one value, and one of
+        # the pair lands above 180 -- impossible under a fold.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        boresight = np.array([[-0.95, 0.0, 0.31], [-0.95, 0.0, 0.31]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        sun_pos = np.array([[1.0e8, 1.0e8, 8.0e7], [1.0e8, -1.0e8, 8.0e7]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["relative_azimuth"])
+
+        relaz = df["relaz"].values
+        assert ((relaz >= 0.0) & (relaz < 360.0)).all()
+        # The mirrored pair sums to 360 (distinct values), one above 180 -- a fold
+        # to [0, 180] could produce neither.
+        npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
+        assert relaz.max() > 180.0
+
 
 class GeometryIntegrationTestCase(unittest.TestCase):
     """End-to-end tests exercising the real SPICE provider paths.
@@ -289,6 +356,27 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         surfcolat = df["surfcolat"]
         self.assertTrue(surfcolat.notna().any(), msg="surface colatitude all-NaN over covered times")
         self.assertTrue(surfcolat.dropna().between(0, 180).all())
+
+        # Surface angles resolve where the boresight does, in their documented
+        # ranges: zeniths in [0, 180], azimuths in [0, 360).
+        self.assertTrue(df["viewzen"].notna().any(), msg="viewing zenith all-NaN over covered times")
+        for col in ("viewzen", "solzen"):
+            self.assertTrue(df[col].dropna().between(0, 180).all())
+        for col in ("viewaz", "relaz"):
+            vals = df[col].dropna()
+            self.assertTrue(((vals >= 0.0) & (vals < 360.0)).all())
+
+        # The viewing angles must match the existing surface_angles primitive (what
+        # downstream calls today) over the covered rows -- same answer, computed
+        # without its redundant ephemeris re-query or geodetic round-trip.
+        sc = df.loc[finite, ["scx", "scy", "scz"]].values
+        footprint = spatial.ray_intersect_ellipsoid(boresight[finite], sc)
+        idx = df.index[finite]
+        surf_df = pd.DataFrame(footprint, columns=["x", "y", "z"], index=idx)
+        tgt_df = pd.DataFrame(sc, columns=["x", "y", "z"], index=idx)
+        ref = spatial.surface_angles(surf_df, target_positions=tgt_df, degrees=True)
+        npt.assert_allclose(df.loc[finite, "viewzen"].values, ref["zenith"].values, atol=1e-9)
+        npt.assert_allclose(df.loc[finite, "viewaz"].values, ref["azimuth"].values, atol=1e-9)
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)
