@@ -323,6 +323,77 @@ def instrument_pointing_state(
     return pnt_data, sc_data, qf_data
 
 
+def frame_euler(
+    from_frame: int | str | spicierpy.obj.Frame,
+    to_frame: int | str | spicierpy.obj.Frame,
+    ugps_times: np.ndarray,
+    sequence=(1, 2, 3),
+    degrees=True,
+    allow_nans=False,
+) -> pd.DataFrame:
+    """Euler angles rotating one reference frame into another over time.
+
+    Factors the frame-to-frame rotation ``pxform(from_frame, to_frame, t)`` into
+    three Euler angles about the axes in ``sequence`` (via ``m2eul``). Generic over
+    the frame pair: missions parameterize it with their own frames, so the
+    instrument-specific gimbal/pointing field stays downstream while the conversion
+    lives here. This is the standalone form of the per-sample Euler extraction that
+    :func:`instrument_pointing_state` computes internally.
+
+    Note
+    ----
+    ``pxform`` has no vectorized SpiceyPy override, so this loops per sample -- an
+    inherent scalar cost, not a missing optimization. For dense time grids, compute
+    on a coarse CK-cadence grid (see ``AbstractMissionData.get_times``) and
+    interpolate rather than calling this at full rate.
+
+    Parameters
+    ----------
+    from_frame, to_frame : str or int or spicierpy.obj.Frame
+        Source and destination reference frames; the returned angles rotate
+        ``from_frame`` into ``to_frame``. Relevant CK/FK kernels must be loaded.
+    ugps_times : array_like of int
+        One or more times in GPS microseconds.
+    sequence : tuple of int, optional
+        The three rotation axes (1=X, 2=Y, 3=Z) to factor into, in ``m2eul`` order.
+        Adjacent axes must differ. Default ``(1, 2, 3)``.
+    degrees : bool, optional
+        If True (default), angles are in degrees, otherwise radians.
+    allow_nans : bool, optional
+        Convert recoverable SPICE failures (e.g. attitude gaps) into NaN rows.
+        Default False raises instead.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``euler1, euler2, euler3`` -- the angle about ``sequence[0]``,
+        ``sequence[1]``, ``sequence[2]`` respectively -- indexed by ``ugps``. Rows
+        without attitude coverage are NaN when ``allow_nans``.
+
+    """
+    if len(sequence) != 3 or any(axis not in (1, 2, 3) for axis in sequence):
+        raise ValueError(f"`sequence` must be three axes from (1, 2, 3), got: {sequence}")
+    if sequence[0] == sequence[1] or sequence[1] == sequence[2]:
+        raise ValueError(f"`sequence` may not repeat adjacent axes (m2eul restriction), got: {sequence}")
+
+    from_name = spicierpy.obj.Frame(from_frame).name
+    to_name = spicierpy.obj.Frame(to_frame).name
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+    et_times = spicetime.adapt(ugps_times, to="et")
+
+    @spicierpy.ext.spice_error_to_val(err_value=np.full(3, np.nan), disable=not allow_nans)
+    def _euler(sample_et):
+        return spicierpy.m2eul(spicierpy.pxform(from_name, to_name, sample_et), *sequence)
+
+    angles = np.array([_euler(sample_et)[0] for sample_et in et_times])
+    if degrees:
+        angles = np.rad2deg(angles)
+
+    data = pd.DataFrame(angles, columns=["euler1", "euler2", "euler3"], index=pd.Index(ugps_times, name="ugps"))
+    data.columns.name = f"Euler[{from_name}->{to_name}]"
+    return data
+
+
 def compute_ellipsoid_intersection(
     ugps_times: np.ndarray,
     instrument: int | str | spicierpy.obj.Body,
