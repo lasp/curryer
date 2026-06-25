@@ -1,7 +1,8 @@
 """Selective geometric data-field computation.
 
-This module computes the geolocation/geometry ancillary data fields the Level-1
-products require. It is organized in two layers, both mission-generic:
+This module computes the geolocation/geometry ancillary data fields that
+geolocated products commonly need. It is organized in two layers, both
+mission-generic:
 
 - **Math-only leaf functions** (``sc_radius``, ``colatitude``,
   ``subobserver_point``, ``earth_sun_distance``) -- pure, vectorized, SPICE-free.
@@ -41,15 +42,17 @@ elementwise, so every field is NaN on exactly the rows its inputs are missing an
 finite elsewhere -- per time, per field. Downstream maps those NaNs onto the
 product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
 
-Angle convention: the surface angles share one documented convention, in degrees,
-over the same boresight ellipsoid footprint as their surface point. Azimuths
-(``viewing_azimuth``, and the viewing and solar azimuths from which
-``relative_azimuth`` is derived) are measured clockwise from geodetic North in
-[0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are geodetic, from the
-local surface normal. ``relative_azimuth`` is the lossless ``viewing - solar``
-difference wrapped to [0, 360). A mission needing a different wrap -- e.g. the CERES [0, 180] fold -- converts on its end;
-curryer deliberately keeps the unfolded value, since reference/wrap remaps are
-reversible but a fold is not, and only the unfolded form lets every consumer adapt.
+Available fields: request any by name (``GeometryData.available_fields()`` lists
+them). Each field expands to the columns below.
+
+- ``sc_radius`` -> ``spacecraft_radius`` -- observer distance from Earth center.
+- ``subsatellite`` -> ``subsatellite_latitude``, ``subsatellite_longitude``,
+  ``subsatellite_colatitude`` -- ground point beneath the spacecraft.
+- ``subsolar`` -> ``subsolar_latitude``, ``subsolar_longitude``,
+  ``subsolar_colatitude`` -- ground point beneath the Sun.
+- ``earth_sun_distance`` -> ``earth_sun_distance`` -- Earth-Sun distance (AU).
+- ``sc_position`` -> ``spacecraft_position_x``, ``spacecraft_position_y``,
+  ``spacecraft_position_z`` -- spacecraft position (ECEF).
 """
 
 import logging
@@ -306,27 +309,27 @@ def _relative_azimuth(providers):
 _FIELDS = {
     "sc_radius": _Field(
         providers=frozenset({"sc_position"}),
-        columns=("scradius",),
+        columns=("spacecraft_radius",),
         evaluate=lambda p: sc_radius(p["sc_position"])[:, None],
     ),
     "subsatellite": _Field(
         providers=frozenset({"sc_position"}),
-        columns=("subsatlat", "subsatlon", "subsatcolat"),
+        columns=("subsatellite_latitude", "subsatellite_longitude", "subsatellite_colatitude"),
         evaluate=lambda p: subobserver_point(p["sc_position"]),
     ),
     "subsolar": _Field(
         providers=frozenset({"sun_position"}),
-        columns=("subsollat", "subsollon", "subsolcolat"),
+        columns=("subsolar_latitude", "subsolar_longitude", "subsolar_colatitude"),
         evaluate=lambda p: subobserver_point(p["sun_position"]),
     ),
     "earth_sun_distance": _Field(
         providers=frozenset({"sun_position"}),
-        columns=("earthsundist",),
+        columns=("earth_sun_distance",),
         evaluate=lambda p: earth_sun_distance(p["sun_position"])[:, None],
     ),
     "sc_position": _Field(
         providers=frozenset({"sc_position"}),
-        columns=("scx", "scy", "scz"),
+        columns=("spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"),
         evaluate=lambda p: p["sc_position"],
     ),
     "boresight": _Field(
@@ -388,6 +391,13 @@ class GeometryData(abstract.AbstractMissionData):
     queried, each exactly once. Relevant kernels must already be loaded for the
     requested times, mirroring the other ``compute`` servers.
 
+    The requested times are the independent variable: :meth:`get_geometry` and
+    :meth:`get_vectors` evaluate every field at exactly the ``ugps_times`` passed
+    -- an arbitrary, possibly non-uniform array -- with no resampling or
+    interpolation. ``microsecond_cadence`` / :meth:`get_times` only offers an
+    optional uniform grid for callers that want one; it never constrains which
+    times are queried.
+
     Parameters
     ----------
     observer : str or int or spicierpy.obj.Body
@@ -443,7 +453,8 @@ class GeometryData(abstract.AbstractMissionData):
         Parameters
         ----------
         ugps_times : array_like of int
-            One or more times in GPS microseconds.
+            One or more times in GPS microseconds. Arbitrary and need not be
+            uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str, optional
             Field names to compute. Default is the ephemeris-only set (valid for
             any observer); attitude/instrument fields (e.g. ``boresight``) must be
@@ -453,9 +464,10 @@ class GeometryData(abstract.AbstractMissionData):
         -------
         pandas.DataFrame
             One row per time (index ``ugps``); vector fields expand to
-            per-field-prefixed columns (e.g. ``scx, scy, scz``). Times outside
-            SPICE coverage are NaN across that field's columns (see the module
-            Fill contract).
+            per-field-prefixed columns (e.g. ``spacecraft_position_x,
+            spacecraft_position_y, spacecraft_position_z``). Times outside SPICE
+            coverage are NaN across that field's columns (see the module Fill
+            contract).
 
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
@@ -479,7 +491,8 @@ class GeometryData(abstract.AbstractMissionData):
         Parameters
         ----------
         ugps_times : array_like of int
-            One or more times in GPS microseconds.
+            One or more times in GPS microseconds. Arbitrary and need not be
+            uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str
             Field names to compute.
 
