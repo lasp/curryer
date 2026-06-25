@@ -224,6 +224,26 @@ class TestGeometryOrchestration:
         assert np.isfinite(df.iloc[0][columns]).all()
         assert df.iloc[1][columns].isna().all()
 
+    def test_all_nan_provider_logs_warning(self, caplog):
+        # All-NaN from a provider (e.g. unfurnished kernels) is flagged with a
+        # warning, distinguishing misconfiguration from a genuine per-sample gap.
+        geo = self._build()
+        all_nan = np.full((2, 3), np.nan)
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=all_nan)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_position"])
+        assert "all-NaN" in caplog.text
+
+    def test_partial_nan_provider_does_not_warn(self, caplog):
+        # A genuine per-sample gap (some finite rows) must not trip the
+        # misconfiguration warning.
+        geo = self._build()
+        partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=partial)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_position"])
+        assert "all-NaN" not in caplog.text
+
     def test_boresight_and_surface_colatitude(self):
         # boresight is a passthrough of its provider; surface_colatitude is the
         # colatitude (90 - lat) of where the boresight, cast from the S/C
@@ -238,8 +258,8 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["boresight", "surface_colatitude"])
 
-        npt.assert_allclose(df[["boresightx", "boresighty", "boresightz"]].values, boresight)
-        npt.assert_allclose(df["surfcolat"].values, [90.0, 90.0], atol=1e-9)
+        npt.assert_allclose(df[["boresight_x", "boresight_y", "boresight_z"]].values, boresight)
+        npt.assert_allclose(df["surface_colatitude"].values, [90.0, 90.0], atol=1e-9)
         assert counter == {"boresight": 1, "sc_position": 1}
 
     def test_surface_angles_physical_nadir(self):
@@ -410,19 +430,19 @@ class GeometryIntegrationTestCase(unittest.TestCase):
                 self.assertIn(column, df.columns)
 
         # Position-derived fields are gap-free over covered times (unlike the
-        # attitude-derived boresight/surfcolat, which may be NaN in attitude gaps).
+        # attitude-derived boresight / surface_colatitude, which may be NaN in attitude gaps).
         position_columns = [
-            "subsatlat",
-            "subsatlon",
-            "subsatcolat",
-            "subsollat",
-            "subsollon",
-            "subsolcolat",
-            "scradius",
-            "earthsundist",
-            "scx",
-            "scy",
-            "scz",
+            "subsatellite_latitude",
+            "subsatellite_longitude",
+            "subsatellite_colatitude",
+            "subsolar_latitude",
+            "subsolar_longitude",
+            "subsolar_colatitude",
+            "spacecraft_radius",
+            "earth_sun_distance",
+            "spacecraft_position_x",
+            "spacecraft_position_y",
+            "spacecraft_position_z",
         ]
         self.assertFalse(
             df[position_columns].isna().any().any(),
@@ -436,15 +456,15 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         self.assertTrue(df["earth_sun_distance"].between(0.97, 1.03).all())
 
         # Boresight is a unit direction in ECEF where the attitude is available.
-        boresight = df[["boresightx", "boresighty", "boresightz"]].values
+        boresight = df[["boresight_x", "boresight_y", "boresight_z"]].values
         finite = np.isfinite(boresight).all(axis=1)
         self.assertTrue(finite.any(), msg="boresight all-NaN over covered times")
         npt.assert_allclose(np.linalg.norm(boresight[finite], axis=1), 1.0, atol=1e-6)
 
         # Surface colatitude is in [0, 180] where the boresight hits the ellipsoid.
-        surfcolat = df["surfcolat"]
-        self.assertTrue(surfcolat.notna().any(), msg="surface colatitude all-NaN over covered times")
-        self.assertTrue(surfcolat.dropna().between(0, 180).all())
+        surface_colatitude = df["surface_colatitude"]
+        self.assertTrue(surface_colatitude.notna().any(), msg="surface colatitude all-NaN over covered times")
+        self.assertTrue(surface_colatitude.dropna().between(0, 180).all())
 
         # Surface angles resolve where the boresight does, in their documented
         # ranges: zeniths in [0, 180], azimuths in [0, 360).
