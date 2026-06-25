@@ -334,13 +334,13 @@ _FIELDS = {
 _EPHEMERIS_PROVIDERS = frozenset({"sc_position", "sun_position"})
 
 # Default field set for ``fields=None``: every field whose providers are a subset
-# (``<=``) of the ephemeris providers. The criterion is observer definability, not
-# kernel coverage -- a body with no instrument FOV/IK (e.g. a bare spacecraft)
-# cannot define a boresight at all, so its attitude fields are impossible whichever
-# kernels are furnished, whereas ephemeris fields are valid for any observer.
-# Defaulting to the ephemeris-only subset keeps ``get_geometry()`` usable for any
-# observer and skips the per-sample attitude loop; attitude fields are opt-in.
-# Derived from the providers, so it self-maintains.
+# (``<=``) of the ephemeris providers -- i.e. computable from position (an SPK)
+# alone, which every observer has. The attitude fields (boresight, and
+# surface_colatitude via it) need more: the spacecraft attitude (a CK, to rotate
+# into the Earth-fixed frame) plus an instrument FOV (IK boresight + FK frame). They
+# are opt-in so the no-args call need not furnish a CK or use an instrument observer
+# -- not because a spacecraft lacks attitude (it has its own CK), but because these
+# fields require those extra inputs. Self-maintaining via the providers.
 _DEFAULT_FIELDS = tuple(name for name, field in _FIELDS.items() if field.providers <= _EPHEMERIS_PROVIDERS)
 
 
