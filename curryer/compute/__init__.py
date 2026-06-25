@@ -1,6 +1,6 @@
 """Methods for computing spatial and pointing datasets.
 
-@author: Brandon Stone
+@author: Brandon Stone, Matthew Maclay
 """
 
 from . import constants, elevation, ephemeris, geometry, pointing, spatial

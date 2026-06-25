@@ -98,8 +98,8 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
             df = geo.get_geometry(self.UGPS, fields=["sc_radius"])
 
-        assert list(df.columns) == ["scradius"]
-        npt.assert_allclose(df["scradius"].values, [7000.0, 7000.0])
+        assert list(df.columns) == ["spacecraft_radius"]
+        npt.assert_allclose(df["spacecraft_radius"].values, [7000.0, 7000.0])
         assert df.index.name == "ugps"
         # Only sc_position was queried; sun_position untouched.
         assert counter == {"sc_position": 1}
@@ -113,8 +113,17 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["sc_position", "subsolar"])
 
-        assert list(df.columns) == ["scx", "scy", "scz", "subsollat", "subsollon", "subsolcolat"]
-        npt.assert_allclose(df[["scx", "scy", "scz"]].values, sc_pos)
+        assert list(df.columns) == [
+            "spacecraft_position_x",
+            "spacecraft_position_y",
+            "spacecraft_position_z",
+            "subsolar_latitude",
+            "subsolar_longitude",
+            "subsolar_colatitude",
+        ]
+        npt.assert_allclose(
+            df[["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values, sc_pos
+        )
         # Each needed provider queried once.
         assert counter == {"sc_position": 1, "sun_position": 1}
 
@@ -167,9 +176,9 @@ class TestGeometryOrchestration:
             df = geo.get_geometry(self.UGPS, fields=["sc_radius", "subsatellite", "sc_position"])
 
         assert counter == {"sc_position": 1}
-        assert "scradius" in df.columns
-        assert "subsatlat" in df.columns
-        assert "scx" in df.columns
+        assert "spacecraft_radius" in df.columns
+        assert "subsatellite_latitude" in df.columns
+        assert "spacecraft_position_x" in df.columns
 
     def test_nan_provider_row_propagates(self):
         # A data gap (NaN provider row) must surface as NaN, not crash, so
@@ -236,10 +245,10 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         self.assertFalse(df.isna().any().any(), msg=f"unexpected NaNs:\n{df.isna().sum()}")
 
         # Physical sanity ranges.
-        self.assertTrue(df["subsatcolat"].between(0, 180).all())
-        self.assertTrue(df["subsatlon"].between(-180, 180).all())
-        self.assertTrue(df["scradius"].between(6500, 7500).all())  # ISS-class orbit.
-        self.assertTrue(df["earthsundist"].between(0.97, 1.03).all())
+        self.assertTrue(df["subsatellite_colatitude"].between(0, 180).all())
+        self.assertTrue(df["subsatellite_longitude"].between(-180, 180).all())
+        self.assertTrue(df["spacecraft_radius"].between(6500, 7500).all())  # ISS-class orbit.
+        self.assertTrue(df["earth_sun_distance"].between(0.97, 1.03).all())
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)
