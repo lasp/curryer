@@ -56,7 +56,23 @@ them). Each field expands to the columns below.
 - ``boresight`` -> ``boresight_x``, ``boresight_y``, ``boresight_z`` --
   instrument boresight unit vector (ECEF).
 - ``surface_colatitude`` -> ``surface_colatitude`` -- colatitude of the boresight
-  ellipsoid footprint.
+  ellipsoid intersection.
+- ``viewing_zenith`` / ``solar_zenith`` -> same-named columns -- geodetic zenith of
+  the satellite / Sun at the boresight ellipsoid intersection.
+- ``viewing_azimuth`` / ``solar_azimuth`` -> same-named columns -- satellite / Sun
+  azimuth at that intersection.
+- ``relative_azimuth`` -> ``relative_azimuth`` -- viewing relative to solar azimuth.
+- ``cone_angle`` -> ``cone_angle`` -- boresight angle off the satellite-to-geocenter
+  vector.
+
+Angle convention: the surface angles are in degrees, over the boresight ellipsoid
+intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
+geodetic North in [0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are
+geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` uses the
+CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the
+Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
+(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
+in [0, 90] for Earth-disk views.
 """
 
 import logging
@@ -290,39 +306,89 @@ _PROVIDERS = {
 # Field-layer helpers: pure math over already-queried providers (no SPICE).
 # These compose the spatial leaves the surface-angle fields share.
 # ---------------------------------------------------------------------------
-_FOOTPRINT_KEY = "footprint"  # cache slot in the per-request providers dict
+_INTERSECTION_KEY = "boresight_intersection"  # cache slot in the per-request providers dict
 
 
-def _footprint(providers):
-    """ECEF point where the instrument boresight, cast from the S/C position,
-    meets the ellipsoid -- the shared surface point for the surface angles.
+def _boresight_intersection(providers):
+    """ECEF point where the boresight ray, cast from the S/C position, meets the
+    ellipsoid -- the shared ground point for the surface angles.
 
-    Memoized into the per-request ``providers`` dict: every surface-angle field in
-    a request shares the same footprint, so the ray-cast runs once per request
-    rather than once per field.
+    A boresight that misses the ellipsoid (off-disk / deep-space pointing) yields
+    NaN: ``ray_intersect_ellipsoid`` is a direct ray-ellipsoid intersection, not a
+    nearest-point projection, so it returns no PNEAR/DIST. Memoized into the
+    per-request ``providers`` dict, so the ray-cast runs once per request and is
+    shared by every surface-angle field.
+
+    Parameters
+    ----------
+    providers : dict
+        Per-request provider results; uses ``boresight`` (unit vectors, ECEF) and
+        ``sc_position`` (the ray origin, ECEF). Mutated to cache the result.
+
+    Returns
+    -------
+    numpy.ndarray
+        Intersection points in ECEF, shape (N, 3); NaN rows where the boresight
+        misses the ellipsoid.
     """
-    footprint = providers.get(_FOOTPRINT_KEY)
-    if footprint is None:
-        footprint = spatial.ray_intersect_ellipsoid(providers["boresight"], providers["sc_position"])
-        providers[_FOOTPRINT_KEY] = footprint
-    return footprint
+    intersection = providers.get(_INTERSECTION_KEY)
+    if intersection is None:
+        intersection = spatial.ray_intersect_ellipsoid(providers["boresight"], providers["sc_position"])
+        providers[_INTERSECTION_KEY] = intersection
+    return intersection
 
 
 def _relative_azimuth(providers):
-    """Relative azimuth between the viewing and solar directions, in [0, 360).
+    """Relative azimuth of the viewing direction about the solar plane, in [0, 360).
 
-    Defined as ``viewing_azimuth - solar_azimuth`` (both measured clockwise from
-    geodetic North per ``spatial.calc_azimuth``) wrapped to [0, 360). This is the
-    lossless full-range form -- it retains which side of the principal plane the
-    geometry is on. The CERES BDS R3V4 convention folds this to [0, 180] via
-    ``min(raa, 360 - raa)`` (and may apply a principal-plane origin offset); apply
-    that downstream as the product requires. Curryer keeps the unfolded value so
-    the fold (which is not reversible) is always available to do, never undone.
+    ``mod(viewing_azimuth - solar_azimuth + 180, 360)`` (azimuths clockwise from
+    geodetic North per ``spatial.calc_azimuth``), matching the CERES BDS R3V4 origin
+    so the Sun sits at 180. This is the lossless full-range value -- it keeps which
+    side of the principal plane the geometry is on. The CERES [0, 180] *fold*
+    (``min(raa, 360 - raa)``) is a separate, lossy step applied downstream if a
+    product wants it; curryer keeps the unfolded value, since a reference/wrap shift
+    is reversible but a fold is not.
+
+    Parameters
+    ----------
+    providers : dict
+        Per-request provider results; uses ``boresight``, ``sc_position``, and
+        ``sun_position`` (via the shared boresight intersection).
+
+    Returns
+    -------
+    numpy.ndarray
+        Relative azimuth in degrees, shape (N,), in [0, 360); NaN where the
+        boresight misses the ellipsoid.
     """
-    footprint = _footprint(providers)
-    view_az = spatial.calc_azimuth(footprint, providers["sc_position"], degrees=True)
-    sun_az = spatial.calc_azimuth(footprint, providers["sun_position"], degrees=True)
-    return np.mod(view_az - sun_az, 360.0)
+    intersection = _boresight_intersection(providers)
+    view_az = spatial.calc_azimuth(intersection, providers["sc_position"], degrees=True)
+    sun_az = spatial.calc_azimuth(intersection, providers["sun_position"], degrees=True)
+    return np.mod(view_az - sun_az + 180.0, 360.0)
+
+
+def _cone_angle(providers):
+    """Angle between the boresight and the satellite-to-geocenter direction.
+
+    The cone angle (CERES BDS R3V4 SCI-18) is the off-nadir angle of the boresight
+    measured from the vector pointing from the spacecraft to Earth's center
+    (``-sc_position``). In [0, 90] for Earth-disk views; larger toward the limb.
+
+    Parameters
+    ----------
+    providers : dict
+        Per-request provider results; uses ``boresight`` (unit vectors, ECEF) and
+        ``sc_position`` (ECEF).
+
+    Returns
+    -------
+    numpy.ndarray
+        Cone angle in degrees, shape (N,).
+    """
+    sc_position = providers["sc_position"]
+    nadir = -sc_position / np.linalg.norm(sc_position, axis=-1, keepdims=True)
+    cos_angle = np.sum(providers["boresight"] * nadir, axis=-1)
+    return np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
 
 
 _FIELDS = {
@@ -357,36 +423,46 @@ _FIELDS = {
         evaluate=lambda p: p["boresight"],
     ),
     "surface_colatitude": _Field(
-        # The footprint is where the boresight, cast from the S/C position, meets
-        # the ellipsoid; ``ray_intersect_ellipsoid`` returns geodetic
-        # [lon, lat, alt], so column 1 is the latitude.
+        # The boresight intersection is where the boresight, cast from the S/C
+        # position, meets the ellipsoid; ``ray_intersect_ellipsoid`` returns
+        # geodetic [lon, lat, alt], so column 1 is the latitude.
         providers=frozenset({"boresight", "sc_position"}),
         columns=("surface_colatitude",),
         evaluate=lambda p: colatitude(
             spatial.ray_intersect_ellipsoid(p["boresight"], p["sc_position"], geodetic=True, degrees=True)[:, 1]
         )[:, None],
     ),
-    # Surface angles -- pure math over the boresight footprint and the shared
-    # ephemeris providers; see the module "Angle convention" note. No new SPICE.
+    # Surface angles -- pure math over the boresight ellipsoid intersection and the
+    # shared ephemeris providers; see the module "Angle convention" note. No new SPICE.
     "viewing_zenith": _Field(
         providers=frozenset({"boresight", "sc_position"}),
-        columns=("viewzen",),
-        evaluate=lambda p: spatial.calc_zenith(_footprint(p), p["sc_position"], degrees=True)[:, None],
+        columns=("viewing_zenith",),
+        evaluate=lambda p: spatial.calc_zenith(_boresight_intersection(p), p["sc_position"], degrees=True)[:, None],
     ),
     "solar_zenith": _Field(
         providers=frozenset({"boresight", "sc_position", "sun_position"}),
-        columns=("solzen",),
-        evaluate=lambda p: spatial.calc_zenith(_footprint(p), p["sun_position"], degrees=True)[:, None],
+        columns=("solar_zenith",),
+        evaluate=lambda p: spatial.calc_zenith(_boresight_intersection(p), p["sun_position"], degrees=True)[:, None],
     ),
     "viewing_azimuth": _Field(
         providers=frozenset({"boresight", "sc_position"}),
-        columns=("viewaz",),
-        evaluate=lambda p: spatial.calc_azimuth(_footprint(p), p["sc_position"], degrees=True)[:, None],
+        columns=("viewing_azimuth",),
+        evaluate=lambda p: spatial.calc_azimuth(_boresight_intersection(p), p["sc_position"], degrees=True)[:, None],
+    ),
+    "solar_azimuth": _Field(
+        providers=frozenset({"boresight", "sc_position", "sun_position"}),
+        columns=("solar_azimuth",),
+        evaluate=lambda p: spatial.calc_azimuth(_boresight_intersection(p), p["sun_position"], degrees=True)[:, None],
     ),
     "relative_azimuth": _Field(
         providers=frozenset({"boresight", "sc_position", "sun_position"}),
-        columns=("relaz",),
+        columns=("relative_azimuth",),
         evaluate=lambda p: _relative_azimuth(p)[:, None],
+    ),
+    "cone_angle": _Field(
+        providers=frozenset({"boresight", "sc_position"}),
+        columns=("cone_angle",),
+        evaluate=lambda p: _cone_angle(p)[:, None],
     ),
 }
 

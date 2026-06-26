@@ -277,14 +277,14 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["viewing_zenith", "solar_zenith"])
 
-        npt.assert_allclose(df["viewzen"].values, [0.0, 0.0], atol=1e-6)
-        npt.assert_allclose(df["solzen"].values, [90.0, 0.0], atol=0.05)
+        npt.assert_allclose(df["viewing_zenith"].values, [0.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["solar_zenith"].values, [90.0, 0.0], atol=0.05)
 
     def test_surface_angles_compose_spatial_leaves(self):
         # The fields must wire the documented spatial leaves over the boresight
-        # footprint. An off-nadir boresight makes the azimuths non-degenerate; the
-        # registry output must equal a direct leaf composition, and each provider
-        # is queried once across the four fields.
+        # ellipsoid intersection. An off-nadir boresight makes the azimuths
+        # non-degenerate; the registry output must equal a direct leaf composition,
+        # and each provider is queried once across the fields.
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
         sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
@@ -292,22 +292,24 @@ class TestGeometryOrchestration:
         boresight /= np.linalg.norm(boresight, axis=1)[:, None]
         geo = self._build()
         fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
-        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "relative_azimuth"]
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=fields)
 
-        footprint = spatial.ray_intersect_ellipsoid(boresight, sc_pos)
-        exp_vaz = spatial.calc_azimuth(footprint, sc_pos, degrees=True)
-        exp_saz = spatial.calc_azimuth(footprint, sun_pos, degrees=True)
-        npt.assert_allclose(df["viewzen"].values, spatial.calc_zenith(footprint, sc_pos, degrees=True))
-        npt.assert_allclose(df["solzen"].values, spatial.calc_zenith(footprint, sun_pos, degrees=True))
-        npt.assert_allclose(df["viewaz"].values, exp_vaz)
-        npt.assert_allclose(df["relaz"].values, np.mod(exp_vaz - exp_saz, 360.0))
+        intersection = spatial.ray_intersect_ellipsoid(boresight, sc_pos)
+        exp_vaz = spatial.calc_azimuth(intersection, sc_pos, degrees=True)
+        exp_saz = spatial.calc_azimuth(intersection, sun_pos, degrees=True)
+        npt.assert_allclose(df["viewing_zenith"].values, spatial.calc_zenith(intersection, sc_pos, degrees=True))
+        npt.assert_allclose(df["solar_zenith"].values, spatial.calc_zenith(intersection, sun_pos, degrees=True))
+        npt.assert_allclose(df["viewing_azimuth"].values, exp_vaz)
+        npt.assert_allclose(df["solar_azimuth"].values, exp_saz)
+        npt.assert_allclose(df["relative_azimuth"].values, np.mod(exp_vaz - exp_saz + 180.0, 360.0))
         assert counter == {"boresight": 1, "sc_position": 1, "sun_position": 1}
 
-    def test_footprint_memoized_across_surface_angle_fields(self):
-        # Every surface-angle field shares the boresight footprint; the memo on the
-        # per-request providers dict casts the ray once, not once per field.
+    def test_boresight_intersection_memoized_across_surface_angle_fields(self):
+        # Every intersection-using surface-angle field shares the boresight
+        # intersection; the memo on the per-request providers dict casts the ray
+        # once, not once per field.
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
         sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
@@ -315,7 +317,7 @@ class TestGeometryOrchestration:
         boresight /= np.linalg.norm(boresight, axis=1)[:, None]
         geo = self._build()
         fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
-        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "relative_azimuth"]
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
         with (
             patch.dict(geometry._PROVIDERS, fakes),
             patch.object(geometry.spatial, "ray_intersect_ellipsoid", wraps=spatial.ray_intersect_ellipsoid) as m_ray,
@@ -341,12 +343,25 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["relative_azimuth"])
 
-        relaz = df["relaz"].values
+        relaz = df["relative_azimuth"].values
         assert ((relaz >= 0.0) & (relaz < 360.0)).all()
         # The mirrored pair sums to 360 (distinct values), one above 180 -- a fold
         # to [0, 180] could produce neither.
         npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
         assert relaz.max() > 180.0
+
+    def test_cone_angle_nadir_and_off_nadir(self):
+        # Cone angle is the boresight's angle off the satellite-to-geocenter
+        # direction: 0 looking straight down, 30 for a 30-deg tilt.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        nadir = np.array([-1.0, 0.0, 0.0])
+        tilt = np.array([-np.cos(np.radians(30.0)), 0.0, np.sin(np.radians(30.0))])
+        boresight = np.array([nadir, tilt])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle"])
+        npt.assert_allclose(df["cone_angle"].values, [0.0, 30.0], atol=1e-6)
 
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider must rotate the IK boresight with pxform only --
@@ -468,24 +483,27 @@ class GeometryIntegrationTestCase(unittest.TestCase):
 
         # Surface angles resolve where the boresight does, in their documented
         # ranges: zeniths in [0, 180], azimuths in [0, 360).
-        self.assertTrue(df["viewzen"].notna().any(), msg="viewing zenith all-NaN over covered times")
-        for col in ("viewzen", "solzen"):
+        self.assertTrue(df["viewing_zenith"].notna().any(), msg="viewing zenith all-NaN over covered times")
+        for col in ("viewing_zenith", "solar_zenith"):
             self.assertTrue(df[col].dropna().between(0, 180).all())
-        for col in ("viewaz", "relaz"):
+        for col in ("viewing_azimuth", "solar_azimuth", "relative_azimuth"):
             vals = df[col].dropna()
             self.assertTrue(((vals >= 0.0) & (vals < 360.0)).all())
+        # Cone angle resolves wherever the boresight does, on-disk and off-nadir.
+        self.assertTrue(df.loc[finite, "cone_angle"].notna().all())
+        self.assertTrue(df["cone_angle"].dropna().between(0, 90).all())
 
         # The viewing angles must match the existing surface_angles primitive (what
         # downstream calls today) over the covered rows -- same answer, computed
         # without its redundant ephemeris re-query or geodetic round-trip.
-        sc = df.loc[finite, ["scx", "scy", "scz"]].values
-        footprint = spatial.ray_intersect_ellipsoid(boresight[finite], sc)
+        sc = df.loc[finite, ["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values
+        intersection = spatial.ray_intersect_ellipsoid(boresight[finite], sc)
         idx = df.index[finite]
-        surf_df = pd.DataFrame(footprint, columns=["x", "y", "z"], index=idx)
+        surf_df = pd.DataFrame(intersection, columns=["x", "y", "z"], index=idx)
         tgt_df = pd.DataFrame(sc, columns=["x", "y", "z"], index=idx)
         ref = spatial.surface_angles(surf_df, target_positions=tgt_df, degrees=True)
-        npt.assert_allclose(df.loc[finite, "viewzen"].values, ref["zenith"].values, atol=1e-9)
-        npt.assert_allclose(df.loc[finite, "viewaz"].values, ref["azimuth"].values, atol=1e-9)
+        npt.assert_allclose(df.loc[finite, "viewing_zenith"].values, ref["zenith"].values, atol=1e-9)
+        npt.assert_allclose(df.loc[finite, "viewing_azimuth"].values, ref["azimuth"].values, atol=1e-9)
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)
