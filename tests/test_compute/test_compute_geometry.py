@@ -68,6 +68,12 @@ class TestGeometryLeaves:
         npt.assert_allclose(geometry.earth_sun_distance(position), [1.0])
         npt.assert_allclose(geometry.earth_sun_distance(position, au=False), [constants.KM_PER_ASTRONOMICAL_UNIT])
 
+    def test_satellite_altitude_known_values(self):
+        # 500 km above the +X equator and above the north pole.
+        equator = np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 500.0, 0.0, 0.0])
+        pole = np.array([0.0, 0.0, constants.WGS84_SEMI_MINOR_AXIS_KM + 500.0])
+        npt.assert_allclose(geometry.satellite_altitude(np.stack([equator, pole])), [500.0, 500.0], atol=1e-6)
+
 
 def _fake_providers(call_counter, **values):
     """Build a patch dict of counting fake providers from ``{key: value}``."""
@@ -160,6 +166,22 @@ class TestGeometryOrchestration:
             geo.get_geometry(self.UGPS, fields=["subsatellite", "earth_sun_distance"])
         # subsatellite -> sc_position, earth_sun_distance -> sun_position only.
         assert counter == {"sc_position": 1, "sun_position": 1}
+
+    def test_sc_altitude_field(self):
+        counter = {}
+        # 500 km and 800 km above the +X equator.
+        sc_pos = np.array(
+            [
+                [constants.WGS84_SEMI_MAJOR_AXIS_KM + 500.0, 0.0, 0.0],
+                [constants.WGS84_SEMI_MAJOR_AXIS_KM + 800.0, 0.0, 0.0],
+            ]
+        )
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+            df = geo.get_geometry(self.UGPS, fields=["sc_altitude"])
+        assert list(df.columns) == ["spacecraft_altitude"]
+        npt.assert_allclose(df["spacecraft_altitude"].values, [500.0, 800.0], atol=1e-6)
+        assert counter == {"sc_position": 1}
 
     def test_unknown_field_raises(self):
         geo = self._build()

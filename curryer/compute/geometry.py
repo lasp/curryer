@@ -5,7 +5,8 @@ geolocated products commonly need. It is organized in two layers, both
 mission-generic:
 
 - **Math-only leaf functions** (``sc_radius``, ``colatitude``,
-  ``subobserver_point``, ``earth_sun_distance``) -- pure, vectorized, SPICE-free.
+  ``subobserver_point``, ``earth_sun_distance``, ``satellite_altitude``) -- pure,
+  vectorized, SPICE-free.
   They take high-level inputs (positions) as arguments and can be called directly
   to compose custom fields; the coordinate/frame primitives they build on (e.g.
   ``ecef_to_geodetic``) stay in :mod:`curryer.compute.spatial`.
@@ -53,6 +54,8 @@ them). Each field expands to the columns below.
 - ``earth_sun_distance`` -> ``earth_sun_distance`` -- Earth-Sun distance (AU).
 - ``sc_position`` -> ``spacecraft_position_x``, ``spacecraft_position_y``,
   ``spacecraft_position_z`` -- spacecraft position (ECEF).
+- ``sc_altitude`` -> ``spacecraft_altitude`` -- observer geodetic height above the
+  ellipsoid (km).
 """
 
 import logging
@@ -171,6 +174,29 @@ def earth_sun_distance(earth_sun_position: np.ndarray, au=True) -> np.ndarray:
     return distance / constants.KM_PER_ASTRONOMICAL_UNIT if au else distance
 
 
+def satellite_altitude(observer_position: np.ndarray) -> np.ndarray:
+    """Geodetic altitude of the observer above the ellipsoid (vectorized).
+
+    The height-above-ellipsoid component of the observer's geodetic position -- the
+    piece ``subobserver_point`` drops when it returns latitude/longitude/colatitude.
+    Complements ``sc_radius`` (the geocentric distance from the body center).
+
+    Parameters
+    ----------
+    observer_position : np.ndarray
+        Observer (e.g., spacecraft) positions in ECEF rectangular coordinates (km),
+        shape (..., 3).
+
+    Returns
+    -------
+    np.ndarray
+        Geodetic altitude in km, shape (...,).
+
+    """
+    lla = spatial.ecef_to_geodetic(observer_position, meters=False, degrees=True)
+    return lla[..., 2]
+
+
 @dataclass(frozen=True)
 class _Field:
     """Registry entry for a single output field.
@@ -254,6 +280,11 @@ _FIELDS = {
         providers=frozenset({"sc_position"}),
         columns=("spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"),
         evaluate=lambda p: p["sc_position"],
+    ),
+    "sc_altitude": _Field(
+        providers=frozenset({"sc_position"}),
+        columns=("spacecraft_altitude",),
+        evaluate=lambda p: satellite_altitude(p["sc_position"])[:, None],
     ),
 }
 
