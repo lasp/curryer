@@ -5,7 +5,8 @@ geolocated products commonly need. It is organized in two layers, both
 mission-generic:
 
 - **Math-only leaf functions** (``sc_radius``, ``colatitude``,
-  ``subobserver_point``, ``earth_sun_distance``) -- pure, vectorized, SPICE-free.
+  ``subobserver_point``, ``earth_sun_distance``, ``satellite_altitude``) -- pure,
+  vectorized, SPICE-free.
   They take high-level inputs (positions) as arguments and can be called directly
   to compose custom fields; the coordinate/frame primitives they build on (e.g.
   ``ecef_to_geodetic``) stay in :mod:`curryer.compute.spatial`.
@@ -53,6 +54,8 @@ them). Each field expands to the columns below.
 - ``earth_sun_distance`` -> ``earth_sun_distance`` -- Earth-Sun distance (AU).
 - ``sc_position`` -> ``spacecraft_position_x``, ``spacecraft_position_y``,
   ``spacecraft_position_z`` -- spacecraft position (ECEF).
+- ``sc_altitude`` -> ``spacecraft_altitude`` -- observer geodetic height above the
+  ellipsoid (km).
 - ``boresight`` -> ``boresight_x``, ``boresight_y``, ``boresight_z`` --
   instrument boresight unit vector (ECEF).
 - ``surface_colatitude`` -> ``surface_colatitude`` -- colatitude of the boresight
@@ -99,7 +102,7 @@ def sc_radius(observer_position: np.ndarray) -> np.ndarray:
     return np.linalg.norm(observer_position, axis=-1)
 
 
-def colatitude(latitude: np.ndarray, degrees=True) -> np.ndarray:
+def colatitude(latitude: np.ndarray, degrees: bool = True) -> np.ndarray:
     """Convert geodetic latitude to colatitude (vectorized).
 
     Colatitude is the complement of latitude (``90 - lat``), ranging from 0 at
@@ -123,7 +126,7 @@ def colatitude(latitude: np.ndarray, degrees=True) -> np.ndarray:
     return quarter_turn - np.asarray(latitude, dtype=float)
 
 
-def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray:
+def subobserver_point(observer_position: np.ndarray, degrees: bool = True) -> np.ndarray:
     """Sub-observer geodetic latitude, longitude, and colatitude (vectorized).
 
     The sub-observer point is the geodetic ground point directly beneath the
@@ -152,7 +155,7 @@ def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray
     return np.stack([lat, lon, colat], axis=-1)
 
 
-def earth_sun_distance(earth_sun_position: np.ndarray, au=True) -> np.ndarray:
+def earth_sun_distance(earth_sun_position: np.ndarray, au: bool = True) -> np.ndarray:
     """Distance between Earth and Sun (vectorized).
 
     Implements the Earth-Sun distance field. The input is the
@@ -175,6 +178,29 @@ def earth_sun_distance(earth_sun_position: np.ndarray, au=True) -> np.ndarray:
     return distance / constants.KM_PER_ASTRONOMICAL_UNIT if au else distance
 
 
+def satellite_altitude(observer_position: np.ndarray) -> np.ndarray:
+    """Geodetic altitude of the observer above the ellipsoid (vectorized).
+
+    The height-above-ellipsoid component of the observer's geodetic position -- the
+    piece ``subobserver_point`` drops when it returns latitude/longitude/colatitude.
+    Complements ``sc_radius`` (the geocentric distance from the body center).
+
+    Parameters
+    ----------
+    observer_position : np.ndarray
+        Observer (e.g., spacecraft) positions in ECEF rectangular coordinates (km),
+        shape (..., 3).
+
+    Returns
+    -------
+    np.ndarray
+        Geodetic altitude in km, shape (...,).
+
+    """
+    lla = spatial.ecef_to_geodetic(observer_position, meters=False, degrees=True)
+    return lla[..., 2]
+
+
 @dataclass(frozen=True)
 class _Field:
     """Registry entry for a single output field.
@@ -190,9 +216,9 @@ class _Field:
 
     """
 
-    providers: frozenset
-    columns: tuple
-    evaluate: Callable
+    providers: frozenset[str]
+    columns: tuple[str, ...]
+    evaluate: Callable[[dict], np.ndarray]
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +338,11 @@ _FIELDS = {
         columns=("spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"),
         evaluate=lambda p: p["sc_position"],
     ),
+    "sc_altitude": _Field(
+        providers=frozenset({"sc_position"}),
+        columns=("spacecraft_altitude",),
+        evaluate=lambda p: satellite_altitude(p["sc_position"])[:, None],
+    ),
     "boresight": _Field(
         providers=frozenset({"boresight"}),
         columns=("boresight_x", "boresight_y", "boresight_z"),
@@ -376,7 +407,7 @@ class GeometryData(abstract.AbstractMissionData):
 
     """
 
-    DEFAULT_CADENCE = constants.ATTITUDE_TIMESTEP_USEC
+    DEFAULT_CADENCE = constants.EPHEMERIS_TIMESTEP_USEC
 
     def __init__(self, observer, microsecond_cadence=None, earth="EARTH", sun="SUN", earth_frame=None):
         microsecond_cadence = self.DEFAULT_CADENCE if microsecond_cadence is None else microsecond_cadence
@@ -405,30 +436,31 @@ class GeometryData(abstract.AbstractMissionData):
     def _gather_providers(self, fields, ugps_times):
         """Query the minimal set of providers for ``fields``, once each.
 
-        A provider that comes back entirely NaN almost always means the required
-        kernels are not furnished (or do not cover the requested span) rather than
-        a genuine per-sample gap, so it is logged as a warning to surface the
-        likely misconfiguration. The all-NaN result still propagates per the fill
-        contract; pass ``allow_nans=False`` to raise on the underlying SPICE error
-        instead.
+        Providers are evaluated in a stable (sorted) order so runs are
+        reproducible. A provider that comes back entirely NaN almost always means
+        the required kernels are not furnished (or do not cover the requested
+        span) rather than a genuine per-sample gap, so it is logged as a warning to
+        surface the likely misconfiguration. The all-NaN result still propagates
+        per the fill contract; set the instance ``allow_nans`` attribute to False
+        to raise on the underlying SPICE error instead.
         """
-        needed = set().union(*(_FIELDS[name].providers for name in fields))
-        logger.debug("Querying providers %s for fields %s", sorted(needed), fields)
+        needed = sorted(set().union(*(_FIELDS[name].providers for name in fields)))
+        logger.debug("Querying providers %s for fields %s", needed, fields)
         providers = {}
         for key in needed:
-            result = _PROVIDERS[key](ugps_times, self)
-            if np.size(result) and np.isnan(result).all():
+            values = _PROVIDERS[key](ugps_times, self)
+            if np.size(values) and np.all(np.isnan(np.asarray(values, dtype=float))):
                 logger.warning(
                     "Provider %r returned all-NaN over %d time(s); check that the required kernels "
                     "are furnished and cover the requested span.",
                     key,
-                    np.shape(result)[0],
+                    len(ugps_times),
                 )
-            providers[key] = result
+            providers[key] = values
         return providers
 
     @abstract.log_return()
-    def get_geometry(self, ugps_times, fields=None) -> pd.DataFrame:
+    def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:
         """Compute the requested fields as a table.
 
         Parameters
@@ -463,7 +495,7 @@ class GeometryData(abstract.AbstractMissionData):
                 data[column] = values[:, jth]
         return pd.DataFrame(data, index=pd.Index(ugps_times, name="ugps"))
 
-    def get_vectors(self, ugps_times, fields) -> dict:
+    def get_vectors(self, ugps_times: np.ndarray, fields: list[str]) -> dict[str, np.ndarray]:
         """Compute the requested fields as typed arrays.
 
         The typed sibling of :meth:`get_geometry`, addressed by field name rather
