@@ -98,7 +98,7 @@ def sc_radius(observer_position: np.ndarray) -> np.ndarray:
     return np.linalg.norm(observer_position, axis=-1)
 
 
-def colatitude(latitude: np.ndarray, degrees=True) -> np.ndarray:
+def colatitude(latitude: np.ndarray, degrees: bool = True) -> np.ndarray:
     """Convert geodetic latitude to colatitude (vectorized).
 
     Colatitude is the complement of latitude (``90 - lat``), ranging from 0 at
@@ -122,7 +122,7 @@ def colatitude(latitude: np.ndarray, degrees=True) -> np.ndarray:
     return quarter_turn - np.asarray(latitude, dtype=float)
 
 
-def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray:
+def subobserver_point(observer_position: np.ndarray, degrees: bool = True) -> np.ndarray:
     """Sub-observer geodetic latitude, longitude, and colatitude (vectorized).
 
     The sub-observer point is the geodetic ground point directly beneath the
@@ -151,7 +151,7 @@ def subobserver_point(observer_position: np.ndarray, degrees=True) -> np.ndarray
     return np.stack([lat, lon, colat], axis=-1)
 
 
-def earth_sun_distance(earth_sun_position: np.ndarray, au=True) -> np.ndarray:
+def earth_sun_distance(earth_sun_position: np.ndarray, au: bool = True) -> np.ndarray:
     """Distance between Earth and Sun (vectorized).
 
     Implements the Earth-Sun distance field. The input is the
@@ -212,9 +212,9 @@ class _Field:
 
     """
 
-    providers: frozenset
-    columns: tuple
-    evaluate: Callable
+    providers: frozenset[str]
+    columns: tuple[str, ...]
+    evaluate: Callable[[dict], np.ndarray]
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ class GeometryData(abstract.AbstractMissionData):
         return {key: _PROVIDERS[key](ugps_times, self) for key in needed}
 
     @abstract.log_return()
-    def get_geometry(self, ugps_times, fields=None) -> pd.DataFrame:
+    def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:
         """Compute the requested fields as a table.
 
         Parameters
@@ -387,7 +387,7 @@ class GeometryData(abstract.AbstractMissionData):
                 data[column] = values[:, jth]
         return pd.DataFrame(data, index=pd.Index(ugps_times, name="ugps"))
 
-    def get_vectors(self, ugps_times, fields) -> dict:
+    def get_vectors(self, ugps_times: np.ndarray, fields: list[str]) -> dict[str, np.ndarray]:
         """Compute the requested fields as typed arrays.
 
         The typed sibling of :meth:`get_geometry`, addressed by field name rather
