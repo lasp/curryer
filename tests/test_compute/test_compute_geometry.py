@@ -149,15 +149,19 @@ class TestGeometryOrchestration:
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
         return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
 
-    def test_default_fields_are_all_registered(self):
+    def test_default_fields_are_ephemeris_only(self):
         counter = {}
         geo = self._build()
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
             df = geo.get_geometry(self.UGPS)
 
-        for field in geometry.GeometryData.available_fields():
-            for column in geometry._FIELDS[field].columns:
-                assert column in df.columns
+        # Default is exactly the ephemeris-only field set...
+        expected = [col for field in geometry._DEFAULT_FIELDS for col in geometry._FIELDS[field].columns]
+        assert list(df.columns) == expected
+        # ...and that set needs only ephemeris providers (no attitude/FOV), so the
+        # default never implicitly requires attitude kernels as fields are added.
+        for field in geometry._DEFAULT_FIELDS:
+            assert geometry._FIELDS[field].providers <= geometry._EPHEMERIS_PROVIDERS
 
     def test_subset_queries_only_needed_providers(self):
         counter = {}
@@ -212,6 +216,26 @@ class TestGeometryOrchestration:
             df = geo.get_geometry(self.UGPS, fields=["sc_radius", "subsatellite"])
         assert np.isfinite(df.iloc[0]).all()
         assert df.iloc[1].isna().all()
+
+    def test_all_nan_provider_warns_only_when_fully_empty(self, caplog):
+        # An all-NaN provider is the documented missing-kernel signal and must
+        # warn; a partial gap (some finite rows) is normal coverage and must not.
+        geo = self._build()
+
+        partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=partial)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_radius"])
+        assert not [r for r in caplog.records if "all-NaN" in r.getMessage()]
+
+        caplog.clear()
+        empty = np.full((2, 3), np.nan)
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=empty)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_radius"])
+        warnings = [r.getMessage() for r in caplog.records if "all-NaN" in r.getMessage()]
+        assert warnings
+        assert "sc_position" in warnings[0]
 
     @pytest.mark.parametrize("field", list(geometry._FIELDS))
     def test_nan_propagates_per_field(self, field):

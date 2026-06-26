@@ -289,6 +289,14 @@ _FIELDS = {
 }
 
 
+# Providers needing only ephemeris (position) coverage -- no attitude (CK) or
+# instrument FOV. The default field set is every field computable from these alone,
+# so a no-`fields` request never implicitly pulls in attitude-derived fields (added
+# by later field groups) that would require additional kernels.
+_EPHEMERIS_PROVIDERS = frozenset({"sc_position", "sun_position"})
+_DEFAULT_FIELDS = tuple(name for name, field in _FIELDS.items() if field.providers <= _EPHEMERIS_PROVIDERS)
+
+
 class GeometryData(abstract.AbstractMissionData):
     """Selective geometric data-field server.
 
@@ -321,7 +329,7 @@ class GeometryData(abstract.AbstractMissionData):
 
     """
 
-    DEFAULT_CADENCE = constants.ATTITUDE_TIMESTEP_USEC
+    DEFAULT_CADENCE = constants.EPHEMERIS_TIMESTEP_USEC
 
     def __init__(self, observer, microsecond_cadence=None, earth="EARTH", sun="SUN", earth_frame=None):
         microsecond_cadence = self.DEFAULT_CADENCE if microsecond_cadence is None else microsecond_cadence
@@ -339,19 +347,35 @@ class GeometryData(abstract.AbstractMissionData):
         return tuple(_FIELDS)
 
     def _resolve_fields(self, fields):
-        """Validate the requested fields, defaulting to all registered."""
+        """Validate the requested fields, defaulting to the ephemeris-only set."""
         if fields is None:
-            return list(_FIELDS)
+            return list(_DEFAULT_FIELDS)
         unknown = [name for name in fields if name not in _FIELDS]
         if unknown:
             raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {self.available_fields()}")
         return list(fields)
 
     def _gather_providers(self, fields, ugps_times):
-        """Query the minimal set of providers for ``fields``, once each."""
-        needed = set().union(*(_FIELDS[name].providers for name in fields))
-        logger.debug("Querying providers %s for fields %s", sorted(needed), fields)
-        return {key: _PROVIDERS[key](ugps_times, self) for key in needed}
+        """Query the minimal set of providers for ``fields``, once each.
+
+        Providers are evaluated in a stable (sorted) order so runs are
+        reproducible. A provider that returns all-NaN over the whole grid is the
+        documented missing-kernel signal, so it is logged as a warning.
+        """
+        needed = sorted(set().union(*(_FIELDS[name].providers for name in fields)))
+        logger.debug("Querying providers %s for fields %s", needed, fields)
+        providers = {}
+        for key in needed:
+            values = _PROVIDERS[key](ugps_times, self)
+            if np.size(values) and np.all(np.isnan(np.asarray(values, dtype=float))):
+                logger.warning(
+                    "Provider %r returned all-NaN over %d time(s); the required kernel is likely "
+                    "unfurnished for this interval.",
+                    key,
+                    len(ugps_times),
+                )
+            providers[key] = values
+        return providers
 
     @abstract.log_return()
     def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:
@@ -363,7 +387,8 @@ class GeometryData(abstract.AbstractMissionData):
             One or more times in GPS microseconds. Arbitrary and need not be
             uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str, optional
-            Field names to compute. Default is all registered fields.
+            Field names to compute. Default is the ephemeris-only set -- the
+            fields computable from position/ephemeris providers alone.
 
         Returns
         -------
