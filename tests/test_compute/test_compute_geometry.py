@@ -69,6 +69,12 @@ class TestGeometryLeaves:
         npt.assert_allclose(geometry.earth_sun_distance(position), [1.0])
         npt.assert_allclose(geometry.earth_sun_distance(position, au=False), [constants.KM_PER_ASTRONOMICAL_UNIT])
 
+    def test_satellite_altitude_known_values(self):
+        # 500 km above the +X equator and above the north pole.
+        equator = np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 500.0, 0.0, 0.0])
+        pole = np.array([0.0, 0.0, constants.WGS84_SEMI_MINOR_AXIS_KM + 500.0])
+        npt.assert_allclose(geometry.satellite_altitude(np.stack([equator, pole])), [500.0, 500.0], atol=1e-6)
+
 
 def _fake_providers(call_counter, **values):
     """Build a patch dict of counting fake providers from ``{key: value}``."""
@@ -155,16 +161,20 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
             df = geo.get_geometry(self.UGPS)
 
-        ephemeris_fields = list(geometry._DEFAULT_FIELDS)
-        attitude_fields = [f for f in geometry._FIELDS if f not in ephemeris_fields]
-        assert attitude_fields  # guard: this test is meaningful only with some
-        for field in ephemeris_fields:
-            for column in geometry._FIELDS[field].columns:
-                assert column in df.columns
+        # Default is exactly the ephemeris-only field set...
+        expected = [col for field in geometry._DEFAULT_FIELDS for col in geometry._FIELDS[field].columns]
+        assert list(df.columns) == expected
+        # ...needing only ephemeris providers (no attitude/FOV), so the default
+        # never implicitly requires attitude kernels as fields are added.
+        for field in geometry._DEFAULT_FIELDS:
+            assert geometry._FIELDS[field].providers <= geometry._EPHEMERIS_PROVIDERS
+        # Attitude fields exist in the registry but are excluded from the default,
+        # and their providers are never queried.
+        attitude_fields = [f for f in geometry._FIELDS if f not in geometry._DEFAULT_FIELDS]
+        assert attitude_fields  # guard: meaningful only with some attitude fields
         for field in attitude_fields:
             for column in geometry._FIELDS[field].columns:
                 assert column not in df.columns
-        # No attitude (non-ephemeris) provider was queried for the default set.
         attitude_providers = set(geometry._PROVIDERS) - geometry._EPHEMERIS_PROVIDERS
         assert attitude_providers.isdisjoint(counter)
 
@@ -175,6 +185,22 @@ class TestGeometryOrchestration:
             geo.get_geometry(self.UGPS, fields=["subsatellite", "earth_sun_distance"])
         # subsatellite -> sc_position, earth_sun_distance -> sun_position only.
         assert counter == {"sc_position": 1, "sun_position": 1}
+
+    def test_sc_altitude_field(self):
+        counter = {}
+        # 500 km and 800 km above the +X equator.
+        sc_pos = np.array(
+            [
+                [constants.WGS84_SEMI_MAJOR_AXIS_KM + 500.0, 0.0, 0.0],
+                [constants.WGS84_SEMI_MAJOR_AXIS_KM + 800.0, 0.0, 0.0],
+            ]
+        )
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+            df = geo.get_geometry(self.UGPS, fields=["sc_altitude"])
+        assert list(df.columns) == ["spacecraft_altitude"]
+        npt.assert_allclose(df["spacecraft_altitude"].values, [500.0, 800.0], atol=1e-6)
+        assert counter == {"sc_position": 1}
 
     def test_unknown_field_raises(self):
         geo = self._build()
@@ -205,6 +231,26 @@ class TestGeometryOrchestration:
             df = geo.get_geometry(self.UGPS, fields=["sc_radius", "subsatellite"])
         assert np.isfinite(df.iloc[0]).all()
         assert df.iloc[1].isna().all()
+
+    def test_all_nan_provider_warns_only_when_fully_empty(self, caplog):
+        # An all-NaN provider is the documented missing-kernel signal and must
+        # warn; a partial gap (some finite rows) is normal coverage and must not.
+        geo = self._build()
+
+        partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=partial)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_radius"])
+        assert not [r for r in caplog.records if "all-NaN" in r.getMessage()]
+
+        caplog.clear()
+        empty = np.full((2, 3), np.nan)
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=empty)):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_radius"])
+        warnings = [r.getMessage() for r in caplog.records if "all-NaN" in r.getMessage()]
+        assert warnings
+        assert "sc_position" in warnings[0]
 
     @pytest.mark.parametrize("field", list(geometry._FIELDS))
     def test_nan_propagates_per_field(self, field):

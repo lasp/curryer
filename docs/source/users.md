@@ -194,6 +194,90 @@ with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels])
 _Assumes dynamic kernels have been created and their file names defined within
 the metakernel JSON file._
 
+### Geometry Ancillary Fields
+
+{py:class}`~curryer.compute.geometry.GeometryData` computes the geolocation/geometry
+ancillary fields a Level-1 product needs — sub-satellite / sub-solar point, satellite
+radius and altitude, Earth-Sun distance (and, with attitude kernels, viewing/solar
+angles). You request any subset of fields by name and it queries the minimal set of
+SPICE inputs, each exactly once. The {py:mod}`curryer.compute.geometry` API reference
+documents every field, leaf function, and accessor.
+
+```python
+import pandas as pd
+import curryer
+from curryer.compute import geometry
+
+meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
+generic_dir = 'data/generic'
+mkrn = curryer.meta.MetaKernel.from_json(meta_kernel, relative=True, sds_dir=generic_dir)
+
+time_range = ('2023-01-01', '2023-01-01T00:05:00')
+ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq='1s', inclusive='left'), 'iso')
+
+# Construct with the observing body (spacecraft or instrument). Kernels must be
+# furnished for the requested times -- GeometryData does not load them itself.
+geo = geometry.GeometryData('CPRS_HYSICS')
+with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
+    df = geo.get_geometry(ugps_times, fields=['subsatellite', 'sc_radius', 'earth_sun_distance'])
+
+print(df.columns.tolist())
+# ['subsatellite_latitude', 'subsatellite_longitude', 'subsatellite_colatitude',
+#  'spacecraft_radius', 'earth_sun_distance']
+```
+
+For typed, per-field arrays instead of a flat table, use
+{py:meth}`~curryer.compute.geometry.GeometryData.get_vectors`:
+
+```python
+with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
+    vectors = geo.get_vectors(ugps_times, fields=['sc_position', 'subsatellite'])
+
+vectors['sc_position'].shape   # (N, 3) ECEF position, km
+vectors['subsatellite'].shape  # (N, 3) latitude / longitude / colatitude
+```
+
+Things worth knowing:
+
+- **Times** are uGPS (`int64` microseconds since 1980-01-06); convert with
+  `curryer.spicetime.adapt(...)`. The times you pass are evaluated exactly — no
+  resampling or interpolation.
+- **Observer** is the only mission input. Position-derived fields work for any body;
+  attitude fields (e.g. `boresight`) need an instrument with a defined FOV.
+- **Discover fields** with
+  {py:meth}`~curryer.compute.geometry.GeometryData.available_fields`; the table below
+  (and the {py:mod}`module docstring <curryer.compute.geometry>`) lists each field and
+  the columns it expands to.
+- **Default** — {py:meth}`~curryer.compute.geometry.GeometryData.get_geometry` with no
+  `fields` returns the ephemeris-only set, valid for any observer (it skips the
+  per-sample attitude loop).
+- **Coverage gaps** surface as `NaN` (rows are never dropped); a provider that returns
+  all-NaN logs a warning — usually an unfurnished kernel. Set `geo.allow_nans = False`
+  (an instance attribute) to raise instead.
+- **Typed access** — {py:meth}`~curryer.compute.geometry.GeometryData.get_vectors`
+  returns `{field: (N, k) ndarray}` addressed by field name rather than column strings.
+
+| Field                | Columns                                              | Meaning                                      |
+| -------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `subsatellite`       | `subsatellite_latitude`, `_longitude`, `_colatitude` | Ground point beneath the spacecraft          |
+| `subsolar`           | `subsolar_latitude`, `_longitude`, `_colatitude`     | Ground point beneath the Sun                 |
+| `sc_radius`          | `spacecraft_radius`                                  | Geocentric distance from Earth's center (km) |
+| `sc_altitude`        | `spacecraft_altitude`                                | Geodetic height above the ellipsoid (km)     |
+| `earth_sun_distance` | `earth_sun_distance`                                 | Earth-Sun distance (AU)                      |
+| `sc_position`        | `spacecraft_position_x` / `_y` / `_z`                | Spacecraft position in ECEF (km)             |
+
+**Composing custom fields.** The registry is built on pure, SPICE-free leaf functions
+— {py:func}`~curryer.compute.geometry.subobserver_point`,
+{py:func}`~curryer.compute.geometry.sc_radius`,
+{py:func}`~curryer.compute.geometry.satellite_altitude`,
+{py:func}`~curryer.compute.geometry.colatitude`, and
+{py:func}`~curryer.compute.geometry.earth_sun_distance` — that take positions as
+arguments. Call them directly to derive fields the registry does not expose yet.
+
+Additional attitude-derived fields (instrument boresight, viewing/solar zenith and
+azimuth, cone angle) are added by the later geometry field groups and require an
+instrument FOV plus attitude (CK) coverage.
+
 ---
 
 ## SPICE Path Length Handling
