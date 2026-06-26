@@ -252,8 +252,8 @@ Things worth knowing:
   `fields` returns the ephemeris-only set, valid for any observer (it skips the
   per-sample attitude loop).
 - **Coverage gaps** surface as `NaN` (rows are never dropped); a provider that returns
-  all-NaN logs a warning — usually an unfurnished kernel. Pass `allow_nans=False` to
-  raise instead.
+  all-NaN logs a warning — usually an unfurnished kernel. Set `geo.allow_nans = False`
+  (an instance attribute) to raise instead.
 - **Typed access** — {py:meth}`~curryer.compute.geometry.GeometryData.get_vectors`
   returns `{field: (N, k) ndarray}` addressed by field name rather than column strings.
 
