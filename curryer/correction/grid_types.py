@@ -1,3 +1,10 @@
+"""Grid data containers for image-matching and PSF operations.
+
+Pure data containers — no configuration, no I/O.  Configuration classes
+(:class:`PSFSamplingConfig`, :class:`SearchConfig`, :class:`RegridConfig`)
+live in :mod:`curryer.correction.config`.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -97,23 +104,3 @@ class OpticalPSFEntry:
         self.field_angle = np.asarray(self.field_angle, dtype=float)
         if self.data.shape != (self.field_angle.size, self.x.size):
             raise ValueError("Optical PSF data must have shape (len(field_angle), len(x)).")
-
-
-@dataclass
-class GeolocationConfig:
-    """Configuration parameters for PSF geolocation modelling."""
-
-    gcp_step_m: float = 30.0
-    motion_convolution_step_m: float = gcp_step_m / 20.0
-    psf_lat_sample_dist_deg: float = 2.4397105613972e-05
-    psf_lon_sample_dist_deg: float = 2.8737038710207e-05
-
-
-@dataclass
-class SearchConfig:
-    """Parameters controlling the image matching search grid."""
-
-    grid_size: int = 44
-    grid_span_km: float = 11.0
-    reduction_factor: float = 0.8
-    spacing_limit_m: float = 10.0

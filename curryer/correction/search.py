@@ -6,7 +6,8 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
 from ..compute import constants
-from .data_structures import ImageGrid, SearchConfig
+from .config import SearchConfig
+from .grid_types import ImageGrid
 
 logger = logging.getLogger(__name__)
 
