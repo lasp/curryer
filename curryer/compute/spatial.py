@@ -323,6 +323,185 @@ def instrument_pointing_state(
     return pnt_data, sc_data, qf_data
 
 
+def frame_to_frame_rotation(
+    from_frame: int | str | spicierpy.obj.Frame,
+    to_frame: int | str | spicierpy.obj.Frame,
+    ugps_times: np.ndarray,
+    allow_nans=False,
+) -> np.ndarray:
+    """Rotation matrices taking one reference frame into another over time.
+
+    The per-sample ``pxform(from_frame, to_frame, t)`` rotation stacked over the
+    requested times -- the shared SPICE query behind :func:`frame_to_frame_euler` and
+    :func:`frame_to_frame_quaternion`. Call it directly when the matrix itself is wanted
+    (e.g. to rotate vectors) or to derive several representations from a single query.
+
+    Note
+    ----
+    ``pxform`` has no vectorized SpiceyPy override, so this loops per sample -- an
+    inherent scalar cost, not a missing optimization. For dense time grids, compute on a
+    coarse CK-cadence grid (see ``AbstractMissionData.get_times``) and interpolate rather
+    than calling this at full rate.
+
+    Parameters
+    ----------
+    from_frame, to_frame : str or int or spicierpy.obj.Frame
+        Source and destination reference frames; the returned matrices rotate
+        ``from_frame`` into ``to_frame``. Relevant CK/FK kernels must be loaded.
+    ugps_times : array_like of int
+        One or more times in GPS microseconds.
+    allow_nans : bool, optional
+        Convert recoverable SPICE failures (e.g. attitude gaps) into all-NaN matrices.
+        Default False raises instead.
+
+    Returns
+    -------
+    numpy.ndarray
+        Rotation matrices, shape (N, 3, 3). Samples without attitude coverage are
+        all-NaN when ``allow_nans``.
+
+    """
+    from_name = spicierpy.obj.Frame(from_frame).name
+    to_name = spicierpy.obj.Frame(to_frame).name
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+    et_times = spicetime.adapt(ugps_times, to="et")
+
+    @spicierpy.ext.spice_error_to_val(err_value=np.full((3, 3), np.nan), disable=not allow_nans)
+    def _rotation(sample_et):
+        return spicierpy.pxform(from_name, to_name, sample_et)
+
+    return np.array([_rotation(sample_et)[0] for sample_et in et_times])
+
+
+def _rotation_rows(matrices, convert, n_columns):
+    """Apply a per-matrix ``convert`` to each rotation, passing NaN matrices through.
+
+    Attitude gaps arrive from :func:`frame_to_frame_rotation` as all-NaN matrices; those
+    rows stay NaN (``convert`` -- a SPICE routine -- is never called on invalid input).
+
+    Parameters
+    ----------
+    matrices : numpy.ndarray
+        Rotation matrices, shape (N, 3, 3).
+    convert : callable
+        Maps one (3, 3) matrix to a length-``n_columns`` representation.
+    n_columns : int
+        Width of the converted output.
+
+    Returns
+    -------
+    numpy.ndarray
+        Converted rows, shape (N, n_columns); all-NaN for NaN input matrices.
+
+    """
+    rows = np.full((len(matrices), n_columns), np.nan)
+    for ith, matrix in enumerate(matrices):
+        if not np.isnan(matrix).any():
+            rows[ith] = convert(matrix)
+    return rows
+
+
+def frame_to_frame_euler(
+    from_frame: int | str | spicierpy.obj.Frame,
+    to_frame: int | str | spicierpy.obj.Frame,
+    ugps_times: np.ndarray,
+    sequence=(1, 2, 3),
+    degrees=True,
+    allow_nans=False,
+) -> pd.DataFrame:
+    """Euler angles rotating one reference frame into another over time.
+
+    Factors the frame-to-frame rotation (:func:`frame_to_frame_rotation`) into three
+    Euler angles about the axes in ``sequence`` (via ``m2eul``). Generic over the frame
+    pair: missions parameterize it with their own frames, so the instrument-specific
+    gimbal/pointing field stays downstream while the conversion lives here. This is the
+    standalone form of the per-sample Euler extraction that
+    :func:`instrument_pointing_state` computes internally.
+
+    Parameters
+    ----------
+    from_frame, to_frame : str or int or spicierpy.obj.Frame
+        Source and destination reference frames; the returned angles rotate
+        ``from_frame`` into ``to_frame``. Relevant CK/FK kernels must be loaded.
+    ugps_times : array_like of int
+        One or more times in GPS microseconds.
+    sequence : tuple of int, optional
+        The three rotation axes (1=X, 2=Y, 3=Z) to factor into, in ``m2eul`` order.
+        Adjacent axes must differ. Default ``(1, 2, 3)``.
+    degrees : bool, optional
+        If True (default), angles are in degrees, otherwise radians.
+    allow_nans : bool, optional
+        Convert recoverable SPICE failures (e.g. attitude gaps) into NaN rows.
+        Default False raises instead.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``euler1, euler2, euler3`` -- the angle about ``sequence[0]``,
+        ``sequence[1]``, ``sequence[2]`` respectively -- indexed by ``ugps``. Rows
+        without attitude coverage are NaN when ``allow_nans``.
+
+    """
+    if len(sequence) != 3 or any(axis not in (1, 2, 3) for axis in sequence):
+        raise ValueError(f"`sequence` must be three axes from (1, 2, 3), got: {sequence}")
+    if sequence[0] == sequence[1] or sequence[1] == sequence[2]:
+        raise ValueError(f"`sequence` may not repeat adjacent axes (m2eul restriction), got: {sequence}")
+
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+    matrices = frame_to_frame_rotation(from_frame, to_frame, ugps_times, allow_nans=allow_nans)
+    angles = _rotation_rows(matrices, lambda matrix: spicierpy.m2eul(matrix, *sequence), 3)
+    if degrees:
+        angles = np.rad2deg(angles)
+
+    from_name = spicierpy.obj.Frame(from_frame).name
+    to_name = spicierpy.obj.Frame(to_frame).name
+    data = pd.DataFrame(angles, columns=["euler1", "euler2", "euler3"], index=pd.Index(ugps_times, name="ugps"))
+    data.columns.name = f"Euler[{from_name}->{to_name}]"
+    return data
+
+
+def frame_to_frame_quaternion(
+    from_frame: int | str | spicierpy.obj.Frame,
+    to_frame: int | str | spicierpy.obj.Frame,
+    ugps_times: np.ndarray,
+    allow_nans=False,
+) -> pd.DataFrame:
+    """Quaternion rotating one reference frame into another over time.
+
+    Converts the frame-to-frame rotation (:func:`frame_to_frame_rotation`) to a SPICE
+    quaternion (via ``m2q``): scalar-first ``[q0, q1, q2, q3]`` with ``q0 = cos(theta/2)``.
+    The unit-norm, singularity-free sibling of :func:`frame_to_frame_euler` for the same
+    rotation.
+
+    Parameters
+    ----------
+    from_frame, to_frame : str or int or spicierpy.obj.Frame
+        Source and destination reference frames; the returned quaternion rotates
+        ``from_frame`` into ``to_frame``. Relevant CK/FK kernels must be loaded.
+    ugps_times : array_like of int
+        One or more times in GPS microseconds.
+    allow_nans : bool, optional
+        Convert recoverable SPICE failures (e.g. attitude gaps) into NaN rows.
+        Default False raises instead.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``q0, q1, q2, q3`` (SPICE scalar-first convention), indexed by ``ugps``.
+        Rows without attitude coverage are NaN when ``allow_nans``.
+
+    """
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+    matrices = frame_to_frame_rotation(from_frame, to_frame, ugps_times, allow_nans=allow_nans)
+    quaternions = _rotation_rows(matrices, spicierpy.m2q, 4)
+
+    from_name = spicierpy.obj.Frame(from_frame).name
+    to_name = spicierpy.obj.Frame(to_frame).name
+    data = pd.DataFrame(quaternions, columns=["q0", "q1", "q2", "q3"], index=pd.Index(ugps_times, name="ugps"))
+    data.columns.name = f"Quaternion[{from_name}->{to_name}]"
+    return data
+
+
 def compute_ellipsoid_intersection(
     ugps_times: np.ndarray,
     instrument: int | str | spicierpy.obj.Body,

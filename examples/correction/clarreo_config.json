@@ -1,0 +1,114 @@
+{
+  "setup": {
+    "geo": {
+      "meta_kernel_file": "tests/data/clarreo/gcs/cprs_v01.kernels.tm.json",
+      "generic_kernel_dir": "data/generic",
+      "instrument_name": "CPRS_HYSICS",
+      "time_field": "corrected_timestamp",
+      "dynamic_kernels": [
+        "tests/data/clarreo/gcs/iss_sc_v01.ephemeris.spk.json",
+        "tests/data/clarreo/gcs/iss_sc_v01.attitude.ck.json",
+        "tests/data/clarreo/gcs/cprs_st_v01.attitude.ck.json"
+      ]
+    },
+    "requirements": {
+      "performance_threshold_m": 250.0,
+      "performance_spec_percent": 39.0
+    },
+    "calibration": {
+      "los_vectors_file": "tests/data/clarreo/image_match/b_HS.mat",
+      "psf_file": "tests/data/clarreo/image_match/optical_PSF_675nm_upsampled.mat"
+    },
+    "spacecraft_position_name": "riss_ctrs",
+    "boresight_name": "bhat_hs",
+    "transformation_matrix_name": "t_hs2ctrs"
+  },
+  "sweep": {
+    "search_strategy": "random",
+    "seed": 42,
+    "n_iterations": 5,
+    "parameters": [
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "tests/data/clarreo/gcs/cprs_base_v01.attitude.ck.json",
+        "spec": {
+          "current_value": [0.0, 0.0, 0.0],
+          "bounds": [-300.0, 300.0],
+          "sigma": 30.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["BASE_AZIMUTH", "BASE_CUBE"]
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "tests/data/clarreo/gcs/cprs_yoke_v01.attitude.ck.json",
+        "spec": {
+          "current_value": [0.0, 0.0, 0.0],
+          "bounds": [-200.0, 200.0],
+          "sigma": 20.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["YOKE_ELEVATION", "YOKE_AZIMUTH"]
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "tests/data/clarreo/gcs/cprs_hysics_v01.attitude.ck.json",
+        "spec": {
+          "current_value": [0.0, 0.0, 0.0],
+          "bounds": [-300.0, 300.0],
+          "sigma": 30.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"]
+        }
+      },
+      {
+        "ptype": "OFFSET_KERNEL",
+        "config_file": "tests/data/clarreo/gcs/cprs_az_v01.attitude.ck.json",
+        "spec": {
+          "field": "hps.az_ang_nonlin",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 30.0,
+          "units": "arcseconds",
+          "transformation_type": "angle_bias",
+          "coordinate_frames": ["YOKE_AZIMUTH"]
+        }
+      },
+      {
+        "ptype": "OFFSET_KERNEL",
+        "config_file": "tests/data/clarreo/gcs/cprs_el_v01.attitude.ck.json",
+        "spec": {
+          "field": "hps.el_ang_nonlin",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 30.0,
+          "units": "arcseconds",
+          "transformation_type": "angle_bias",
+          "coordinate_frames": ["YOKE_ELEVATION"]
+        }
+      },
+      {
+        "ptype": "OFFSET_TIME",
+        "config_file": null,
+        "spec": {
+          "field": "corrected_timestamp",
+          "current_value": 0.0,
+          "bounds": [-50.0, 50.0],
+          "sigma": 7.0,
+          "units": "milliseconds"
+        }
+      }
+    ]
+  },
+  "output": {
+    "netcdf": {
+      "performance_threshold_m": 250.0,
+      "title": "CLARREO Pathfinder Geolocation Correction Analysis",
+      "description": "Parameter sensitivity analysis for CLARREO Pathfinder on ISS"
+    },
+    "output_filename": "clarreo_correction_results.nc"
+  }
+}

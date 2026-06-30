@@ -1,6 +1,6 @@
 # User Documentation (Getting Started)
 
-# Installation
+## Installation
 
 ### Install System Dependencies
 
@@ -22,11 +22,10 @@ or from NAIF: https://naif.jpl.nasa.gov/naif/toolkit_C.html
 pip install lasp-curryer
 ```
 
-# Basic Usage
+## Basic Usage
 
-```python
-# Example code goes here
-```
+See [Correction Package User Guide](correction_user_guide.md) for verification
+and correction workflows, and `examples/correction/` for runnable scripts.
 
 ### Data / Binary Files
 
@@ -56,6 +55,32 @@ Download Third-party Files:
   15-arc-second.
   - Alternatively, use the script [download_dem.py](bin/download_dem.py) to
     download different types and/or resolutions from the USGS.
+
+## Correction Package
+
+The `curryer.correction` package checks and optimises geolocation alignment
+against mission requirements. Two entry points:
+
+- **`verify()`** — check whether the current kernels meet accuracy requirements
+- **`run_correction()`** — find better parameters via a parameter sweep
+
+**5-line quickstart (verification):**
+
+```python
+from curryer.correction import GeolocationSetup, load_setup_from_json, verify
+import xarray as xr
+
+setup = GeolocationSetup(...)           # or load_setup_from_json("config.json")
+result = verify(setup, image_matching_results=[xr.open_dataset("matching.nc")])
+print(result.summary_table)            # ASCII table with per-GCP pass/fail
+print("Passed:", result.passed)
+```
+
+See the [Correction User Guide](correction_user_guide.md) for the full
+configuration reference and workflow documentation, and
+`examples/correction/` for runnable scripts.
+
+---
 
 ## Examples
 
@@ -194,41 +219,94 @@ with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels])
 _Assumes dynamic kernels have been created and their file names defined within
 the metakernel JSON file._
 
+### Geometry Ancillary Fields
+
+{py:class}`~curryer.compute.geometry.GeometryData` computes the geolocation/geometry
+ancillary fields a Level-1 product needs — sub-satellite / sub-solar point, satellite
+radius and altitude, Earth-Sun distance (and, with attitude kernels, viewing/solar
+angles). You request any subset of fields by name and it queries the minimal set of
+SPICE inputs, each exactly once. The {py:mod}`curryer.compute.geometry` API reference
+documents every field, leaf function, and accessor.
+
+```python
+import pandas as pd
+import curryer
+from curryer.compute import geometry
+
+meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
+generic_dir = 'data/generic'
+mkrn = curryer.meta.MetaKernel.from_json(meta_kernel, relative=True, sds_dir=generic_dir)
+
+time_range = ('2023-01-01', '2023-01-01T00:05:00')
+ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq='1s', inclusive='left'), 'iso')
+
+# Construct with the observing body (spacecraft or instrument). Kernels must be
+# furnished for the requested times -- GeometryData does not load them itself.
+geo = geometry.GeometryData('CPRS_HYSICS')
+with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
+    df = geo.get_geometry(ugps_times, fields=['subsatellite', 'sc_radius', 'earth_sun_distance'])
+
+print(df.columns.tolist())
+# ['subsatellite_latitude', 'subsatellite_longitude', 'subsatellite_colatitude',
+#  'spacecraft_radius', 'earth_sun_distance']
+```
+
+For typed, per-field arrays instead of a flat table, use
+{py:meth}`~curryer.compute.geometry.GeometryData.get_vectors`:
+
+```python
+with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
+    vectors = geo.get_vectors(ugps_times, fields=['sc_position', 'subsatellite'])
+
+vectors['sc_position'].shape   # (N, 3) ECEF position, km
+vectors['subsatellite'].shape  # (N, 3) latitude / longitude / colatitude
+```
+
+Things worth knowing:
+
+- **Times** are uGPS (`int64` microseconds since 1980-01-06); convert with
+  `curryer.spicetime.adapt(...)`. The times you pass are evaluated exactly — no
+  resampling or interpolation.
+- **Observer** is the only mission input. Position-derived fields work for any body;
+  attitude fields (e.g. `boresight`) need an instrument with a defined FOV.
+- **Discover fields** with
+  {py:meth}`~curryer.compute.geometry.GeometryData.available_fields`; the table below
+  (and the {py:mod}`module docstring <curryer.compute.geometry>`) lists each field and
+  the columns it expands to.
+- **Default** — {py:meth}`~curryer.compute.geometry.GeometryData.get_geometry` with no
+  `fields` returns the ephemeris-only set, valid for any observer (it skips the
+  per-sample attitude loop).
+- **Coverage gaps** surface as `NaN` (rows are never dropped); a provider that returns
+  all-NaN logs a warning — usually an unfurnished kernel. Set `geo.allow_nans = False`
+  (an instance attribute) to raise instead.
+- **Typed access** — {py:meth}`~curryer.compute.geometry.GeometryData.get_vectors`
+  returns `{field: (N, k) ndarray}` addressed by field name rather than column strings.
+
+| Field                | Columns                                              | Meaning                                      |
+| -------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| `subsatellite`       | `subsatellite_latitude`, `_longitude`, `_colatitude` | Ground point beneath the spacecraft          |
+| `subsolar`           | `subsolar_latitude`, `_longitude`, `_colatitude`     | Ground point beneath the Sun                 |
+| `sc_radius`          | `spacecraft_radius`                                  | Geocentric distance from Earth's center (km) |
+| `sc_altitude`        | `spacecraft_altitude`                                | Geodetic height above the ellipsoid (km)     |
+| `earth_sun_distance` | `earth_sun_distance`                                 | Earth-Sun distance (AU)                      |
+| `sc_position`        | `spacecraft_position_x` / `_y` / `_z`                | Spacecraft position in ECEF (km)             |
+
+**Composing custom fields.** The registry is built on pure, SPICE-free leaf functions
+— {py:func}`~curryer.compute.geometry.subobserver_point`,
+{py:func}`~curryer.compute.geometry.sc_radius`,
+{py:func}`~curryer.compute.geometry.satellite_altitude`,
+{py:func}`~curryer.compute.geometry.colatitude`, and
+{py:func}`~curryer.compute.geometry.earth_sun_distance` — that take positions as
+arguments. Call them directly to derive fields the registry does not expose yet.
+
+Additional attitude-derived fields (instrument boresight, viewing/solar zenith and
+azimuth, cone angle) are added by the later geometry field groups and require an
+instrument FOV plus attitude (CK) coverage.
+
 ---
 
 ## SPICE Path Length Handling
 
-Curryer automatically handles SPICE's 80-character path limit using a simple two-strategy approach:
-
-1. **Symlink** (always tried first—zero overhead, no copying)
-2. **File copy** to temp directory (bulletproof fallback if symlink fails)
-
-No configuration needed for most users. Temp files are automatically cleaned up after kernel generation.
-
-### Configuration Options
-
-```bash
-# Custom temp directory (default: /tmp on Unix, auto-detected on Windows)
-export CURRYER_TEMP_DIR="/tmp"
-
-# AWS/Cloud: Disable file copying to avoid storage costs
-export CURRYER_DISABLE_COPY="true"
-```
-
-### How It Works
-
-When kernel paths exceed 80 characters:
-
-```
-INFO: Path exceeds 80 chars (102 chars): /very/long/path.../naif0012.tls
-INFO:   → Using symlink: /tmp/curryer_naif0012.tls
-```
-
-Or if symlinks fail:
-
-```
-INFO: Path exceeds 80 chars (102 chars): naif0012.tls
-INFO:   → Using copy: /tmp/curryer_abc12345.tls
-```
-
-See [SPICE Path Handling Documentation](../spice_path_handling.md) for more details.
+Curryer automatically handles SPICE's 80-character path limit by symlinking (or copying as a fallback)
+long kernel paths to a short temp directory. No configuration is needed for most users. Override the
+temp directory with `CURRYER_TEMP_DIR` if `/tmp` is unavailable (e.g. some cloud environments).
