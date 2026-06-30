@@ -78,16 +78,16 @@ class SpatialTestCase(unittest.TestCase):
                 allow_nans=False,
             )
 
-    def test_unit_frame_euler_invalid_sequence_raises(self):
+    def test_unit_frame_to_frame_euler_invalid_sequence_raises(self):
         ugps = np.array([1_000_000])
         with self.assertRaises(ValueError):
-            spatial.frame_euler("A", "B", ugps, sequence=(1, 2))  # not three axes
+            spatial.frame_to_frame_euler("A", "B", ugps, sequence=(1, 2))  # not three axes
         with self.assertRaises(ValueError):
-            spatial.frame_euler("A", "B", ugps, sequence=(1, 4, 2))  # axis out of range
+            spatial.frame_to_frame_euler("A", "B", ugps, sequence=(1, 4, 2))  # axis out of range
         with self.assertRaises(ValueError):
-            spatial.frame_euler("A", "B", ugps, sequence=(1, 1, 2))  # adjacent repeat
+            spatial.frame_to_frame_euler("A", "B", ugps, sequence=(1, 1, 2))  # adjacent repeat
 
-    def test_unit_frame_euler_degrees_and_columns(self):
+    def test_unit_frame_to_frame_euler_degrees_and_columns(self):
         # Angles are m2eul(pxform(...)) per sample; degrees converts from radians,
         # columns/index follow the sequence order and ugps.
         ugps = np.array([1_000_000, 2_000_000])
@@ -97,14 +97,14 @@ class SpatialTestCase(unittest.TestCase):
             patch.object(spatial.spicierpy, "pxform", return_value=np.eye(3)),
             patch.object(spatial.spicierpy, "m2eul", side_effect=[(0.0, np.pi / 2, np.pi), (np.pi, 0.0, np.pi / 4)]),
         ):
-            df = spatial.frame_euler("INST_FRAME", "ITRF93", ugps)
+            df = spatial.frame_to_frame_euler("INST_FRAME", "ITRF93", ugps)
 
         assert list(df.columns) == ["euler1", "euler2", "euler3"]
         assert df.index.name == "ugps"
         npt.assert_allclose(df.iloc[0].values, [0.0, 90.0, 180.0])
         npt.assert_allclose(df.iloc[1].values, [180.0, 0.0, 45.0])
 
-    def test_unit_frame_euler_radians_passthrough(self):
+    def test_unit_frame_to_frame_euler_radians_passthrough(self):
         ugps = np.array([1_000_000])
         with (
             patch.object(spatial.spicierpy.obj, "Frame"),
@@ -112,10 +112,10 @@ class SpatialTestCase(unittest.TestCase):
             patch.object(spatial.spicierpy, "pxform", return_value=np.eye(3)),
             patch.object(spatial.spicierpy, "m2eul", return_value=(0.1, 0.2, 0.3)),
         ):
-            df = spatial.frame_euler("A", "B", ugps, degrees=False)
+            df = spatial.frame_to_frame_euler("A", "B", ugps, degrees=False)
         npt.assert_allclose(df.iloc[0].values, [0.1, 0.2, 0.3])
 
-    def test_unit_frame_euler_nan_fills_attitude_gap(self):
+    def test_unit_frame_to_frame_euler_nan_fills_attitude_gap(self):
         # A SPICE attitude gap NaN-fills under allow_nans, and raises without it.
         ugps = np.array([1_000_000, 2_000_000])
         gap = spicierpy.utils.exceptions.SpiceyError("SPICE(NOFRAMECONNECT)")
@@ -125,20 +125,20 @@ class SpatialTestCase(unittest.TestCase):
             patch.object(spatial.spicierpy, "pxform", side_effect=gap),
             patch.object(spatial.spicierpy, "m2eul"),
         ):
-            df = spatial.frame_euler("A", "B", ugps, allow_nans=True)
+            df = spatial.frame_to_frame_euler("A", "B", ugps, allow_nans=True)
             assert df.shape == (2, 3)
             assert np.isnan(df.values).all()
 
             with self.assertRaises(spicierpy.utils.exceptions.SpiceyError):
-                spatial.frame_euler("A", "B", ugps, allow_nans=False)
+                spatial.frame_to_frame_euler("A", "B", ugps, allow_nans=False)
 
     @pytest.mark.extra
-    def test_frame_euler_matches_pointing_state(self):
-        # frame_euler is the standalone form of the Euler extraction inside
+    def test_frame_to_frame_euler_matches_pointing_state(self):
+        # frame_to_frame_euler is the standalone form of the Euler extraction inside
         # instrument_pointing_state; over real kernels they must agree exactly.
         ugps = spicetime.adapt(np.array(["2023-01-01", "2023-01-01T00:01"]), "iso")
         with self.mkrn.load():
-            euler = spatial.frame_euler("CPRS_HYSICS_COORD", "ITRF93", ugps)
+            euler = spatial.frame_to_frame_euler("CPRS_HYSICS_COORD", "ITRF93", ugps)
             _, sc_data, _ = spatial.instrument_pointing_state(
                 ugps, "CPRS_HYSICS", pointing_frame="ITRF93", allow_nans=True
             )
@@ -147,15 +147,81 @@ class SpatialTestCase(unittest.TestCase):
         )
 
     @pytest.mark.extra
-    def test_frame_euler_reconstructs_rotation(self):
+    def test_frame_to_frame_euler_reconstructs_rotation(self):
         # Independent check: the returned angles rebuild the frame rotation via eul2m.
         ugps = spicetime.adapt(np.array(["2023-01-01"]), "iso")
         with self.mkrn.load():
-            euler = spatial.frame_euler("CPRS_HYSICS_COORD", "ITRF93", ugps, degrees=False)
+            euler = spatial.frame_to_frame_euler("CPRS_HYSICS_COORD", "ITRF93", ugps, degrees=False)
             et = spicetime.adapt(ugps, to="et")[0]
             expected_rot = spicierpy.pxform("CPRS_HYSICS_COORD", "ITRF93", et)
             e1, e2, e3 = euler.iloc[0].values
             rebuilt = spicierpy.eul2m(e1, e2, e3, 1, 2, 3)
+        npt.assert_allclose(rebuilt, expected_rot, atol=1e-9)
+
+    def test_unit_frame_to_frame_rotation_shape_and_values(self):
+        # The core stacks pxform per sample into (N, 3, 3).
+        ugps = np.array([1_000_000, 2_000_000])
+        with (
+            patch.object(spatial.spicierpy.obj, "Frame"),
+            patch.object(spatial.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
+            patch.object(spatial.spicierpy, "pxform", return_value=np.eye(3)),
+        ):
+            matrices = spatial.frame_to_frame_rotation("A", "B", ugps)
+        assert matrices.shape == (2, 3, 3)
+        npt.assert_allclose(matrices[0], np.eye(3))
+        npt.assert_allclose(matrices[1], np.eye(3))
+
+    def test_unit_frame_to_frame_quaternion_columns(self):
+        # Quaternion columns are SPICE scalar-first q0..q3 over m2q(rotation).
+        ugps = np.array([1_000_000, 2_000_000])
+        with (
+            patch.object(spatial.spicierpy.obj, "Frame"),
+            patch.object(spatial.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
+            patch.object(spatial.spicierpy, "pxform", return_value=np.eye(3)),
+            patch.object(spatial.spicierpy, "m2q", side_effect=[(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0)]),
+        ):
+            df = spatial.frame_to_frame_quaternion("A", "B", ugps)
+        assert list(df.columns) == ["q0", "q1", "q2", "q3"]
+        assert df.index.name == "ugps"
+        npt.assert_allclose(df.iloc[0].values, [1.0, 0.0, 0.0, 0.0])
+        npt.assert_allclose(df.iloc[1].values, [0.0, 1.0, 0.0, 0.0])
+
+    def test_unit_frame_to_frame_quaternion_nan_fills_attitude_gap(self):
+        # A SPICE attitude gap NaN-fills under allow_nans, and raises without it.
+        ugps = np.array([1_000_000, 2_000_000])
+        gap = spicierpy.utils.exceptions.SpiceyError("SPICE(NOFRAMECONNECT)")
+        with (
+            patch.object(spatial.spicierpy.obj, "Frame"),
+            patch.object(spatial.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
+            patch.object(spatial.spicierpy, "pxform", side_effect=gap),
+            patch.object(spatial.spicierpy, "m2q"),
+        ):
+            df = spatial.frame_to_frame_quaternion("A", "B", ugps, allow_nans=True)
+            assert df.shape == (2, 4)
+            assert np.isnan(df.values).all()
+
+            with self.assertRaises(spicierpy.utils.exceptions.SpiceyError):
+                spatial.frame_to_frame_quaternion("A", "B", ugps, allow_nans=False)
+
+    @pytest.mark.extra
+    def test_frame_to_frame_rotation_matches_pxform(self):
+        # The core stacks the same matrices SPICE's pxform returns per sample.
+        ugps = spicetime.adapt(np.array(["2023-01-01"]), "iso")
+        with self.mkrn.load():
+            matrices = spatial.frame_to_frame_rotation("CPRS_HYSICS_COORD", "ITRF93", ugps)
+            et = spicetime.adapt(ugps, to="et")[0]
+            expected_rot = spicierpy.pxform("CPRS_HYSICS_COORD", "ITRF93", et)
+        npt.assert_allclose(matrices[0], expected_rot, atol=1e-12)
+
+    @pytest.mark.extra
+    def test_frame_to_frame_quaternion_reconstructs_rotation(self):
+        # The returned quaternion rebuilds the frame rotation via q2m.
+        ugps = spicetime.adapt(np.array(["2023-01-01"]), "iso")
+        with self.mkrn.load():
+            quat = spatial.frame_to_frame_quaternion("CPRS_HYSICS_COORD", "ITRF93", ugps)
+            et = spicetime.adapt(ugps, to="et")[0]
+            expected_rot = spicierpy.pxform("CPRS_HYSICS_COORD", "ITRF93", et)
+            rebuilt = spicierpy.q2m(quat.iloc[0].values)
         npt.assert_allclose(rebuilt, expected_rot, atol=1e-9)
 
     def test_unit_calculate_intersect_custom_vectors(self):
