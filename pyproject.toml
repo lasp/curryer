@@ -1,8 +1,14 @@
 [project]
 name = "lasp-curryer"
-version = "0.3.3"
+version = "0.4.0"
 description = "LASP SPICE extentions and geospatial data product generation tools."
-authors = [{ name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" }]
+authors = [
+    { name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" },
+    { name = "Matthew Maclay", email = "matthew.maclay@lasp.colorado.edu" },
+    { name = "Gavin Medley", email = "gavin.medley@lasp.colorado.edu" },
+    { name = "Matt Watwood", email = "matt.watwood@lasp.colorado.edu" },
+    { name = "Maxine Hartnett", email = "maxine.hartnett@lasp.colorado.edu" },
+]
 readme = "README.md"
 keywords = [
     "spice",
@@ -19,7 +25,7 @@ keywords = [
 requires-python = ">=3.10,<4"
 license = { text = "MIT" }
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Natural Language :: English",
@@ -53,7 +59,8 @@ dependencies = [
     "openpyxl>=3",
     "numpy >=1.23,<2.0",
     "boto3",
-    "typing-extensions"
+    "typing-extensions",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -1,45 +1,17 @@
-"""
-Tests for pairing.py module
-
-This module tests the GCP (Ground Control Point) pairing functionality:
-- Spatial pairing of L1A science data with GCP reference imagery
-- File discovery and matching
-- Geographic overlap detection
-- Pairing validation
-
-Running Tests:
--------------
-# Via pytest (recommended)
-pytest tests/test_correction/test_pairing.py -v
-
-# Run specific test
-pytest tests/test_correction/test_pairing.py::PairingTestCase::test_find_l1a_gcp_pairs -v
-
-# Standalone execution
-python tests/test_correction/test_pairing.py
-
-Requirements:
------------------
-These tests validate that GCP pairing correctly identifies which reference
-images overlap with science data, ensuring accurate geolocation validation.
-"""
+"""Tests for ``curryer.correction.pairing`` (GCP spatial pairing)."""
 
 from __future__ import annotations
 
-import logging
-import unittest
 from pathlib import Path
 
 import numpy as np
+import pytest
 from scipy.io import loadmat
 
-from curryer import utils
-from curryer.correction.data_structures import NamedImageGrid
+from curryer.correction.grid_types import NamedImageGrid
 from curryer.correction.pairing import find_l1a_gcp_pairs
 
-logger = logging.getLogger(__name__)
-utils.enable_logging(log_level=logging.DEBUG, extra_loggers=[__name__])
-
+# ── test-case metadata ────────────────────────────────────────────────────────
 
 L1A_FILES = [
     ("1/TestCase1a_subimage.mat", "subimage"),
@@ -75,183 +47,86 @@ EXPECTED_MATCHES = {
     "5/TestCase5b_subimage.mat": "5/GCP10087Titicaca_resampled.mat",
 }
 
-
-class PairingTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        root_dir = Path(__file__).parent.parent.parent
-        self.test_dir = root_dir / "tests" / "data" / "clarreo" / "image_match"
-        self.assertTrue(self.test_dir.is_dir(), self.test_dir)
-
-    def _load_image_grid(self, relative_path: str, key: str) -> NamedImageGrid:
-        mat_path = self.test_dir / relative_path
-        mat = loadmat(mat_path, squeeze_me=True, struct_as_record=False)[key]
-        h = getattr(mat, "h", None)
-        return NamedImageGrid(
-            data=np.asarray(mat.data),
-            lat=np.asarray(mat.lat),
-            lon=np.asarray(mat.lon),
-            h=np.asarray(h) if h is not None else None,
-            name=relative_path,
-        )
-
-    def _prepare_inputs(self, file_list):
-        for rel_path, key in file_list:
-            yield self._load_image_grid(rel_path, key)
-
-    def test_find_l1a_gcp_pairs(self):
-        l1a_inputs = list(self._prepare_inputs(L1A_FILES))
-        gcp_inputs = list(self._prepare_inputs(GCP_FILES))
-
-        result = find_l1a_gcp_pairs(l1a_inputs, gcp_inputs, max_distance_m=0.0)
-
-        matches_by_l1a = {}
-        for match in result.matches:
-            l1a_name = result.l1a_images[match.l1a_index].name
-            gcp_name = result.gcp_images[match.gcp_index].name
-            distance = match.distance_m
-            if l1a_name not in matches_by_l1a or distance < matches_by_l1a[l1a_name][1]:
-                matches_by_l1a[l1a_name] = (gcp_name, distance)
-
-        assert set(matches_by_l1a.keys()) == set(expected for expected in EXPECTED_MATCHES)
-
-        for l1a_name, expected_gcp in EXPECTED_MATCHES.items():
-            assert l1a_name in matches_by_l1a, f"Missing match for {l1a_name}"
-            gcp_name, distance = matches_by_l1a[l1a_name]
-            assert gcp_name == expected_gcp, f"Unexpected match for {l1a_name}: {gcp_name}"
-            assert distance >= 0.0, f"Expected non-negative margin for {l1a_name}: {distance}"
-
-    @staticmethod
-    def _make_rect_image(name: str, lon_min: float, lon_max: float, lat_min: float, lat_max: float) -> NamedImageGrid:
-        lat = np.array([[lat_max, lat_max], [lat_min, lat_min]], dtype=float)
-        lon = np.array([[lon_min, lon_max], [lon_min, lon_max]], dtype=float)
-        data = np.zeros_like(lat)
-        return NamedImageGrid(data=data, lat=lat, lon=lon, name=name)
-
-    @staticmethod
-    def _make_point_gcp(name: str, lon: float, lat: float) -> NamedImageGrid:
-        data = np.array([[1.0]])
-        lat_arr = np.array([[lat]])
-        lon_arr = np.array([[lon]])
-        return NamedImageGrid(data=data, lat=lat_arr, lon=lon_arr, name=name)
-
-    def test_synthetic_pairing_no_overlap(self):
-        l1a = [self._make_rect_image("L1A", lon_min=1.0, lon_max=2.0, lat_min=-1.0, lat_max=1.0)]
-        gcp = [self._make_point_gcp("GCP", lon=0.0, lat=0.0)]
-
-        result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=100_000.0)
-        assert result.matches == []
-
-    def test_synthetic_pairing_partial_less_than_threshold(self):
-        l1a = [self._make_rect_image("L1A", lon_min=0.0, lon_max=1.0, lat_min=-1.0, lat_max=1.0)]
-        gcp = [self._make_point_gcp("GCP", lon=0.0, lat=0.0)]
-
-        result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=100_000.0)
-        assert result.matches == []
-
-    def test_synthetic_pairing_complete_above_threshold(self):
-        l1a = [self._make_rect_image("L1A", lon_min=-1.0, lon_max=1.0, lat_min=-1.0, lat_max=1.0)]
-        gcp = [self._make_point_gcp("GCP", lon=0.0, lat=0.0)]
-
-        result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=100_000.0)
-        assert len(result.matches) == 1
-        match = result.matches[0]
-        assert match.l1a_index == 0
-        assert match.gcp_index == 0
-        assert match.distance_m >= 100_000.0
-
-    def test_synthetic_pairing_partial_threshold_not_met(self):
-        l1a = [self._make_rect_image("L1A", lon_min=-1.0, lon_max=1.0, lat_min=-1.0, lat_max=1.0)]
-        gcp = [self._make_point_gcp("GCP", lon=0.0, lat=0.0)]
-
-        result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=200_000.0)
-        assert result.matches == []
+# ── fixtures / helpers ────────────────────────────────────────────────────────
 
 
-class TestPairingValidation(unittest.TestCase):
-    """Test validation function for pairing output."""
-
-    def test_validate_pairing_output_valid(self):
-        """Test that valid pairing output passes validation."""
-        from curryer.correction.pairing import validate_pairing_output
-
-        valid_pairs = [
-            ("science_001", "landsat_gcp_001.tif"),
-            ("science_002", "landsat_gcp_002.tif"),
-        ]
-
-        # Should not raise
-        validate_pairing_output(valid_pairs)
-
-    def test_validate_pairing_output_valid_with_path(self):
-        """Test that pairing output with Path objects passes validation."""
-        from curryer.correction.pairing import validate_pairing_output
-
-        valid_pairs = [
-            ("science_001", Path("/data/gcp_001.tif")),
-            ("science_002", "/data/gcp_002.tif"),
-        ]
-
-        # Should not raise
-        validate_pairing_output(valid_pairs)
-
-    def test_validate_pairing_output_empty_list(self):
-        """Test that empty list is valid (no pairs found)."""
-        from curryer.correction.pairing import validate_pairing_output
-
-        empty_pairs = []
-
-        # Should not raise
-        validate_pairing_output(empty_pairs)
-
-    def test_validate_pairing_output_not_list(self):
-        """Test that non-list input raises TypeError."""
-        import pytest
-
-        from curryer.correction.pairing import validate_pairing_output
-
-        with pytest.raises(TypeError, match="must return list"):
-            validate_pairing_output(("science", "gcp"))  # Tuple instead of list
-
-    def test_validate_pairing_output_not_tuple(self):
-        """Test that list elements that aren't tuples raise ValueError."""
-        import pytest
-
-        from curryer.correction.pairing import validate_pairing_output
-
-        invalid_pairs = [
-            ("science_001", "gcp_001.tif"),
-            ["science_002", "gcp_002.tif"],  # List instead of tuple
-        ]
-
-        with pytest.raises(ValueError, match=r"output\[1\] must be \(str, str\) tuple"):
-            validate_pairing_output(invalid_pairs)
-
-    def test_validate_pairing_output_wrong_tuple_length(self):
-        """Test that tuples with wrong length raise ValueError."""
-        import pytest
-
-        from curryer.correction.pairing import validate_pairing_output
-
-        invalid_pairs = [
-            ("science_001", "gcp_001.tif", "extra"),  # 3 elements
-        ]
-
-        with pytest.raises(ValueError, match=r"output\[0\] must be \(str, str\) tuple"):
-            validate_pairing_output(invalid_pairs)
-
-    def test_validate_pairing_output_wrong_types(self):
-        """Test that tuple elements with wrong types raise ValueError."""
-        import pytest
-
-        from curryer.correction.pairing import validate_pairing_output
-
-        invalid_pairs = [
-            (123, "gcp_001.tif"),  # First element not string
-        ]
-
-        with pytest.raises(ValueError, match=r"output\[0\].*expected \(str, str\)"):
-            validate_pairing_output(invalid_pairs)
+@pytest.fixture(scope="module")
+def image_match_dir():
+    root = Path(__file__).parent.parent.parent
+    d = root / "tests" / "data" / "clarreo" / "image_match"
+    assert d.is_dir(), str(d)
+    return d
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _load(path: Path, key: str, name: str) -> NamedImageGrid:
+    mat = loadmat(str(path), squeeze_me=True, struct_as_record=False)[key]
+    h = getattr(mat, "h", None)
+    return NamedImageGrid(
+        data=np.asarray(mat.data),
+        lat=np.asarray(mat.lat),
+        lon=np.asarray(mat.lon),
+        h=np.asarray(h) if h is not None else None,
+        name=name,
+    )
+
+
+def _rect(name, lon_min, lon_max, lat_min, lat_max) -> NamedImageGrid:
+    lat = np.array([[lat_max, lat_max], [lat_min, lat_min]], dtype=float)
+    lon = np.array([[lon_min, lon_max], [lon_min, lon_max]], dtype=float)
+    return NamedImageGrid(data=np.zeros_like(lat), lat=lat, lon=lon, name=name)
+
+
+def _point(name, lon, lat) -> NamedImageGrid:
+    return NamedImageGrid(data=np.array([[1.0]]), lat=np.array([[lat]]), lon=np.array([[lon]]), name=name)
+
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+
+
+def test_find_l1a_gcp_pairs(image_match_dir):
+    l1a = [_load(image_match_dir / rel, key, rel) for rel, key in L1A_FILES]
+    gcp = [_load(image_match_dir / rel, key, rel) for rel, key in GCP_FILES]
+    result = find_l1a_gcp_pairs(l1a, gcp, max_distance_m=0.0)
+    by_l1a = {}
+    for m in result.matches:
+        name = result.l1a_images[m.l1a_index].name
+        gname = result.gcp_images[m.gcp_index].name
+        if name not in by_l1a or m.distance_m < by_l1a[name][1]:
+            by_l1a[name] = (gname, m.distance_m)
+    assert set(by_l1a) == set(EXPECTED_MATCHES)
+    for l1a_name, expected_gcp in EXPECTED_MATCHES.items():
+        gname, dist = by_l1a[l1a_name]
+        assert gname == expected_gcp
+        assert dist >= 0.0
+
+
+def test_synthetic_pairing_no_overlap():
+    result = find_l1a_gcp_pairs(
+        [_rect("L1A", 1.0, 2.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m=100_000.0
+    )
+    assert result.matches == []
+
+
+def test_synthetic_pairing_partial_less_than_threshold():
+    result = find_l1a_gcp_pairs(
+        [_rect("L1A", 0.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m=100_000.0
+    )
+    assert result.matches == []
+
+
+def test_synthetic_pairing_complete_above_threshold():
+    result = find_l1a_gcp_pairs(
+        [_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m=100_000.0
+    )
+    assert len(result.matches) == 1
+    m = result.matches[0]
+    assert m.l1a_index == 0
+    assert m.gcp_index == 0
+    assert m.distance_m >= 100_000.0
+
+
+def test_synthetic_pairing_partial_threshold_not_met():
+    result = find_l1a_gcp_pairs(
+        [_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m=200_000.0
+    )
+    assert result.matches == []

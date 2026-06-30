@@ -13,8 +13,8 @@ from scipy.signal import convolve2d, fftconvolve
 
 from ..compute import constants
 from ..compute.spatial import ecef_to_geodetic, geodetic_to_ecef
-from .data_structures import (
-    GeolocationConfig,
+from .config import PSFSamplingConfig
+from .grid_types import (
     ImageGrid,
     OpticalPSFEntry,
     ProjectedPSF,
@@ -234,7 +234,7 @@ def convolve_gcp_with_psf(gcp: ImageGrid, psf: PSFGrid) -> ImageGrid:
 def convolve_psf_with_spacecraft_motion(
     psf: ProjectedPSF,
     composite_img: ImageGrid,
-    config: GeolocationConfig,
+    config: PSFSamplingConfig,
 ) -> PSFGrid:
     """
     Apply spacecraft motion blur to projected PSF.
@@ -245,7 +245,7 @@ def convolve_psf_with_spacecraft_motion(
         Projected PSF on Earth's surface.
     composite_img : ImageGrid
         Composite image defining spacecraft motion direction.
-    config : GeolocationConfig
+    config : PSFSamplingConfig
         Configuration with PSF sampling parameters.
 
     Returns
@@ -469,3 +469,70 @@ def normalize_psf(psf: PSFGrid) -> PSFGrid:
         raise ValueError("Cannot normalize PSF with zero total power.")
     psf.data = psf.data / total
     return psf
+
+
+def resolve_spacecraft_ecef(
+    grid: ImageGrid,
+    r_spacecraft_m: np.ndarray | None,
+    default_altitude_m: float = 400_000.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return ``(r_spacecraft_m, boresight, t_matrix)`` for image-matching.
+
+    When *r_spacecraft_m* is provided it is used directly; the boresight is
+    the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
+    grid center lat/lon is used to build an approximate nadir position at
+    *default_altitude_m* above the WGS-84 ellipsoid surface.
+
+    The rotation matrix is always the ``3×3`` identity — the boresight is
+    already expressed in the CTRS frame via the nadir-approximation, so no
+    additional rotation is needed.
+
+    Parameters
+    ----------
+    grid : ImageGrid
+        Observation grid, used for the center lat/lon when *r_spacecraft_m*
+        is ``None``.
+    r_spacecraft_m : ndarray of shape (3,) or None
+        Spacecraft ECEF position in meters.  Pass ``None`` to fall back to
+        the nadir approximation.
+    default_altitude_m : float, optional
+        Spacecraft altitude above the WGS-84 surface (meters) used when
+        *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
+        Override for other spacecraft (e.g. 505 000 m for CTIM).
+
+    Returns
+    -------
+    r_spacecraft_m : ndarray, shape (3,)
+        ECEF spacecraft position in meters.
+    boresight : ndarray, shape (3,)
+        Nadir unit vector from spacecraft toward Earth center.
+    t_matrix : ndarray, shape (3, 3)
+        Identity rotation matrix.
+    """
+    if r_spacecraft_m is not None:
+        r = np.asarray(r_spacecraft_m, dtype=float).ravel()
+        boresight = -r / np.linalg.norm(r)
+        return r, boresight, np.eye(3)
+
+    # Approximate nadir from grid center lat/lon
+    mid_i, mid_j = grid.mid_indices
+    lat = float(grid.lat[mid_i, mid_j])
+    lon = float(grid.lon[mid_i, mid_j])
+    lat_r = np.deg2rad(lat)
+    lon_r = np.deg2rad(lon)
+    nadir_hat = np.array(
+        [
+            np.cos(lat_r) * np.cos(lon_r),
+            np.cos(lat_r) * np.sin(lon_r),
+            np.sin(lat_r),
+        ]
+    )
+    r_approx = (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
+    logger.debug(
+        "No spacecraft position in observation file — approximating nadir "
+        "from grid center (lat=%.2f, lon=%.2f, alt=%.0f m)",
+        lat,
+        lon,
+        default_altitude_m,
+    )
+    return r_approx, -nadir_hat, np.eye(3)
