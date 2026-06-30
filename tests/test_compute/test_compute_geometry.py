@@ -308,45 +308,48 @@ class TestGeometryOrchestration:
         assert counter == {"boresight": 1, "sc_position": 1}
 
     def test_boresight_provider_is_pure_attitude_transform(self):
-        # The boresight provider must rotate the IK boresight with pxform only --
-        # no ephemeris query -- so it never duplicates the sc_position pass and a
-        # position gap cannot null an otherwise-available attitude. Patch the SPICE
-        # pieces and fail loudly if it reaches for spkezr.
+        # The boresight provider resolves the IK boresight and rotates it into ECEF via
+        # frame_to_frame_rotation -- no ephemeris query -- so it never duplicates the
+        # sc_position pass and a position gap cannot null an otherwise-available attitude.
         ctx = geometry.GeometryData("INST")
         ik = np.array([0.0, 0.0, 1.0])
         rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])  # +90 deg about Z
         with (
-            patch.object(geometry.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
             patch.object(geometry.spicierpy.obj, "Body") as m_body,
             patch.object(geometry.spicierpy.obj, "Frame") as m_frame,
             patch.object(geometry.spicierpy.ext, "instrument_boresight", return_value=ik) as m_bore,
-            patch.object(geometry.spicierpy, "pxform", return_value=rot) as m_pxform,
+            patch.object(geometry.spatial, "frame_to_frame_rotation", return_value=np.array([rot, rot])) as m_rot,
             patch.object(geometry.spicierpy, "spkezr", side_effect=AssertionError("queried ephemeris")),
         ):
             m_body.return_value.frame.name = "INST_FRAME"
             m_frame.return_value.name = "ITRF93"
             out = geometry._provider_boresight(self.UGPS, ctx)
 
+        # Each row is the per-sample rotation applied to the IK boresight.
         npt.assert_allclose(out, np.array([rot @ ik, rot @ ik]))
         m_bore.assert_called_once_with("INST", norm=True)
-        m_pxform.assert_called_with("INST_FRAME", "ITRF93", 20.0)
-        assert m_pxform.call_count == 2  # one rotation per sample, no ephemeris pass
+        m_rot.assert_called_once()
+        assert m_rot.call_args.args[:2] == ("INST_FRAME", "ITRF93")
+        assert m_rot.call_args.kwargs == {"allow_nans": ctx.allow_nans}
 
-    def test_boresight_provider_nan_fills_missing_fov(self):
+    def test_boresight_provider_nan_fills_missing_fov(self, caplog):
         # A body with no defined FOV makes instrument_boresight raise during the
-        # one-time pointing lookup. Under allow_nans the provider must NaN-fill
-        # (fill contract); without it, the SPICE error propagates.
+        # one-time pointing lookup. Under allow_nans the provider NaN-fills (fill
+        # contract) and surfaces the swallowed SPICE error as a warning; without
+        # allow_nans the error propagates.
         geo = geometry.GeometryData("SPACECRAFT")  # no instrument FOV/IK
         boom = geometry.spicierpy.SpiceyError("SPICE(NOFRAMECONNECT)")
         with (
-            patch.object(geometry.spicetime, "adapt", return_value=np.array([10.0, 20.0])),
             patch.object(geometry.spicierpy.obj, "Body"),
             patch.object(geometry.spicierpy.obj, "Frame"),
             patch.object(geometry.spicierpy.ext, "instrument_boresight", side_effect=boom),
         ):
-            out = geometry._provider_boresight(self.UGPS, geo)
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                out = geometry._provider_boresight(self.UGPS, geo)
             assert out.shape == (2, 3)
             assert np.isnan(out).all()
+            assert "Boresight unavailable" in caplog.text
+            assert "NOFRAMECONNECT" in caplog.text
 
             geo.allow_nans = False
             with pytest.raises(geometry.spicierpy.SpiceyError):
@@ -436,3 +439,25 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         self.assertEqual(vectors["sc_position"].shape, (2, 3))
         # sc_position is exactly the ITRF93 ephemeris position.
         npt.assert_allclose(vectors["sc_position"], reference[["x", "y", "z"]].values, rtol=1e-9)
+
+
+def test_geometry_field_enum_matches_registry():
+    # GeometryField is the public field vocabulary and must stay in lockstep with the
+    # registry: every registered field is a GeometryField, and the columns the registry
+    # reports are the enum's (the single source of truth).
+    assert set(geometry._FIELDS) == set(constants.GeometryField)
+    for field in constants.GeometryField:
+        assert geometry._FIELDS[field].columns == field.columns
+
+
+def test_geometry_field_enum_interchangeable_with_strings():
+    # Members are plain strings: usable as selectors and column keys, equal to their value.
+    assert constants.GeometryField.SUBSATELLITE == "subsatellite"
+    assert "subsatellite" in geometry._FIELDS
+    assert constants.GeometryField.SUBSATELLITE in geometry._FIELDS
+    assert constants.GeometryField.SUBSATELLITE.columns == (
+        "subsatellite_latitude",
+        "subsatellite_longitude",
+        "subsatellite_colatitude",
+    )
+    assert constants.GeometryField.SUBSATELLITE.description
