@@ -1,6 +1,6 @@
 # Changelog
 
-## Version 0.4.0 (2026-05)
+## Version 0.4.0 (2026-06)
 
 Major redesign of the `curryer.correction` package with a new modular architecture, Pydantic-based configuration, standalone verification workflows, GCP regridding support, and expanded documentation and examples.
 
@@ -21,7 +21,7 @@ Major redesign of the `curryer.correction` package with a new modular architectu
 - `curryer.correction` has been significantly reorganized internally; loader protocols were removed.
 - Configuration now uses Pydantic models; some module, class, and function names were renamed or relocated.
 - Removed the monolithic `CorrectionConfig` (and `load_config_from_json`) in favor of `GeolocationSetup` / `Sweep` / `OutputConfig` and `load_config_files` / `load_setup_from_json` / `load_sweep_from_json`. Entry points now take `setup` first: `run_correction(setup, sweep, inputs, work_dir)` and `verify(setup, ...)`.
-- This release should be treated as a breaking redesign milestone.
+- This release should be treated as a breaking redesign, however there are minimal downstream users of correction.
 
 ---
 
