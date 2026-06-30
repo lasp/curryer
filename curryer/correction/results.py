@@ -6,6 +6,7 @@ returned by :func:`~curryer.correction.pipeline.run_correction`.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from curryer.correction.config import GeolocationSetup, NetCDFConfig, Sweep
+
+logger = logging.getLogger(__name__)
 
 
 class ParameterSetResult(BaseModel):
@@ -315,7 +318,15 @@ def build_correction_result(
             param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
 
     # Keep only keys that are present and are 1-D arrays in netcdf_data
-    param_keys = [k for k in param_keys if isinstance(netcdf_data.get(k), np.ndarray) and netcdf_data[k].ndim == 1]
+    expected_keys = param_keys
+    param_keys = [k for k in expected_keys if isinstance(netcdf_data.get(k), np.ndarray) and netcdf_data[k].ndim == 1]
+    if expected_keys and not param_keys and n_param_sets > 0:
+        logger.warning(
+            "Sweep defined parameter(s) but none of the expected NetCDF variables %s were found "
+            "in the results; parameter provenance will be empty for %d parameter set(s).",
+            expected_keys,
+            n_param_sets,
+        )
 
     # Build per-set results
     all_sets: list[ParameterSetResult] = []

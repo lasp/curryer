@@ -4,6 +4,7 @@ Separates I/O-specific configuration from the core correction config models.
 """
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -130,12 +131,12 @@ class NetCDFConfig(BaseModel):
 
         if param_config.config_file:
             file_stem = param_config.config_file.stem
-            # Cosmetic only: strip kernel version suffixes (``_v01``/``_v02``) and the
-            # ``.attitude.ck`` format tag so the NetCDF ``long_name`` reads cleanly
+            # Cosmetic only: strip any kernel version suffix (``_v01``, ``_v02``, ...) and
+            # the ``.attitude.ck`` format tag so the NetCDF ``long_name`` reads cleanly
             # (e.g. ``cprs_hysics_v01.attitude.ck`` -> "Cprs Hysics correction").
             # These tokens are conventional in mission kernel filenames; unmatched
             # names simply pass through unchanged, so this is safe for any mission.
-            clean_name = file_stem.replace("_v01", "").replace("_v02", "").replace(".attitude.ck", "")
+            clean_name = re.sub(r"_v\d+", "", file_stem).replace(".attitude.ck", "")
             clean_name = clean_name.replace("_", " ").title()
             if angle_type:
                 long_name = f"{clean_name} {angle_type} correction"

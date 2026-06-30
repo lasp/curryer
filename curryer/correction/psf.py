@@ -509,8 +509,6 @@ def resolve_spacecraft_ecef(
     t_matrix : ndarray, shape (3, 3)
         Identity rotation matrix.
     """
-    from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
-
     if r_spacecraft_m is not None:
         r = np.asarray(r_spacecraft_m, dtype=float).ravel()
         boresight = -r / np.linalg.norm(r)
@@ -529,7 +527,7 @@ def resolve_spacecraft_ecef(
             np.sin(lat_r),
         ]
     )
-    r_approx = (WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
+    r_approx = (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
     logger.debug(
         "No spacecraft position in observation file — approximating nadir "
         "from grid center (lat=%.2f, lon=%.2f, alt=%.0f m)",
