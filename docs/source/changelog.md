@@ -1,6 +1,6 @@
 # Changelog
 
-## Version 0.4.0b1 (2026-05)
+## Version 0.4.0 (2026-05)
 
 Major redesign of the `curryer.correction` package with a new modular architecture, Pydantic-based configuration, standalone verification workflows, GCP regridding support, and expanded documentation and examples.
 
