@@ -1,5 +1,24 @@
 # Changelog
 
+## Version 0.3.3 (2026-06)
+
+- Added the `curryer.compute.geometry` module: `GeometryData` computes geolocation/geometry
+  ancillary fields (subsatellite and subsolar points, satellite radius, Earth-Sun distance,
+  spacecraft position and geodetic altitude) through a selective-compute registry that queries
+  each SPICE input once, with importable math-only leaf functions and a documented per-field NaN
+  fill contract
+- Added frame-to-frame rotation primitives to `curryer.compute.spatial`: `frame_to_frame_rotation`,
+  `frame_to_frame_euler`, and `frame_to_frame_quaternion`
+
+## Version 0.3.2 (2026-04)
+
+- Pinned SpiceyPy below 8.1.0 for compatibility
+- Refreshed the documentation
+
+## Version 0.3.1 (2026-02)
+
+- Added a citation file
+
 ## Version 0.3.0
 
 - Add automatic SPICE file path shortening tools
