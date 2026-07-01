@@ -40,7 +40,7 @@ authors:
     orcid: "https://orcid.org/0009-0002-1495-5652"
 identifiers:
   - type: doi
-    value: https://doi.org/10.5281/zenodo.18734309
+    value: 10.5281/zenodo.18734309
     description: Zenodo DOI
 repository-code: "https://github.com/lasp/curryer"
 url: "https://lasp-curryer.readthedocs.io/en/latest/"
