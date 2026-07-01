@@ -44,3 +44,13 @@ docker build --tag "curryer-tests" --target test . && docker run "curryer-tests"
 ## Making a Pull Request
 
 ## Release Process
+
+Curryer is set up with automatic release tooling for your convenience. We use the Github Release tooling and git tags to start the process, and a GitHub actions step (found under release.yml) to build and send the release to PyPi.
+
+### Release Steps
+
+1. [Determine the version for a release](https://semver.org/). We follow standard semantic versioning, meaning a major version update indicates a breaking API change, a minor version update is for backwards compatible functionality updates, and a patch version is for backwards compatible bug fixes or very minor changes.
+2. Update the version number within pyproject.toml. At this point, also update the changelog.md file if it is not already updated.
+3. On the Curryer GitHub page, click into the Releases page and then hit "Draft new release." This will open your draft release. Start by creating a new tag with your version, then hit "Generate Release Notes" to automatically fill in all the PRs since the last update.
+4. Update the release notes with any other information you want to include. Then, submit the release.
+5. Verify that the release github action succeeds and that the new version is on Pypi. You're done!
