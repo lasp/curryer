@@ -337,20 +337,28 @@ _INTERSECTION_KEY = "boresight_intersection"  # cache slot in the per-request pr
 
 
 def _boresight_intersection(providers):
-    """ECEF point where the boresight ray, cast from the S/C position, meets the
-    ellipsoid -- the shared ground point for the surface angles.
+    """ECEF point where the instrument's boresight ray, cast from the S/C position,
+    meets the ellipsoid -- the shared ground point for the surface angles.
 
-    A boresight that misses the ellipsoid (off-disk / deep-space pointing) yields
-    NaN: ``ray_intersect_ellipsoid`` is a direct ray-ellipsoid intersection, not a
-    nearest-point projection, so it returns no PNEAR/DIST. Memoized into the
-    per-request ``providers`` dict, so the ray-cast runs once per request and is
-    shared by every surface-angle field.
+    The ``boresight`` is the instrument's single IK boresight (populated by
+    ``_provider_boresight``), not an arbitrary or per-pixel pointing vector: this
+    server is boresight-only by design (see :class:`GeometryData` for the scope and
+    the multi-pixel alternative). A boresight that misses the ellipsoid (off-disk /
+    deep-space pointing) yields NaN -- ``ray_intersect_ellipsoid`` is a direct
+    ray-ellipsoid intersection, not a nearest-point projection, so it returns no
+    PNEAR/DIST.
+
+    Takes the per-request ``providers`` dict (rather than the two arrays directly) so
+    it can memoize: the ray-cast runs once on first use and the result is cached under
+    ``_INTERSECTION_KEY`` for every other surface-angle field in the same request to
+    reuse.
 
     Parameters
     ----------
     providers : dict
-        Per-request provider results; uses ``boresight`` (unit vectors, ECEF) and
-        ``sc_position`` (the ray origin, ECEF). Mutated to cache the result.
+        Per-request provider results. Reads ``boresight`` (the IK boresight unit
+        vectors, ECEF) and ``sc_position`` (the ray origin, ECEF); mutated to cache
+        the intersection under ``_INTERSECTION_KEY``.
 
     Returns
     -------
@@ -503,6 +511,20 @@ class GeometryData(abstract.AbstractMissionData):
     interpolation. ``microsecond_cadence`` / :meth:`get_times` only offers an
     optional uniform grid for callers that want one; it never constrains which
     times are queried.
+
+    Scope -- this server produces *per-observation* ancillary geometry: one row per
+    requested time. Its fields are of two kinds: spacecraft-level quantities that are
+    independent of pointing (subsatellite/subsolar points, radius, altitude, Earth-Sun
+    distance) and angles referenced to the instrument's *single* boresight -- the IK
+    boresight (viewing/solar zenith and azimuth, relative azimuth, cone angle, surface
+    colatitude). It deliberately does *not* compute per-pixel geometry: an instrument
+    with many pointing vectors (a camera focal plane, an offset pixel) is a
+    ``(time, pixel)`` problem served by
+    :func:`~curryer.compute.spatial.compute_ellipsoid_intersection`
+    (``custom_pointing_vectors=``), whose vectorized ray-cast and per-pixel quality
+    flags belong with the geolocated product rather than this ancillary table. A future
+    mission needing a single *non-boresight* reference vector here (still one vector, not
+    the array) is a natural additive extension, not a change to this contract.
 
     Parameters
     ----------
