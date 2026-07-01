@@ -43,7 +43,7 @@ repos:
       - id: ccv
         name: codecov-validator
         description: Validate codecov.yml against the Codecov API.
-        entry: curl --fail-with-body --silent --show-error --data-binary @codecov.yml https://codecov.io/validate
+        entry: curl --fail --silent --show-error --connect-timeout 5 --max-time 30 --data-binary @codecov.yml https://codecov.io/validate
         language: system
         files: ^codecov\.yml$
         pass_filenames: false
