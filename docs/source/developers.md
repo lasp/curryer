@@ -42,3 +42,9 @@ docker build --tag "curryer-tests" --target test . && docker run "curryer-tests"
 ## Building Documentation with Sphinx
 
 ## Making a Pull Request
+
+```{toctree}
+:maxdepth: 1
+
+repo_management.md
+```
