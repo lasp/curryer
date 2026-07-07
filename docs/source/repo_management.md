@@ -10,7 +10,7 @@ Curryer is set up with automatic release tooling for your convenience. We use th
 2. Update the version number within pyproject.toml. At this point, also update the changelog.md file if it is not already updated.
 3. On the Curryer GitHub page, click into the Releases page and then hit "Draft new release." This will open your draft release. Start by creating a new tag with your version, then hit "Generate Release Notes" to automatically fill in all the PRs since the last update.
 4. Update the release notes with any other information you want to include. Then, submit the release.
-Verify that the release GitHub Actions workflow succeeds and that the new version is on PyPI. You're done!
+   Verify that the release GitHub Actions workflow succeeds and that the new version is on PyPI. You're done!
 
 ## Test Workflows
 
