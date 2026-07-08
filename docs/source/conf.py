@@ -24,6 +24,12 @@ myst_enable_extensions = ["html_image", "dollarmath"]
 
 autoapi_type = "python"
 autoapi_dirs = ["../../curryer"]
+autoapi_options = [
+    "members",
+    "undoc-members",
+    "show-inheritance",
+    "show-module-summary",
+]
 
 templates_path = ["_templates"]
 exclude_patterns = []
