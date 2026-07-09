@@ -174,6 +174,29 @@ class GeometryField(str, Enum):
         ("cross_track_angle",),
         "Boresight look angle from nadir in the cross-track-nadir plane.",
     )
+    SC_POSITION_INERTIAL = (
+        "sc_position_inertial",
+        (
+            "spacecraft_position_inertial_x",
+            "spacecraft_position_inertial_y",
+            "spacecraft_position_inertial_z",
+        ),
+        "Spacecraft position (inertial, km).",
+    )
+    SC_VELOCITY_INERTIAL = (
+        "sc_velocity_inertial",
+        (
+            "spacecraft_velocity_inertial_x",
+            "spacecraft_velocity_inertial_y",
+            "spacecraft_velocity_inertial_z",
+        ),
+        "Spacecraft velocity (inertial, km/s).",
+    )
+    BORESIGHT_INERTIAL = (
+        "boresight_inertial",
+        ("boresight_inertial_x", "boresight_inertial_y", "boresight_inertial_z"),
+        "Instrument boresight unit vector (inertial).",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)

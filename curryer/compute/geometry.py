@@ -34,7 +34,11 @@ code -- no spacecraft/instrument names are hardcoded.
 
 Frame contract: the Earth-fixed (ECEF) fields all share a single reference frame
 -- the ``earth_frame`` configured on :class:`GeometryData` (``ITRF93`` by
-default) -- so fields are never combined in mismatched reference frames.
+default) -- so fields are never combined in mismatched reference frames. The
+``*_inertial`` fields likewise share ``inertial_frame`` (``J2000`` by default),
+and ``satellite_attitude`` targets ``attitude_frame`` (defaulting to
+``inertial_frame``). A field's frame is named in its description; the Earth-fixed
+and inertial state vectors are distinct fields, never the same field re-framed.
 
 Fill contract: SPICE coverage gaps (and off-Earth samples) surface as NaN. The
 providers query with ``allow_nans`` (True by default), so an uncovered time
@@ -71,11 +75,16 @@ them). Each field expands to the columns below.
   ``cone_angle`` (deg/s) over the requested times.
 - ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
 - ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
-  (body -> inertial, scalar-first).
+  (body -> ``attitude_frame``, scalar-first).
 - ``clock_angle`` / ``clock_angle_rate`` -> same-named columns -- boresight azimuth in the
   inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s).
 - ``along_track_angle`` / ``cross_track_angle`` -> same-named columns -- boresight look
   angles from nadir in the velocity-nadir and cross-track-nadir planes.
+- ``sc_position_inertial`` / ``sc_velocity_inertial`` ->
+  ``spacecraft_position_inertial_x/y/z`` / ``spacecraft_velocity_inertial_x/y/z`` --
+  observer state in ``inertial_frame`` (km, km/s).
+- ``boresight_inertial`` -> ``boresight_inertial_x/y/z`` -- instrument boresight unit
+  vector in ``inertial_frame``.
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -253,18 +262,23 @@ class _Field:
 # Providers: each queries SPICE once over the ugps grid and returns a cached
 # array. The observing body and frames come from the caller's ``GeometryData``.
 # ---------------------------------------------------------------------------
-def _provider_sc_position(ugps_times, ctx):
-    """Observer (spacecraft) position in the configured Earth-fixed frame
-    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3), km."""
+def _provider_sc_state(ugps_times, ctx):
+    """Observer (spacecraft) state in the configured Earth-fixed frame (``ctx.earth_frame``,
+    ``ITRF93`` by default), shape (N, 6) as [x, y, z, vx, vy, vz] in km and km/s.
+
+    One ephemeris read serves both the Earth-fixed position and velocity fields: the SPK
+    evaluation that yields the position yields its derivative with it, so querying them as
+    separate providers would read the same segment twice.
+    """
     state = spicierpy.ext.query_ephemeris(
         ugps_times,
         target=ctx.observer,
         observer=ctx.earth,
         ref_frame=ctx.earth_frame,
-        velocity=False,
+        velocity=True,
         allow_nans=ctx.allow_nans,
     )
-    return state[list(spicierpy.ext.POSITION_COLUMNS)].values
+    return state[list(spicierpy.ext.POSITION_COLUMNS + spicierpy.ext.VELOCITY_COLUMNS)].values
 
 
 def _provider_sun_position(ugps_times, ctx):
@@ -367,23 +381,14 @@ def _provider_sc_state_inertial(ugps_times, ctx):
     return state[list(spicierpy.ext.POSITION_COLUMNS + spicierpy.ext.VELOCITY_COLUMNS)].values
 
 
-def _provider_sc_velocity(ugps_times, ctx):
-    """Observer (spacecraft) velocity in the configured Earth-fixed frame
-    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3), km/s."""
-    state = spicierpy.ext.query_ephemeris(
-        ugps_times,
-        target=ctx.observer,
-        observer=ctx.earth,
-        ref_frame=ctx.earth_frame,
-        velocity=True,
-        allow_nans=ctx.allow_nans,
-    )
-    return state[list(spicierpy.ext.VELOCITY_COLUMNS)].values
-
-
 def _provider_attitude_quaternion(ugps_times, ctx):
-    """Observer body attitude as a quaternion rotating its body frame into the inertial
-    frame (``ctx.inertial_frame``, ``J2000`` by default), shape (N, 4), scalar-first.
+    """Observer body attitude as a quaternion rotating its body frame into
+    ``ctx.attitude_frame`` (which defaults to ``ctx.inertial_frame``, ``J2000``),
+    shape (N, 4), scalar-first.
+
+    The attitude target is its own knob because a product may reference attitude to a frame
+    other than the one its position/velocity use (e.g. an Earth-fixed attitude quaternion
+    alongside inertial state vectors).
 
     A pure attitude query (CK lookup, no ephemeris), guarded like the boresight: a missing
     body frame is logged and NaN-fills every row under ``ctx.allow_nans``, and per-sample
@@ -400,16 +405,15 @@ def _provider_attitude_quaternion(ugps_times, ctx):
         logger.warning("Body frame unavailable for observer %r: %s", ctx.observer, error)
         return np.full((ugps_times.size, 4), np.nan)
     quaternions = spatial.frame_to_frame_quaternion(
-        body_frame, ctx.inertial_frame, ugps_times, allow_nans=ctx.allow_nans
+        body_frame, ctx.attitude_frame, ugps_times, allow_nans=ctx.allow_nans
     )
     return quaternions.values
 
 
 _PROVIDERS = {
-    "sc_position": _provider_sc_position,
+    "sc_state": _provider_sc_state,
     "sun_position": _provider_sun_position,
     "boresight": _provider_boresight,
-    "sc_velocity": _provider_sc_velocity,
     "attitude_quaternion": _provider_attitude_quaternion,
     "boresight_inertial": _provider_boresight_inertial,
     "sc_state_inertial": _provider_sc_state_inertial,
@@ -433,38 +437,66 @@ class _ProviderResults:
 
     Attributes
     ----------
-    sc_position, sun_position, boresight, sc_velocity : numpy.ndarray or None
-        Base provider results (ECEF), shape (N, 3). ``None`` when the requested field set
-        does not need that provider.
+    sc_state, sc_state_inertial : numpy.ndarray or None
+        Observer state, shape (N, 6) as [x, y, z, vx, vy, vz] -- Earth-fixed and inertial
+        respectively. ``None`` when the requested field set does not need that provider.
+        The position/velocity halves are exposed as the ``sc_position`` / ``sc_velocity``
+        (and ``*_inertial``) slice properties.
+    sun_position, boresight, boresight_inertial : numpy.ndarray or None
+        Base provider results, shape (N, 3).
     attitude_quaternion : numpy.ndarray or None
-        Body-to-inertial attitude quaternion, shape (N, 4), scalar-first.
+        Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None
         The request times (GPS microseconds), shape (N,), carried so rate fields can
         finite-difference against the actual (possibly non-uniform) spacing.
     """
 
-    sc_position: np.ndarray | None = None
+    sc_state: np.ndarray | None = None
     sun_position: np.ndarray | None = None
     boresight: np.ndarray | None = None
-    sc_velocity: np.ndarray | None = None
     attitude_quaternion: np.ndarray | None = None
     sc_state_inertial: np.ndarray | None = None
     boresight_inertial: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
+
+    @property
+    def sc_position(self) -> np.ndarray:
+        """Earth-fixed observer position (N, 3), the first half of ``sc_state``."""
+        return self.sc_state[:, :3]
+
+    @property
+    def sc_velocity(self) -> np.ndarray:
+        """Earth-fixed observer velocity (N, 3), the second half of ``sc_state``."""
+        return self.sc_state[:, 3:6]
+
+    @property
+    def sc_position_inertial(self) -> np.ndarray:
+        """Inertial observer position (N, 3), the first half of ``sc_state_inertial``."""
+        return self.sc_state_inertial[:, :3]
+
+    @property
+    def sc_velocity_inertial(self) -> np.ndarray:
+        """Inertial observer velocity (N, 3), the second half of ``sc_state_inertial``."""
+        return self.sc_state_inertial[:, 3:6]
 
     @cached_property
     def orbital_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Right-handed orbital-frame basis vectors from the inertial state, each (N, 3):
         ``x`` along the inertial velocity (component perpendicular to nadir), ``z`` toward
         Earth's center (nadir, ``-r_hat``), ``y = z x x``. Built once and shared by the
-        clock and along/cross-track fields (CERES SCI-12/-13). Rows without an inertial
-        state come back NaN.
+        clock and along/cross-track fields (CERES SCI-12/-13).
+
+        Degenerate rows -- a missing state, ``r = 0``, or a velocity parallel to nadir --
+        have a zero norm *and* a zero numerator, so they normalize to NaN (never inf),
+        honoring the module fill contract. ``errstate`` keeps that silent rather than
+        raising an invalid-divide warning per gap.
         """
         r = self.sc_state_inertial[:, :3]
         v = self.sc_state_inertial[:, 3:6]
-        z = -r / np.linalg.norm(r, axis=-1, keepdims=True)
-        x = v - np.sum(v * z, axis=-1, keepdims=True) * z
-        x = x / np.linalg.norm(x, axis=-1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            z = -r / np.linalg.norm(r, axis=-1, keepdims=True)
+            x = v - np.sum(v * z, axis=-1, keepdims=True) * z
+            x = x / np.linalg.norm(x, axis=-1, keepdims=True)
         y = np.cross(z, x)
         return x, y, z
 
@@ -641,51 +673,56 @@ def _cross_track_angle(p):
 # provider results (``_ProviderResults``). Column names live on ``GeometryField`` (the
 # single source) and are mirrored onto each ``_Field`` for lookup.
 _FIELD_SPECS = (
-    (GeometryField.SC_RADIUS, {"sc_position"}, lambda p: sc_radius(p.sc_position)[:, None]),
-    (GeometryField.SUBSATELLITE, {"sc_position"}, lambda p: subobserver_point(p.sc_position)),
+    (GeometryField.SC_RADIUS, {"sc_state"}, lambda p: sc_radius(p.sc_position)[:, None]),
+    (GeometryField.SUBSATELLITE, {"sc_state"}, lambda p: subobserver_point(p.sc_position)),
     (GeometryField.SUBSOLAR, {"sun_position"}, lambda p: subobserver_point(p.sun_position)),
     (GeometryField.EARTH_SUN_DISTANCE, {"sun_position"}, lambda p: earth_sun_distance(p.sun_position)[:, None]),
-    (GeometryField.SC_POSITION, {"sc_position"}, lambda p: p.sc_position),
-    (GeometryField.SC_ALTITUDE, {"sc_position"}, lambda p: satellite_altitude(p.sc_position)[:, None]),
+    (GeometryField.SC_POSITION, {"sc_state"}, lambda p: p.sc_position),
+    (GeometryField.SC_ALTITUDE, {"sc_state"}, lambda p: satellite_altitude(p.sc_position)[:, None]),
     (GeometryField.BORESIGHT, {"boresight"}, lambda p: p.boresight),
     # Surface colatitude shares the boresight ellipsoid intersection with the surface angles;
     # ``ecef_to_geodetic`` returns [lon, lat, alt], so column 1 is latitude.
     (
         GeometryField.SURFACE_COLATITUDE,
-        {"boresight", "sc_position"},
+        {"boresight", "sc_state"},
         lambda p: colatitude(spatial.ecef_to_geodetic(p.boresight_intersection, degrees=True)[:, 1])[:, None],
     ),
     # Surface angles -- pure math over the boresight ellipsoid intersection and the shared
     # ephemeris providers; see the module "Angle convention" note. No new SPICE.
     (
         GeometryField.VIEWING_ZENITH,
-        {"boresight", "sc_position"},
+        {"boresight", "sc_state"},
         lambda p: spatial.calc_zenith(p.boresight_intersection, p.sc_position, degrees=True)[:, None],
     ),
     (
         GeometryField.SOLAR_ZENITH,
-        {"boresight", "sc_position", "sun_position"},
+        {"boresight", "sc_state", "sun_position"},
         lambda p: spatial.calc_zenith(p.boresight_intersection, p.sun_position, degrees=True)[:, None],
     ),
     (
         GeometryField.VIEWING_AZIMUTH,
-        {"boresight", "sc_position"},
+        {"boresight", "sc_state"},
         lambda p: spatial.calc_azimuth(p.boresight_intersection, p.sc_position, degrees=True)[:, None],
     ),
     (
         GeometryField.SOLAR_AZIMUTH,
-        {"boresight", "sc_position", "sun_position"},
+        {"boresight", "sc_state", "sun_position"},
         lambda p: spatial.calc_azimuth(p.boresight_intersection, p.sun_position, degrees=True)[:, None],
     ),
     (
         GeometryField.RELATIVE_AZIMUTH,
-        {"boresight", "sc_position", "sun_position"},
+        {"boresight", "sc_state", "sun_position"},
         lambda p: _relative_azimuth(p)[:, None],
     ),
-    (GeometryField.CONE_ANGLE, {"boresight", "sc_position"}, lambda p: _cone_angle(p)[:, None]),
-    (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_position"}, lambda p: _cone_angle_rate(p)[:, None]),
-    (GeometryField.SC_VELOCITY, {"sc_velocity"}, lambda p: p.sc_velocity),
+    (GeometryField.CONE_ANGLE, {"boresight", "sc_state"}, lambda p: _cone_angle(p)[:, None]),
+    (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_state"}, lambda p: _cone_angle_rate(p)[:, None]),
+    (GeometryField.SC_VELOCITY, {"sc_state"}, lambda p: p.sc_velocity),
     (GeometryField.SATELLITE_ATTITUDE, {"attitude_quaternion"}, lambda p: p.attitude_quaternion),
+    # Inertial state vectors: slices of the same inertial ephemeris read the orbital-frame
+    # fields already make, so requesting them alongside costs no extra SPICE.
+    (GeometryField.SC_POSITION_INERTIAL, {"sc_state_inertial"}, lambda p: p.sc_position_inertial),
+    (GeometryField.SC_VELOCITY_INERTIAL, {"sc_state_inertial"}, lambda p: p.sc_velocity_inertial),
+    (GeometryField.BORESIGHT_INERTIAL, {"boresight_inertial"}, lambda p: p.boresight_inertial),
     # Orbital-frame fields: the boresight in the orbital frame built from the inertial state.
     (GeometryField.CLOCK_ANGLE, {"sc_state_inertial", "boresight_inertial"}, lambda p: _clock_angle(p)[:, None]),
     (
@@ -711,12 +748,15 @@ _FIELDS = {
 }
 
 
-# Providers available for any observing body (queried from ephemeris alone).
-_EPHEMERIS_PROVIDERS = frozenset({"sc_position", "sun_position"})
+# Providers available for any observing body (queried from the Earth-fixed ephemeris
+# alone). The inertial state is deliberately excluded: it is a *second* ephemeris read
+# (a different reference frame), so the inertial fields stay opt-in.
+_EPHEMERIS_PROVIDERS = frozenset({"sc_state", "sun_position"})
 
 # Default field set for ``fields=None``: every field whose providers are a subset
-# (``<=``) of the ephemeris providers -- i.e. computable from position (an SPK)
-# alone, which every observer has. The attitude fields (boresight, and
+# (``<=``) of the ephemeris providers -- i.e. computable from the Earth-fixed state (an
+# SPK) alone, which every observer has. Velocity rides that one state read, so it is a
+# default field too. The attitude fields (boresight, and
 # surface_colatitude via it) need more: the spacecraft attitude (a CK, to rotate
 # into the Earth-fixed frame) plus an instrument FOV (IK boresight + FK frame). They
 # are opt-in so the no-args call need not furnish a CK or use an instrument observer
@@ -769,15 +809,27 @@ class GeometryData(abstract.AbstractMissionData):
         Earth-fixed (ECEF) reference frame. Default ``spatial.EARTH_FRAME``
         (ITRF93).
     inertial_frame : str or spicierpy.obj.Frame, optional
-        Inertial reference frame for the attitude quaternion (and other inertial-referenced
-        fields). Default ``"J2000"``; overridable so no frame is fixed in code.
+        Inertial reference frame for the inertial state and the orbital-frame fields.
+        Default ``"J2000"``; overridable so no frame is fixed in code.
+    attitude_frame : str or spicierpy.obj.Frame, optional
+        Target frame of the ``satellite_attitude`` quaternion. Defaults to
+        ``inertial_frame``. It is a separate knob because a product may reference its
+        attitude to a frame other than the one its state vectors use -- e.g. an Earth-fixed
+        attitude quaternion alongside inertial position/velocity.
 
     """
 
     DEFAULT_CADENCE = constants.EPHEMERIS_TIMESTEP_USEC
 
     def __init__(
-        self, observer, microsecond_cadence=None, earth="EARTH", sun="SUN", earth_frame=None, inertial_frame="J2000"
+        self,
+        observer,
+        microsecond_cadence=None,
+        earth="EARTH",
+        sun="SUN",
+        earth_frame=None,
+        inertial_frame="J2000",
+        attitude_frame=None,
     ):
         microsecond_cadence = self.DEFAULT_CADENCE if microsecond_cadence is None else microsecond_cadence
         super().__init__(microsecond_cadence=microsecond_cadence)
@@ -788,6 +840,7 @@ class GeometryData(abstract.AbstractMissionData):
         self.sun = sun
         self.earth_frame = spatial.EARTH_FRAME if earth_frame is None else earth_frame
         self.inertial_frame = inertial_frame
+        self.attitude_frame = inertial_frame if attitude_frame is None else attitude_frame
 
     @classmethod
     def available_fields(cls):
