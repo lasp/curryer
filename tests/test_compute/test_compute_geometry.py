@@ -252,7 +252,10 @@ class TestGeometryOrchestration:
         assert warnings
         assert "sc_position" in warnings[0]
 
-    @pytest.mark.parametrize("field", list(geometry._FIELDS))
+    # Rate fields are non-local finite differences -- a missing row NaNs its neighbours
+    # too -- so they don't obey the per-sample fill contract; their NaN behaviour has its
+    # own tests.
+    @pytest.mark.parametrize("field", [f for f in geometry._FIELDS if not str(f).endswith("_rate")])
     def test_nan_propagates_per_field(self, field):
         # Fill contract: every field must NaN exactly the rows its inputs are
         # missing and stay finite elsewhere, whichever provider feeds it. Both
@@ -408,6 +411,47 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos, boresight=boresight)):
             df = geo.get_geometry(self.UGPS, fields=["cone_angle"])
         npt.assert_allclose(df["cone_angle"].values, [0.0, 30.0], atol=1e-6)
+
+    def test_cone_angle_rate_linear_sweep_and_sign(self):
+        # A boresight tilting off nadir at a constant angular rate makes cone_angle a
+        # linear ramp in time, so its finite-difference rate is the constant slope
+        # (30 deg over 1 s = 30 deg/s). Reversing the sweep flips the sign -- the sign
+        # is the direction of change, which is what downstream consumers key on.
+        ugps = np.array([1_000_000, 2_000_000, 3_000_000])  # 1 s spacing
+        sc_pos = np.tile([7000.0, 0.0, 0.0], (3, 1))
+        angles = np.radians([0.0, 30.0, 60.0])
+        boresight = np.stack([-np.cos(angles), np.zeros(3), np.sin(angles)], axis=1)
+        geo = self._build()
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            fwd = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(fwd["cone_angle_rate"].values, [30.0, 30.0, 30.0], atol=1e-6)
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight[::-1])):
+            rev = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(rev["cone_angle_rate"].values, [-30.0, -30.0, -30.0], atol=1e-6)
+
+    def test_cone_angle_rate_single_sample_is_nan(self):
+        # A rate needs at least two samples; a single-time request yields NaN rather
+        # than raising from np.gradient.
+        sc_pos = np.array([[7000.0, 0.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(np.array([1_000_000]), fields=["cone_angle_rate"])
+        assert np.isnan(df["cone_angle_rate"].values).all()
+
+    def test_cone_angle_rate_nan_gap_is_nonlocal(self):
+        # A rate is a finite difference, so a missing row NaNs its neighbours too, not
+        # just itself: with two samples and a gap in the second, neither rate can form.
+        # This non-locality is why cone_angle_rate is excluded from the per-sample fill
+        # contract test.
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle_rate"])
+        assert df["cone_angle_rate"].isna().all()
 
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider resolves the IK boresight and rotates it into ECEF via

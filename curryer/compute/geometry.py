@@ -67,6 +67,8 @@ them). Each field expands to the columns below.
 - ``relative_azimuth`` -> ``relative_azimuth`` -- viewing relative to solar azimuth.
 - ``cone_angle`` -> ``cone_angle`` -- boresight angle off the satellite-to-geocenter
   vector.
+- ``cone_angle_rate`` -> ``cone_angle_rate`` -- finite-difference time derivative of
+  ``cone_angle`` (deg/s) over the requested times.
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -351,11 +353,24 @@ class _ProviderResults:
     sc_position, sun_position, boresight : numpy.ndarray or None
         Base provider results (ECEF), each shape (N, 3). ``None`` when the requested
         field set does not need that provider.
+    ugps_times : numpy.ndarray or None
+        The request times (GPS microseconds), shape (N,), carried so rate fields can
+        finite-difference against the actual (possibly non-uniform) spacing.
     """
 
     sc_position: np.ndarray | None = None
     sun_position: np.ndarray | None = None
     boresight: np.ndarray | None = None
+    ugps_times: np.ndarray | None = None
+
+    @cached_property
+    def seconds(self) -> np.ndarray:
+        """Request times as float seconds from the first sample -- the coordinate for
+        finite-difference rate fields. Referenced to the first time so that int64 uGPS
+        microseconds keep sub-microsecond precision after the float cast.
+        """
+        ugps = np.asarray(self.ugps_times, dtype=np.int64)
+        return (ugps - ugps[0]).astype(float) / 1e6
 
     @cached_property
     def boresight_intersection(self) -> np.ndarray:
@@ -426,6 +441,32 @@ def _cone_angle(p):
     return np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
 
 
+def _cone_angle_rate(p):
+    """Finite-difference time derivative of the cone angle, in degrees per second.
+
+    ``np.gradient`` of :func:`_cone_angle` over the request times (``p.seconds``):
+    second-order accurate in the interior, first-order at the ends, and honouring
+    non-uniform spacing. Its sign gives the direction the boresight sweeps relative to
+    nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
+    samples; a single-time request is NaN, since a rate needs at least two samples.
+
+    Parameters
+    ----------
+    p : _ProviderResults
+        Per-request provider results; uses ``boresight`` and ``sc_position`` (via
+        :func:`_cone_angle`) and the request times ``p.seconds``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Cone-angle rate in degrees/second, shape (N,).
+    """
+    cone = _cone_angle(p)
+    if cone.shape[0] < 2:
+        return np.full_like(cone, np.nan)
+    return np.gradient(cone, p.seconds)
+
+
 # Field registry: each field names its providers and an evaluate() over the gathered
 # provider results (``_ProviderResults``). Column names live on ``GeometryField`` (the
 # single source) and are mirrored onto each ``_Field`` for lookup.
@@ -472,6 +513,7 @@ _FIELD_SPECS = (
         lambda p: _relative_azimuth(p)[:, None],
     ),
     (GeometryField.CONE_ANGLE, {"boresight", "sc_position"}, lambda p: _cone_angle(p)[:, None]),
+    (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_position"}, lambda p: _cone_angle_rate(p)[:, None]),
 )
 
 _FIELDS = {
@@ -596,7 +638,7 @@ class GeometryData(abstract.AbstractMissionData):
                     len(ugps_times),
                 )
             gathered[key] = values
-        return _ProviderResults(**gathered)
+        return _ProviderResults(ugps_times=ugps_times, **gathered)
 
     @abstract.log_return()
     def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:

@@ -139,6 +139,11 @@ class GeometryField(str, Enum):
         ("cone_angle",),
         "Boresight angle off the satellite-to-geocenter (nadir) vector.",
     )
+    CONE_ANGLE_RATE = (
+        "cone_angle_rate",
+        ("cone_angle_rate",),
+        "Rate of change of the cone angle (deg/s), finite-differenced over the requested times.",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)
