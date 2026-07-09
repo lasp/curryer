@@ -144,6 +144,16 @@ class GeometryField(str, Enum):
         ("cone_angle_rate",),
         "Rate of change of the cone angle (deg/s), finite-differenced over the requested times.",
     )
+    SC_VELOCITY = (
+        "sc_velocity",
+        ("spacecraft_velocity_x", "spacecraft_velocity_y", "spacecraft_velocity_z"),
+        "Spacecraft velocity (ECEF, km/s).",
+    )
+    SATELLITE_ATTITUDE = (
+        "satellite_attitude",
+        ("attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"),
+        "Spacecraft body attitude quaternion (body -> inertial, scalar-first).",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)

@@ -150,7 +150,16 @@ class TestGeometryOrchestration:
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
         # Boresights point back toward Earth center so the footprint ray-cast hits.
         boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
-        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        sc_vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
+        attitude = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+        return _fake_providers(
+            counter,
+            sc_position=sc_pos,
+            sun_position=sun_pos,
+            boresight=boresight,
+            sc_velocity=sc_vel,
+            attitude_quaternion=attitude,
+        )
 
     def test_default_fields_are_ephemeris_only(self):
         # fields=None defaults to the ephemeris-only set (valid for any observer);
@@ -264,8 +273,17 @@ class TestGeometryOrchestration:
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        sc_vel = np.array([[1.0, 2.0, 3.0], [np.nan, np.nan, np.nan]])
+        attitude = np.array([[1.0, 0.0, 0.0, 0.0], [np.nan, np.nan, np.nan, np.nan]])
         geo = self._build()
-        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        fakes = _fake_providers(
+            counter,
+            sc_position=sc_pos,
+            sun_position=sun_pos,
+            boresight=boresight,
+            sc_velocity=sc_vel,
+            attitude_quaternion=attitude,
+        )
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
 
@@ -452,6 +470,29 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
             df = geo.get_geometry(self.UGPS, fields=["cone_angle_rate"])
         assert df["cone_angle_rate"].isna().all()
+
+    def test_sc_velocity_field(self):
+        # Velocity is a passthrough of its own ECEF provider, queried once and not shared
+        # with the position query.
+        counter = {}
+        vel = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_velocity=vel)):
+            df = geo.get_geometry(self.UGPS, fields=["sc_velocity"])
+        assert list(df.columns) == ["spacecraft_velocity_x", "spacecraft_velocity_y", "spacecraft_velocity_z"]
+        npt.assert_allclose(df.values, vel)
+        assert counter == {"sc_velocity": 1}
+
+    def test_satellite_attitude_field(self):
+        # Attitude is a passthrough of the body-to-inertial quaternion provider (q0..q3).
+        counter = {}
+        quat = np.array([[1.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, attitude_quaternion=quat)):
+            df = geo.get_geometry(self.UGPS, fields=["satellite_attitude"])
+        assert list(df.columns) == ["attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"]
+        npt.assert_allclose(df.values, quat)
+        assert counter == {"attitude_quaternion": 1}
 
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider resolves the IK boresight and rotates it into ECEF via

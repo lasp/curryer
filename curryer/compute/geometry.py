@@ -69,6 +69,9 @@ them). Each field expands to the columns below.
   vector.
 - ``cone_angle_rate`` -> ``cone_angle_rate`` -- finite-difference time derivative of
   ``cone_angle`` (deg/s) over the requested times.
+- ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
+- ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
+  (body -> inertial, scalar-first).
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -326,10 +329,50 @@ def _provider_boresight(ugps_times, ctx):
     return np.einsum("nij,j->ni", matrices, boresight)
 
 
+def _provider_sc_velocity(ugps_times, ctx):
+    """Observer (spacecraft) velocity in the configured Earth-fixed frame
+    (``ctx.earth_frame``, ``ITRF93`` by default), shape (N, 3), km/s."""
+    state = spicierpy.ext.query_ephemeris(
+        ugps_times,
+        target=ctx.observer,
+        observer=ctx.earth,
+        ref_frame=ctx.earth_frame,
+        velocity=True,
+        allow_nans=ctx.allow_nans,
+    )
+    return state[list(spicierpy.ext.VELOCITY_COLUMNS)].values
+
+
+def _provider_attitude_quaternion(ugps_times, ctx):
+    """Observer body attitude as a quaternion rotating its body frame into the inertial
+    frame (``ctx.inertial_frame``, ``J2000`` by default), shape (N, 4), scalar-first.
+
+    A pure attitude query (CK lookup, no ephemeris), guarded like the boresight: a missing
+    body frame is logged and NaN-fills every row under ``ctx.allow_nans``, and per-sample
+    attitude gaps come back as NaN rows from the quaternion primitive.
+    """
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+
+    @spicierpy.ext.spice_error_to_val(err_value=None, err_flag=lambda err: err, disable=not ctx.allow_nans)
+    def _resolve_body_frame():
+        return spicierpy.obj.Body(ctx.observer, frame=True).frame.name
+
+    body_frame, error = _resolve_body_frame()
+    if body_frame is None:  # observer has no body frame -> surface the error and NaN-fill.
+        logger.warning("Body frame unavailable for observer %r: %s", ctx.observer, error)
+        return np.full((ugps_times.size, 4), np.nan)
+    quaternions = spatial.frame_to_frame_quaternion(
+        body_frame, ctx.inertial_frame, ugps_times, allow_nans=ctx.allow_nans
+    )
+    return quaternions.values
+
+
 _PROVIDERS = {
     "sc_position": _provider_sc_position,
     "sun_position": _provider_sun_position,
     "boresight": _provider_boresight,
+    "sc_velocity": _provider_sc_velocity,
+    "attitude_quaternion": _provider_attitude_quaternion,
 }
 
 
@@ -350,9 +393,11 @@ class _ProviderResults:
 
     Attributes
     ----------
-    sc_position, sun_position, boresight : numpy.ndarray or None
-        Base provider results (ECEF), each shape (N, 3). ``None`` when the requested
-        field set does not need that provider.
+    sc_position, sun_position, boresight, sc_velocity : numpy.ndarray or None
+        Base provider results (ECEF), shape (N, 3). ``None`` when the requested field set
+        does not need that provider.
+    attitude_quaternion : numpy.ndarray or None
+        Body-to-inertial attitude quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None
         The request times (GPS microseconds), shape (N,), carried so rate fields can
         finite-difference against the actual (possibly non-uniform) spacing.
@@ -361,6 +406,8 @@ class _ProviderResults:
     sc_position: np.ndarray | None = None
     sun_position: np.ndarray | None = None
     boresight: np.ndarray | None = None
+    sc_velocity: np.ndarray | None = None
+    attitude_quaternion: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
 
     @cached_property
@@ -514,6 +561,8 @@ _FIELD_SPECS = (
     ),
     (GeometryField.CONE_ANGLE, {"boresight", "sc_position"}, lambda p: _cone_angle(p)[:, None]),
     (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_position"}, lambda p: _cone_angle_rate(p)[:, None]),
+    (GeometryField.SC_VELOCITY, {"sc_velocity"}, lambda p: p.sc_velocity),
+    (GeometryField.SATELLITE_ATTITUDE, {"attitude_quaternion"}, lambda p: p.attitude_quaternion),
 )
 
 _FIELDS = {
@@ -579,12 +628,17 @@ class GeometryData(abstract.AbstractMissionData):
     earth_frame : str or spicierpy.obj.Frame, optional
         Earth-fixed (ECEF) reference frame. Default ``spatial.EARTH_FRAME``
         (ITRF93).
+    inertial_frame : str or spicierpy.obj.Frame, optional
+        Inertial reference frame for the attitude quaternion (and other inertial-referenced
+        fields). Default ``"J2000"``; overridable so no frame is fixed in code.
 
     """
 
     DEFAULT_CADENCE = constants.EPHEMERIS_TIMESTEP_USEC
 
-    def __init__(self, observer, microsecond_cadence=None, earth="EARTH", sun="SUN", earth_frame=None):
+    def __init__(
+        self, observer, microsecond_cadence=None, earth="EARTH", sun="SUN", earth_frame=None, inertial_frame="J2000"
+    ):
         microsecond_cadence = self.DEFAULT_CADENCE if microsecond_cadence is None else microsecond_cadence
         super().__init__(microsecond_cadence=microsecond_cadence)
         # Store raw names; SPICE objects are resolved lazily inside the providers
@@ -593,6 +647,7 @@ class GeometryData(abstract.AbstractMissionData):
         self.earth = earth
         self.sun = sun
         self.earth_frame = spatial.EARTH_FRAME if earth_frame is None else earth_frame
+        self.inertial_frame = inertial_frame
 
     @classmethod
     def available_fields(cls):
