@@ -152,6 +152,7 @@ class TestGeometryOrchestration:
         boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
         sc_vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
         attitude = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+        sc_state = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [0.0, 7000.0, 0.0, -7.5, 0.0, 0.0]])
         return _fake_providers(
             counter,
             sc_position=sc_pos,
@@ -159,6 +160,8 @@ class TestGeometryOrchestration:
             boresight=boresight,
             sc_velocity=sc_vel,
             attitude_quaternion=attitude,
+            sc_state_inertial=sc_state,
+            boresight_inertial=boresight,
         )
 
     def test_default_fields_are_ephemeris_only(self):
@@ -275,6 +278,7 @@ class TestGeometryOrchestration:
         boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         sc_vel = np.array([[1.0, 2.0, 3.0], [np.nan, np.nan, np.nan]])
         attitude = np.array([[1.0, 0.0, 0.0, 0.0], [np.nan, np.nan, np.nan, np.nan]])
+        sc_state = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [np.nan] * 6])
         geo = self._build()
         fakes = _fake_providers(
             counter,
@@ -283,6 +287,8 @@ class TestGeometryOrchestration:
             boresight=boresight,
             sc_velocity=sc_vel,
             attitude_quaternion=attitude,
+            sc_state_inertial=sc_state,
+            boresight_inertial=boresight,
         )
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
@@ -493,6 +499,41 @@ class TestGeometryOrchestration:
         assert list(df.columns) == ["attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"]
         npt.assert_allclose(df.values, quat)
         assert counter == {"attitude_quaternion": 1}
+
+    def test_clock_along_cross_track_geometry(self):
+        # Orbit: position +X, inertial velocity +Y (prograde). Orbital frame is x=+Y
+        # (velocity), z=-X (nadir), y=z x x=-Z. A boresight 30 deg off nadir toward the
+        # velocity is pure along-track (clock 0, ahead); toward +y is pure cross-track
+        # (clock 90 -- the side opposite the orbital angular momentum, per SCI-12).
+        c30, s30 = np.cos(np.radians(30.0)), np.sin(np.radians(30.0))
+        state = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [7000.0, 0.0, 0.0, 0.0, 7.5, 0.0]])
+        nadir, xdir, ydir = np.array([-1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0])
+        boresight = np.array([c30 * nadir + s30 * xdir, c30 * nadir + s30 * ydir])
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["clock_angle", "along_track_angle", "cross_track_angle"])
+        npt.assert_allclose(df["along_track_angle"].values, [30.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["cross_track_angle"].values, [0.0, 30.0], atol=1e-6)
+        npt.assert_allclose(df["clock_angle"].values, [0.0, 90.0], atol=1e-6)
+
+    def test_clock_angle_rate_unwraps_across_360(self):
+        # A boresight sweeping in azimuth so the clock angle crosses the 360->0 wrap: the
+        # unwrapped finite difference stays a smooth +8 deg/s, where a raw diff would spike.
+        ugps = np.array([1_000_000, 2_000_000, 3_000_000])  # 1 s spacing
+        state = np.tile([7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], (3, 1))
+        tilt = np.radians(20.0)
+        xdir, ydir, zdir = np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0]), np.array([-1.0, 0.0, 0.0])
+        betas = np.radians([350.0, 358.0, 6.0])
+        boresight = np.array(
+            [np.cos(tilt) * zdir + np.sin(tilt) * (np.cos(b) * xdir + np.sin(b) * ydir) for b in betas]
+        )
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(ugps, fields=["clock_angle", "clock_angle_rate"])
+        npt.assert_allclose(df["clock_angle"].values, [350.0, 358.0, 6.0], atol=1e-6)
+        npt.assert_allclose(df["clock_angle_rate"].values, [8.0, 8.0, 8.0], atol=1e-6)
 
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider resolves the IK boresight and rotates it into ECEF via

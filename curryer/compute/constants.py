@@ -154,6 +154,26 @@ class GeometryField(str, Enum):
         ("attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"),
         "Spacecraft body attitude quaternion (body -> inertial, scalar-first).",
     )
+    CLOCK_ANGLE = (
+        "clock_angle",
+        ("clock_angle",),
+        "Boresight azimuth in the inertial-velocity orbital frame (CERES SCI-12), [0, 360).",
+    )
+    CLOCK_ANGLE_RATE = (
+        "clock_angle_rate",
+        ("clock_angle_rate",),
+        "Rate of change of the clock angle (deg/s), unwrapped finite difference.",
+    )
+    ALONG_TRACK_ANGLE = (
+        "along_track_angle",
+        ("along_track_angle",),
+        "Boresight look angle from nadir in the velocity-nadir plane (forward +).",
+    )
+    CROSS_TRACK_ANGLE = (
+        "cross_track_angle",
+        ("cross_track_angle",),
+        "Boresight look angle from nadir in the cross-track-nadir plane.",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)

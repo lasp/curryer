@@ -72,6 +72,10 @@ them). Each field expands to the columns below.
 - ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
 - ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
   (body -> inertial, scalar-first).
+- ``clock_angle`` / ``clock_angle_rate`` -> same-named columns -- boresight azimuth in the
+  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s).
+- ``along_track_angle`` / ``cross_track_angle`` -> same-named columns -- boresight look
+  angles from nadir in the velocity-nadir and cross-track-nadir planes.
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -310,12 +314,24 @@ def _provider_boresight(ugps_times, ctx):
         Boresight unit vectors in ``ctx.earth_frame``, shape (N, 3). Rows where
         the attitude/FOV is unavailable are NaN (under ``allow_nans``).
     """
+    return _boresight_in_frame(ugps_times, ctx, ctx.earth_frame)
+
+
+def _boresight_in_frame(ugps_times, ctx, target_frame):
+    """Instrument IK boresight unit vector rotated into ``target_frame``, shape (N, 3).
+
+    Shared by the Earth-fixed and inertial boresight providers: resolves the IK boresight
+    in the instrument frame and rotates it into ``target_frame`` via
+    :func:`~curryer.compute.spatial.frame_to_frame_rotation`. A missing FOV/frame is logged
+    and NaN-fills every row under ``ctx.allow_nans``; per-sample attitude gaps come back as
+    NaN rows from the rotation.
+    """
     ugps_times = np.atleast_1d(np.asarray(ugps_times))
 
     @spicierpy.ext.spice_error_to_val(err_value=None, err_flag=lambda err: err, disable=not ctx.allow_nans)
     def _resolve_pointing():
         from_frame = spicierpy.obj.Body(ctx.observer, frame=True).frame.name
-        to_frame = spicierpy.obj.Frame(ctx.earth_frame).name
+        to_frame = spicierpy.obj.Frame(target_frame).name
         boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
         return from_frame, to_frame, boresight
 
@@ -327,6 +343,28 @@ def _provider_boresight(ugps_times, ctx):
 
     matrices = spatial.frame_to_frame_rotation(from_frame, to_frame, ugps_times, allow_nans=ctx.allow_nans)
     return np.einsum("nij,j->ni", matrices, boresight)
+
+
+def _provider_boresight_inertial(ugps_times, ctx):
+    """Instrument boresight unit vector in the inertial frame (``ctx.inertial_frame``,
+    ``J2000`` by default), shape (N, 3). The inertial sibling of ``_provider_boresight``
+    for the clock and along/cross-track fields."""
+    return _boresight_in_frame(ugps_times, ctx, ctx.inertial_frame)
+
+
+def _provider_sc_state_inertial(ugps_times, ctx):
+    """Observer inertial state (position + velocity) in ``ctx.inertial_frame`` (``J2000`` by
+    default), shape (N, 6) as [x, y, z, vx, vy, vz] in km and km/s. Feeds the orbital frame
+    the clock and along/cross-track fields are referenced to."""
+    state = spicierpy.ext.query_ephemeris(
+        ugps_times,
+        target=ctx.observer,
+        observer=ctx.earth,
+        ref_frame=ctx.inertial_frame,
+        velocity=True,
+        allow_nans=ctx.allow_nans,
+    )
+    return state[list(spicierpy.ext.POSITION_COLUMNS + spicierpy.ext.VELOCITY_COLUMNS)].values
 
 
 def _provider_sc_velocity(ugps_times, ctx):
@@ -373,6 +411,8 @@ _PROVIDERS = {
     "boresight": _provider_boresight,
     "sc_velocity": _provider_sc_velocity,
     "attitude_quaternion": _provider_attitude_quaternion,
+    "boresight_inertial": _provider_boresight_inertial,
+    "sc_state_inertial": _provider_sc_state_inertial,
 }
 
 
@@ -408,7 +448,25 @@ class _ProviderResults:
     boresight: np.ndarray | None = None
     sc_velocity: np.ndarray | None = None
     attitude_quaternion: np.ndarray | None = None
+    sc_state_inertial: np.ndarray | None = None
+    boresight_inertial: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
+
+    @cached_property
+    def orbital_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Right-handed orbital-frame basis vectors from the inertial state, each (N, 3):
+        ``x`` along the inertial velocity (component perpendicular to nadir), ``z`` toward
+        Earth's center (nadir, ``-r_hat``), ``y = z x x``. Built once and shared by the
+        clock and along/cross-track fields (CERES SCI-12/-13). Rows without an inertial
+        state come back NaN.
+        """
+        r = self.sc_state_inertial[:, :3]
+        v = self.sc_state_inertial[:, 3:6]
+        z = -r / np.linalg.norm(r, axis=-1, keepdims=True)
+        x = v - np.sum(v * z, axis=-1, keepdims=True) * z
+        x = x / np.linalg.norm(x, axis=-1, keepdims=True)
+        y = np.cross(z, x)
+        return x, y, z
 
     @cached_property
     def seconds(self) -> np.ndarray:
@@ -514,6 +572,57 @@ def _cone_angle_rate(p):
     return np.gradient(cone, p.seconds)
 
 
+def _clock_angle(p):
+    """Clock angle (CERES BDS R3V4 SCI-12): azimuth of the boresight in the orbital frame,
+    measured from the inertial-velocity direction, in [0, 360).
+
+    ``atan2(boresight . y, boresight . x)`` in the orbital frame (``x`` = inertial velocity,
+    ``y = z x x``, ``z`` = nadir): 0 with the Earth point directly ahead, 270 on the orbital
+    angular-momentum side. NaN where the inertial state or boresight is unavailable.
+    """
+    x, y, _ = p.orbital_frame
+    u = p.boresight_inertial
+    return np.mod(np.degrees(np.arctan2(np.sum(u * y, axis=-1), np.sum(u * x, axis=-1))), 360.0)
+
+
+def _clock_angle_rate(p):
+    """Finite-difference time derivative of the clock angle, deg/s.
+
+    ``np.gradient`` over the request times (``p.seconds``) of the clock angle *unwrapped*
+    first, so the 360 -> 0 wrap does not inject a spurious spike. Single-time requests are
+    NaN; a NaN clock angle propagates to its neighbours.
+    """
+    clock = _clock_angle(p)
+    if clock.shape[0] < 2:
+        return np.full_like(clock, np.nan)
+    unwrapped = np.degrees(np.unwrap(np.radians(clock)))
+    return np.gradient(unwrapped, p.seconds)
+
+
+def _along_track_angle(p):
+    """Boresight look angle from nadir in the along-track (velocity-nadir) plane, degrees.
+
+    ``atan2(boresight . x, boresight . z)`` in the orbital frame: 0 at nadir, positive
+    toward the inertial velocity (forward). NaN where the inertial state or boresight is
+    unavailable.
+    """
+    x, _, z = p.orbital_frame
+    u = p.boresight_inertial
+    return np.degrees(np.arctan2(np.sum(u * x, axis=-1), np.sum(u * z, axis=-1)))
+
+
+def _cross_track_angle(p):
+    """Boresight look angle from nadir in the cross-track (``y``-nadir) plane, degrees.
+
+    ``atan2(boresight . y, boresight . z)`` in the orbital frame: 0 at nadir, positive
+    toward ``+y = z x x`` (opposite the orbital angular momentum). NaN where the inertial
+    state or boresight is unavailable.
+    """
+    _, y, z = p.orbital_frame
+    u = p.boresight_inertial
+    return np.degrees(np.arctan2(np.sum(u * y, axis=-1), np.sum(u * z, axis=-1)))
+
+
 # Field registry: each field names its providers and an evaluate() over the gathered
 # provider results (``_ProviderResults``). Column names live on ``GeometryField`` (the
 # single source) and are mirrored onto each ``_Field`` for lookup.
@@ -563,6 +672,23 @@ _FIELD_SPECS = (
     (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_position"}, lambda p: _cone_angle_rate(p)[:, None]),
     (GeometryField.SC_VELOCITY, {"sc_velocity"}, lambda p: p.sc_velocity),
     (GeometryField.SATELLITE_ATTITUDE, {"attitude_quaternion"}, lambda p: p.attitude_quaternion),
+    # Orbital-frame fields: the boresight in the orbital frame built from the inertial state.
+    (GeometryField.CLOCK_ANGLE, {"sc_state_inertial", "boresight_inertial"}, lambda p: _clock_angle(p)[:, None]),
+    (
+        GeometryField.CLOCK_ANGLE_RATE,
+        {"sc_state_inertial", "boresight_inertial"},
+        lambda p: _clock_angle_rate(p)[:, None],
+    ),
+    (
+        GeometryField.ALONG_TRACK_ANGLE,
+        {"sc_state_inertial", "boresight_inertial"},
+        lambda p: _along_track_angle(p)[:, None],
+    ),
+    (
+        GeometryField.CROSS_TRACK_ANGLE,
+        {"sc_state_inertial", "boresight_inertial"},
+        lambda p: _cross_track_angle(p)[:, None],
+    ),
 )
 
 _FIELDS = {
