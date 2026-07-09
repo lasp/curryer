@@ -535,6 +535,29 @@ class TestGeometryOrchestration:
         npt.assert_allclose(df["clock_angle"].values, [350.0, 358.0, 6.0], atol=1e-6)
         npt.assert_allclose(df["clock_angle_rate"].values, [8.0, 8.0, 8.0], atol=1e-6)
 
+    def test_clock_angle_rate_gap_does_not_poison_later_samples(self):
+        # np.unwrap is not NaN-safe: its cumulative correction would propagate one missing
+        # sample through every later one. A coverage gap must NaN only the samples whose
+        # finite-difference stencil touches it, exactly like cone_angle_rate.
+        ugps = 1_000_000 + np.arange(6) * 1_000_000  # 6 samples, 1 s spacing
+        state = np.tile([7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], (6, 1))
+        tilt = np.radians(20.0)
+        xdir, ydir, zdir = np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0]), np.array([-1.0, 0.0, 0.0])
+        betas = np.radians([10.0, 18.0, 26.0, 34.0, 42.0, 50.0])  # a steady +8 deg/s sweep
+        boresight = np.array(
+            [np.cos(tilt) * zdir + np.sin(tilt) * (np.cos(b) * xdir + np.sin(b) * ydir) for b in betas]
+        )
+        boresight[2] = np.nan  # attitude gap
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            rate = geo.get_geometry(ugps, fields=["clock_angle_rate"])["clock_angle_rate"].to_numpy()
+
+        # Only the stencils touching the gap are NaN; the tail is untouched (pre-fix: all NaN).
+        assert np.isnan(rate[[1, 3]]).all()
+        assert np.isfinite(rate[[0, 4, 5]]).all()
+        npt.assert_allclose(rate[[0, 4, 5]], 8.0, atol=1e-6)
+
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider resolves the IK boresight and rotates it into ECEF via
         # frame_to_frame_rotation -- no ephemeris query -- so it never duplicates the

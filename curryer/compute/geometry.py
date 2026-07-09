@@ -590,12 +590,26 @@ def _clock_angle_rate(p):
 
     ``np.gradient`` over the request times (``p.seconds``) of the clock angle *unwrapped*
     first, so the 360 -> 0 wrap does not inject a spurious spike. Single-time requests are
-    NaN; a NaN clock angle propagates to its neighbours.
+    NaN, and a NaN clock angle propagates to its neighbours.
+
+    ``np.unwrap`` is not NaN-safe -- its correction is a cumulative sum, so one missing
+    sample would poison every later one -- hence the unwrap runs over the finite samples
+    only and is scattered back, leaving gaps as NaN for ``np.gradient`` to propagate
+    locally. Unwrapping across a gap cannot know how many wraps occurred inside it, but an
+    unknown multiple of 360 is a constant offset that cancels in the derivative everywhere
+    except at the gap edge, which is NaN regardless.
+
+    Note the clock angle is an azimuth about nadir and is therefore singular there: as the
+    boresight crosses nadir its azimuth swings ~180 degrees, so this rate legitimately
+    spikes on near-nadir samples.
     """
     clock = _clock_angle(p)
     if clock.shape[0] < 2:
         return np.full_like(clock, np.nan)
-    unwrapped = np.degrees(np.unwrap(np.radians(clock)))
+    finite = np.isfinite(clock)
+    unwrapped = np.full_like(clock, np.nan)
+    if finite.sum() >= 2:
+        unwrapped[finite] = np.degrees(np.unwrap(np.radians(clock[finite])))
     return np.gradient(unwrapped, p.seconds)
 
 
