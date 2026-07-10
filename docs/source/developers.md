@@ -43,4 +43,8 @@ docker build --tag "curryer-tests" --target test . && docker run "curryer-tests"
 
 ## Making a Pull Request
 
-## Release Process
+```{toctree}
+:maxdepth: 1
+
+repo_management.md
+```
