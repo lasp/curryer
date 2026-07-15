@@ -90,7 +90,7 @@ import pandas as pd
 
 from .. import spicierpy
 from . import abstract, constants, spatial
-from .constants import GeometryField
+from .geometry_fields import GeometryField
 
 logger = logging.getLogger(__name__)
 
@@ -596,7 +596,7 @@ class GeometryData(abstract.AbstractMissionData):
 
     @classmethod
     def available_fields(cls):
-        """Registered fields as :class:`~curryer.compute.constants.GeometryField` members.
+        """Registered fields as :class:`~curryer.compute.geometry_fields.GeometryField` members.
 
         Members are plain strings, so the result is usable directly as
         ``fields=`` selectors and each member carries its ``columns`` and
