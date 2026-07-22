@@ -534,9 +534,7 @@ class SpiceTime(np.ndarray):
             # Numpy 2 passes the base-class array, so take the ttype from self.
             ttype = getattr(out_arr, "ttype", None) or self.ttype
             if ttype not in allowed_timedelta64_units.get(units, []):
-                raise TypeError(
-                    f"Cannot combine ttype {ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})"
-                )
+                raise TypeError(f"Cannot combine ttype {ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})")
             out_arr = out_arr.astype(TTYPE_TO_DTYPE[ttype])
 
         if _NUMPY_GE_2:
