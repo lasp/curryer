@@ -456,7 +456,7 @@ def query_ephemeris(ugps_times, target, observer, ref_frame="J2000", correction=
     else:
         read_ephem = vectorized.spkezp
         default_columns = POSITION_COLUMNS
-    nan_output = np.array([np.NaN for _ in default_columns])
+    nan_output = np.array([np.nan for _ in default_columns])
 
     # Load SPICE mappings.
     target = Body(target)
