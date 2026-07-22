@@ -535,7 +535,7 @@ class SpiceTime(np.ndarray):
             ttype = getattr(out_arr, "ttype", None) or self.ttype
             if ttype not in allowed_timedelta64_units.get(units, []):
                 raise TypeError(
-                    f"Cannot combine ttype {self.ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})"
+                    f"Cannot combine ttype {ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})"
                 )
             out_arr = out_arr.astype(TTYPE_TO_DTYPE[ttype])
 
