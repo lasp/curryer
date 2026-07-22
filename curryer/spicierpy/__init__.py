@@ -9,7 +9,9 @@
 #
 try:
     from spiceypy import *
-except AttributeError:
+except AttributeError as e:
+    if "exceptionsstypes" not in str(e):
+        raise
     # SpiceyPy 8.1.0-8.1.2 have a broken `__all__` (a missing comma merges two
     # entries into the bogus name "exceptionsstypes"), which kills wildcard
     # imports. Fall back to copying the module's public namespace directly.
