@@ -75,6 +75,59 @@ class GeometryField(str, Enum):
         ("cone_angle_rate",),
         "Rate of change of the cone angle (deg/s), finite-differenced over the requested times.",
     )
+    SC_VELOCITY = (
+        "sc_velocity",
+        ("spacecraft_velocity_x", "spacecraft_velocity_y", "spacecraft_velocity_z"),
+        "Spacecraft velocity (ECEF, km/s).",
+    )
+    SATELLITE_ATTITUDE = (
+        "satellite_attitude",
+        ("attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"),
+        "Spacecraft body attitude quaternion (body -> inertial, scalar-first).",
+    )
+    CLOCK_ANGLE = (
+        "clock_angle",
+        ("clock_angle",),
+        "Boresight azimuth in the inertial-velocity orbital frame (CERES SCI-12), [0, 360).",
+    )
+    CLOCK_ANGLE_RATE = (
+        "clock_angle_rate",
+        ("clock_angle_rate",),
+        "Rate of change of the clock angle (deg/s), unwrapped finite difference.",
+    )
+    ALONG_TRACK_ANGLE = (
+        "along_track_angle",
+        ("along_track_angle",),
+        "Boresight look angle from nadir in the velocity-nadir plane (forward +).",
+    )
+    CROSS_TRACK_ANGLE = (
+        "cross_track_angle",
+        ("cross_track_angle",),
+        "Boresight look angle from nadir in the cross-track-nadir plane.",
+    )
+    SC_POSITION_INERTIAL = (
+        "sc_position_inertial",
+        (
+            "spacecraft_position_inertial_x",
+            "spacecraft_position_inertial_y",
+            "spacecraft_position_inertial_z",
+        ),
+        "Spacecraft position (inertial, km).",
+    )
+    SC_VELOCITY_INERTIAL = (
+        "sc_velocity_inertial",
+        (
+            "spacecraft_velocity_inertial_x",
+            "spacecraft_velocity_inertial_y",
+            "spacecraft_velocity_inertial_z",
+        ),
+        "Spacecraft velocity (inertial, km/s).",
+    )
+    BORESIGHT_INERTIAL = (
+        "boresight_inertial",
+        ("boresight_inertial_x", "boresight_inertial_y", "boresight_inertial_z"),
+        "Instrument boresight unit vector (inertial).",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)
