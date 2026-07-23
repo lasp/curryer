@@ -53,11 +53,13 @@ dependencies = [
     "pyproj>=3.6",
     "requests>=2.28",
     "jinja2>=3",
-    # NOTE: SpiceyPy 8.1+ breaks curryer compatibility. Keep this pin until
-    # that issue is resolved upstream/in curryer (CURRYER-148).
-    "spiceypy>=6,<8.1.0",
+    # NOTE: SpiceyPy 8.1.0-8.1.2 ship a broken `__all__` that kills wildcard
+    # imports; curryer.spicierpy works around it (see issue #147). SpiceyPy
+    # 8.1+ publishes no cp310 wheels, so cap it on 3.10 to avoid sdist builds.
+    "spiceypy>=6,<8.1; python_version < '3.11'",
+    "spiceypy>=6; python_version >= '3.11'",
     "openpyxl>=3",
-    "numpy >=1.23,<2.0",
+    "numpy >=1.23,<3",
     "boto3",
     "typing-extensions",
     "pydantic>=2.0",
@@ -110,6 +112,7 @@ select = [
     "S",  # flake8-bandit security
     "PT", # flake8-pytest-style
     "UP", # pyupgrade syntax upgrader
+    "NPY201", # numpy 2 migration: flag APIs removed in numpy 2
 ]
 per-file-ignores = { "tests/*" = [
     "S",

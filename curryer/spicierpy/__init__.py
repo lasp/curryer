@@ -7,7 +7,18 @@
 #
 # Import everything from SpiceyPy. Required to "replace" issue methods.
 #
-from spiceypy import *
+try:
+    from spiceypy import *
+except AttributeError as e:
+    if "exceptionsstypes" not in str(e):
+        raise
+    # SpiceyPy 8.1.0-8.1.2 have a broken `__all__` (a missing comma merges two
+    # entries into the bogus name "exceptionsstypes"), which kills wildcard
+    # imports. Fall back to copying the module's public namespace directly.
+    import spiceypy as _spiceypy
+
+    globals().update({_k: _v for _k, _v in vars(_spiceypy).items() if not _k.startswith("_")})
+    del _spiceypy
 
 #
 # Lastly load in the custom modules.
