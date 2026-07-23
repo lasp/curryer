@@ -6,6 +6,7 @@
 import logging
 import os
 import shutil
+import typing
 from pathlib import Path
 
 import numpy as np
@@ -405,6 +406,122 @@ def spice_error_to_val(err_value=None, err_flag=None, pass_flag=None, disable=Fa
         return wrapped_call
 
     return wrapped_func
+
+
+SPICE_ERROR_COVERAGE = "coverage"
+SPICE_ERROR_MISSING_KERNEL = "missing_kernel"
+SPICE_ERROR_BAD_TIME = "bad_time"
+SPICE_ERROR_OTHER = "other"
+
+
+class SpiceErrorInfo(typing.NamedTuple):
+    """A ``SpiceyError`` reduced to a user-facing cause.
+
+    Attributes
+    ----------
+    category : str
+        One of :data:`SPICE_ERROR_COVERAGE`, :data:`SPICE_ERROR_MISSING_KERNEL`,
+        :data:`SPICE_ERROR_BAD_TIME`, or :data:`SPICE_ERROR_OTHER`.
+    short : str
+        The NAIF short message (e.g. ``"SPICE(NOFRAMECONNECT)"``), or ``"SPICE(UNKNOWN)"``
+        if the exception carried none.
+    summary : str
+        One-line, non-technical description of the likely cause.
+    detail : str
+        The NAIF long message, if any -- the specifics behind ``summary``.
+    routine : str
+        The SPICE call chain that failed (e.g. ``"pxform_c --> PXFORM"``).
+    """
+
+    category: str
+    short: str
+    summary: str
+    detail: str
+    routine: str
+
+
+# NAIF short-message token (the name inside ``SPICE(...)``) -> operational cause. Not
+# exhaustive: the tokens a bad time / uncovered epoch / unloaded kernel most commonly raise.
+# Anything unmapped falls through to SPICE_ERROR_OTHER.
+_SPICE_ERROR_CATEGORIES = {
+    "NOFRAMECONNECT": SPICE_ERROR_COVERAGE,
+    "SPKINSUFFDATA": SPICE_ERROR_COVERAGE,
+    "CKINSUFFDATA": SPICE_ERROR_COVERAGE,
+    "NOLOADEDFILES": SPICE_ERROR_MISSING_KERNEL,
+    "KERNELVARNOTFOUND": SPICE_ERROR_MISSING_KERNEL,
+    "NOSUCHFILE": SPICE_ERROR_MISSING_KERNEL,
+    "NOFRAMEDATA": SPICE_ERROR_MISSING_KERNEL,
+    "FRAMEDATANOTFOUND": SPICE_ERROR_MISSING_KERNEL,
+    "UNPARSEDTIME": SPICE_ERROR_BAD_TIME,
+    "INVALIDTIMESTRING": SPICE_ERROR_BAD_TIME,
+}
+
+_SPICE_ERROR_SUMMARIES = {
+    SPICE_ERROR_COVERAGE: "The requested time or frame is outside the coverage of the loaded SPICE kernels.",
+    SPICE_ERROR_MISSING_KERNEL: "A required SPICE kernel or frame definition is not loaded.",
+    SPICE_ERROR_BAD_TIME: "SPICE could not parse the requested time.",
+    SPICE_ERROR_OTHER: "SPICE reported an error.",
+}
+
+
+def _spice_short_token(short):
+    """Inner token of a NAIF short message: ``"SPICE(NOFRAMECONNECT)"`` -> ``"NOFRAMECONNECT"``."""
+    token = (short or "").strip()
+    if token.startswith("SPICE(") and token.endswith(")"):
+        return token[len("SPICE(") : -1]
+    return token
+
+
+def classify_spice_error(err):
+    """Reduce a ``SpiceyError`` to a user-facing cause.
+
+    SPICE surfaces failures as verbose, multi-line tracebacks whose actionable content is the
+    NAIF short name (``err.short``). This maps that short name to a coarse operational category
+    and a one-line summary, so callers can log or raise something a user can act on instead of
+    the raw dump. Pairs with :func:`spice_error_to_val` -- pass this (or
+    :func:`spice_error_message`) as its ``err_flag``.
+
+    Parameters
+    ----------
+    err : spiceypy.utils.exceptions.SpiceyError
+        The caught SPICE exception.
+
+    Returns
+    -------
+    SpiceErrorInfo
+        The category, short name, summary, long detail, and failing routine.
+    """
+    short = getattr(err, "short", "") or ""
+    category = _SPICE_ERROR_CATEGORIES.get(_spice_short_token(short), SPICE_ERROR_OTHER)
+    return SpiceErrorInfo(
+        category=category,
+        short=short or "SPICE(UNKNOWN)",
+        summary=_SPICE_ERROR_SUMMARIES[category],
+        detail=(getattr(err, "long", "") or "").strip(),
+        routine=(getattr(err, "traceback", "") or "").strip(),
+    )
+
+
+def spice_error_message(err):
+    """One-line, user-facing message for a caught ``SpiceyError``.
+
+    Combines the plain-language cause from :func:`classify_spice_error` with the NAIF short
+    name and failing routine for traceability, e.g. ``"The requested time or frame is outside
+    the coverage of the loaded SPICE kernels. [SPICE(NOFRAMECONNECT) in pxform_c --> PXFORM]"``.
+
+    Parameters
+    ----------
+    err : spiceypy.utils.exceptions.SpiceyError
+        The caught SPICE exception.
+
+    Returns
+    -------
+    str
+        A message suitable for logging or re-raising to a user.
+    """
+    info = classify_spice_error(err)
+    trace = f" in {info.routine}" if info.routine else ""
+    return f"{info.summary} [{info.short}{trace}]"
 
 
 POSITION_COLUMNS = ("x", "y", "z")

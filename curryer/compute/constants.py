@@ -1,11 +1,10 @@
-"""SPICE related constants for TIM.
-
-@author: Brandon Stone
-"""
+"""Physical constants, default sampling intervals, and SPICE quality-flag definitions for the compute package."""
 
 from enum import IntFlag, unique
 
 from spiceypy.utils.exceptions import SpiceyError
+
+from .geometry_fields import GeometryField  # noqa: F401  re-exported for backward compatibility
 
 # Time-interval between output samples (TIM/SIM missions only).
 #   Units: Microseconds
