@@ -56,6 +56,10 @@ them). Each field expands to the columns below.
   ``spacecraft_position_z`` -- spacecraft position (ECEF).
 - ``sc_altitude`` -> ``spacecraft_altitude`` -- observer geodetic height above the
   ellipsoid (km).
+- ``boresight`` -> ``boresight_x``, ``boresight_y``, ``boresight_z`` --
+  instrument boresight unit vector (ECEF).
+- ``surface_colatitude`` -> ``surface_colatitude`` -- colatitude of the boresight
+  ellipsoid footprint.
 """
 
 import logging
@@ -67,6 +71,7 @@ import pandas as pd
 
 from .. import spicierpy
 from . import abstract, constants, spatial
+from .geometry_fields import GeometryField
 
 logger = logging.getLogger(__name__)
 
@@ -249,51 +254,104 @@ def _provider_sun_position(ugps_times, ctx):
     return state[list(spicierpy.ext.POSITION_COLUMNS)].values
 
 
+# The boresight is a pure attitude quantity: the IK boresight rotated from the
+# instrument frame into ``earth_frame`` via ``spatial.frame_to_frame_rotation`` (the
+# shared per-sample ``pxform`` primitive). It queries no ephemeris -- position comes
+# from the ``sc_position`` provider -- so requesting the boresight beside the position
+# fields costs one attitude pass plus one shared ephemeris pass, never a duplicate.
+# Recoverable SPICE failures NaN-fill under ``allow_nans``: a missing FOV/frame is
+# logged and fills every row, and per-sample attitude gaps come back as NaN rows from
+# the rotation primitive.
+def _provider_boresight(ugps_times, ctx):
+    """Instrument boresight unit vector in the configured Earth-fixed frame.
+
+    Resolves the IK boresight in the instrument frame, then rotates it into
+    ``ctx.earth_frame`` (``ITRF93`` by default) with
+    :func:`curryer.compute.spatial.frame_to_frame_rotation`. The one-time pointing
+    lookup (instrument frame / IK boresight, which fails for a body with no defined
+    FOV) is guarded: under ``ctx.allow_nans`` a failure is logged and NaN-fills, and
+    without it the underlying SPICE error is raised. Per-sample attitude gaps surface
+    as NaN rows from the rotation, honoring the module fill contract.
+
+    Parameters
+    ----------
+    ugps_times : array_like of int
+        Times in GPS microseconds at which to evaluate the boresight.
+    ctx : GeometryData
+        Supplies the observing body (``ctx.observer``), the target Earth-fixed
+        frame (``ctx.earth_frame``), and the NaN-fill toggle (``ctx.allow_nans``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Boresight unit vectors in ``ctx.earth_frame``, shape (N, 3). Rows where
+        the attitude/FOV is unavailable are NaN (under ``allow_nans``).
+    """
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+
+    @spicierpy.ext.spice_error_to_val(err_value=None, err_flag=lambda err: err, disable=not ctx.allow_nans)
+    def _resolve_pointing():
+        from_frame = spicierpy.obj.Body(ctx.observer, frame=True).frame.name
+        to_frame = spicierpy.obj.Frame(ctx.earth_frame).name
+        boresight = spicierpy.ext.instrument_boresight(ctx.observer, norm=True)
+        return from_frame, to_frame, boresight
+
+    pointing, error = _resolve_pointing()
+    if pointing is None:  # missing IK/FOV or frame -> surface the error and NaN-fill (allow_nans only).
+        logger.warning("Boresight unavailable for observer %r: %s", ctx.observer, error)
+        return np.full((ugps_times.size, 3), np.nan)
+    from_frame, to_frame, boresight = pointing
+
+    matrices = spatial.frame_to_frame_rotation(from_frame, to_frame, ugps_times, allow_nans=ctx.allow_nans)
+    return np.einsum("nij,j->ni", matrices, boresight)
+
+
 _PROVIDERS = {
     "sc_position": _provider_sc_position,
     "sun_position": _provider_sun_position,
+    "boresight": _provider_boresight,
 }
 
+
+# Field registry: each field names its providers and an evaluate() over the gathered
+# provider dict. Column names live on ``GeometryField`` (the single source) and are
+# mirrored onto each ``_Field`` for lookup.
+_FIELD_SPECS = (
+    (GeometryField.SC_RADIUS, {"sc_position"}, lambda p: sc_radius(p["sc_position"])[:, None]),
+    (GeometryField.SUBSATELLITE, {"sc_position"}, lambda p: subobserver_point(p["sc_position"])),
+    (GeometryField.SUBSOLAR, {"sun_position"}, lambda p: subobserver_point(p["sun_position"])),
+    (GeometryField.EARTH_SUN_DISTANCE, {"sun_position"}, lambda p: earth_sun_distance(p["sun_position"])[:, None]),
+    (GeometryField.SC_POSITION, {"sc_position"}, lambda p: p["sc_position"]),
+    (GeometryField.SC_ALTITUDE, {"sc_position"}, lambda p: satellite_altitude(p["sc_position"])[:, None]),
+    (GeometryField.BORESIGHT, {"boresight"}, lambda p: p["boresight"]),
+    # The boresight intersection is where the boresight, cast from the S/C position, meets the
+    # ellipsoid; ``ray_intersect_ellipsoid`` returns geodetic [lon, lat, alt], so column 1 is latitude.
+    (
+        GeometryField.SURFACE_COLATITUDE,
+        {"boresight", "sc_position"},
+        lambda p: colatitude(
+            spatial.ray_intersect_ellipsoid(p["boresight"], p["sc_position"], geodetic=True, degrees=True)[:, 1]
+        )[:, None],
+    ),
+)
 
 _FIELDS = {
-    "sc_radius": _Field(
-        providers=frozenset({"sc_position"}),
-        columns=("spacecraft_radius",),
-        evaluate=lambda p: sc_radius(p["sc_position"])[:, None],
-    ),
-    "subsatellite": _Field(
-        providers=frozenset({"sc_position"}),
-        columns=("subsatellite_latitude", "subsatellite_longitude", "subsatellite_colatitude"),
-        evaluate=lambda p: subobserver_point(p["sc_position"]),
-    ),
-    "subsolar": _Field(
-        providers=frozenset({"sun_position"}),
-        columns=("subsolar_latitude", "subsolar_longitude", "subsolar_colatitude"),
-        evaluate=lambda p: subobserver_point(p["sun_position"]),
-    ),
-    "earth_sun_distance": _Field(
-        providers=frozenset({"sun_position"}),
-        columns=("earth_sun_distance",),
-        evaluate=lambda p: earth_sun_distance(p["sun_position"])[:, None],
-    ),
-    "sc_position": _Field(
-        providers=frozenset({"sc_position"}),
-        columns=("spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"),
-        evaluate=lambda p: p["sc_position"],
-    ),
-    "sc_altitude": _Field(
-        providers=frozenset({"sc_position"}),
-        columns=("spacecraft_altitude",),
-        evaluate=lambda p: satellite_altitude(p["sc_position"])[:, None],
-    ),
+    field: _Field(providers=frozenset(providers), columns=field.columns, evaluate=evaluate)
+    for field, providers, evaluate in _FIELD_SPECS
 }
 
 
-# Providers needing only ephemeris (position) coverage -- no attitude (CK) or
-# instrument FOV. The default field set is every field computable from these alone,
-# so a no-`fields` request never implicitly pulls in attitude-derived fields (added
-# by later field groups) that would require additional kernels.
+# Providers available for any observing body (queried from ephemeris alone).
 _EPHEMERIS_PROVIDERS = frozenset({"sc_position", "sun_position"})
+
+# Default field set for ``fields=None``: every field whose providers are a subset
+# (``<=``) of the ephemeris providers -- i.e. computable from position (an SPK)
+# alone, which every observer has. The attitude fields (boresight, and
+# surface_colatitude via it) need more: the spacecraft attitude (a CK, to rotate
+# into the Earth-fixed frame) plus an instrument FOV (IK boresight + FK frame). They
+# are opt-in so the no-args call need not furnish a CK or use an instrument observer
+# -- not because a spacecraft lacks attitude (it has its own CK), but because these
+# fields require those extra inputs. Self-maintaining via the providers.
 _DEFAULT_FIELDS = tuple(name for name, field in _FIELDS.items() if field.providers <= _EPHEMERIS_PROVIDERS)
 
 
@@ -343,7 +401,12 @@ class GeometryData(abstract.AbstractMissionData):
 
     @classmethod
     def available_fields(cls):
-        """Tuple of registered field names."""
+        """Registered fields as :class:`~curryer.compute.geometry_fields.GeometryField` members.
+
+        Members are plain strings, so the result is usable directly as
+        ``fields=`` selectors and each member carries its ``columns`` and
+        ``description``.
+        """
         return tuple(_FIELDS)
 
     def _resolve_fields(self, fields):
@@ -352,15 +415,20 @@ class GeometryData(abstract.AbstractMissionData):
             return list(_DEFAULT_FIELDS)
         unknown = [name for name in fields if name not in _FIELDS]
         if unknown:
-            raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {self.available_fields()}")
+            available = [str(field) for field in self.available_fields()]
+            raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {available}")
         return list(fields)
 
     def _gather_providers(self, fields, ugps_times):
         """Query the minimal set of providers for ``fields``, once each.
 
         Providers are evaluated in a stable (sorted) order so runs are
-        reproducible. A provider that returns all-NaN over the whole grid is the
-        documented missing-kernel signal, so it is logged as a warning.
+        reproducible. A provider that comes back entirely NaN almost always means
+        the required kernels are not furnished (or do not cover the requested
+        span) rather than a genuine per-sample gap, so it is logged as a warning to
+        surface the likely misconfiguration. The all-NaN result still propagates
+        per the fill contract; set the instance ``allow_nans`` attribute to False
+        to raise on the underlying SPICE error instead.
         """
         needed = sorted(set().union(*(_FIELDS[name].providers for name in fields)))
         logger.debug("Querying providers %s for fields %s", needed, fields)
@@ -369,8 +437,8 @@ class GeometryData(abstract.AbstractMissionData):
             values = _PROVIDERS[key](ugps_times, self)
             if np.size(values) and np.all(np.isnan(np.asarray(values, dtype=float))):
                 logger.warning(
-                    "Provider %r returned all-NaN over %d time(s); the required kernel is likely "
-                    "unfurnished for this interval.",
+                    "Provider %r returned all-NaN over %d time(s); check that the required kernels "
+                    "are furnished and cover the requested span.",
                     key,
                     len(ugps_times),
                 )
@@ -387,8 +455,9 @@ class GeometryData(abstract.AbstractMissionData):
             One or more times in GPS microseconds. Arbitrary and need not be
             uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str, optional
-            Field names to compute. Default is the ephemeris-only set -- the
-            fields computable from position/ephemeris providers alone.
+            Field names to compute. Default is the ephemeris-only set (valid for
+            any observer); attitude/instrument fields (e.g. ``boresight``) must be
+            requested explicitly. See :meth:`available_fields` for the full list.
 
         Returns
         -------
