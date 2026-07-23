@@ -13,10 +13,11 @@ from unittest.mock import patch
 
 import numpy as np
 import numpy.testing as npt
+import pandas as pd
 import pytest
 
 from curryer import meta, spicetime, spicierpy, utils
-from curryer.compute import constants, geometry
+from curryer.compute import constants, geometry, spatial
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -251,7 +252,10 @@ class TestGeometryOrchestration:
         assert warnings
         assert "sc_position" in warnings[0]
 
-    @pytest.mark.parametrize("field", list(geometry._FIELDS))
+    # Rate fields are non-local finite differences -- a missing row NaNs its neighbours
+    # too -- so they don't obey the per-sample fill contract; their NaN behaviour has its
+    # own tests.
+    @pytest.mark.parametrize("field", [f for f in geometry._FIELDS if not str(f).endswith("_rate")])
     def test_nan_propagates_per_field(self, field):
         # Fill contract: every field must NaN exactly the rows its inputs are
         # missing and stay finite elsewhere, whichever provider feeds it. Both
@@ -306,6 +310,148 @@ class TestGeometryOrchestration:
         npt.assert_allclose(df[["boresight_x", "boresight_y", "boresight_z"]].values, boresight)
         npt.assert_allclose(df["surface_colatitude"].values, [90.0, 90.0], atol=1e-9)
         assert counter == {"boresight": 1, "sc_position": 1}
+
+    def test_surface_angles_physical_nadir(self):
+        # Boresight cast straight down from an equatorial sub-satellite point: the
+        # satellite sits at the footprint's local zenith, so the viewing zenith is
+        # ~0. The Sun on +Y is on the local horizon of the +X footprint (zenith ~90,
+        # with a slight excess from finite-Sun parallax as the footprint is offset
+        # from the geocenter) and at the local zenith of the +Y footprint (zenith 0).
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sun_pos = np.array([[0.0, 1.5e8, 0.0], [0.0, 1.5e8, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["viewing_zenith", "solar_zenith"])
+
+        npt.assert_allclose(df["viewing_zenith"].values, [0.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["solar_zenith"].values, [90.0, 0.0], atol=0.05)
+
+    def test_surface_angles_compose_spatial_leaves(self):
+        # The fields must wire the documented spatial leaves over the boresight
+        # ellipsoid intersection. An off-nadir boresight makes the azimuths
+        # non-degenerate; the registry output must equal a direct leaf composition,
+        # and each provider is queried once across the fields.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        intersection = spatial.ray_intersect_ellipsoid(boresight, sc_pos)
+        exp_vaz = spatial.calc_azimuth(intersection, sc_pos, degrees=True)
+        exp_saz = spatial.calc_azimuth(intersection, sun_pos, degrees=True)
+        npt.assert_allclose(df["viewing_zenith"].values, spatial.calc_zenith(intersection, sc_pos, degrees=True))
+        npt.assert_allclose(df["solar_zenith"].values, spatial.calc_zenith(intersection, sun_pos, degrees=True))
+        npt.assert_allclose(df["viewing_azimuth"].values, exp_vaz)
+        npt.assert_allclose(df["solar_azimuth"].values, exp_saz)
+        npt.assert_allclose(df["relative_azimuth"].values, np.mod(exp_vaz - exp_saz + 180.0, 360.0))
+        assert counter == {"boresight": 1, "sc_position": 1, "sun_position": 1}
+
+    def test_boresight_intersection_memoized_across_surface_angle_fields(self):
+        # Every intersection-using surface-angle field shares the boresight
+        # intersection; the memo on the per-request providers dict casts the ray
+        # once, not once per field.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
+        with (
+            patch.dict(geometry._PROVIDERS, fakes),
+            patch.object(geometry.spatial, "ray_intersect_ellipsoid", wraps=spatial.ray_intersect_ellipsoid) as m_ray,
+        ):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        assert m_ray.call_count == 1
+        assert np.isfinite(df.values).all()
+
+    def test_relative_azimuth_is_lossless_not_folded(self):
+        # relative_azimuth keeps the full [0, 360) range; a [0, 180] fold (e.g.
+        # CERES) is the caller's to apply. Mirroring the Sun across the footprint's
+        # principal plane (sign-flipped East component) maps the relative azimuth to
+        # 360 - raa: a folded field would collapse the pair to one value, and one of
+        # the pair lands above 180 -- impossible under a fold.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        boresight = np.array([[-0.95, 0.0, 0.31], [-0.95, 0.0, 0.31]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        sun_pos = np.array([[1.0e8, 1.0e8, 8.0e7], [1.0e8, -1.0e8, 8.0e7]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["relative_azimuth"])
+
+        relaz = df["relative_azimuth"].values
+        assert ((relaz >= 0.0) & (relaz < 360.0)).all()
+        # The mirrored pair sums to 360 (distinct values), one above 180 -- a fold
+        # to [0, 180] could produce neither.
+        npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
+        assert relaz.max() > 180.0
+
+    def test_cone_angle_nadir_and_off_nadir(self):
+        # Cone angle is the boresight's angle off the satellite-to-geocenter
+        # direction: 0 looking straight down, 30 for a 30-deg tilt.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        nadir = np.array([-1.0, 0.0, 0.0])
+        tilt = np.array([-np.cos(np.radians(30.0)), 0.0, np.sin(np.radians(30.0))])
+        boresight = np.array([nadir, tilt])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle"])
+        npt.assert_allclose(df["cone_angle"].values, [0.0, 30.0], atol=1e-6)
+
+    def test_cone_angle_rate_linear_sweep_and_sign(self):
+        # A boresight tilting off nadir at a constant angular rate makes cone_angle a
+        # linear ramp in time, so its finite-difference rate is the constant slope
+        # (30 deg over 1 s = 30 deg/s). Reversing the sweep flips the sign -- the sign
+        # is the direction of change, which is what downstream consumers key on.
+        ugps = np.array([1_000_000, 2_000_000, 3_000_000])  # 1 s spacing
+        sc_pos = np.tile([7000.0, 0.0, 0.0], (3, 1))
+        angles = np.radians([0.0, 30.0, 60.0])
+        boresight = np.stack([-np.cos(angles), np.zeros(3), np.sin(angles)], axis=1)
+        geo = self._build()
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            fwd = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(fwd["cone_angle_rate"].values, [30.0, 30.0, 30.0], atol=1e-6)
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight[::-1])):
+            rev = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(rev["cone_angle_rate"].values, [-30.0, -30.0, -30.0], atol=1e-6)
+
+    def test_cone_angle_rate_single_sample_is_nan(self):
+        # A rate needs at least two samples; a single-time request yields NaN rather
+        # than raising from np.gradient.
+        sc_pos = np.array([[7000.0, 0.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(np.array([1_000_000]), fields=["cone_angle_rate"])
+        assert np.isnan(df["cone_angle_rate"].values).all()
+
+    def test_cone_angle_rate_nan_gap_is_nonlocal(self):
+        # A rate is a finite difference, so a missing row NaNs its neighbours too, not
+        # just itself: with two samples and a gap in the second, neither rate can form.
+        # This non-locality is why cone_angle_rate is excluded from the per-sample fill
+        # contract test.
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=sc_pos, boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle_rate"])
+        assert df["cone_angle_rate"].isna().all()
 
     def test_boresight_provider_is_pure_attitude_transform(self):
         # The boresight provider resolves the IK boresight and rotates it into ECEF via
@@ -427,6 +573,30 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         surface_colatitude = df["surface_colatitude"]
         self.assertTrue(surface_colatitude.notna().any(), msg="surface colatitude all-NaN over covered times")
         self.assertTrue(surface_colatitude.dropna().between(0, 180).all())
+
+        # Surface angles resolve where the boresight does, in their documented
+        # ranges: zeniths in [0, 180], azimuths in [0, 360).
+        self.assertTrue(df["viewing_zenith"].notna().any(), msg="viewing zenith all-NaN over covered times")
+        for col in ("viewing_zenith", "solar_zenith"):
+            self.assertTrue(df[col].dropna().between(0, 180).all())
+        for col in ("viewing_azimuth", "solar_azimuth", "relative_azimuth"):
+            vals = df[col].dropna()
+            self.assertTrue(((vals >= 0.0) & (vals < 360.0)).all())
+        # Cone angle resolves wherever the boresight does, on-disk and off-nadir.
+        self.assertTrue(df.loc[finite, "cone_angle"].notna().all())
+        self.assertTrue(df["cone_angle"].dropna().between(0, 90).all())
+
+        # The viewing angles must match the existing surface_angles primitive (what
+        # downstream calls today) over the covered rows -- same answer, computed
+        # without its redundant ephemeris re-query or geodetic round-trip.
+        sc = df.loc[finite, ["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values
+        intersection = spatial.ray_intersect_ellipsoid(boresight[finite], sc)
+        idx = df.index[finite]
+        surf_df = pd.DataFrame(intersection, columns=["x", "y", "z"], index=idx)
+        tgt_df = pd.DataFrame(sc, columns=["x", "y", "z"], index=idx)
+        ref = spatial.surface_angles(surf_df, target_positions=tgt_df, degrees=True)
+        npt.assert_allclose(df.loc[finite, "viewing_zenith"].values, ref["zenith"].values, atol=1e-9)
+        npt.assert_allclose(df.loc[finite, "viewing_azimuth"].values, ref["azimuth"].values, atol=1e-9)
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)

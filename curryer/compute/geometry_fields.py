@@ -40,6 +40,41 @@ class GeometryField(str, Enum):
         ("surface_colatitude",),
         "Colatitude of the boresight ellipsoid intersection.",
     )
+    VIEWING_ZENITH = (
+        "viewing_zenith",
+        ("viewing_zenith",),
+        "Geodetic zenith of the satellite at the boresight intersection.",
+    )
+    SOLAR_ZENITH = (
+        "solar_zenith",
+        ("solar_zenith",),
+        "Geodetic zenith of the Sun at the boresight intersection.",
+    )
+    VIEWING_AZIMUTH = (
+        "viewing_azimuth",
+        ("viewing_azimuth",),
+        "Satellite azimuth (clockwise from North) at the boresight intersection.",
+    )
+    SOLAR_AZIMUTH = (
+        "solar_azimuth",
+        ("solar_azimuth",),
+        "Solar azimuth (clockwise from North) at the boresight intersection.",
+    )
+    RELATIVE_AZIMUTH = (
+        "relative_azimuth",
+        ("relative_azimuth",),
+        "Viewing azimuth relative to solar azimuth (CERES origin, unfolded).",
+    )
+    CONE_ANGLE = (
+        "cone_angle",
+        ("cone_angle",),
+        "Boresight angle off the satellite-to-geocenter (nadir) vector.",
+    )
+    CONE_ANGLE_RATE = (
+        "cone_angle_rate",
+        ("cone_angle_rate",),
+        "Rate of change of the cone angle (deg/s), finite-differenced over the requested times.",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)
