@@ -100,6 +100,35 @@ def get_short_temp_dir() -> Path:
     return temp_dir
 
 
+def validate_path_length(path: Path, max_length: int = 80) -> None:
+    """Validate that a path does not exceed a maximum length.
+
+    Used primarily for SPICE kernel paths, which fail in the C implementation
+    of SPICE when longer than 80 characters. Unlike `update_invalid_paths`,
+    which rewrites long paths, this is a fail-fast check for callers that
+    control where their files land.
+
+    Parameters
+    ----------
+    path : Path
+        The path to validate. Resolved to an absolute path before measuring.
+    max_length : int
+        Maximum allowed path length (default: 80 for SPICE).
+
+    Raises
+    ------
+    RuntimeError
+        If the resolved path exceeds the maximum length.
+    """
+    path_str = str(path.resolve())
+    if len(path_str) > max_length:
+        raise RuntimeError(
+            f"Path length ({len(path_str)}) exceeds limit ({max_length}):\n"
+            f"  {path_str}\n"
+            f"Consider setting CURRYER_TEMP_DIR to a shorter base path."
+        )
+
+
 def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:
     """Create a symlink in a short temp directory.
 

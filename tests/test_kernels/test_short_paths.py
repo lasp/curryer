@@ -21,6 +21,7 @@ from curryer.kernels.path_utils import (
     get_path_strategy_config,
     get_short_temp_dir,
     update_invalid_paths,
+    validate_path_length,
 )
 
 logger = logging.getLogger(__name__)
@@ -767,6 +768,58 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
 
         self.assertFalse(config["disable_copy"], "Copy should be enabled by default")
         self.assertTrue(config["try_copy"], "try_copy should be True by default")
+
+
+class TestValidatePathLength(unittest.TestCase):
+    """Test validate_path_length() fail-fast check.
+
+    Tests the validation helper for callers that control their own file
+    placement and want a hard error instead of path rewriting when a path
+    exceeds SPICE's 80-character limit.
+    """
+
+    def test_short_path_passes(self):
+        """Test that a path within the limit does not raise."""
+        validate_path_length(Path("/tmp/short.tls"), max_length=80)
+
+    def test_long_path_raises(self):
+        """Test that an over-length path raises with a helpful message."""
+        long_path = Path("/tmp") / ("a" * 100) / "kernel.tls"
+
+        with self.assertRaises(RuntimeError) as context:
+            validate_path_length(long_path, max_length=80)
+
+        message = str(context.exception)
+        self.assertIn("exceeds limit (80)", message)
+        self.assertIn(str(long_path), message)
+        self.assertIn("CURRYER_TEMP_DIR", message)
+        self.assertIn(str(len(str(long_path.resolve()))), message)
+
+    def test_custom_max_length(self):
+        """Test that the limit is configurable in both directions."""
+        path = Path("/tmp/moderately_long_filename.bsp")
+
+        validate_path_length(path, max_length=1000)
+
+        with self.assertRaises(RuntimeError) as context:
+            validate_path_length(path, max_length=5)
+
+        message = str(context.exception)
+        self.assertIn("exceeds limit (5)", message)
+        self.assertIn(str(path), message)
+
+    def test_relative_path_measured_resolved(self):
+        """Test that relative paths are measured after resolution."""
+        # A short relative name can still exceed the limit once resolved
+        # against a deep working directory.
+        deep_dir = Path(tempfile.mkdtemp(prefix="x" * 60, dir="/tmp"))  # noqa: S108
+        self.addCleanup(shutil.rmtree, deep_dir, ignore_errors=True)
+        orig_cwd = os.getcwd()
+        os.chdir(deep_dir)
+        self.addCleanup(os.chdir, orig_cwd)
+
+        with self.assertRaises(RuntimeError):
+            validate_path_length(Path("kernel_with_a_long_name.bsp"), max_length=80)
 
 
 class TestAdditionalCoverage(unittest.TestCase):
