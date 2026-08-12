@@ -100,6 +100,56 @@ class load_kernel:
             raise ValueError("Must specify `kernel` (str) or `all`=True.")
 
 
+class LoadedKernel(typing.NamedTuple):
+    """A kernel currently furnished in the SPICE kernel pool.
+
+    Attributes
+    ----------
+    file : str
+        Kernel file path, as it was furnished.
+    ktype : str
+        SPICE kernel type (e.g. ``"SPK"``, ``"CK"``, ``"PCK"``, ``"TEXT"``, ``"META"``).
+    source : str
+        Name of the source file that furnished this kernel (e.g. a meta-kernel),
+        or an empty string if it was furnished directly.
+    handle : int
+        SPICE integer handle for binary kernels; 0 for text kernels.
+    """
+
+    file: str
+    ktype: str
+    source: str
+    handle: int
+
+
+def loaded_kernels(kind="ALL"):
+    """List the kernels currently furnished in the SPICE kernel pool.
+
+    Queries the kernel pool itself (``ktotal`` / ``kdata``), so the result reflects
+    every furnished kernel regardless of which component loaded it — unlike
+    :attr:`load_kernel.loaded`, which tracks only the kernels loaded through that
+    handle. Useful for verifying furnish state and for pool-wide diagnostics.
+
+    Parameters
+    ----------
+    kind : str, optional
+        SPICE kernel kind filter: one of ``"SPK"``, ``"CK"``, ``"PCK"``, ``"DSK"``,
+        ``"EK"``, ``"TEXT"``, ``"META"``, a space-delimited combination, or ``"ALL"``.
+        Default="ALL".
+
+    Returns
+    -------
+    list of LoadedKernel
+        One record per furnished kernel, in load order.
+
+    """
+    records = []
+    for which in range(spiceypy.ktotal(kind)):
+        file, ktype, source, handle = spiceypy.kdata(which, kind)
+        records.append(LoadedKernel(file=file, ktype=ktype, source=source, handle=handle))
+    return records
+
+
 def object_frame(obj_name, as_id=False):
     """Retrieve frame name/id associated with an object name or id.
 
