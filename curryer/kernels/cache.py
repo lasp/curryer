@@ -67,7 +67,7 @@ def get_local_cache_dir() -> Path:
         base = Path("~/Library/Caches").expanduser()
     else:
         base = Path(os.getenv("XDG_CACHE_HOME", "~/.cache")).expanduser()
-    return base / package_name / version(package_name)
+    return base / package_name / _package_version()
 
 
 def clear_cache(cache_dir: Path | None = None) -> list[Path]:
