@@ -20,6 +20,11 @@ except AttributeError as e:
     globals().update({_k: _v for _k, _v in vars(_spiceypy).items() if not _k.startswith("_")})
     del _spiceypy
 
+# SpiceyPy 8.1+ defines `__all__`, which omits the `utils` submodule from the
+# wildcard import (earlier versions had no `__all__`, so `utils` came along
+# implicitly). Import it explicitly to keep `spicierpy.utils` available.
+from spiceypy import utils
+
 #
 # Lastly load in the custom modules.
 #
@@ -40,4 +45,4 @@ from .vectorized import (  # Time-related  # Ephemeris
     unitim,
 )
 
-__all__ = ["ext", "obj", "ckgp", "recgeo", "sce2c", "sct2e", "spkezp", "spkezr", "str2et", "timout", "unitim"]
+__all__ = ["ext", "obj", "utils", "ckgp", "recgeo", "sce2c", "sct2e", "spkezp", "spkezr", "str2et", "timout", "unitim"]
