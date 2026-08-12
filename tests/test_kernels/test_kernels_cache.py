@@ -214,7 +214,7 @@ class CacheTestCase(unittest.TestCase):
 
     def test_get_local_cache_dir_version_keyed(self):
         cache_dir = cache.get_local_cache_dir()
-        self.assertEqual(version("curryer"), cache_dir.name)
+        self.assertEqual(version(cache.DISTRIBUTION_NAME), cache_dir.name)
         self.assertEqual("curryer", cache_dir.parent.name)
 
 
