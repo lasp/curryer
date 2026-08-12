@@ -213,6 +213,9 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
         a body name, while an int is assumed to be a body code.
         Note: Using a body name requires that the body definition is loaded
         into memory; integer codes will work regardless.
+        For binary PCK kernels, coverage is keyed on the frame *class* ID
+        (e.g., 3000 for the ITRF93 Earth-orientation kernels); SPICE has no
+        name lookup for class IDs, so an integer code is required.
     as_segments : bool
         Option to return the coverage of each segment.
     to_fmt : str, optional
@@ -230,9 +233,9 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
     (CK)).
 
     """
-    # Determine the kernel type (returns uppercase).
+    # Determine the kernel architecture and type (returns uppercase).
     filename = str(filename)
-    _, ktype = spiceypy.getfat(filename)
+    arch, ktype = spiceypy.getfat(filename)
 
     # TODO: Switch to using objs for `body`.
 
@@ -256,10 +259,21 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
             body = Frame(body)
         window = spiceypy.ckcov(filename, idcode=body.id, needav=False, level="SEGMENT", tol=0, timsys="TDB")
 
-    # Valid, but unsupported kernel types.
-    elif ktype in ["PCK"]:
-        # TODO: Consider implementing using: pckcov
-        raise NotImplementedError(f"For kernel type: {ktype!r}")
+    # Orientation (binary PCK) kernel, e.g. Earth-orientation / ITRF93.
+    elif ktype == "PCK":
+        # Text PCKs (arch "KPL") carry constants, not time coverage.
+        if arch != "DAF":
+            raise NotImplementedError(f"Text PCK kernels carry constants, not time coverage: {filename!r}")
+        if isinstance(body, Body | Frame):
+            idcode = body.id
+        elif isinstance(body, int):
+            idcode = body
+        else:
+            raise TypeError(
+                f"Binary-PCK coverage is keyed on the integer frame class ID (e.g., 3000"
+                f" for ITRF93), which has no name lookup; got: {body!r}"
+            )
+        window = spiceypy.pckcov(filename, idcode=idcode)
 
     # Invalid kernel types (i.e., no related "coverage" function).
     else:
@@ -302,12 +316,13 @@ def kernel_objects(filename, as_id=False):
     -------
     tuple of str or tuple of ints
         Collection of NAIF body names (default) or codes found within the
-        kernel file (`filename`).
+        kernel file (`filename`). Binary PCK kernels contain frame *class*
+        IDs, which have no name lookup and require `as_id=True`.
 
     """
-    # Determine the kernel type (returns uppercase).
+    # Determine the kernel architecture and type (returns uppercase).
     filename = str(filename)
-    _, ktype = spiceypy.getfat(filename)
+    arch, ktype = spiceypy.getfat(filename)
 
     # Ephemeris kernel.
     if ktype == "SPK":
@@ -320,6 +335,18 @@ def kernel_objects(filename, as_id=False):
         objs = tuple(spiceypy.ckobj(filename))
         if not as_id:
             objs = tuple(Frame(v) for v in objs)
+
+    # Orientation (binary PCK) kernel: contains frame *class* IDs (e.g., 3000
+    # for ITRF93), which have no generic name lookup in SPICE.
+    elif ktype == "PCK":
+        # Text PCKs (arch "KPL") carry constants, not object/frame segments.
+        if arch != "DAF":
+            raise NotImplementedError(f"Text PCK kernels carry constants, not object segments: {filename!r}")
+        ids_cell = spiceypy.support_types.SPICEINT_CELL(1000)
+        spiceypy.pckfrm(filename, ids_cell)
+        objs = tuple(int(ids_cell[i]) for i in range(spiceypy.card(ids_cell)))
+        if not as_id:
+            raise NotImplementedError("Binary-PCK frame class IDs have no name lookup; use `as_id=True`.")
 
     # Valid, but unsupported kernel types.
     elif ktype in ["DSK"]:

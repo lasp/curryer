@@ -11,7 +11,7 @@ from unittest.mock import call, patch
 
 from spiceypy.utils.exceptions import SpiceyError
 
-from curryer import meta, spicierpy, utils
+from curryer import meta, spicetime, spicierpy, utils
 from curryer.spicierpy import ext, obj
 
 logger = logging.getLogger(__name__)
@@ -215,14 +215,14 @@ class ExtTestCase(unittest.TestCase):
                 ext.kernel_coverage(self.kernels["attitude"][-1], 0)
             self.assertIn("No data for body [Frame(0)] was found in the kernel", raised.exception.args[0])
 
-        # PCK is valid, but not implemented.
+        # Text PCK is valid, but carries constants, not time coverage.
         tmp_file = str(self.tmp_dir / "test1")
         with open(tmp_file, "w") as fobj:
             fobj.write("KPL/PCK\n\n")
 
         with self.assertRaises(NotImplementedError) as raised:
             ext.kernel_coverage(tmp_file, 0)
-        self.assertIn("For kernel type: 'PCK'", raised.exception.args[0])
+        self.assertIn("Text PCK", raised.exception.args[0])
 
         # Invalid kernel for coverage data.
         tmp_file = str(self.tmp_dir / "test2")
@@ -279,6 +279,58 @@ class ExtTestCase(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             ext.kernel_objects(tmp_file)
         self.assertIn("Unknown or unexpected kernel type: 'SCLK' from", raised.exception.args[0])
+
+    def _write_test_pck(self, filename, classid=3000, segments=((0.0, 86400.0),)):
+        """Write a minimal binary PCK with one type-2 segment per (start, stop) ET pair."""
+        handle = spicierpy.pckopn(str(filename), "test-bpc", 0)
+        polydg = 1
+        cdata = [0.0] * (3 * (polydg + 1))
+        for first, last in segments:
+            spicierpy.pckw02(handle, classid, "J2000", first, last, "testseg", last - first, 1, polydg, cdata, first)
+        spicierpy.pckcls(handle)
+        return filename
+
+    def test_kernel_coverage_pck(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test.bpc")
+        window = ext.kernel_coverage(pck_file, 3000, to_fmt="et")
+        self.assertEqual((0.0, 86400.0), tuple(window))
+
+        # Default output format is ugps.
+        ugps_window = ext.kernel_coverage(pck_file, 3000)
+        expected = spicetime.adapt([0.0, 86400.0], "et", "ugps")
+        self.assertEqual(tuple(expected), tuple(ugps_window))
+
+    def test_kernel_coverage_pck_segments_and_errors(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test_seg.bpc", segments=((0.0, 86400.0), (172800.0, 259200.0)))
+
+        # Overall window spans both segments; as_segments returns each.
+        window = ext.kernel_coverage(pck_file, 3000, to_fmt="et")
+        self.assertEqual((0.0, 259200.0), tuple(window))
+        segments = ext.kernel_coverage(pck_file, 3000, as_segments=True, to_fmt="et")
+        self.assertEqual((0.0, 86400.0, 172800.0, 259200.0), tuple(segments))
+
+        # A class ID absent from the kernel is an error that names the IDs it does contain.
+        with self.assertRaises(ValueError) as raised:
+            ext.kernel_coverage(pck_file, 4000, to_fmt="et")
+        self.assertIn("3000", str(raised.exception))
+
+        # Frame class IDs have no name lookup.
+        with self.assertRaises(TypeError):
+            ext.kernel_coverage(pck_file, "ITRF93", to_fmt="et")
+
+    def test_kernel_objects_pck(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test_obj.bpc")
+        self.assertEqual((3000,), ext.kernel_objects(pck_file, as_id=True))
+        with self.assertRaises(NotImplementedError):
+            ext.kernel_objects(pck_file)
+
+        # Text PCKs carry constants, not object segments.
+        text_pck = str(self.tmp_dir / "test_text.tpc")
+        with open(text_pck, "w") as fobj:
+            fobj.write("KPL/PCK\n\n")
+        with self.assertRaises(NotImplementedError) as raised:
+            ext.kernel_objects(text_pck, as_id=True)
+        self.assertIn("Text PCK", raised.exception.args[0])
 
     def test_infer_kernel_ids_basic(self):
         ids = ext.infer_ids("iss_sc", -125544, instruments=["tim"])
