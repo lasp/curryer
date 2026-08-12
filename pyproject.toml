@@ -1,6 +1,6 @@
 [project]
 name = "lasp-curryer"
-version = "0.5.0"
+version = "0.5.1"
 description = "LASP SPICE extensions and geospatial data product generation tools."
 authors = [
     { name = "Brandon Stone", email = "brandon.h.stone@colorado.edu" },
