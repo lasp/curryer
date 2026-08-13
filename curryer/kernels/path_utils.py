@@ -100,7 +100,7 @@ def get_short_temp_dir() -> Path:
     return temp_dir
 
 
-def validate_path_length(path: Path, max_length: int = 80) -> None:
+def validate_path_length(path: Path, max_len: int = 80) -> None:
     """Validate that a path does not exceed a maximum length.
 
     Used primarily for SPICE kernel paths, which fail in the C implementation
@@ -111,19 +111,22 @@ def validate_path_length(path: Path, max_length: int = 80) -> None:
     Parameters
     ----------
     path : Path
-        The path to validate. Resolved to an absolute path before measuring.
-    max_length : int
+        The path to validate. Made absolute against the working directory
+        before measuring, without dereferencing symlinks — a short symlink
+        (this module's primary shortening strategy) is measured as SPICE
+        sees it, not as its longer target.
+    max_len : int
         Maximum allowed path length (default: 80 for SPICE).
 
     Raises
     ------
     RuntimeError
-        If the resolved path exceeds the maximum length.
+        If the absolute path exceeds the maximum length.
     """
-    path_str = str(path.resolve())
-    if len(path_str) > max_length:
+    path_str = os.path.abspath(path)
+    if len(path_str) > max_len:
         raise RuntimeError(
-            f"Path length ({len(path_str)}) exceeds limit ({max_length}):\n"
+            f"Path length ({len(path_str)}) exceeds limit ({max_len}):\n"
             f"  {path_str}\n"
             f"Consider setting CURRYER_TEMP_DIR to a shorter base path."
         )
