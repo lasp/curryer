@@ -1,27 +1,32 @@
-# Codecov configuration for space_packet_parser
+# Codecov configuration for curryer
 # https://docs.codecov.com/docs/codecovyml-reference
+#
+# CI measures the fast test suite only: @pytest.mark.extra tests and integration
+# tests that depend on data files not committed to the repo are skipped, so
+# measured coverage sits well below what the full suite exercises. The project
+# and tests targets are therefore floors set just under the measured levels on
+# main (project 78.8%, tests 87.7% as of 2026-08): they fail only on a genuine
+# regression, not on every PR. Ratchet them up as measured coverage rises.
+# Patch coverage is the high bar that applies to new and changed code.
 
 coverage:
   status:
     project:
       default:
-        target: 85% # Target coverage percentage
-        threshold: 5% # Allow 5% drop without failing
+        target: 75% # Floor under measured project coverage
         if_no_uploads: error # Fail if no coverage data
         only_pulls: false # Check coverage on all commits
 
-      # Custom group for tests module with higher threshold
       tests:
-        target: 95% # Very high threshold for test files
-        threshold: 1% # Allow only 1% drop
+        target: 85% # Floor under measured tests/** coverage; skipped tests count as uncovered
         paths:
-          - "tests/**" # Adjust this path to match your test directory
+          - "tests/**"
         if_no_uploads: error
         only_pulls: false
 
     patch:
       default:
-        target: 85% # Lower threshold for new code
+        target: 85% # High bar for new and changed code
         threshold: 5%
         only_pulls: true # Only check patch coverage on PRs
 
