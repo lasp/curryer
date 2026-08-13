@@ -10,7 +10,10 @@ kernels for one object (:func:`pairwise_overlap`).
 Queries are scoped to the requested target objects: kernels that do not
 contain a target contribute nothing, and unrelated furnished kernels never
 affect a result. All window times are uGPS (int64 microseconds since the GPS
-epoch); windows are closed ``(start, stop)`` intervals.
+epoch); windows are ``(start, stop)`` bounds as reported by SPICE. Boundary
+instants are shared rather than exclusive: a coverage window's stop is also
+the start of any adjacent gap, so exactly-touching windows merge and a
+single-instant overlap counts as an intersection.
 
 @author: Matthew Maclay
 """
@@ -93,9 +96,10 @@ def _target_id(target, ktype):
 
     Mirrors the per-type coercion in :func:`curryer.spicierpy.ext.kernel_coverage`:
     SPK segments are keyed by body ID, CK by frame ID, and binary PCK by frame
-    *class* ID (integer only — class IDs have no name lookup). A target whose
-    name cannot be resolved (e.g., its definitions are not loaded) is treated
-    as not mappable rather than an error, so scoping stays permissive.
+    *class* ID (integers are used as-is — class IDs have no name lookup — while
+    `Frame`/`Body` targets resolve through the frame info, which requires the
+    frame definitions to be loaded). A target that cannot be resolved is
+    treated as not mappable rather than an error, so scoping stays permissive.
     """
     try:
         if ktype == "SPK":
@@ -106,7 +110,11 @@ def _target_id(target, ktype):
             return obj.id
         if ktype == "PCK":
             if isinstance(target, Body | Frame):
-                return target.id
+                # Coverage is keyed on the frame *class* ID (e.g., 3000 for
+                # ITRF93), not the frame ID (13000): resolve through the frame
+                # info, via the body's associated frame for Body inputs.
+                frame_id = spiceypy.cidfrm(target.id)[0] if isinstance(target, Body) else target.id
+                return spiceypy.frinfo(frame_id)[2]
             return target if isinstance(target, int) else None
     except (SpiceyError, ValueError):
         return None

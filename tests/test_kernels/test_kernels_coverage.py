@@ -11,7 +11,7 @@ from pathlib import Path
 
 from curryer import spicetime, spicierpy, utils
 from curryer.kernels import coverage
-from curryer.spicierpy import ext
+from curryer.spicierpy import ext, obj
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -78,6 +78,13 @@ class CoverageTestCase(unittest.TestCase):
             kernels=[self.spk_a1, self.spk_a2, self.spk_b, self.pck_p],
         )
         self.assertEqual(self._ugps_windows((1000.0, 2000.0), (3000.0, 3500.0)), windows)
+
+    def test_object_coverage_pck_frame_object(self):
+        # Frame targets map to the frame *class* ID (ITRF93: frame ID 13000,
+        # class ID 3000) and must match the coverage of the class-ID query.
+        result = coverage.object_coverage(obj.Frame("ITRF93"), kernels=[self.pck_p])
+        self.assertEqual(self._ugps_windows((500.0, 3600.0)), result.windows)
+        self.assertEqual((str(self.pck_p),), result.kernels)
 
     def test_valid_window_no_common_coverage(self):
         # A target absent from every kernel yields no valid window.
