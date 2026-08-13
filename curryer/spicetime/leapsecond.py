@@ -4,7 +4,8 @@ Importing this module will load the default leapsecond kernel that is included
 with this library. If the kernel pool is cleared, `load()` should be called to
 reload the leapsecond kernel. The included kernel can be updated using
 `update_file()`; if a new kernel is available, it will be downloaded to the
-package's "data" directory.
+local kernel cache (see `curryer.kernels.cache`) and found by
+`find_default_file()` alongside the packaged kernel.
 
 The last leapsecond kernel that is loaded takes the highest precedence.
 
@@ -20,13 +21,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 from .. import spicierpy as sp
 
 logger = logging.getLogger(__name__)
 
-_LEAPSECOND_FILE_PATH = "../../data/generic"
+_LEAPSECOND_FILE_PATH = "../data/generic"
 _LEAPSECOND_FILE_GLOB = "naif*.tls"
 LEAPSECOND_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/"
 
@@ -35,6 +35,12 @@ LEAPSECOND_USER_FILE_PATH = None
 
 def find_default_file():
     """Find the library's default leapsecond kernel file.
+
+    Searches the first defined of: the module override
+    `LEAPSECOND_USER_FILE_PATH`, the directory named by the
+    `LEAPSECOND_FILE_ENV` environment variable, or the kernel included with
+    the package plus any updated kernels in the local cache (populated by
+    `update_file`). The most recent kernel (highest-versioned filename) wins.
 
     Returns
     -------
@@ -46,17 +52,26 @@ def find_default_file():
     #   Pylint thinks the `Path` class is really a `PurePath`.
     # pylint: disable=no-member
     if LEAPSECOND_USER_FILE_PATH is not None:
-        path = Path(LEAPSECOND_USER_FILE_PATH)
+        search_dirs = [Path(LEAPSECOND_USER_FILE_PATH)]
     elif os.getenv("LEAPSECOND_FILE_ENV", None):
-        path = Path(os.getenv("LEAPSECOND_FILE_ENV"))
+        search_dirs = [Path(os.getenv("LEAPSECOND_FILE_ENV"))]
     else:
-        path = Path(__file__).parent
-        path = path.joinpath(_LEAPSECOND_FILE_PATH).resolve()
-    leapsecond_files = list(path.glob(_LEAPSECOND_FILE_GLOB))
-    leapsecond_files.sort()
+        # Deferred import: curryer.kernels imports spicetime at package init.
+        from ..kernels import cache as kernels_cache
+
+        search_dirs = [Path(__file__).parent.joinpath(_LEAPSECOND_FILE_PATH).resolve()]
+        cache_dir = kernels_cache.get_local_cache_dir()
+        if cache_dir.is_dir():
+            search_dirs.append(cache_dir)
+
+    leapsecond_files = sorted(
+        (fn for path in search_dirs for fn in path.glob(_LEAPSECOND_FILE_GLOB)), key=lambda fn: fn.name
+    )
 
     if len(leapsecond_files) == 0:
-        raise FileNotFoundError(f"Unable to find the default leapsecond kernel file. Searched directory: {path}")
+        raise FileNotFoundError(
+            f"Unable to find the default leapsecond kernel file. Searched directories: {search_dirs}"
+        )
 
     file = leapsecond_files[-1]
     logger.debug("Found default leapsecond kernel: %s", file)
@@ -131,22 +146,18 @@ def check_for_update():
         leapsecond kernel (e.g., "naif0012.tls"), otherwise None.
 
     """
-    resp = requests.get(LEAPSECOND_BASE_URL, timeout=10)
-    resp.raise_for_status()
+    # Deferred import: curryer.kernels imports spicetime at package init.
+    from ..kernels import discovery
 
-    files = re.findall(r'href="(naif[0-9]{4}\.tls)"', resp.text)
-    if len(files) == 0:
-        raise ValueError(f"No files were found on the NAIF page: {LEAPSECOND_BASE_URL!r}")
-
-    files.sort()
-    logger.debug("Found files on NAIF page: %r", files)
+    latest_url = discovery.find_most_recent_naif_kernel(LEAPSECOND_BASE_URL, discovery.NAIF_LSK_REGEX)
+    latest_name = latest_url.rsplit("/", 1)[-1]
 
     # Compare the file name to the default kernel.
     default_kernel = find_default_file()
-    if default_kernel.name == files[-1]:
+    if default_kernel.name == latest_name:
         logger.info("No update found. File name matches current file: %s", default_kernel)
         return None
-    return files[-1]
+    return latest_name
 
 
 def update_file():
@@ -155,10 +166,11 @@ def update_file():
     Returns
     -------
     pathlib.Path or None
-        Path to the updated leapsecond file, or None if the current leapsecond
-        file was already up-to-date. Note: If an update was found, then the
-        module constant `LEAPSECOND_FILE` will be updated and the kernel will
-        be loaded into memory (overriding any existing leapsecond kernels).
+        Path to the updated leapsecond file in the local kernel cache, or
+        None if the current leapsecond file was already up-to-date. Note: If
+        an update was found, the kernel will be loaded into memory
+        (overriding any existing leapsecond kernels) and `find_default_file`
+        will resolve to it going forward.
 
     """
     # Check if we need to update, and if so, the new filename.
@@ -166,20 +178,13 @@ def update_file():
     if kernel_name is None:
         return None
 
-    # Form the URL to download and the destination filename.
+    # Deferred import: curryer.kernels imports spicetime at package init.
+    from ..kernels import cache as kernels_cache
+
+    # Download the latest leapsecond file into the local kernel cache.
     kernel_url = LEAPSECOND_BASE_URL + kernel_name
-    default_file = find_default_file()
-    kernel_file = default_file.with_name(kernel_name)
-    if kernel_file.is_file():
-        raise FileExistsError(f"New file already exists, but wasn't the default! File: {kernel_file}")
-
-    # Download the latest leapsecond file.
     logger.debug("Downloading kernel file: %r", kernel_url)
-    resp = requests.get(kernel_url, timeout=60)
-    resp.raise_for_status()
-
-    logger.debug("Saving kernel file: %r", kernel_file)
-    kernel_file.write_text(resp.text)
+    kernel_file = kernels_cache.fetch(kernel_url)
 
     # Check the file header to ensure it's correct.
     _, ktype = sp.getfat(str(kernel_file))
