@@ -300,6 +300,18 @@ class ExtTestCase(unittest.TestCase):
         expected = spicetime.adapt([0.0, 86400.0], "et", "ugps")
         self.assertEqual(tuple(expected), tuple(ugps_window))
 
+    def test_kernel_coverage_pck_frame_object(self):
+        # Frame objects map to the frame *class* ID (ITRF93: frame ID 13000,
+        # class ID 3000), so they must resolve the same coverage as the class ID.
+        pck_file = self._write_test_pck(self.tmp_dir / "test_frame.bpc")
+        with ext.load_kernel(self.generic_dir / "earth_assoc_itrf93.tf"):
+            window = ext.kernel_coverage(pck_file, obj.Frame("ITRF93"), to_fmt="et")
+            self.assertEqual((0.0, 86400.0), tuple(window))
+
+            # Body objects route via the body's associated frame.
+            body_window = ext.kernel_coverage(pck_file, obj.Body("EARTH"), to_fmt="et")
+            self.assertEqual((0.0, 86400.0), tuple(body_window))
+
     def test_kernel_coverage_pck_segments_and_errors(self):
         pck_file = self._write_test_pck(self.tmp_dir / "test_seg.bpc", segments=((0.0, 86400.0), (172800.0, 259200.0)))
 

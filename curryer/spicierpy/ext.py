@@ -215,7 +215,9 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
         into memory; integer codes will work regardless.
         For binary PCK kernels, coverage is keyed on the frame *class* ID
         (e.g., 3000 for the ITRF93 Earth-orientation kernels); SPICE has no
-        name lookup for class IDs, so an integer code is required.
+        name lookup for class IDs, so pass the class ID as an integer, or a
+        `Frame`/`Body` object (mapped via its frame's info, which requires
+        the frame definitions to be loaded).
     as_segments : bool
         Option to return the coverage of each segment.
     to_fmt : str, optional
@@ -265,7 +267,12 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
         if arch != "DAF":
             raise NotImplementedError(f"Text PCK kernels carry constants, not time coverage: {filename!r}")
         if isinstance(body, Body | Frame):
-            idcode = body.id
+            # Coverage is keyed on the frame *class* ID (e.g., 3000 for ITRF93),
+            # not the frame ID (13000): resolve through the frame info, going
+            # via the body's associated frame for Body inputs. Requires the
+            # frame definitions to be loaded.
+            frame_id = spiceypy.cidfrm(body.id)[0] if isinstance(body, Body) else body.id
+            idcode = spiceypy.frinfo(frame_id)[2]
         elif isinstance(body, int):
             idcode = body
         else:
