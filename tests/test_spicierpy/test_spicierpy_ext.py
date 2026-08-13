@@ -123,21 +123,23 @@ class ExtTestCase(unittest.TestCase):
         self.assertIn("Must specify `kernel` (str) or `all`=True.", raised.exception.args[0])
 
     def test_loaded_kernels_lists_pool(self):
-        # Robust to kernels other tests may have left furnished: assert on the delta.
-        baseline = len(ext.loaded_kernels())
+        # Robust to kernels other tests may have left furnished (or SPICE
+        # de-duplicating a re-furnish): assert on membership and on the pool's
+        # file set returning to the baseline, not on counts.
+        baseline_files = {rec.file for rec in ext.loaded_kernels()}
         with ext.load_kernel(self.kernels_all):
             records = ext.loaded_kernels()
-            self.assertEqual(baseline + len(self.kernels_all), len(records))
             listed_files = {rec.file for rec in records}
             for kernel_file in self.kernels_all:
                 self.assertIn(str(kernel_file), listed_files)
+            self.assertTrue(baseline_files.issubset(listed_files))
             for rec in records:
                 self.assertIsInstance(rec, ext.LoadedKernel)
                 self.assertIsInstance(rec.file, str)
                 self.assertIsInstance(rec.ktype, str)
                 self.assertIsInstance(rec.source, str)
                 self.assertIsInstance(rec.handle, int)
-        self.assertEqual(baseline, len(ext.loaded_kernels()))
+        self.assertEqual(baseline_files, {rec.file for rec in ext.loaded_kernels()})
 
     def test_loaded_kernels_kind_filter(self):
         with ext.load_kernel(self.kernels_all):
@@ -147,6 +149,7 @@ class ExtTestCase(unittest.TestCase):
             expected_spks = {str(fn) for fn in self.kernels["ephemeris"]}
             self.assertTrue(expected_spks.issubset({rec.file for rec in spk_records}))
             text_records = ext.loaded_kernels(kind="TEXT")
+            self.assertTrue(text_records)
             self.assertTrue(all(rec.ktype == "TEXT" for rec in text_records))
             self.assertTrue(all(rec.handle == 0 for rec in text_records))
 
