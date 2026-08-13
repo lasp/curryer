@@ -109,6 +109,23 @@ class DiscoveryTestCase(unittest.TestCase):
             discovery.naif_index_url(discovery.NAIF_LSK_REGEX, base_url="https://mirror.example.edu/naif/"),
         )
 
+    def test_alternate_base_url_without_trailing_slash(self):
+        # A slash-less base must not lose its last path component to urljoin.
+        self.assertEqual(
+            "https://mirror.example.edu/naif/lsk/",
+            discovery.naif_index_url(discovery.NAIF_LSK_REGEX, base_url="https://mirror.example.edu/naif"),
+        )
+        self.assertEqual(
+            "https://test.example.edu/kernels/",
+            discovery.naif_index_url(discovery.NAIF_LSK_REGEX, base_url="https://test.example.edu/kernels", flat=True),
+        )
+
+    def test_invalid_allowed_attempts_raises(self):
+        for attempts in (0, -1):
+            with self.assertRaises(ValueError) as context:
+                discovery.find_most_recent_naif_kernel(LSK_INDEX_URL, discovery.NAIF_LSK_REGEX, attempts)
+            self.assertIn("allowed_attempts", str(context.exception))
+
     def test_flat_base_url_skips_routing(self):
         self.assertEqual(
             "https://test.example.edu/kernels/",
