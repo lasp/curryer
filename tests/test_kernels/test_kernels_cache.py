@@ -98,6 +98,32 @@ class CacheTestCase(unittest.TestCase):
         self.assertEqual(self.cache_dir / "naif0012.tls", entry)
         self.assertEqual(b"S3 KERNEL DATA", entry.read_bytes())
 
+    def test_s3_stale_size_match_revalidates_without_download(self):
+        payload = b"S3 KERNEL DATA"
+        stubber = self._stubbed_s3(payload)
+        entry = cache.fetch(S3_URI, cache_dir=self.cache_dir)
+        _age_entry(entry, datetime.timedelta(days=2))
+
+        # Only a head_object is stubbed: a re-download (get_object) would
+        # error out against the stubber.
+        stubber.add_response(
+            "head_object",
+            {"ContentLength": len(payload)},
+            {"Bucket": "test-bucket", "Key": "kernels/naif0012.tls"},
+        )
+        again = cache.fetch(S3_URI, max_age=datetime.timedelta(days=1), cache_dir=self.cache_dir)
+
+        self.assertEqual(entry, again)
+        self.assertEqual(payload, again.read_bytes())
+        # The mtime refresh makes the entry warm again.
+        self.assertLess(time.time() - again.stat().st_mtime, 60)
+
+    def test_source_without_basename_raises(self):
+        for source in ("https://naif.example.gov/pub/naif/generic_kernels/lsk/", "s3://test-bucket/"):
+            with self.assertRaises(ValueError) as context:
+                cache.fetch(source, cache_dir=self.cache_dir)
+            self.assertIn("no file basename", str(context.exception))
+
     @responses.activate
     def test_warm_hit_no_network(self):
         # Nothing registered with responses: any network call errors out, and

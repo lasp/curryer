@@ -4,13 +4,15 @@ Resolves a kernel source — a local path, ``s3://`` URI, or ``http(s)://``
 URL — to a local file under a per-version user cache directory, usable
 standalone or through the kernel manager.
 
-Cache identity is **basename + file size**, bounded by a per-entry maximum
-age: an entry younger than ``max_age`` is reused without touching the
-network; an older entry is revalidated against the source's size (local
-``stat``, HTTP ``HEAD``, S3 ``head_object``) and re-downloaded only on a
-mismatch, since rolling NAIF kernels (e.g. ``earth_latest_high_prec.bpc``)
-update under a stable name. Writes are atomic (temp file + rename), so an
-interrupted download never leaves a partial entry. When the source is
+Cache entries are keyed by source **basename**: an entry younger than its
+``max_age`` is reused without touching the network, while an older entry is
+revalidated against the source's **file size** (local ``stat``, HTTP
+``HEAD``, S3 ``head_object``) and re-downloaded only on a mismatch, since
+rolling NAIF kernels (e.g. ``earth_latest_high_prec.bpc``) update under a
+stable name. Distinct sources that share a basename share one entry (the
+most recently fetched wins) — NAIF generic kernels version their filenames,
+which makes the basename a sufficient key. Writes are atomic (temp file +
+rename), so an interrupted download never leaves a partial entry. When the source is
 unreachable and a cached copy exists, the stale copy is used with a warning
 rather than raising — offline environments keep working on a warm cache.
 
@@ -120,6 +122,8 @@ def fetch(
 
     Raises
     ------
+    ValueError
+        If the source has no file basename (e.g. ends with ``/``).
     FileNotFoundError
         If a local source does not exist and there is no cached copy.
     requests.exceptions.RequestException
@@ -159,10 +163,21 @@ def fetch(
 
 
 def _basename(source: str) -> str:
-    """Base filename of a source path, URL, or S3 URI."""
+    """Base filename of a source path, URL, or S3 URI.
+
+    Raises
+    ------
+    ValueError
+        If the source has no file basename (e.g. ends with ``/``), which
+        would otherwise alias the cache directory itself.
+    """
     if source.startswith(("http://", "https://", "s3://")):
-        return os.path.basename(urlparse(source).path)
-    return Path(source).name
+        name = os.path.basename(urlparse(source).path)
+    else:
+        name = Path(source).name
+    if not name:
+        raise ValueError(f"Kernel source has no file basename: {source!r}")
+    return name
 
 
 def _source_size(source: str) -> int | None:
