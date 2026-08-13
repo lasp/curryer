@@ -38,6 +38,8 @@ import numpy as np
 from .. import spicierpy as sp
 from . import constants, leapsecond, native, utils
 
+_NUMPY_GE_2 = np.lib.NumpyVersion(np.__version__) >= "2.0.0"
+
 
 # TODO: Support format type of a SPICE clock obj (i.e., convert to/from sclk ticks).
 #   See methods `sce2c` and `sct2e`. Limited usage and requires kernels!
@@ -507,23 +509,18 @@ class SpiceTime(np.ndarray):
         # Set the `ttype`. Could be None if casting from a non-SpiceTime obj.
         self._ttype = getattr(obj, "ttype", None)
 
-    def __array_prepare__(self, out_arr, context=None):
-        """Numpy's way of supporting subclassing from ufuncs (e.g.,
-        `np.min(et_arr)`). Allows viewing (ONLY) the output data structure and
-        context (func & args) before the calculation.
-        """
-        # Prevent mixing with datetime64.
-        if out_arr.dtype.type == np.datetime64:
-            raise TypeError(
-                "Can not combine SpiceTime and numpy.datetime64 arrays. Datetime64 does not support leapseconds!"
-            )
-        return np.ndarray.__array_prepare__(self, out_arr, context)
-
-    def __array_wrap__(self, out_arr, context=None):
+    def __array_wrap__(self, out_arr, context=None, return_scalar=False):
         """Numpy's way of supporting subclassing from ufuncs (e.g.,
         `np.min(et_arr)`). Allows tweaking the output (`out_arr`), before final
         casting as `SpiceTime`.
         """
+        # Prevent mixing with datetime64. Numpy 2 removed `__array_prepare__`,
+        #   which used to raise this before the calculation, so it lives here.
+        if out_arr.dtype.type == np.datetime64:
+            raise TypeError(
+                "Can not combine SpiceTime and numpy.datetime64 arrays. Datetime64 does not support leapseconds!"
+            )
+
         # Cast timedelta output as the ttype's data type (e.g., int64 for ugps)
         #   but only if they use the same time units.
         if out_arr.dtype.type == np.timedelta64:
@@ -534,13 +531,19 @@ class SpiceTime(np.ndarray):
             search_units = re.search(r"\w+\[(\w{1,2})\]", out_arr.dtype.str)
             units = None if search_units is None else search_units.group(1)
 
-            if out_arr.ttype not in allowed_timedelta64_units.get(units, []):
-                raise TypeError(
-                    f"Cannot combine ttype {self.ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})"
-                )
-            out_arr = out_arr.astype(TTYPE_TO_DTYPE[out_arr.ttype])
+            # Numpy 2 passes the base-class array, so take the ttype from self.
+            ttype = getattr(out_arr, "ttype", None) or self.ttype
+            if ttype not in allowed_timedelta64_units.get(units, []):
+                raise TypeError(f"Cannot combine ttype {ttype!r} with timedelta units {units!r} ({out_arr.dtype.str})")
+            out_arr = out_arr.astype(TTYPE_TO_DTYPE[ttype])
 
-        return np.ndarray.__array_wrap__(self, out_arr, context)
+        if _NUMPY_GE_2:
+            result = np.ndarray.__array_wrap__(self, out_arr, context, return_scalar)
+        else:
+            result = np.ndarray.__array_wrap__(self, out_arr, context)
+        if isinstance(result, SpiceTime) and result.ttype is None:
+            result._ttype = self.ttype
+        return result
 
     def __repr__(self):
         """String representation of the array with the time format `ttype`."""

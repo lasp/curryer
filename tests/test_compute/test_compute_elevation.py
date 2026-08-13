@@ -419,11 +419,11 @@ class ElevationTestCase(unittest.TestCase):
         yy = np.tile(y, (x.size, 1)).T
 
         _, _, wgs84_z = transformer.transform(xx[idx], yy[idx], usgs_hts[idx])
-        wgs84_hts = np.full(usgs_hts.shape, np.NaN, dtype=np.float64)  # Source is int16!!!
+        wgs84_hts = np.full(usgs_hts.shape, np.nan, dtype=np.float64)  # Source is int16!!!
         wgs84_hts[idx] = wgs84_z
 
         _, _, geoid_z = transformer.transform(xx[idx], yy[idx], np.zeros(xx[idx].size))
-        geoid_hts = np.full(usgs_hts.shape, np.NaN, dtype=np.float64)  # Source is int16!!!
+        geoid_hts = np.full(usgs_hts.shape, np.nan, dtype=np.float64)  # Source is int16!!!
         geoid_hts[idx] = geoid_z
 
         # Geoid has some differences (more tolerant due to potential format conversion).

@@ -1,5 +1,50 @@
 # Changelog
 
+## Version 0.5.0 (2026-07)
+
+Expands `curryer.compute.geometry` from 6 to 24 computable fields and adds NumPy 2 support.
+
+### Highlights
+
+- **18 new geometry fields** on `GeometryData`, all routed through the existing
+  selective-compute registry so a request costs only the SPICE providers it actually needs:
+  - _Boresight and surface_ – `boresight`, `surface_colatitude`.
+  - _Surface angles_ – `viewing_zenith`, `solar_zenith`, `viewing_azimuth`, `solar_azimuth`,
+    `relative_azimuth`, `cone_angle`, `cone_angle_rate`. These are pure math over the boresight
+    ellipsoid intersection and providers already in hand, so they add no new SPICE queries.
+  - _State and attitude_ – `sc_velocity`, `satellite_attitude`.
+  - _Inertial and orbital frame_ – `sc_position_inertial`, `sc_velocity_inertial`,
+    `boresight_inertial`, `clock_angle`, `clock_angle_rate`, `along_track_angle`,
+    `cross_track_angle`. The inertial fields are a second ephemeris read (a different reference
+    frame), so they stay opt-in rather than joining the default field set.
+- **New `curryer.compute.geometry_fields` module** exposing the `GeometryField` enum, so
+  downstream consumers can import field identifiers without pulling in the broader constants
+  module. `GeometryField` subclasses `str`, so members and plain strings
+  (`GeometryField.SUBSATELLITE` vs `"subsatellite"`) remain interchangeable as field selectors
+  and column keys. It is re-exported from `curryer.compute.constants` for backward compatibility.
+- **Angle conventions documented once, in the module** – azimuths clockwise from geodetic North
+  in `[0,360)`, zeniths geodetic from the surface normal, degrees. `relative_azimuth` uses the
+  CERES BDS R3V4 origin (Sun at 180) and is kept in its lossless unfolded form; the `[0,180]`
+  fold is a deliberate downstream step.
+- **NumPy 2 support** – the `numpy` constraint widens to `>=1.23,<3`. `SpiceTime` now implements
+  `__array_wrap__` with the NumPy 2 signature (NumPy 1 remains supported); `__array_prepare__`,
+  removed in NumPy 2, is gone. Ruff's `NPY201` rule is enabled to catch removed APIs.
+- **SpiceyPy unpinned on Python 3.11+** – SpiceyPy 8.1.0–8.1.2 ship a broken `__all__` that
+  breaks wildcard imports; `curryer.spicierpy` now detects and works around it rather than
+  capping the version (issue #147). Python 3.10 stays capped at `<8.1`, since SpiceyPy 8.1+
+  publishes no cp310 wheels.
+- **New SPICE error-classification helpers** in `curryer.spicierpy.ext`: `SpiceErrorInfo`,
+  `classify_spice_error`, and `spice_error_message`.
+- **Release and repository documentation** – new `repo_management.md` covering the release
+  process, test workflows, dependency management, and linting/coverage tooling.
+
+### Notes
+
+- No breaking changes. `GeometryData.__init__` gains `inertial_frame` and `attitude_frame`
+  keyword arguments, both appended with defaults.
+
+---
+
 ## Version 0.4.0 (2026-06)
 
 Major redesign of the `curryer.correction` package with a new modular architecture, Pydantic-based configuration, standalone verification workflows, GCP regridding support, and expanded documentation and examples.

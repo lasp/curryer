@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from curryer import meta, utils
+from spiceypy.utils.exceptions import SpiceyError
+
+from curryer import meta, spicierpy, utils
 from curryer.spicierpy import ext, obj
 
 logger = logging.getLogger(__name__)
@@ -282,6 +284,51 @@ class ExtTestCase(unittest.TestCase):
         with ext.load_kernel([self.kernels["frame"], self.kernels["instrument"]]):
             arr = ext.instrument_boresight("tsis_tim_glint")
             self.assertListEqual([0.0, 0.0, 1.0], list(arr))
+
+
+class _StubSpiceError:
+    """Duck-typed stand-in for a SpiceyError: only the attributes the classifier reads."""
+
+    def __init__(self, short, long="", traceback=""):
+        self.short = short
+        self.long = long
+        self.traceback = traceback
+
+
+class SpiceErrorClassifierTestCase(unittest.TestCase):
+    def test_classify_real_bad_time(self):
+        # str2et parses the string before touching kernels, so a garbage time raises a real
+        # SpiceUNPARSEDTIME without any furnished kernels.
+        with self.assertRaises(SpiceyError) as ctx:
+            spicierpy.str2et("not-a-real-time-@@")
+        info = ext.classify_spice_error(ctx.exception)
+        self.assertEqual(ext.SPICE_ERROR_BAD_TIME, info.category)
+        self.assertIn("UNPARSEDTIME", info.short)
+        self.assertTrue(info.routine)
+
+    def test_classify_categories_by_short(self):
+        cases = {
+            "SPICE(NOFRAMECONNECT)": ext.SPICE_ERROR_COVERAGE,
+            "SPICE(SPKINSUFFDATA)": ext.SPICE_ERROR_COVERAGE,
+            "SPICE(KERNELVARNOTFOUND)": ext.SPICE_ERROR_MISSING_KERNEL,
+            "SPICE(NOLOADEDFILES)": ext.SPICE_ERROR_MISSING_KERNEL,
+            "SPICE(UNPARSEDTIME)": ext.SPICE_ERROR_BAD_TIME,
+            "SPICE(SOMETHINGELSE)": ext.SPICE_ERROR_OTHER,
+        }
+        for short, expected in cases.items():
+            self.assertEqual(expected, ext.classify_spice_error(_StubSpiceError(short)).category)
+
+    def test_classify_missing_short_is_unknown(self):
+        info = ext.classify_spice_error(_StubSpiceError(""))
+        self.assertEqual(ext.SPICE_ERROR_OTHER, info.category)
+        self.assertEqual("SPICE(UNKNOWN)", info.short)
+
+    def test_error_message_includes_cause_short_and_routine(self):
+        err = _StubSpiceError("SPICE(NOFRAMECONNECT)", traceback="pxform_c --> PXFORM")
+        msg = ext.spice_error_message(err)
+        self.assertIn("outside the coverage", msg)
+        self.assertIn("SPICE(NOFRAMECONNECT)", msg)
+        self.assertIn("pxform_c --> PXFORM", msg)
 
 
 if __name__ == "__main__":

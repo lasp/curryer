@@ -809,3 +809,9 @@ global attributes:
 - **HDF format:** `load_gcp_chip_from_hdf` tries HDF4 (`pyhdf`) first, then falls back to HDF5 (`h5py`).
 - **Memory:** a 1400 × 1400 Landsat chip uses ~30 MB RAM; 100 chips processed sequentially stay well within a 4 GB budget.
 - **Performance:** each chip typically takes 3–6 seconds on a single CPU core.
+
+```{toctree}
+:maxdepth: 1
+
+gcp_regridding.md
+```

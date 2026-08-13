@@ -13,10 +13,11 @@ from unittest.mock import patch
 
 import numpy as np
 import numpy.testing as npt
+import pandas as pd
 import pytest
 
 from curryer import meta, spicetime, spicierpy, utils
-from curryer.compute import constants, geometry
+from curryer.compute import constants, geometry, spatial
 
 logger = logging.getLogger(__name__)
 utils.enable_logging(extra_loggers=[__name__])
@@ -88,6 +89,18 @@ def _fake_providers(call_counter, **values):
     return {key: _make(key, value) for key, value in values.items()}
 
 
+def _state(position, velocity=None):
+    """(N, 6) Earth-fixed state fake built from an (N, 3) position.
+
+    Velocity defaults to zero on finite rows and NaN on gap rows, mirroring the real
+    ``sc_state`` provider: one ephemeris read, and a coverage gap NaNs the whole row.
+    """
+    position = np.asarray(position, dtype=float)
+    if velocity is None:
+        velocity = np.where(np.isfinite(position), 0.0, np.nan)
+    return np.concatenate([position, np.asarray(velocity, dtype=float)], axis=1)
+
+
 class TestGeometryOrchestration:
     """``GeometryData`` field selection, minimal querying, and assembly."""
 
@@ -101,21 +114,21 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         geo = self._build()
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos))):
             df = geo.get_geometry(self.UGPS, fields=["sc_radius"])
 
         assert list(df.columns) == ["spacecraft_radius"]
         npt.assert_allclose(df["spacecraft_radius"].values, [7000.0, 7000.0])
         assert df.index.name == "ugps"
-        # Only sc_position was queried; sun_position untouched.
-        assert counter == {"sc_position": 1}
+        # Only the shared Earth-fixed state was queried; sun_position untouched.
+        assert counter == {"sc_state": 1}
 
     def test_get_geometry_multiple_fields_union_of_providers(self):
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
         geo = self._build()
-        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        fakes = _fake_providers(counter, sc_state=_state(sc_pos), sun_position=sun_pos)
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=["sc_position", "subsolar"])
 
@@ -131,13 +144,13 @@ class TestGeometryOrchestration:
             df[["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values, sc_pos
         )
         # Each needed provider queried once.
-        assert counter == {"sc_position": 1, "sun_position": 1}
+        assert counter == {"sc_state": 1, "sun_position": 1}
 
     def test_get_vectors_returns_n3_arrays(self):
         counter = {}
         sc_pos = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         geo = self._build()
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos))):
             vecs = geo.get_vectors(self.UGPS, fields=["sc_position"])
 
         assert vecs["sc_position"].shape == (2, 3)
@@ -147,9 +160,25 @@ class TestGeometryOrchestration:
         """Fakes for every registered provider, sized to UGPS (N=2)."""
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [1.5e8, 1.0e6, 0.0]])
-        return _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        # Boresights point back toward Earth center so the footprint ray-cast hits.
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sc_vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
+        attitude = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+        sc_state_inert = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [0.0, 7000.0, 0.0, -7.5, 0.0, 0.0]])
+        return _fake_providers(
+            counter,
+            sc_state=_state(sc_pos, sc_vel),
+            sun_position=sun_pos,
+            boresight=boresight,
+            attitude_quaternion=attitude,
+            sc_state_inertial=sc_state_inert,
+            boresight_inertial=boresight,
+        )
 
     def test_default_fields_are_ephemeris_only(self):
+        # fields=None defaults to the ephemeris-only set (valid for any observer);
+        # attitude/instrument fields are opt-in, not in the default output, and
+        # the attitude provider is never queried by default.
         counter = {}
         geo = self._build()
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
@@ -158,10 +187,19 @@ class TestGeometryOrchestration:
         # Default is exactly the ephemeris-only field set...
         expected = [col for field in geometry._DEFAULT_FIELDS for col in geometry._FIELDS[field].columns]
         assert list(df.columns) == expected
-        # ...and that set needs only ephemeris providers (no attitude/FOV), so the
-        # default never implicitly requires attitude kernels as fields are added.
+        # ...needing only ephemeris providers (no attitude/FOV), so the default
+        # never implicitly requires attitude kernels as fields are added.
         for field in geometry._DEFAULT_FIELDS:
             assert geometry._FIELDS[field].providers <= geometry._EPHEMERIS_PROVIDERS
+        # Attitude fields exist in the registry but are excluded from the default,
+        # and their providers are never queried.
+        attitude_fields = [f for f in geometry._FIELDS if f not in geometry._DEFAULT_FIELDS]
+        assert attitude_fields  # guard: meaningful only with some attitude fields
+        for field in attitude_fields:
+            for column in geometry._FIELDS[field].columns:
+                assert column not in df.columns
+        attitude_providers = set(geometry._PROVIDERS) - geometry._EPHEMERIS_PROVIDERS
+        assert attitude_providers.isdisjoint(counter)
 
     def test_subset_queries_only_needed_providers(self):
         counter = {}
@@ -169,7 +207,7 @@ class TestGeometryOrchestration:
         with patch.dict(geometry._PROVIDERS, self._full_fakes(counter)):
             geo.get_geometry(self.UGPS, fields=["subsatellite", "earth_sun_distance"])
         # subsatellite -> sc_position, earth_sun_distance -> sun_position only.
-        assert counter == {"sc_position": 1, "sun_position": 1}
+        assert counter == {"sc_state": 1, "sun_position": 1}
 
     def test_sc_altitude_field(self):
         counter = {}
@@ -181,11 +219,11 @@ class TestGeometryOrchestration:
             ]
         )
         geo = self._build()
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos))):
             df = geo.get_geometry(self.UGPS, fields=["sc_altitude"])
         assert list(df.columns) == ["spacecraft_altitude"]
         npt.assert_allclose(df["spacecraft_altitude"].values, [500.0, 800.0], atol=1e-6)
-        assert counter == {"sc_position": 1}
+        assert counter == {"sc_state": 1}
 
     def test_unknown_field_raises(self):
         geo = self._build()
@@ -198,10 +236,10 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
         geo = self._build()
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos))):
             df = geo.get_geometry(self.UGPS, fields=["sc_radius", "subsatellite", "sc_position"])
 
-        assert counter == {"sc_position": 1}
+        assert counter == {"sc_state": 1}
         assert "spacecraft_radius" in df.columns
         assert "subsatellite_latitude" in df.columns
         assert "spacecraft_position_x" in df.columns
@@ -212,7 +250,7 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         geo = self._build()
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_position=sc_pos)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos))):
             df = geo.get_geometry(self.UGPS, fields=["sc_radius", "subsatellite"])
         assert np.isfinite(df.iloc[0]).all()
         assert df.iloc[1].isna().all()
@@ -223,21 +261,24 @@ class TestGeometryOrchestration:
         geo = self._build()
 
         partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
-        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=partial)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(partial))):
             with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
                 geo.get_geometry(self.UGPS, fields=["sc_radius"])
         assert not [r for r in caplog.records if "all-NaN" in r.getMessage()]
 
         caplog.clear()
         empty = np.full((2, 3), np.nan)
-        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_position=empty)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(empty))):
             with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
                 geo.get_geometry(self.UGPS, fields=["sc_radius"])
         warnings = [r.getMessage() for r in caplog.records if "all-NaN" in r.getMessage()]
         assert warnings
-        assert "sc_position" in warnings[0]
+        assert "sc_state" in warnings[0]
 
-    @pytest.mark.parametrize("field", list(geometry._FIELDS))
+    # Rate fields are non-local finite differences -- a missing row NaNs its neighbours
+    # too -- so they don't obey the per-sample fill contract; their NaN behaviour has its
+    # own tests.
+    @pytest.mark.parametrize("field", [f for f in geometry._FIELDS if not str(f).endswith("_rate")])
     def test_nan_propagates_per_field(self, field):
         # Fill contract: every field must NaN exactly the rows its inputs are
         # missing and stay finite elsewhere, whichever provider feeds it. Both
@@ -245,14 +286,404 @@ class TestGeometryOrchestration:
         counter = {}
         sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
         sun_pos = np.array([[1.5e8, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        sc_vel = np.array([[1.0, 2.0, 3.0], [np.nan, np.nan, np.nan]])
+        attitude = np.array([[1.0, 0.0, 0.0, 0.0], [np.nan, np.nan, np.nan, np.nan]])
+        sc_state_inert = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [np.nan] * 6])
         geo = self._build()
-        fakes = _fake_providers(counter, sc_position=sc_pos, sun_position=sun_pos)
+        fakes = _fake_providers(
+            counter,
+            sc_state=_state(sc_pos, sc_vel),
+            sun_position=sun_pos,
+            boresight=boresight,
+            attitude_quaternion=attitude,
+            sc_state_inertial=sc_state_inert,
+            boresight_inertial=boresight,
+        )
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
 
         columns = list(geometry._FIELDS[field].columns)
         assert np.isfinite(df.iloc[0][columns]).all()
         assert df.iloc[1][columns].isna().all()
+
+    def test_all_nan_provider_logs_warning(self, caplog):
+        # All-NaN from a provider (e.g. unfurnished kernels) is flagged with a
+        # warning, distinguishing misconfiguration from a genuine per-sample gap.
+        geo = self._build()
+        all_nan = np.full((2, 3), np.nan)
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(all_nan))):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_position"])
+        assert "all-NaN" in caplog.text
+
+    def test_partial_nan_provider_does_not_warn(self, caplog):
+        # A genuine per-sample gap (some finite rows) must not trip the
+        # misconfiguration warning.
+        geo = self._build()
+        partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(partial))):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                geo.get_geometry(self.UGPS, fields=["sc_position"])
+        assert "all-NaN" not in caplog.text
+
+    def test_boresight_and_surface_colatitude(self):
+        # boresight is a passthrough of its provider; surface_colatitude is the
+        # colatitude (90 - lat) of where the boresight, cast from the S/C
+        # position, meets the ellipsoid. Both rows are equatorial intercepts
+        # (lat 0 -> colat 90); the differing longitudes guard against the field
+        # reading the longitude column instead of latitude.
+        counter = {}
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers(counter, boresight=boresight, sc_state=_state(sc_pos))
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["boresight", "surface_colatitude"])
+
+        npt.assert_allclose(df[["boresight_x", "boresight_y", "boresight_z"]].values, boresight)
+        npt.assert_allclose(df["surface_colatitude"].values, [90.0, 90.0], atol=1e-9)
+        assert counter == {"boresight": 1, "sc_state": 1}
+
+    def test_surface_angles_physical_nadir(self):
+        # Boresight cast straight down from an equatorial sub-satellite point: the
+        # satellite sits at the footprint's local zenith, so the viewing zenith is
+        # ~0. The Sun on +Y is on the local horizon of the +X footprint (zenith ~90,
+        # with a slight excess from finite-Sun parallax as the footprint is offset
+        # from the geocenter) and at the local zenith of the +Y footprint (zenith 0).
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        sun_pos = np.array([[0.0, 1.5e8, 0.0], [0.0, 1.5e8, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_state=_state(sc_pos), sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["viewing_zenith", "solar_zenith"])
+
+        npt.assert_allclose(df["viewing_zenith"].values, [0.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["solar_zenith"].values, [90.0, 0.0], atol=0.05)
+
+    def test_surface_angles_compose_spatial_leaves(self):
+        # The fields must wire the documented spatial leaves over the boresight
+        # ellipsoid intersection. An off-nadir boresight makes the azimuths
+        # non-degenerate; the registry output must equal a direct leaf composition,
+        # and each provider is queried once across the fields.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_state=_state(sc_pos), sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        intersection = spatial.ray_intersect_ellipsoid(boresight, sc_pos)
+        exp_vaz = spatial.calc_azimuth(intersection, sc_pos, degrees=True)
+        exp_saz = spatial.calc_azimuth(intersection, sun_pos, degrees=True)
+        npt.assert_allclose(df["viewing_zenith"].values, spatial.calc_zenith(intersection, sc_pos, degrees=True))
+        npt.assert_allclose(df["solar_zenith"].values, spatial.calc_zenith(intersection, sun_pos, degrees=True))
+        npt.assert_allclose(df["viewing_azimuth"].values, exp_vaz)
+        npt.assert_allclose(df["solar_azimuth"].values, exp_saz)
+        npt.assert_allclose(df["relative_azimuth"].values, np.mod(exp_vaz - exp_saz + 180.0, 360.0))
+        assert counter == {"boresight": 1, "sc_state": 1, "sun_position": 1}
+
+    def test_boresight_intersection_memoized_across_surface_angle_fields(self):
+        # Every intersection-using surface-angle field shares the boresight
+        # intersection; the memo on the per-request providers dict casts the ray
+        # once, not once per field.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7200.0, 0.0]])
+        sun_pos = np.array([[1.0e8, 1.0e8, 5.0e7], [-1.2e8, 0.4e8, 2.0e7]])
+        boresight = np.array([[-0.9, 0.3, 0.3], [0.2, -0.9, 0.3]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_state=_state(sc_pos), sun_position=sun_pos, boresight=boresight)
+        fields = ["viewing_zenith", "solar_zenith", "viewing_azimuth", "solar_azimuth", "relative_azimuth"]
+        with (
+            patch.dict(geometry._PROVIDERS, fakes),
+            patch.object(geometry.spatial, "ray_intersect_ellipsoid", wraps=spatial.ray_intersect_ellipsoid) as m_ray,
+        ):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+
+        assert m_ray.call_count == 1
+        assert np.isfinite(df.values).all()
+
+    def test_relative_azimuth_is_lossless_not_folded(self):
+        # relative_azimuth keeps the full [0, 360) range; a [0, 180] fold (e.g.
+        # CERES) is the caller's to apply. Mirroring the Sun across the footprint's
+        # principal plane (sign-flipped East component) maps the relative azimuth to
+        # 360 - raa: a folded field would collapse the pair to one value, and one of
+        # the pair lands above 180 -- impossible under a fold.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        boresight = np.array([[-0.95, 0.0, 0.31], [-0.95, 0.0, 0.31]])
+        boresight /= np.linalg.norm(boresight, axis=1)[:, None]
+        sun_pos = np.array([[1.0e8, 1.0e8, 8.0e7], [1.0e8, -1.0e8, 8.0e7]])
+        geo = self._build()
+        fakes = _fake_providers(counter, sc_state=_state(sc_pos), sun_position=sun_pos, boresight=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["relative_azimuth"])
+
+        relaz = df["relative_azimuth"].values
+        assert ((relaz >= 0.0) & (relaz < 360.0)).all()
+        # The mirrored pair sums to 360 (distinct values), one above 180 -- a fold
+        # to [0, 180] could produce neither.
+        npt.assert_allclose(relaz[0] + relaz[1], 360.0, atol=1e-6)
+        assert relaz.max() > 180.0
+
+    def test_cone_angle_nadir_and_off_nadir(self):
+        # Cone angle is the boresight's angle off the satellite-to-geocenter
+        # direction: 0 looking straight down, 30 for a 30-deg tilt.
+        counter = {}
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [7000.0, 0.0, 0.0]])
+        nadir = np.array([-1.0, 0.0, 0.0])
+        tilt = np.array([-np.cos(np.radians(30.0)), 0.0, np.sin(np.radians(30.0))])
+        boresight = np.array([nadir, tilt])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(sc_pos), boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle"])
+        npt.assert_allclose(df["cone_angle"].values, [0.0, 30.0], atol=1e-6)
+
+    def test_cone_angle_rate_linear_sweep_and_sign(self):
+        # A boresight tilting off nadir at a constant angular rate makes cone_angle a
+        # linear ramp in time, so its finite-difference rate is the constant slope
+        # (30 deg over 1 s = 30 deg/s). Reversing the sweep flips the sign -- the sign
+        # is the direction of change, which is what downstream consumers key on.
+        ugps = np.array([1_000_000, 2_000_000, 3_000_000])  # 1 s spacing
+        sc_pos = np.tile([7000.0, 0.0, 0.0], (3, 1))
+        angles = np.radians([0.0, 30.0, 60.0])
+        boresight = np.stack([-np.cos(angles), np.zeros(3), np.sin(angles)], axis=1)
+        geo = self._build()
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(sc_pos), boresight=boresight)):
+            fwd = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(fwd["cone_angle_rate"].values, [30.0, 30.0, 30.0], atol=1e-6)
+
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(sc_pos), boresight=boresight[::-1])):
+            rev = geo.get_geometry(ugps, fields=["cone_angle_rate"])
+        npt.assert_allclose(rev["cone_angle_rate"].values, [-30.0, -30.0, -30.0], atol=1e-6)
+
+    def test_cone_angle_rate_single_sample_is_nan(self):
+        # A rate needs at least two samples; a single-time request yields NaN rather
+        # than raising from np.gradient.
+        sc_pos = np.array([[7000.0, 0.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(sc_pos), boresight=boresight)):
+            df = geo.get_geometry(np.array([1_000_000]), fields=["cone_angle_rate"])
+        assert np.isnan(df["cone_angle_rate"].values).all()
+
+    def test_cone_angle_rate_nan_gap_is_nonlocal(self):
+        # A rate is a finite difference, so a missing row NaNs its neighbours too, not
+        # just itself: with two samples and a gap in the second, neither rate can form.
+        # This non-locality is why cone_angle_rate is excluded from the per-sample fill
+        # contract test.
+        sc_pos = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(sc_pos), boresight=boresight)):
+            df = geo.get_geometry(self.UGPS, fields=["cone_angle_rate"])
+        assert df["cone_angle_rate"].isna().all()
+
+    def test_sc_velocity_field(self):
+        # Velocity is a passthrough of its own ECEF provider, queried once and not shared
+        # with the position query.
+        counter = {}
+        vel = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(np.zeros_like(vel), vel))):
+            df = geo.get_geometry(self.UGPS, fields=["sc_velocity"])
+        assert list(df.columns) == ["spacecraft_velocity_x", "spacecraft_velocity_y", "spacecraft_velocity_z"]
+        npt.assert_allclose(df.values, vel)
+        assert counter == {"sc_state": 1}
+
+    def test_satellite_attitude_field(self):
+        # Attitude is a passthrough of the body-to-inertial quaternion provider (q0..q3).
+        counter = {}
+        quat = np.array([[1.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, attitude_quaternion=quat)):
+            df = geo.get_geometry(self.UGPS, fields=["satellite_attitude"])
+        assert list(df.columns) == ["attitude_q0", "attitude_q1", "attitude_q2", "attitude_q3"]
+        npt.assert_allclose(df.values, quat)
+        assert counter == {"attitude_quaternion": 1}
+
+    def test_position_and_velocity_share_one_ephemeris_read(self):
+        # The Earth-fixed position and velocity are halves of one state provider, so asking
+        # for both must not read the same SPK segment twice.
+        counter = {}
+        pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, sc_state=_state(pos, vel))):
+            df = geo.get_geometry(self.UGPS, fields=["sc_position", "sc_velocity"])
+
+        assert counter == {"sc_state": 1}
+        npt.assert_allclose(df[["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values, pos)
+        npt.assert_allclose(df[["spacecraft_velocity_x", "spacecraft_velocity_y", "spacecraft_velocity_z"]].values, vel)
+
+    def test_inertial_state_and_boresight_fields(self):
+        # The inertial state vectors are slices of the same inertial ephemeris read the
+        # orbital-frame fields already make -- one query each, no duplicate pass.
+        counter = {}
+        pos = np.array([[7000.0, 0.0, 0.0], [0.0, 7000.0, 0.0]])
+        vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers(
+            counter, sc_state_inertial=np.concatenate([pos, vel], axis=1), boresight_inertial=boresight
+        )
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(
+                self.UGPS,
+                fields=["sc_position_inertial", "sc_velocity_inertial", "boresight_inertial", "clock_angle"],
+            )
+
+        npt.assert_allclose(df[[f"spacecraft_position_inertial_{a}" for a in "xyz"]].values, pos)
+        npt.assert_allclose(df[[f"spacecraft_velocity_inertial_{a}" for a in "xyz"]].values, vel)
+        npt.assert_allclose(df[[f"boresight_inertial_{a}" for a in "xyz"]].values, boresight)
+        assert counter == {"sc_state_inertial": 1, "boresight_inertial": 1}
+
+    @pytest.mark.parametrize(
+        "degenerate",
+        [
+            [np.nan] * 6,  # missing inertial state
+            [0.0, 0.0, 0.0, 0.0, 7.5, 0.0],  # r = 0
+            [7000.0, 0.0, 0.0, -1.0, 0.0, 0.0],  # velocity parallel to nadir
+            [7000.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # zero velocity
+        ],
+    )
+    def test_orbital_frame_degenerate_rows_are_nan_not_inf(self, degenerate, recwarn):
+        # A zero norm implies a zero numerator, so a degenerate row normalizes to NaN -- the
+        # fill contract -- never inf, and the errstate guard keeps numpy from warning per gap.
+        sc_state_inert = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], degenerate])
+        boresight = np.array([[-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=sc_state_inert, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["clock_angle", "along_track_angle", "cross_track_angle"])
+
+        values = df.values
+        assert not np.isinf(values).any()
+        assert np.isfinite(values[0]).all()  # the well-posed row is unaffected
+        assert np.isnan(values[1]).all()  # the degenerate row NaNs, per the fill contract
+        assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+    def test_attitude_frame_defaults_to_inertial_and_is_overridable(self):
+        # The attitude target is its own knob: a product may want an Earth-fixed attitude
+        # quaternion alongside inertial state vectors.
+        assert geometry.GeometryData("X").attitude_frame == "J2000"
+        assert geometry.GeometryData("X", inertial_frame="ECLIPJ2000").attitude_frame == "ECLIPJ2000"
+        assert geometry.GeometryData("X", attitude_frame="ITRF93").attitude_frame == "ITRF93"
+        assert geometry.GeometryData("X", attitude_frame="ITRF93").inertial_frame == "J2000"
+
+    def test_clock_along_cross_track_geometry(self):
+        # Orbit: position +X, inertial velocity +Y (prograde). Orbital frame is x=+Y
+        # (velocity), z=-X (nadir), y=z x x=-Z. A boresight 30 deg off nadir toward the
+        # velocity is pure along-track (clock 0, ahead); toward +y is pure cross-track
+        # (clock 90 -- the side opposite the orbital angular momentum, per SCI-12).
+        c30, s30 = np.cos(np.radians(30.0)), np.sin(np.radians(30.0))
+        state = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [7000.0, 0.0, 0.0, 0.0, 7.5, 0.0]])
+        nadir, xdir, ydir = np.array([-1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0])
+        boresight = np.array([c30 * nadir + s30 * xdir, c30 * nadir + s30 * ydir])
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=["clock_angle", "along_track_angle", "cross_track_angle"])
+        npt.assert_allclose(df["along_track_angle"].values, [30.0, 0.0], atol=1e-6)
+        npt.assert_allclose(df["cross_track_angle"].values, [0.0, 30.0], atol=1e-6)
+        npt.assert_allclose(df["clock_angle"].values, [0.0, 90.0], atol=1e-6)
+
+    def test_clock_angle_rate_unwraps_across_360(self):
+        # A boresight sweeping in azimuth so the clock angle crosses the 360->0 wrap: the
+        # unwrapped finite difference stays a smooth +8 deg/s, where a raw diff would spike.
+        ugps = np.array([1_000_000, 2_000_000, 3_000_000])  # 1 s spacing
+        state = np.tile([7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], (3, 1))
+        tilt = np.radians(20.0)
+        xdir, ydir, zdir = np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0]), np.array([-1.0, 0.0, 0.0])
+        betas = np.radians([350.0, 358.0, 6.0])
+        boresight = np.array(
+            [np.cos(tilt) * zdir + np.sin(tilt) * (np.cos(b) * xdir + np.sin(b) * ydir) for b in betas]
+        )
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(ugps, fields=["clock_angle", "clock_angle_rate"])
+        npt.assert_allclose(df["clock_angle"].values, [350.0, 358.0, 6.0], atol=1e-6)
+        npt.assert_allclose(df["clock_angle_rate"].values, [8.0, 8.0, 8.0], atol=1e-6)
+
+    def test_clock_angle_rate_gap_does_not_poison_later_samples(self):
+        # np.unwrap is not NaN-safe: its cumulative correction would propagate one missing
+        # sample through every later one. A coverage gap must NaN only the samples whose
+        # finite-difference stencil touches it, exactly like cone_angle_rate.
+        ugps = 1_000_000 + np.arange(6) * 1_000_000  # 6 samples, 1 s spacing
+        state = np.tile([7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], (6, 1))
+        tilt = np.radians(20.0)
+        xdir, ydir, zdir = np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, -1.0]), np.array([-1.0, 0.0, 0.0])
+        betas = np.radians([10.0, 18.0, 26.0, 34.0, 42.0, 50.0])  # a steady +8 deg/s sweep
+        boresight = np.array(
+            [np.cos(tilt) * zdir + np.sin(tilt) * (np.cos(b) * xdir + np.sin(b) * ydir) for b in betas]
+        )
+        boresight[2] = np.nan  # attitude gap
+        geo = self._build()
+        fakes = _fake_providers({}, sc_state_inertial=state, boresight_inertial=boresight)
+        with patch.dict(geometry._PROVIDERS, fakes):
+            rate = geo.get_geometry(ugps, fields=["clock_angle_rate"])["clock_angle_rate"].to_numpy()
+
+        # Only the stencils touching the gap are NaN; the tail is untouched (pre-fix: all NaN).
+        assert np.isnan(rate[[1, 3]]).all()
+        assert np.isfinite(rate[[0, 4, 5]]).all()
+        npt.assert_allclose(rate[[0, 4, 5]], 8.0, atol=1e-6)
+
+    def test_boresight_provider_is_pure_attitude_transform(self):
+        # The boresight provider resolves the IK boresight and rotates it into ECEF via
+        # frame_to_frame_rotation -- no ephemeris query -- so it never duplicates the
+        # sc_position pass and a position gap cannot null an otherwise-available attitude.
+        ctx = geometry.GeometryData("INST")
+        ik = np.array([0.0, 0.0, 1.0])
+        rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])  # +90 deg about Z
+        with (
+            patch.object(geometry.spicierpy.obj, "Body") as m_body,
+            patch.object(geometry.spicierpy.obj, "Frame") as m_frame,
+            patch.object(geometry.spicierpy.ext, "instrument_boresight", return_value=ik) as m_bore,
+            patch.object(geometry.spatial, "frame_to_frame_rotation", return_value=np.array([rot, rot])) as m_rot,
+            patch.object(geometry.spicierpy, "spkezr", side_effect=AssertionError("queried ephemeris")),
+        ):
+            m_body.return_value.frame.name = "INST_FRAME"
+            m_frame.return_value.name = "ITRF93"
+            out = geometry._provider_boresight(self.UGPS, ctx)
+
+        # Each row is the per-sample rotation applied to the IK boresight.
+        npt.assert_allclose(out, np.array([rot @ ik, rot @ ik]))
+        m_bore.assert_called_once_with("INST", norm=True)
+        m_rot.assert_called_once()
+        assert m_rot.call_args.args[:2] == ("INST_FRAME", "ITRF93")
+        assert m_rot.call_args.kwargs == {"allow_nans": ctx.allow_nans}
+
+    def test_boresight_provider_nan_fills_missing_fov(self, caplog):
+        # A body with no defined FOV makes instrument_boresight raise during the
+        # one-time pointing lookup. Under allow_nans the provider NaN-fills (fill
+        # contract) and surfaces the swallowed SPICE error as a warning; without
+        # allow_nans the error propagates.
+        geo = geometry.GeometryData("SPACECRAFT")  # no instrument FOV/IK
+        boom = geometry.spicierpy.SpiceyError("SPICE(NOFRAMECONNECT)")
+        with (
+            patch.object(geometry.spicierpy.obj, "Body"),
+            patch.object(geometry.spicierpy.obj, "Frame"),
+            patch.object(geometry.spicierpy.ext, "instrument_boresight", side_effect=boom),
+        ):
+            with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
+                out = geometry._provider_boresight(self.UGPS, geo)
+            assert out.shape == (2, 3)
+            assert np.isnan(out).all()
+            assert "Boresight unavailable" in caplog.text
+            assert "NOFRAMECONNECT" in caplog.text
+
+            geo.allow_nans = False
+            with pytest.raises(geometry.spicierpy.SpiceyError):
+                geometry._provider_boresight(self.UGPS, geo)
 
 
 class GeometryIntegrationTestCase(unittest.TestCase):
@@ -280,21 +711,76 @@ class GeometryIntegrationTestCase(unittest.TestCase):
 
     def test_get_geometry_all_fields_real_kernels(self):
         geo = geometry.GeometryData(self.instrument)
+        # Request every field explicitly: the attitude fields are opt-in (the
+        # default set is ephemeris-only), and CPRS_HYSICS has an instrument FOV.
+        all_fields = geometry.GeometryData.available_fields()
         with self.mkrn.load():
-            df = geo.get_geometry(self.ugps)
+            df = geo.get_geometry(self.ugps, fields=all_fields)
 
-        for field in geometry.GeometryData.available_fields():
+        for field in all_fields:
             for column in geometry._FIELDS[field].columns:
                 self.assertIn(column, df.columns)
 
-        # These fields are all position-derived -> gap-free over covered times.
-        self.assertFalse(df.isna().any().any(), msg=f"unexpected NaNs:\n{df.isna().sum()}")
+        # Position-derived fields are gap-free over covered times (unlike the
+        # attitude-derived boresight / surface_colatitude, which may be NaN in attitude gaps).
+        position_columns = [
+            "subsatellite_latitude",
+            "subsatellite_longitude",
+            "subsatellite_colatitude",
+            "subsolar_latitude",
+            "subsolar_longitude",
+            "subsolar_colatitude",
+            "spacecraft_radius",
+            "earth_sun_distance",
+            "spacecraft_position_x",
+            "spacecraft_position_y",
+            "spacecraft_position_z",
+        ]
+        self.assertFalse(
+            df[position_columns].isna().any().any(),
+            msg=f"unexpected NaNs:\n{df[position_columns].isna().sum()}",
+        )
 
         # Physical sanity ranges.
         self.assertTrue(df["subsatellite_colatitude"].between(0, 180).all())
         self.assertTrue(df["subsatellite_longitude"].between(-180, 180).all())
         self.assertTrue(df["spacecraft_radius"].between(6500, 7500).all())  # ISS-class orbit.
         self.assertTrue(df["earth_sun_distance"].between(0.97, 1.03).all())
+
+        # Boresight is a unit direction in ECEF where the attitude is available.
+        boresight = df[["boresight_x", "boresight_y", "boresight_z"]].values
+        finite = np.isfinite(boresight).all(axis=1)
+        self.assertTrue(finite.any(), msg="boresight all-NaN over covered times")
+        npt.assert_allclose(np.linalg.norm(boresight[finite], axis=1), 1.0, atol=1e-6)
+
+        # Surface colatitude is in [0, 180] where the boresight hits the ellipsoid.
+        surface_colatitude = df["surface_colatitude"]
+        self.assertTrue(surface_colatitude.notna().any(), msg="surface colatitude all-NaN over covered times")
+        self.assertTrue(surface_colatitude.dropna().between(0, 180).all())
+
+        # Surface angles resolve where the boresight does, in their documented
+        # ranges: zeniths in [0, 180], azimuths in [0, 360).
+        self.assertTrue(df["viewing_zenith"].notna().any(), msg="viewing zenith all-NaN over covered times")
+        for col in ("viewing_zenith", "solar_zenith"):
+            self.assertTrue(df[col].dropna().between(0, 180).all())
+        for col in ("viewing_azimuth", "solar_azimuth", "relative_azimuth"):
+            vals = df[col].dropna()
+            self.assertTrue(((vals >= 0.0) & (vals < 360.0)).all())
+        # Cone angle resolves wherever the boresight does, on-disk and off-nadir.
+        self.assertTrue(df.loc[finite, "cone_angle"].notna().all())
+        self.assertTrue(df["cone_angle"].dropna().between(0, 90).all())
+
+        # The viewing angles must match the existing surface_angles primitive (what
+        # downstream calls today) over the covered rows -- same answer, computed
+        # without its redundant ephemeris re-query or geodetic round-trip.
+        sc = df.loc[finite, ["spacecraft_position_x", "spacecraft_position_y", "spacecraft_position_z"]].values
+        intersection = spatial.ray_intersect_ellipsoid(boresight[finite], sc)
+        idx = df.index[finite]
+        surf_df = pd.DataFrame(intersection, columns=["x", "y", "z"], index=idx)
+        tgt_df = pd.DataFrame(sc, columns=["x", "y", "z"], index=idx)
+        ref = spatial.surface_angles(surf_df, target_positions=tgt_df, degrees=True)
+        npt.assert_allclose(df.loc[finite, "viewing_zenith"].values, ref["zenith"].values, atol=1e-9)
+        npt.assert_allclose(df.loc[finite, "viewing_azimuth"].values, ref["azimuth"].values, atol=1e-9)
 
     def test_get_vectors_itrf93_matches_direct_query(self):
         geo = geometry.GeometryData(self.instrument)
@@ -307,3 +793,25 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         self.assertEqual(vectors["sc_position"].shape, (2, 3))
         # sc_position is exactly the ITRF93 ephemeris position.
         npt.assert_allclose(vectors["sc_position"], reference[["x", "y", "z"]].values, rtol=1e-9)
+
+
+def test_geometry_field_enum_matches_registry():
+    # GeometryField is the public field vocabulary and must stay in lockstep with the
+    # registry: every registered field is a GeometryField, and the columns the registry
+    # reports are the enum's (the single source of truth).
+    assert set(geometry._FIELDS) == set(constants.GeometryField)
+    for field in constants.GeometryField:
+        assert geometry._FIELDS[field].columns == field.columns
+
+
+def test_geometry_field_enum_interchangeable_with_strings():
+    # Members are plain strings: usable as selectors and column keys, equal to their value.
+    assert constants.GeometryField.SUBSATELLITE == "subsatellite"
+    assert "subsatellite" in geometry._FIELDS
+    assert constants.GeometryField.SUBSATELLITE in geometry._FIELDS
+    assert constants.GeometryField.SUBSATELLITE.columns == (
+        "subsatellite_latitude",
+        "subsatellite_longitude",
+        "subsatellite_colatitude",
+    )
+    assert constants.GeometryField.SUBSATELLITE.description

@@ -145,7 +145,9 @@ class VectorizedTestCase(unittest.TestCase):
                     abcorr=self.correction,
                     ref=self.reference_frame,
                 )
-            self.assertIn("only length-1 arrays can be converted", raised.exception.args[0])
+            # Numpy 2 reworded the error from "only length-1 arrays can be
+            #   converted" to "only 0-dimensional arrays can be converted".
+            self.assertRegex(raised.exception.args[0], "only (length-1|0-dimensional) arrays can be converted")
 
             # Doesn't support target name (string).
             with self.assertRaises(TypeError) as raised:
@@ -307,7 +309,7 @@ class VectorizedTestCase(unittest.TestCase):
         self.assertListEqual(["2000-01-01T12:00:01", "2000-01-01T12:00:01", "2000-01-01T12:00:01"], list(utc[:, 1]))
 
         # # Proof that the original library does not support them.
-        with self.assertRaisesRegex(TypeError, "only length-1 arrays"):
+        with self.assertRaisesRegex(TypeError, "only (length-1|0-dimensional) arrays"):
             spiceypy.timout(np.stack([test_et_values, test_et_values]), fmt, n_char)
 
     def test_unitim_vectorized(self):
