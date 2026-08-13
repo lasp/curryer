@@ -66,6 +66,9 @@ def naif_index_url(kernel_file_regex: str, base_url: str | None = None, flat: bo
         If the pattern's extension has no known subdirectory.
     """
     base_url = NAIF_GENERIC_KERNELS_URL if base_url is None else base_url
+    if not base_url.endswith("/"):
+        # urljoin drops the last path component of a slash-less base.
+        base_url += "/"
     if flat:
         return base_url
     extension = kernel_file_regex.rsplit(".", 1)[-1]
@@ -77,7 +80,9 @@ def naif_index_url(kernel_file_regex: str, base_url: str | None = None, flat: bo
     return urljoin(base_url, NAIF_SUBDIR_BY_EXTENSION[extension])
 
 
-def find_most_recent_naif_kernel(naif_base_url: str, kernel_file_regex: str, allowed_attempts: int = 3) -> str:
+def find_most_recent_naif_kernel(
+    naif_base_url: str, kernel_file_regex: str, allowed_attempts: int = HTTP_ATTEMPTS
+) -> str:
     """Find the most recent kernel matching a pattern on one index page.
 
     NAIF versions its generic kernels in the filename (e.g.
@@ -91,7 +96,7 @@ def find_most_recent_naif_kernel(naif_base_url: str, kernel_file_regex: str, all
     kernel_file_regex : str
         Filename pattern to match against the page's links.
     allowed_attempts : int, optional
-        Retries for fetching the index page. Default=3.
+        Retries for fetching the index page. Default=``HTTP_ATTEMPTS``.
 
     Returns
     -------
@@ -103,8 +108,11 @@ def find_most_recent_naif_kernel(naif_base_url: str, kernel_file_regex: str, all
     requests.exceptions.RequestException
         If the index page fetch fails after all retries.
     ValueError
-        If no filenames on the page match the pattern.
+        If `allowed_attempts` is not positive, or no filenames on the page
+        match the pattern.
     """
+    if allowed_attempts < 1:
+        raise ValueError(f"allowed_attempts must be >= 1; got {allowed_attempts}")
     kernel_link_regex = re.compile(f'href="({kernel_file_regex})"')
 
     for attempt in range(1, allowed_attempts + 1):
@@ -133,7 +141,7 @@ def find_latest_naif_kernel_url(
     kernel_file_regex: str,
     base_url: str | None = None,
     flat: bool = False,
-    allowed_attempts: int = 3,
+    allowed_attempts: int = HTTP_ATTEMPTS,
 ) -> str:
     """Resolve a kernel pattern to the most recent kernel URL on the server.
 
@@ -151,7 +159,7 @@ def find_latest_naif_kernel_url(
         Skip subdirectory routing for single-directory mirrors.
         Default=False.
     allowed_attempts : int, optional
-        Retries for fetching the index page. Default=3.
+        Retries for fetching the index page. Default=``HTTP_ATTEMPTS``.
 
     Returns
     -------
