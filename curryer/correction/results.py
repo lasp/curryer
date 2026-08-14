@@ -341,7 +341,7 @@ def build_correction_result(
                 worst_pair_rms_m=float(worst_pair_rms_arr[idx]) if idx < len(worst_pair_rms_arr) else float("nan"),
             )
         )
-    all_sets.sort(key=lambda s: (float("inf") if math.isnan(s.mean_rms_m) else s.mean_rms_m))
+    all_sets.sort(key=lambda s: float("inf") if math.isnan(s.mean_rms_m) else s.mean_rms_m)
 
     best_params: dict[str, float] = (
         {k: float(netcdf_data[k][best_idx]) for k in param_keys} if param_keys and n_param_sets > 0 else {}
