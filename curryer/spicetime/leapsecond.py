@@ -3,9 +3,10 @@
 Importing this module will load the default leapsecond kernel that is included
 with this library. If the kernel pool is cleared, `load()` should be called to
 reload the leapsecond kernel. The included kernel can be updated using
-`update_file()`; if a new kernel is available, it will be downloaded to the
-local kernel cache (see `curryer.kernels.cache`) and found by
-`find_default_file()` alongside the packaged kernel.
+`update_file()`; if a new kernel is available, it will be downloaded to a
+version-independent directory in the local kernel cache (see
+`curryer.kernels.cache`) and found by `find_default_file()` alongside the
+packaged kernel.
 
 The last leapsecond kernel that is loaded takes the highest precedence.
 
@@ -17,12 +18,14 @@ import logging
 import os
 import re
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .. import spicierpy as sp
+from ..utils import get_local_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,16 @@ _LEAPSECOND_FILE_GLOB = "naif*.tls"
 LEAPSECOND_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/"
 
 LEAPSECOND_USER_FILE_PATH = None
+
+
+def _lsk_cache_dir() -> Path:
+    """Cache directory for updated leapsecond kernels.
+
+    Deliberately version-independent (a sibling of the per-version cache
+    directories): an updated LSK must keep being found after a package
+    upgrade, which would otherwise silently revert to the packaged kernel.
+    """
+    return get_local_cache_dir().parent / "lsk"
 
 
 def find_default_file():
@@ -56,13 +69,10 @@ def find_default_file():
     elif os.getenv("LEAPSECOND_FILE_ENV", None):
         search_dirs = [Path(os.getenv("LEAPSECOND_FILE_ENV"))]
     else:
-        # Deferred import: curryer.kernels imports spicetime at package init.
-        from ..kernels import cache as kernels_cache
-
         search_dirs = [Path(__file__).parent.joinpath(_LEAPSECOND_FILE_PATH).resolve()]
-        cache_dir = kernels_cache.get_local_cache_dir()
-        if cache_dir.is_dir():
-            search_dirs.append(cache_dir)
+        lsk_dir = _lsk_cache_dir()
+        if lsk_dir.is_dir():
+            search_dirs.append(lsk_dir)
 
     leapsecond_files = sorted(
         (fn for path in search_dirs for fn in path.glob(_LEAPSECOND_FILE_GLOB)), key=lambda fn: fn.name
@@ -149,7 +159,7 @@ def check_for_update():
     # Deferred import: curryer.kernels imports spicetime at package init.
     from ..kernels import discovery
 
-    latest_url = discovery.find_most_recent_naif_kernel(LEAPSECOND_BASE_URL, discovery.NAIF_LSK_REGEX)
+    latest_url = discovery.find_latest_naif_kernel_url(discovery.NAIF_LSK_REGEX)
     latest_name = latest_url.rsplit("/", 1)[-1]
 
     # Compare the file name to the default kernel.
@@ -166,25 +176,41 @@ def update_file():
     Returns
     -------
     pathlib.Path or None
-        Path to the updated leapsecond file in the local kernel cache, or
-        None if the current leapsecond file was already up-to-date. Note: If
-        an update was found, the kernel will be loaded into memory
-        (overriding any existing leapsecond kernels) and `find_default_file`
-        will resolve to it going forward.
+        Path to the updated leapsecond file in the local kernel cache
+        (version-independent, so it survives package upgrades), or None if
+        the current leapsecond file was already up-to-date. Note: If an
+        update was found, the kernel will be loaded into memory (overriding
+        any existing leapsecond kernels) and `find_default_file` will
+        resolve to it going forward.
+
+    Warns
+    -----
+    UserWarning
+        When a leapsecond override (`LEAPSECOND_USER_FILE_PATH` or
+        `LEAPSECOND_FILE_ENV`) is active: `find_default_file` keeps
+        resolving the override, not the downloaded update.
 
     """
-    # Check if we need to update, and if so, the new filename.
-    kernel_name = check_for_update()
-    if kernel_name is None:
-        return None
-
     # Deferred import: curryer.kernels imports spicetime at package init.
     from ..kernels import cache as kernels_cache
+    from ..kernels import discovery
 
-    # Download the latest leapsecond file into the local kernel cache.
-    kernel_url = LEAPSECOND_BASE_URL + kernel_name
+    # Resolve the latest kernel URL once; its filename decides up-to-dateness.
+    kernel_url = discovery.find_latest_naif_kernel_url(discovery.NAIF_LSK_REGEX)
+    default_kernel = find_default_file()
+    if default_kernel.name == kernel_url.rsplit("/", 1)[-1]:
+        logger.info("No update found. File name matches current file: %s", default_kernel)
+        return None
+
+    if LEAPSECOND_USER_FILE_PATH is not None or os.getenv("LEAPSECOND_FILE_ENV", None):
+        warnings.warn(
+            "A leapsecond override (LEAPSECOND_USER_FILE_PATH or LEAPSECOND_FILE_ENV) is active;"
+            " find_default_file will keep resolving the override instead of the downloaded update."
+        )
+
+    # Download the latest leapsecond file into the version-independent cache.
     logger.debug("Downloading kernel file: %r", kernel_url)
-    kernel_file = kernels_cache.fetch(kernel_url)
+    kernel_file = kernels_cache.fetch(kernel_url, cache_dir=_lsk_cache_dir())
 
     # Check the file header to ensure it's correct.
     _, ktype = sp.getfat(str(kernel_file))

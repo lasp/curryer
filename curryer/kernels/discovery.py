@@ -12,10 +12,11 @@ them is :mod:`curryer.kernels.cache`'s job.
 
 import logging
 import re
-import time
 from urllib.parse import urljoin
 
 import requests
+
+from . import cache
 
 logger = logging.getLogger(__name__)
 
@@ -115,17 +116,11 @@ def find_most_recent_naif_kernel(
         raise ValueError(f"allowed_attempts must be >= 1; got {allowed_attempts}")
     kernel_link_regex = re.compile(f'href="({kernel_file_regex})"')
 
-    for attempt in range(1, allowed_attempts + 1):
-        try:
-            resp = requests.get(naif_base_url, timeout=HTTP_TIMEOUT_SEC)
-            resp.raise_for_status()
-            break
-        except requests.exceptions.RequestException as error:
-            if attempt == allowed_attempts:
-                logger.error("Failed to fetch NAIF index after %d attempts: %s", allowed_attempts, error)
-                raise
-            logger.debug("NAIF index fetch attempt %d/%d failed (%s); retrying", attempt, allowed_attempts, error)
-            time.sleep(1)
+    try:
+        resp = cache.get_with_retries(naif_base_url, timeout=HTTP_TIMEOUT_SEC, attempts=allowed_attempts)
+    except requests.exceptions.RequestException as error:
+        logger.error("Failed to fetch NAIF index after %d attempts: %s", allowed_attempts, error)
+        raise
 
     file_names = kernel_link_regex.findall(resp.text)
     if len(file_names) == 0:
