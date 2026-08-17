@@ -120,16 +120,21 @@ def validate_path_length(path: Path, max_len: int = 80) -> None:
 
     Raises
     ------
-    RuntimeError
+    ValueError
         If the absolute path exceeds the maximum length.
+
+    Notes
+    -----
+    The limit depends on how the path reaches SPICE: a string value in a
+    meta-kernel silently truncates at 80 characters, while a path passed
+    directly to ``furnsh`` tolerates roughly 255 — hence `max_len` is
+    adjustable. The check measures the absolute form of `path`; when SPICE
+    will receive a different string (e.g. an as-written relative path),
+    validate that exact string's length instead.
     """
     path_str = os.path.abspath(path)
     if len(path_str) > max_len:
-        raise RuntimeError(
-            f"Path length ({len(path_str)}) exceeds limit ({max_len}):\n"
-            f"  {path_str}\n"
-            f"Consider setting CURRYER_TEMP_DIR to a shorter base path."
-        )
+        raise ValueError(f"Path length ({len(path_str)}) exceeds limit ({max_len}):\n  {path_str}")
 
 
 def create_short_symlink(source_path: Path, temp_dir: Path) -> Path | None:

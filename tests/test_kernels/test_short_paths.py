@@ -786,13 +786,12 @@ class TestValidatePathLength(unittest.TestCase):
         """Test that an over-length path raises with a helpful message."""
         long_path = Path("/tmp") / ("a" * 100) / "kernel.tls"
 
-        with self.assertRaises(RuntimeError) as context:
+        with self.assertRaises(ValueError) as context:
             validate_path_length(long_path, max_len=80)
 
         message = str(context.exception)
         self.assertIn("exceeds limit (80)", message)
         self.assertIn(str(long_path), message)
-        self.assertIn("CURRYER_TEMP_DIR", message)
         self.assertIn(str(len(os.path.abspath(long_path))), message)
 
     def test_custom_max_length(self):
@@ -801,7 +800,7 @@ class TestValidatePathLength(unittest.TestCase):
 
         validate_path_length(path, max_len=1000)
 
-        with self.assertRaises(RuntimeError) as context:
+        with self.assertRaises(ValueError) as context:
             validate_path_length(path, max_len=5)
 
         message = str(context.exception)
@@ -818,7 +817,7 @@ class TestValidatePathLength(unittest.TestCase):
         os.chdir(deep_dir)
         self.addCleanup(os.chdir, orig_cwd)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(ValueError):
             validate_path_length(Path("kernel_with_a_long_name.bsp"), max_len=80)
 
     def test_symlink_measured_not_target(self):
@@ -836,7 +835,7 @@ class TestValidatePathLength(unittest.TestCase):
         self.addCleanup(link.unlink, missing_ok=True)
         os.symlink(target, link)
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(ValueError):
             validate_path_length(target, max_len=80)
         validate_path_length(link, max_len=80)
 
