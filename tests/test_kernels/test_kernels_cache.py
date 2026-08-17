@@ -4,21 +4,20 @@
 """
 
 import datetime
-import io
 import logging
 import os
 import tempfile
 import time
 import unittest
-from importlib.metadata import version
+import warnings
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from unittest.mock import patch
 
 import boto3
 import requests
 import responses
-from botocore.response import StreamingBody
-from botocore.stub import Stubber
+from moto import mock_aws
 
 from curryer import utils
 from curryer.kernels import cache
@@ -48,25 +47,18 @@ class CacheTestCase(unittest.TestCase):
         self.local_source = self.source_dir / "local_kernel.tls"
         self.local_source.write_bytes(b"LOCAL KERNEL DATA")
 
-    def _stubbed_s3(self, payload: bytes, expect_head: bool = False):
-        """Create a stubbed S3 client and patch boto3 to return it."""
-        client = boto3.client("s3", region_name="us-east-1")
-        stubber = Stubber(client)
-        params = {"Bucket": "test-bucket", "Key": "kernels/naif0012.tls"}
-        if expect_head:
-            stubber.add_response("head_object", {"ContentLength": len(payload)}, params)
-        else:
-            stubber.add_response(
-                "get_object",
-                {"Body": StreamingBody(io.BytesIO(payload), len(payload)), "ContentLength": len(payload)},
-                params,
-            )
-        stubber.activate()
-        self.addCleanup(stubber.deactivate)
-        patcher = patch("boto3.client", return_value=client)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return stubber
+    def _moto_s3(self, payload: bytes):
+        """Create the mocked bucket/object behind S3_URI (inside @mock_aws)."""
+        env = patch.dict(
+            os.environ,
+            {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing", "AWS_DEFAULT_REGION": "us-east-1"},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        client = boto3.client("s3")
+        client.create_bucket(Bucket="test-bucket")
+        client.put_object(Bucket="test-bucket", Key="kernels/naif0012.tls", Body=payload)
+        return client
 
     def test_local_copy(self):
         entry = cache.fetch(self.local_source, cache_dir=self.cache_dir)
@@ -85,38 +77,49 @@ class CacheTestCase(unittest.TestCase):
         self.assertEqual(b"HTTP KERNEL DATA", entry.read_bytes())
 
     @responses.activate
-    def test_http_download_retries(self):
+    def test_http_download_retries_with_backoff(self):
         responses.add(responses.GET, HTTP_URL, body=requests.exceptions.ConnectionError("first attempt"))
+        responses.add(responses.GET, HTTP_URL, body=requests.exceptions.ConnectionError("second attempt"))
         responses.add(responses.GET, HTTP_URL, body=b"HTTP KERNEL DATA")
-        with patch("time.sleep"):
+        with patch("time.sleep") as mock_sleep:
             entry = cache.fetch(HTTP_URL, cache_dir=self.cache_dir)
         self.assertEqual(b"HTTP KERNEL DATA", entry.read_bytes())
+        self.assertEqual([1, 5], [call.args[0] for call in mock_sleep.call_args_list])
 
+    @mock_aws
     def test_s3_download(self):
-        self._stubbed_s3(b"S3 KERNEL DATA")
+        self._moto_s3(b"S3 KERNEL DATA")
         entry = cache.fetch(S3_URI, cache_dir=self.cache_dir)
         self.assertEqual(self.cache_dir / "naif0012.tls", entry)
         self.assertEqual(b"S3 KERNEL DATA", entry.read_bytes())
 
+    @mock_aws
     def test_s3_stale_size_match_revalidates_without_download(self):
-        payload = b"S3 KERNEL DATA"
-        stubber = self._stubbed_s3(payload)
+        client = self._moto_s3(b"S3 KERNEL DATA")
         entry = cache.fetch(S3_URI, cache_dir=self.cache_dir)
         _age_entry(entry, datetime.timedelta(days=2))
 
-        # Only a head_object is stubbed: a re-download (get_object) would
-        # error out against the stubber.
-        stubber.add_response(
-            "head_object",
-            {"ContentLength": len(payload)},
-            {"Bucket": "test-bucket", "Key": "kernels/naif0012.tls"},
-        )
+        # Same size, different bytes: a size-based revalidation keeps the
+        # cached copy, so seeing the old bytes proves no re-download ran.
+        client.put_object(Bucket="test-bucket", Key="kernels/naif0012.tls", Body=b"S3 ALTERED DATA!"[:14])
         again = cache.fetch(S3_URI, max_age=datetime.timedelta(days=1), cache_dir=self.cache_dir)
 
         self.assertEqual(entry, again)
-        self.assertEqual(payload, again.read_bytes())
+        self.assertEqual(b"S3 KERNEL DATA", again.read_bytes())
         # The mtime refresh makes the entry warm again.
         self.assertLess(time.time() - again.stat().st_mtime, 60)
+
+    @mock_aws
+    def test_s3_stale_size_mismatch_redownloads(self):
+        client = self._moto_s3(b"S3 KERNEL DATA")
+        entry = cache.fetch(S3_URI, cache_dir=self.cache_dir)
+        _age_entry(entry, datetime.timedelta(days=2))
+
+        client.put_object(Bucket="test-bucket", Key="kernels/naif0012.tls", Body=b"S3 NEW ROLLING KERNEL DATA")
+        again = cache.fetch(S3_URI, max_age=datetime.timedelta(days=1), cache_dir=self.cache_dir)
+
+        self.assertEqual(entry, again)
+        self.assertEqual(b"S3 NEW ROLLING KERNEL DATA", again.read_bytes())
 
     def test_source_without_basename_raises(self):
         for source in ("https://naif.example.gov/pub/naif/generic_kernels/lsk/", "s3://test-bucket/"):
@@ -130,8 +133,10 @@ class CacheTestCase(unittest.TestCase):
         # a fallback to a stale copy would emit a warning.
         entry = cache.fetch(self.local_source, cache_dir=self.cache_dir)
 
-        with self.assertNoLogs(cache.logger, level="WARNING"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             again = cache.fetch(HTTP_URL.replace("naif0012.tls", "local_kernel.tls"), cache_dir=self.cache_dir)
+        self.assertEqual([], [warning for warning in caught if issubclass(warning.category, UserWarning)])
         self.assertEqual(entry, again)
         self.assertEqual(b"LOCAL KERNEL DATA", again.read_bytes())
 
@@ -196,12 +201,12 @@ class CacheTestCase(unittest.TestCase):
 
         responses.reset()
         responses.add(responses.HEAD, HTTP_URL, body=requests.exceptions.ConnectionError("no route to NAIF"))
-        with self.assertLogs(cache.logger, level="WARNING") as caught:
+        with self.assertWarns(UserWarning) as caught:
             again = cache.fetch(HTTP_URL, max_age=datetime.timedelta(days=1), cache_dir=self.cache_dir)
 
         self.assertEqual(entry, again)
         self.assertEqual(b"HTTP KERNEL DATA", again.read_bytes())
-        self.assertTrue(any("stale cached copy" in message for message in caught.output))
+        self.assertIn("stale cached copy", str(caught.warning))
 
     @responses.activate
     def test_failed_redownload_returns_stale_with_warning(self):
@@ -213,35 +218,57 @@ class CacheTestCase(unittest.TestCase):
         responses.add(responses.HEAD, HTTP_URL, headers={"Content-Length": "9999"})
         responses.add(responses.GET, HTTP_URL, body=requests.exceptions.ConnectionError("dropped mid-download"))
         with patch("time.sleep"):
-            with self.assertLogs(cache.logger, level="WARNING") as caught:
+            with self.assertWarns(UserWarning) as caught:
                 again = cache.fetch(HTTP_URL, max_age=datetime.timedelta(days=1), cache_dir=self.cache_dir)
 
         self.assertEqual(b"HTTP KERNEL DATA", again.read_bytes())
-        self.assertTrue(any("stale cached copy" in message for message in caught.output))
+        self.assertIn("stale cached copy", str(caught.warning))
 
     @responses.activate
     def test_normal_flow_logs_debug_never_warns(self):
         responses.add(responses.GET, HTTP_URL, body=b"HTTP KERNEL DATA")
 
-        with self.assertNoLogs(cache.logger, level="WARNING"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             with self.assertLogs(cache.logger, level="DEBUG") as miss_logs:
                 cache.fetch(HTTP_URL, cache_dir=self.cache_dir)
             with self.assertLogs(cache.logger, level="DEBUG") as hit_logs:
                 cache.fetch(HTTP_URL, cache_dir=self.cache_dir)
 
+        self.assertEqual([], [warning for warning in caught if issubclass(warning.category, UserWarning)])
         self.assertTrue(any("Cached" in message for message in miss_logs.output))
         self.assertTrue(any("Cache hit" in message for message in hit_logs.output))
 
     def test_clear_cache(self):
         entry = cache.fetch(self.local_source, cache_dir=self.cache_dir)
-        removed = cache.clear_cache(cache_dir=self.cache_dir)
+        # A tmp cache dir is only clearable when it is the package's own:
+        # point the cache root at it.
+        with patch("curryer.kernels.cache.get_local_cache_dir", return_value=self.cache_dir):
+            removed = cache.clear_cache(cache_dir=self.cache_dir)
         self.assertEqual([entry], removed)
         self.assertFalse(entry.exists())
 
+    def test_clear_cache_refuses_foreign_directory(self):
+        important = self.tmp_dir / "important"
+        important.mkdir()
+        keeper = important / "data.txt"
+        keeper.write_text("do not delete")
+
+        with self.assertRaises(ValueError) as context:
+            cache.clear_cache(cache_dir=important)
+        self.assertIn("cache root", str(context.exception))
+        self.assertTrue(keeper.exists())
+
     def test_get_local_cache_dir_version_keyed(self):
         cache_dir = cache.get_local_cache_dir()
-        self.assertEqual(version(cache.DISTRIBUTION_NAME), cache_dir.name)
+        self.assertEqual(version(utils.DISTRIBUTION_NAME), cache_dir.name)
         self.assertEqual("curryer", cache_dir.parent.name)
+
+    def test_package_version_never_raises(self):
+        # The version keys the cache directory, so source checkouts without
+        # an installed distribution must still resolve to something.
+        with patch("curryer.utils.version", side_effect=PackageNotFoundError):
+            self.assertEqual("unknown", utils.package_version())
 
 
 if __name__ == "__main__":
