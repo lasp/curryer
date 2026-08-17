@@ -11,10 +11,12 @@ revalidated against the source's **file size** (local ``stat``, HTTP
 rolling NAIF kernels (e.g. ``earth_latest_high_prec.bpc``) update under a
 stable name. Distinct sources that share a basename share one entry (the
 most recently fetched wins) — NAIF generic kernels version their filenames,
-which makes the basename a sufficient key. Writes are atomic (temp file +
-rename), so an interrupted download never leaves a partial entry. When the source is
-unreachable and a cached copy exists, the stale copy is used with a warning
-rather than raising — offline environments keep working on a warm cache.
+which makes the basename a sufficient key for its designed scope; sources
+whose basenames collide across directories need distinct ``cache_dir``s.
+Writes are atomic (temp file + rename), so an interrupted download never
+leaves a partial entry. When the source is unreachable and a cached copy
+exists, the stale copy is used with a warning rather than raising — offline
+environments keep working on a warm cache.
 
 The normal flow emits debug logs only, never warnings.
 
@@ -27,65 +29,101 @@ import os
 import shutil
 import tempfile
 import time
-from importlib.metadata import PackageNotFoundError, version
+import warnings
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 
+from ..utils import get_local_cache_dir
+
 logger = logging.getLogger(__name__)
 
 HTTP_ATTEMPTS = 3
 HTTP_TIMEOUT_SEC = 30
-
-# The distribution registers under a different name than the import package.
-DISTRIBUTION_NAME = "lasp-curryer"
+HTTP_BACKOFF_SEC = (1, 5, 20)
 
 
-def _package_version() -> str:
-    """Installed version of this package, whichever name it registered under."""
-    try:
-        return version(DISTRIBUTION_NAME)
-    except PackageNotFoundError:
-        return version(__name__.split(".", 1)[0])
+def get_with_retries(url: str, dest=None, timeout: int = HTTP_TIMEOUT_SEC, attempts: int = HTTP_ATTEMPTS):
+    """GET a URL with backoff retries.
 
-
-def get_local_cache_dir() -> Path:
-    """Determine the user cache directory for this package version.
-
-    The directory is keyed by installed package version, so a new release
-    starts from an empty cache.
+    Parameters
+    ----------
+    url : str
+        URL to fetch.
+    dest : binary file object, optional
+        When given, the body is streamed into it (rewound and truncated on
+        retry) and None is returned; otherwise the response is returned.
+    timeout : int, optional
+        Per-attempt timeout in seconds. Default=``HTTP_TIMEOUT_SEC``.
+    attempts : int, optional
+        Total attempts before the last error propagates.
+        Default=``HTTP_ATTEMPTS``.
 
     Returns
     -------
-    pathlib.Path
-        Platform cache directory for the current curryer version. Not
-        created by this function.
+    requests.Response or None
+        The response when `dest` is None, otherwise None.
+
+    Raises
+    ------
+    requests.exceptions.RequestException
+        If every attempt fails.
     """
-    package_name = __name__.split(".", 1)[0]
-    if os.name == "nt":
-        base = Path(os.getenv("LOCALAPPDATA", "~/AppData/Local")).expanduser()
-    elif os.uname().sysname == "Darwin":
-        base = Path("~/Library/Caches").expanduser()
-    else:
-        base = Path(os.getenv("XDG_CACHE_HOME", "~/.cache")).expanduser()
-    return base / package_name / _package_version()
+    for attempt in range(1, attempts + 1):
+        try:
+            if dest is None:
+                resp = requests.get(url, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            with requests.get(url, stream=True, timeout=timeout) as resp:
+                resp.raise_for_status()
+                for chunk in resp.iter_content(chunk_size=8192):
+                    dest.write(chunk)
+            return None
+        except requests.exceptions.RequestException as error:
+            if attempt == attempts:
+                raise
+            if dest is not None:
+                dest.seek(0)
+                dest.truncate()
+            delay = HTTP_BACKOFF_SEC[min(attempt - 1, len(HTTP_BACKOFF_SEC) - 1)]
+            logger.debug("GET attempt %d/%d failed (%s); retrying in %ds: %s", attempt, attempts, error, delay, url)
+            time.sleep(delay)
+    return None
 
 
 def clear_cache(cache_dir: Path | None = None) -> list[Path]:
-    """Remove all cached files from a cache directory.
+    """Remove all cached files from a curryer cache directory.
+
+    Refuses directories outside the curryer cache root (the parent of
+    :func:`curryer.utils.get_local_cache_dir`, holding one subdirectory per
+    package version) — this function deletes files indiscriminately, so it
+    only ever operates on directories this package owns.
 
     Parameters
     ----------
     cache_dir : pathlib.Path, optional
-        Directory to empty. Default: :func:`get_local_cache_dir`.
+        Directory to empty; must be the cache root or a descendant.
+        Default: :func:`curryer.utils.get_local_cache_dir`.
 
     Returns
     -------
     list of pathlib.Path
         The removed files.
+
+    Raises
+    ------
+    ValueError
+        If `cache_dir` is not under the curryer cache root.
     """
+    root = get_local_cache_dir().parent.resolve()
     cache_dir = get_local_cache_dir() if cache_dir is None else Path(cache_dir)
+    resolved = cache_dir.expanduser().resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"Refusing to clear {cache_dir}: not under the curryer cache root {root}")
+    # Validation resolves symlinks; removal keeps the caller's path form so
+    # returned entries compare equal to what fetch() handed out.
     removed = []
     if cache_dir.is_dir():
         for cached_file in cache_dir.iterdir():
@@ -130,6 +168,19 @@ def fetch(
         If an HTTP download fails after retries and there is no cached copy.
     botocore.exceptions.BotoCoreError or botocore.exceptions.ClientError
         If an S3 download fails and there is no cached copy.
+
+    Warns
+    -----
+    UserWarning
+        When the source is unreachable (or the refresh fails) and a stale
+        cached copy is returned instead.
+
+    Notes
+    -----
+    A refresh replaces the entry in place (atomic ``os.replace``). A SPICE
+    handle furnished from the old file keeps reading the old inode; unload
+    and re-furnish the returned path after a fetch that may have refreshed
+    an already-furnished kernel.
     """
     source_str = str(source)
     cache_dir = get_local_cache_dir() if cache_dir is None else Path(cache_dir)
@@ -143,7 +194,7 @@ def fetch(
         try:
             source_size = _source_size(source_str)
         except Exception as error:
-            logger.warning("Source %s unreachable (%s); using stale cached copy: %s", source_str, error, entry)
+            warnings.warn(f"Source {source_str} unreachable ({error}); using stale cached copy: {entry}")
             return entry
         if source_size is not None and source_size == entry.stat().st_size:
             entry.touch()
@@ -155,7 +206,7 @@ def fetch(
         _materialize(source_str, entry)
     except Exception as error:
         if entry.is_file():
-            logger.warning("Failed to update %s from %s (%s); using stale cached copy", entry, source_str, error)
+            warnings.warn(f"Failed to update {entry} from {source_str} ({error}); using stale cached copy")
             return entry
         raise
     logger.debug("Cached %s to %s", source_str, entry)
@@ -206,7 +257,7 @@ def _materialize(source: str, entry: Path) -> None:
     try:
         with os.fdopen(temp_fd, "wb") as temp_file:
             if source.startswith(("http://", "https://")):
-                _download_http(source, temp_file)
+                get_with_retries(source, dest=temp_file)
             elif source.startswith("s3://"):
                 _download_s3(source, temp_file)
             else:
@@ -219,24 +270,6 @@ def _materialize(source: str, entry: Path) -> None:
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
-
-
-def _download_http(url: str, dest) -> None:
-    """Stream an HTTP(S) URL into an open binary file, with retries."""
-    for attempt in range(1, HTTP_ATTEMPTS + 1):
-        try:
-            with requests.get(url, stream=True, timeout=HTTP_TIMEOUT_SEC) as resp:
-                resp.raise_for_status()
-                for chunk in resp.iter_content(chunk_size=8192):
-                    dest.write(chunk)
-            return
-        except requests.exceptions.RequestException as error:
-            if attempt == HTTP_ATTEMPTS:
-                raise
-            logger.debug("Download attempt %d/%d failed (%s); retrying: %s", attempt, HTTP_ATTEMPTS, error, url)
-            dest.seek(0)
-            dest.truncate()
-            time.sleep(1)
 
 
 def _download_s3(uri: str, dest) -> None:
