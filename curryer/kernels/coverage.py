@@ -21,6 +21,7 @@ single-instant overlap counts as an intersection.
 import logging
 import typing
 import warnings
+from pathlib import Path
 
 import spiceypy
 from spiceypy.utils.exceptions import SpiceyError
@@ -30,8 +31,8 @@ from ..spicierpy.obj import Body, Frame
 
 logger = logging.getLogger(__name__)
 
-# Kernel types that carry time coverage.
-COVERAGE_KERNEL_TYPES = ("SPK", "CK", "PCK")
+# Kernel types that carry time coverage (str-valued enum members).
+COVERAGE_KERNEL_TYPES = (ext.KernelType.SPK, ext.KernelType.CK, ext.KernelType.PCK)
 
 
 class ObjectCoverage(typing.NamedTuple):
@@ -47,9 +48,9 @@ class ObjectCoverage(typing.NamedTuple):
         Kernel files that contributed coverage.
     """
 
-    target: typing.Any
-    windows: tuple
-    kernels: tuple
+    target: int | str | Body | Frame
+    windows: tuple[tuple[int, int], ...]
+    kernels: tuple[str, ...]
 
 
 class KernelObjectCoverage(typing.NamedTuple):
@@ -71,14 +72,16 @@ class KernelObjectCoverage(typing.NamedTuple):
     file: str
     ktype: str
     object_id: int
-    window: tuple
+    window: tuple[int, int]
 
 
-def _coverage_kernels(kernels=None):
+def _coverage_kernels(kernels: typing.Iterable[str | Path] | None = None) -> list[tuple[str, str]]:
     """Resolve the kernel files to consider as ``(filename, ktype)`` pairs.
 
-    Defaults to the furnished pool; an explicit list is filtered to binary
-    kernel types that carry time coverage.
+    Defaults to the furnished pool, silently scoped to coverage-capable types
+    (the pool legitimately holds text kernels). An explicitly given file that
+    carries no time coverage is dropped with a warning instead, since passing
+    one is most likely a caller mistake.
     """
     if kernels is None:
         return [(rec.file, rec.ktype) for rec in ext.loaded_kernels() if rec.ktype in COVERAGE_KERNEL_TYPES]
@@ -88,7 +91,21 @@ def _coverage_kernels(kernels=None):
         arch, ktype = spiceypy.getfat(filename)
         if arch == "DAF" and ktype in COVERAGE_KERNEL_TYPES:
             resolved.append((filename, ktype))
+        else:
+            warnings.warn(f"Ignoring kernel without time coverage (arch={arch}, type={ktype}): {filename}")
     return resolved
+
+
+def _kernel_catalog(kernels: typing.Iterable[str | Path] | None = None) -> dict[str, tuple[str, tuple[int, ...]]]:
+    """Resolve kernels once into ``{filename: (ktype, contained_ids)}``.
+
+    Reading each kernel's object directory is file I/O; resolving the catalog
+    up front avoids rescanning every kernel for every target.
+    """
+    return {
+        filename: (ktype, tuple(int(code) for code in ext.kernel_objects(filename, as_id=True)))
+        for filename, ktype in _coverage_kernels(kernels)
+    }
 
 
 def _target_id(target, ktype):
@@ -97,9 +114,12 @@ def _target_id(target, ktype):
     Mirrors the per-type coercion in :func:`curryer.spicierpy.ext.kernel_coverage`:
     SPK segments are keyed by body ID, CK by frame ID, and binary PCK by frame
     *class* ID (integers are used as-is — class IDs have no name lookup — while
-    `Frame`/`Body` targets resolve through the frame info, which requires the
-    frame definitions to be loaded). A target that cannot be resolved is
-    treated as not mappable rather than an error, so scoping stays permissive.
+    names and `Frame`/`Body` targets resolve via
+    :func:`curryer.spicierpy.ext.frame_class_id`, which follows TK aliases
+    such as ``MOON_PA`` and requires the frame definitions to be loaded).
+    A target that cannot be resolved is treated as not mappable rather than an
+    error, so scoping stays permissive; the aggregation entry points diagnose
+    targets that resolve nowhere.
     """
     try:
         if ktype == "SPK":
@@ -107,16 +127,11 @@ def _target_id(target, ktype):
             return obj.id
         if ktype == "CK":
             obj = target.frame if isinstance(target, Body) else target if isinstance(target, Frame) else Frame(target)
-            return obj.id
+            # Frame keeps the name when no loaded FK defines its ID.
+            return obj.id if isinstance(obj.id, int) else None
         if ktype == "PCK":
-            if isinstance(target, Body | Frame):
-                # Coverage is keyed on the frame *class* ID (e.g., 3000 for
-                # ITRF93), not the frame ID (13000): resolve through the frame
-                # info, via the body's associated frame for Body inputs.
-                frame_id = spiceypy.cidfrm(target.id)[0] if isinstance(target, Body) else target.id
-                return spiceypy.frinfo(frame_id)[2]
-            return target if isinstance(target, int) else None
-    except (SpiceyError, ValueError):
+            return target if isinstance(target, int) else ext.frame_class_id(target)
+    except (SpiceyError, ValueError, TypeError):
         return None
     return None
 
@@ -168,7 +183,33 @@ def _subtract(window, covered):
     return tuple(gap for gap in gaps if gap[0] < gap[1])
 
 
-def object_coverage(target, kernels=None):
+def _object_coverage(target, catalog):
+    """Coverage of one target against a resolved catalog.
+
+    Returns the ObjectCoverage plus whether the target resolved into at least
+    one kernel's ID space — needed to tell an unresolvable target apart from
+    a resolvable one that no kernel contains.
+    """
+    windows = []
+    contributors = []
+    resolved = False
+    for filename, (ktype, contained) in catalog.items():
+        target_id = _target_id(target, ktype)
+        if target_id is None:
+            continue
+        resolved = True
+        if int(target_id) not in contained:
+            continue
+        flat = ext.kernel_coverage(filename, int(target_id), as_segments=True, to_fmt="ugps")
+        windows.extend(zip(flat[0::2], flat[1::2], strict=True))
+        contributors.append(filename)
+    return ObjectCoverage(target=target, windows=_merge(windows), kernels=tuple(contributors)), resolved
+
+
+def object_coverage(
+    target: int | str | Body | Frame,
+    kernels: typing.Iterable[str | Path] | None = None,
+) -> ObjectCoverage:
     """Union of coverage windows for one object across kernels.
 
     Parameters
@@ -178,8 +219,8 @@ def object_coverage(target, kernels=None):
         kernel type's ID space (body ID for SPK, frame ID for CK, frame class
         ID for binary PCK); names require their definitions to be loaded.
     kernels : iterable of str or Path, optional
-        Kernel files to consider. Default: every furnished kernel of a
-        coverage-capable type.
+        Kernel files to consider. Default: every currently loaded (furnished)
+        kernel of a coverage-capable type.
 
     Returns
     -------
@@ -188,30 +229,54 @@ def object_coverage(target, kernels=None):
         not contain the target contribute nothing.
 
     """
-    windows = []
-    contributors = []
-    for filename, ktype in _coverage_kernels(kernels):
-        target_id = _target_id(target, ktype)
-        if target_id is None or target_id not in ext.kernel_objects(filename, as_id=True):
-            continue
-        flat = ext.kernel_coverage(filename, target_id, as_segments=True, to_fmt="ugps")
-        windows.extend(zip(flat[0::2], flat[1::2], strict=True))
-        contributors.append(filename)
-    return ObjectCoverage(target=target, windows=_merge(windows), kernels=tuple(contributors))
+    result, _ = _object_coverage(target, _kernel_catalog(kernels))
+    return result
 
 
-def valid_window(targets, kernels=None):
+def _resolve_windows(targets, kernels):
+    """Intersect per-target coverage; collect targets with no contribution.
+
+    Every target is checked (no early exit on an empty intersection) so the
+    diagnostics name all problem targets, not just the first.
+    """
+    catalog = _kernel_catalog(kernels)
+    windows = None
+    missing = []
+    for target in targets:
+        cov, resolved = _object_coverage(target, catalog)
+        if not cov.kernels:
+            reason = "no kernel contains it" if resolved else "it could not be resolved to an ID"
+            missing.append(f"{target} ({reason})")
+        windows = cov.windows if windows is None else _intersect(windows, cov.windows)
+    return windows if windows is not None else (), missing
+
+
+def _missing_message(missing):
+    return (
+        f"Target(s) without coverage in any considered kernel: {'; '.join(missing)}."
+        " A mistyped or undefined target is otherwise indistinguishable from missing data."
+    )
+
+
+def valid_window(
+    targets: typing.Iterable[int | str | Body | Frame],
+    kernels: typing.Iterable[str | Path] | None = None,
+) -> tuple[tuple[int, int], ...]:
     """Windows where every target is simultaneously covered.
 
     The intersection, across targets, of each target's union of coverage —
-    i.e., "when is everything I need valid at once."
+    i.e., "when is everything I need valid at once." A target that no
+    considered kernel covers — or that cannot be resolved to an ID at all —
+    triggers a warning, since it would otherwise be indistinguishable from a
+    genuine lack of common coverage.
 
     Parameters
     ----------
     targets : iterable
         Objects that must all be covered (see :func:`object_coverage`).
     kernels : iterable of str or Path, optional
-        Kernel files to consider. Default: the furnished pool.
+        Kernel files to consider. Default: every currently loaded (furnished)
+        kernel of a coverage-capable type.
 
     Returns
     -------
@@ -220,21 +285,27 @@ def valid_window(targets, kernels=None):
         no common coverage.
 
     """
-    windows = None
-    for target in targets:
-        target_windows = object_coverage(target, kernels=kernels).windows
-        windows = target_windows if windows is None else _intersect(windows, target_windows)
-        if not windows:
-            return ()
-    return windows if windows is not None else ()
+    windows, missing = _resolve_windows(targets, kernels)
+    if missing:
+        warnings.warn(_missing_message(missing))
+    return windows
 
 
-def coverage_gaps(targets, start, stop, kernels=None, error=False):
+def coverage_gaps(
+    targets: typing.Iterable[int | str | Body | Frame],
+    start: int,
+    stop: int,
+    kernels: typing.Iterable[str | Path] | None = None,
+    error: bool = False,
+) -> tuple[tuple[int, int], ...]:
     """Sub-ranges of a requested window not covered for every target.
 
     Emits a warning by default when gaps exist — SPICE otherwise fails
     opaquely deep inside a later computation, so surfacing the gap up front
-    makes the failure traceable. Raising instead is caller opt-in.
+    makes the failure traceable. Raising instead is caller opt-in. A target
+    that no considered kernel covers (or that cannot be resolved to an ID)
+    is diagnosed separately from an ordinary gap, and raises first when
+    `error` is set.
 
     Parameters
     ----------
@@ -243,10 +314,11 @@ def coverage_gaps(targets, start, stop, kernels=None, error=False):
     start, stop : int
         Requested window in uGPS.
     kernels : iterable of str or Path, optional
-        Kernel files to consider. Default: the furnished pool.
+        Kernel files to consider. Default: every currently loaded (furnished)
+        kernel of a coverage-capable type.
     error : bool, optional
-        Raise a ``ValueError`` instead of warning when gaps exist.
-        Default=False.
+        Raise a ``ValueError`` instead of warning when gaps exist or a target
+        has no coverage anywhere. Default=False.
 
     Returns
     -------
@@ -255,7 +327,15 @@ def coverage_gaps(targets, start, stop, kernels=None, error=False):
         fully covered.
 
     """
-    gaps = _subtract((start, stop), valid_window(targets, kernels=kernels))
+    if stop < start:
+        raise ValueError(f"Requested window is inverted: stop ({stop}) < start ({start}) (ugps)")
+    windows, missing = _resolve_windows(targets, kernels)
+    if missing:
+        message = _missing_message(missing)
+        if error:
+            raise ValueError(message)
+        warnings.warn(message)
+    gaps = _subtract((start, stop), windows)
     if gaps:
         message = (
             f"Requested window [{start}, {stop}] (ugps) is not fully covered for targets"
@@ -268,13 +348,14 @@ def coverage_gaps(targets, start, stop, kernels=None, error=False):
     return gaps
 
 
-def coverage_rollup(kernels=None):
+def coverage_rollup(kernels: typing.Iterable[str | Path] | None = None) -> list[KernelObjectCoverage]:
     """Per-kernel, per-object overall coverage windows (diagnostic).
 
     Parameters
     ----------
     kernels : iterable of str or Path, optional
-        Kernel files to consider. Default: the furnished pool.
+        Kernel files to consider. Default: every currently loaded (furnished)
+        kernel of a coverage-capable type.
 
     Returns
     -------
@@ -283,8 +364,8 @@ def coverage_rollup(kernels=None):
 
     """
     records = []
-    for filename, ktype in _coverage_kernels(kernels):
-        for object_id in ext.kernel_objects(filename, as_id=True):
+    for filename, (ktype, contained) in _kernel_catalog(kernels).items():
+        for object_id in contained:
             window = ext.kernel_coverage(filename, int(object_id), to_fmt="ugps")
             records.append(
                 KernelObjectCoverage(
@@ -297,7 +378,11 @@ def coverage_rollup(kernels=None):
     return records
 
 
-def pairwise_overlap(kernel_a, kernel_b, target):
+def pairwise_overlap(
+    kernel_a: str | Path,
+    kernel_b: str | Path,
+    target: int | str | Body | Frame,
+) -> tuple[tuple[int, int], ...]:
     """Overlap windows of two kernels for the same target (diagnostic).
 
     Parameters
