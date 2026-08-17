@@ -153,6 +153,24 @@ class ExtTestCase(unittest.TestCase):
             self.assertTrue(all(rec.ktype == "TEXT" for rec in text_records))
             self.assertTrue(all(rec.handle == 0 for rec in text_records))
 
+    def test_loaded_kernels_kind_enum_and_list(self):
+        with ext.load_kernel(self.kernels_all):
+            spk_records = ext.loaded_kernels(kind="SPK")
+            self.assertEqual(spk_records, ext.loaded_kernels(kind=ext.KernelType.SPK))
+
+            # A list of kinds matches the union of the individual filters.
+            combined = ext.loaded_kernels(kind=[ext.KernelType.SPK, "TEXT"])
+            expected = {rec.file for rec in spk_records} | {rec.file for rec in ext.loaded_kernels(kind="TEXT")}
+            self.assertEqual(expected, {rec.file for rec in combined})
+            self.assertTrue(combined)
+
+            # Text PCKs report as TEXT, never PCK (see KernelType docstring):
+            # the PCK (binary-only) filter must not include the .tpc kernels.
+            text_pcks = {str(fn) for fn in self.kernels_all if fn.suffix == ".tpc"}
+            self.assertTrue(text_pcks)
+            pck_files = {rec.file for rec in ext.loaded_kernels(kind=ext.KernelType.PCK)}
+            self.assertFalse(text_pcks & pck_files)
+
     def test_object_frame(self):
         # Load the kernels to activate name <--> code.
         #   Load frame kernel for name <--> code.

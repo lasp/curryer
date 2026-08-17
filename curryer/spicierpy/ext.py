@@ -3,6 +3,7 @@
 @author: Brandon Stone
 """
 
+import enum
 import logging
 import os
 import shutil
@@ -100,6 +101,28 @@ class load_kernel:
             raise ValueError("Must specify `kernel` (str) or `all`=True.")
 
 
+class KernelType(str, enum.Enum):
+    """SPICE kernel-pool type categories, as used by ``ktotal`` / ``kdata``.
+
+    These are the pool's load-time categories, not file formats: SPICE
+    collapses every text kernel (LSK, FK, IK, SCLK, text PCK, meta-kernel
+    contents, ...) into ``TEXT``, so a text PCK is reported as ``TEXT``,
+    never ``PCK``. ``PCK`` matches only binary PCKs.
+
+    Members are plain strings (``KernelType.SPK == "SPK"``) and may be passed
+    anywhere SPICE expects a kind string.
+    """
+
+    SPK = "SPK"
+    CK = "CK"
+    PCK = "PCK"
+    DSK = "DSK"
+    EK = "EK"
+    TEXT = "TEXT"
+    META = "META"
+    ALL = "ALL"
+
+
 class LoadedKernel(typing.NamedTuple):
     """A kernel currently furnished in the SPICE kernel pool.
 
@@ -122,7 +145,9 @@ class LoadedKernel(typing.NamedTuple):
     handle: int
 
 
-def loaded_kernels(kind="ALL"):
+def loaded_kernels(
+    kind: str | KernelType | typing.Iterable[str | KernelType] = KernelType.ALL,
+) -> list[LoadedKernel]:
     """List the kernels currently furnished in the SPICE kernel pool.
 
     Queries the kernel pool itself (``ktotal`` / ``kdata``), so the result reflects
@@ -132,10 +157,11 @@ def loaded_kernels(kind="ALL"):
 
     Parameters
     ----------
-    kind : str, optional
-        SPICE kernel kind filter: one of ``"SPK"``, ``"CK"``, ``"PCK"``, ``"DSK"``,
-        ``"EK"``, ``"TEXT"``, ``"META"``, a space-delimited combination, or ``"ALL"``.
-        Default="ALL".
+    kind : str or KernelType or iterable of them, optional
+        Kernel kind filter: one or more :class:`KernelType` values (or their
+        string equivalents), or a space-delimited combination string. Note
+        that all text kernels report as ``TEXT`` (see :class:`KernelType`).
+        Default=``KernelType.ALL``.
 
     Returns
     -------
@@ -143,9 +169,13 @@ def loaded_kernels(kind="ALL"):
         One record per furnished kernel, in load order.
 
     """
+    if not isinstance(kind, str):
+        kind = " ".join(kind)
     records = []
     for which in range(spiceypy.ktotal(kind)):
-        file, ktype, source, handle = spiceypy.kdata(which, kind)
+        # Slice guards against the 5-tuple (extra `found` flag) that kdata
+        # returns when spiceypy's `catch_false_founds` config is disabled.
+        file, ktype, source, handle = spiceypy.kdata(which, kind)[:4]
         records.append(LoadedKernel(file=file, ktype=ktype, source=source, handle=handle))
     return records
 
