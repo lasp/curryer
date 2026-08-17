@@ -326,9 +326,42 @@ class ExtTestCase(unittest.TestCase):
             ext.kernel_coverage(pck_file, 4000, to_fmt="et")
         self.assertIn("3000", str(raised.exception))
 
-        # Frame class IDs have no name lookup.
+        # Frame names resolve through the frame system (ITRF93 is built in).
+        named = ext.kernel_coverage(pck_file, "ITRF93", to_fmt="et")
+        self.assertEqual(tuple(window), tuple(named))
+
+    def test_kernel_coverage_pck_moon_alias(self):
+        # MOON_PA is a class-4 TK alias of MOON_PA_DE421 (class ID 31006):
+        # alias references must be followed to the aliased PCK frame's class
+        # ID rather than using the alias's own class ID (31000).
+        moon_bpc = self.generic_dir / "moon_pa_de421_1900-2050.bpc"
+        with ext.load_kernel([self.generic_dir / "moon_080317.tf", self.generic_dir / "moon_assoc_pa.tf"]):
+            expected = tuple(ext.kernel_coverage(moon_bpc, 31006, to_fmt="et"))
+            self.assertEqual(2, len(expected))
+            for target in ("MOON_PA_DE421", "MOON_PA", obj.Frame("MOON_PA"), "MOON", obj.Body(301)):
+                with self.subTest(target=target):
+                    self.assertEqual(expected, tuple(ext.kernel_coverage(moon_bpc, target, to_fmt="et")))
+            self.assertEqual((31006,), ext.kernel_objects(moon_bpc, as_id=True))
+
+    def test_kernel_coverage_pck_earth_real_kernel(self):
+        earth_bpc = self.generic_dir / "earth_720101_070426.bpc"
+        window = tuple(ext.kernel_coverage(earth_bpc, "ITRF93", to_fmt="et"))
+        self.assertEqual(2, len(window))
+        self.assertLess(window[0], window[1])
+        self.assertEqual(window, tuple(ext.kernel_coverage(earth_bpc, 3000, to_fmt="et")))
+        self.assertEqual((3000,), ext.kernel_objects(earth_bpc, as_id=True))
+
+    def test_frame_class_id_errors(self):
+        # Inertial (class-1) frames have no binary-PCK data.
+        with self.assertRaises(ValueError) as raised:
+            ext.frame_class_id("J2000")
+        self.assertIn("class-1", str(raised.exception))
+
+        with self.assertRaises(ValueError):
+            ext.frame_class_id("NOT_A_REAL_FRAME_NAME")
+
         with self.assertRaises(TypeError):
-            ext.kernel_coverage(pck_file, "ITRF93", to_fmt="et")
+            ext.frame_class_id(1.5)
 
     def test_kernel_objects_pck(self):
         pck_file = self._write_test_pck(self.tmp_dir / "test_obj.bpc")
