@@ -89,14 +89,16 @@ class LeapsecondTestCase(unittest.TestCase):
         # NOTE: The `fursh` routine is mocked to prevent changes to the kernel
         #   pool.
         cache_dir = self.tmp_dir / "cache"
-        with patch("curryer.kernels.cache.get_local_cache_dir", return_value=cache_dir):
+        with patch("curryer.spicetime.leapsecond.get_local_cache_dir", return_value=cache_dir):
             # Make the default look like it's very old and needs updating.
             outdated_fn = Path(self.tmp_dir, "naif0001.tls")
             with patch.object(leapsecond, "find_default_file", return_value=outdated_fn):
                 fn = leapsecond.update_file()
                 self.assertIsInstance(fn, Path)
                 self.assertTrue(fn.is_file())
-                self.assertEqual(cache_dir, fn.parent, "Update should land in the kernel cache")
+                self.assertEqual(
+                    self.tmp_dir / "lsk", fn.parent, "Update should land in the version-independent LSK cache"
+                )
 
             # The unpatched search now resolves to the downloaded kernel.
             default_file = leapsecond.find_default_file()
@@ -122,7 +124,7 @@ class LeapsecondFakeTestCase(unittest.TestCase):
 
         # Isolate the kernel cache: an unrelated cached kernel on the dev
         # machine must not affect the default-file search.
-        cache_patcher = patch("curryer.kernels.cache.get_local_cache_dir", return_value=self.tmp_dir / "cache")
+        cache_patcher = patch("curryer.spicetime.leapsecond.get_local_cache_dir", return_value=self.tmp_dir / "cache")
         self.addCleanup(cache_patcher.stop)
         cache_patcher.start()
 
@@ -244,9 +246,11 @@ class UpdateLeapsecondTestCase(unittest.TestCase):
         self.tmp_dir = Path(self.__tmp_dir.name)
 
         # Isolate the kernel cache so downloads land in (and searches see) a
-        # temp dir instead of the real user cache.
+        # temp dir instead of the real user cache. Updated LSKs land in the
+        # version-independent sibling of the version-keyed cache dir.
         self.cache_dir = self.tmp_dir / "cache"
-        patcher = patch("curryer.kernels.cache.get_local_cache_dir", return_value=self.cache_dir)
+        self.lsk_dir = self.tmp_dir / "lsk"
+        patcher = patch("curryer.spicetime.leapsecond.get_local_cache_dir", return_value=self.cache_dir)
         self.addCleanup(patcher.stop)
         patcher.start()
 
@@ -285,26 +289,27 @@ class UpdateLeapsecondTestCase(unittest.TestCase):
 
     @responses.activate
     def test_update_file_no_update_needed(self):
-        # Nothing registered with responses: any network request errors out.
-        with patch.object(leapsecond, "check_for_update", return_value=None) as mock_check_for_update:
+        # Only the index page is registered: a download attempt errors out.
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL, body=self.INDEX_PAGE)
+        with patch.object(leapsecond, "find_default_file", return_value=Path("naif0002.tls")):
             r = leapsecond.update_file()
 
         self.assertIsNone(r)
-        mock_check_for_update.assert_called_once_with()
 
     @responses.activate
     @patch.object(leapsecond.sp, "furnsh", autospec=True)
     def test_update_file_is_outdated(self, mock_furnsh):
         # Serve a "newer" kernel whose content is the real packaged kernel.
         kernel_text = leapsecond.find_default_file().read_text()
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL, body='href="naif9999.tls"')
         responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL + "naif9999.tls", body=kernel_text)
 
-        with patch.object(leapsecond, "check_for_update", return_value="naif9999.tls"):
+        with patch.object(leapsecond, "find_default_file", return_value=Path("naif0001.tls")):
             fn = leapsecond.update_file()
 
         self.assertIsInstance(fn, Path)
         self.assertTrue(fn.is_file())
-        self.assertEqual(self.cache_dir, fn.parent, "Update should land in the kernel cache")
+        self.assertEqual(self.lsk_dir, fn.parent, "Update should land in the version-independent LSK cache")
         self.assertEqual(kernel_text, fn.read_text(), "Kernel text doesn't match fake web data!")
 
         # The downloaded kernel is now the default, and was loaded.
@@ -314,16 +319,50 @@ class UpdateLeapsecondTestCase(unittest.TestCase):
 
     @responses.activate
     @patch.object(leapsecond.sp, "furnsh", autospec=True)
+    def test_update_survives_version_change(self, mock_furnsh):
+        # The LSK cache dir is a version-independent sibling of the
+        # version-keyed dirs: after a simulated package upgrade (a different
+        # version-keyed dir under the same root), the update is still found.
+        kernel_text = leapsecond.find_default_file().read_text()
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL, body='href="naif9999.tls"')
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL + "naif9999.tls", body=kernel_text)
+
+        with patch.object(leapsecond, "find_default_file", return_value=Path("naif0001.tls")):
+            fn = leapsecond.update_file()
+
+        with patch("curryer.spicetime.leapsecond.get_local_cache_dir", return_value=self.tmp_dir / "cache-next"):
+            default_file = leapsecond.find_default_file()
+        self.assertTrue(default_file.samefile(fn), "Update lost after a simulated package upgrade!")
+
+    @responses.activate
+    @patch.object(leapsecond.sp, "furnsh", autospec=True)
+    def test_update_file_warns_when_override_active(self, mock_furnsh):
+        # An active override keeps winning the default-file search, so the
+        # downloaded update would be invisible: the user must be told.
+        packaged_dir = Path(leapsecond.__file__).parent.joinpath(leapsecond._LEAPSECOND_FILE_PATH).resolve()
+        kernel_text = leapsecond.find_default_file().read_text()
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL, body='href="naif9999.tls"')
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL + "naif9999.tls", body=kernel_text)
+
+        with patch.object(leapsecond, "LEAPSECOND_USER_FILE_PATH", packaged_dir):
+            with self.assertWarns(UserWarning) as caught:
+                fn = leapsecond.update_file()
+        self.assertIn("override", str(caught.warning))
+        self.assertTrue(fn.is_file())
+
+    @responses.activate
+    @patch.object(leapsecond.sp, "furnsh", autospec=True)
     def test_update_file_fails_web_data_not_an_lsk_kernel(self, mock_furnsh):
         # Serve content that is not a valid kernel.
+        responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL, body='href="naif9999.tls"')
         responses.add(responses.GET, leapsecond.LEAPSECOND_BASE_URL + "naif9999.tls", body=self.INDEX_PAGE)
 
-        with patch.object(leapsecond, "check_for_update", return_value="naif9999.tls"):
+        with patch.object(leapsecond, "find_default_file", return_value=Path("naif0001.tls")):
             with self.assertRaises(AssertionError):
                 leapsecond.update_file()
 
         self.assertFalse(mock_furnsh.called, "Tried to load the invalid kernel.")
-        self.assertFalse((self.cache_dir / "naif9999.tls").exists(), "Invalid kernel left in the cache.")
+        self.assertFalse((self.lsk_dir / "naif9999.tls").exists(), "Invalid kernel left in the cache.")
 
 
 class DefaultFileResolutionTestCase(unittest.TestCase):
@@ -334,9 +373,11 @@ class DefaultFileResolutionTestCase(unittest.TestCase):
         self.addCleanup(self.__tmp_dir.cleanup)
         self.tmp_dir = Path(self.__tmp_dir.name)
 
-        # Default to an empty, isolated kernel cache.
+        # Default to an empty, isolated kernel cache; updated LSKs live in
+        # the version-independent sibling of the version-keyed dir.
         self.cache_dir = self.tmp_dir / "cache"
-        patcher = patch("curryer.kernels.cache.get_local_cache_dir", return_value=self.cache_dir)
+        self.lsk_dir = self.tmp_dir / "lsk"
+        patcher = patch("curryer.spicetime.leapsecond.get_local_cache_dir", return_value=self.cache_dir)
         self.addCleanup(patcher.stop)
         patcher.start()
 
@@ -362,8 +403,8 @@ class DefaultFileResolutionTestCase(unittest.TestCase):
         self.assertEqual(self.tmp_dir / "naif0001.tls", fn)
 
     def test_cached_update_wins_over_packaged_kernel(self):
-        self.cache_dir.mkdir(parents=True)
-        newer = self.cache_dir / "naif9999.tls"
+        self.lsk_dir.mkdir(parents=True)
+        newer = self.lsk_dir / "naif9999.tls"
         newer.touch()
         fn = leapsecond.find_default_file()
         self.assertEqual(newer, fn)
@@ -371,8 +412,8 @@ class DefaultFileResolutionTestCase(unittest.TestCase):
     def test_cache_only_resolution(self):
         # An install whose packaged kernel is unavailable but whose cache was
         # populated (e.g., by `update_file`) still resolves.
-        self.cache_dir.mkdir(parents=True)
-        cached = self.cache_dir / "naif0012.tls"
+        self.lsk_dir.mkdir(parents=True)
+        cached = self.lsk_dir / "naif0012.tls"
         cached.write_text(leapsecond.find_default_file().read_text())
         with patch.object(leapsecond, "_LEAPSECOND_FILE_PATH", self.tmp_dir / "empty"):
             fn = leapsecond.find_default_file()

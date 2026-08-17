@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+Adds the building blocks of a mission-agnostic kernel-management layer:
+pool introspection, kernel coverage queries and aggregation, NAIF
+generic-kernel discovery, and a local kernel file cache.
+
+- **`curryer.spicierpy.ext`** – `loaded_kernels()` lists the furnished
+  kernel pool (with a `KernelType` filter enum); `kernel_coverage` /
+  `kernel_objects` gain binary-PCK support keyed on frame class IDs, with
+  `frame_class_id()` resolving names, `Body`/`Frame` objects, and TK-frame
+  aliases (e.g. `MOON_PA`).
+- **New `curryer.kernels.coverage`** – run-level coverage aggregation:
+  `valid_window` (simultaneous coverage across targets), `coverage_gaps`
+  (uncovered sub-ranges, warning or raising), `coverage_rollup`, and
+  `pairwise_overlap`. Targets that resolve nowhere are diagnosed instead of
+  silently reporting as uncovered.
+- **New `curryer.kernels.discovery`** – resolves the most recent NAIF
+  generic kernels (LSK, DE, PCKs) by scraping the server's index listings,
+  with mirror and flat-directory support.
+- **New `curryer.kernels.cache`** – fetches kernel sources (local, HTTP,
+  S3) into a per-version user cache with atomic writes, per-entry max ages,
+  size revalidation, retry backoff, and offline stale-copy fallback.
+- **New `curryer.kernels.path_utils`** – consolidated SPICE path-length
+  handling (`validate_path_length`, shortening strategies for the
+  80-character meta-kernel limit).
+- **Leapsecond updates survive upgrades** – a leapsecond kernel ships
+  inside the package, and `spicetime.leapsecond.update_file` caches updates
+  in a version-independent directory.
+
 ## Version 0.5.0 (2026-07)
 
 Expands `curryer.compute.geometry` from 6 to 24 computable fields and adds NumPy 2 support.
