@@ -129,6 +129,28 @@ class GeometryField(str, Enum):
         "Instrument boresight unit vector (inertial).",
     )
 
+    MOON_BORESIGHT_ANGLE = (
+        "moon_boresight_angle",
+        ("moon_boresight_angle",),
+        "Angle between the instrument boresight and the Moon (deg).",
+    )
+    MOON_AZIMUTH_OFFSET = (
+        "moon_azimuth_offset",
+        ("moon_azimuth_offset",),
+        "Signed Moon offset from the boresight about the cross-boresight elevation axis (deg).",
+    )
+    MOON_ELEVATION_OFFSET = (
+        "moon_elevation_offset",
+        ("moon_elevation_offset",),
+        "Signed Moon offset from the boresight about the cross-boresight azimuth axis (deg).",
+    )
+    MOON_ANGULAR_RADIUS = (
+        "moon_angular_radius",
+        ("moon_angular_radius",),
+        "Apparent angular radius of the lunar disk from the observer (deg).",
+    )
+    MOON_DISTANCE = ("moon_distance", ("moon_distance",), "Observer-Moon distance (km).")
+
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)
         member._value_ = value
