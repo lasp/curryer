@@ -3,6 +3,7 @@
 @author: Brandon Stone
 """
 
+import enum
 import logging
 import os
 import shutil
@@ -98,6 +99,85 @@ class load_kernel:
             self._loaded.remove(kernel)
         else:
             raise ValueError("Must specify `kernel` (str) or `all`=True.")
+
+
+class KernelType(str, enum.Enum):
+    """SPICE kernel-pool type categories, as used by ``ktotal`` / ``kdata``.
+
+    These are the pool's load-time categories, not file formats: SPICE
+    collapses every text kernel (LSK, FK, IK, SCLK, text PCK, meta-kernel
+    contents, ...) into ``TEXT``, so a text PCK is reported as ``TEXT``,
+    never ``PCK``. ``PCK`` matches only binary PCKs.
+
+    Members are plain strings (``KernelType.SPK == "SPK"``) and may be passed
+    anywhere SPICE expects a kind string.
+    """
+
+    SPK = "SPK"
+    CK = "CK"
+    PCK = "PCK"
+    DSK = "DSK"
+    EK = "EK"
+    TEXT = "TEXT"
+    META = "META"
+    ALL = "ALL"
+
+
+class LoadedKernel(typing.NamedTuple):
+    """A kernel currently furnished in the SPICE kernel pool.
+
+    Attributes
+    ----------
+    file : str
+        Kernel file path, as it was furnished.
+    ktype : str
+        SPICE kernel type (e.g. ``"SPK"``, ``"CK"``, ``"PCK"``, ``"TEXT"``, ``"META"``).
+    source : str
+        Name of the source file that furnished this kernel (e.g. a meta-kernel),
+        or an empty string if it was furnished directly.
+    handle : int
+        SPICE integer handle for binary kernels; 0 for text kernels.
+    """
+
+    file: str
+    ktype: str
+    source: str
+    handle: int
+
+
+def loaded_kernels(
+    kind: str | KernelType | typing.Iterable[str | KernelType] = KernelType.ALL,
+) -> list[LoadedKernel]:
+    """List the kernels currently furnished in the SPICE kernel pool.
+
+    Queries the kernel pool itself (``ktotal`` / ``kdata``), so the result reflects
+    every furnished kernel regardless of which component loaded it — unlike
+    :attr:`load_kernel.loaded`, which tracks only the kernels loaded through that
+    handle. Useful for verifying furnish state and for pool-wide diagnostics.
+
+    Parameters
+    ----------
+    kind : str or KernelType or iterable of them, optional
+        Kernel kind filter: one or more :class:`KernelType` values (or their
+        string equivalents), or a space-delimited combination string. Note
+        that all text kernels report as ``TEXT`` (see :class:`KernelType`).
+        Default=``KernelType.ALL``.
+
+    Returns
+    -------
+    list of LoadedKernel
+        One record per furnished kernel, in load order.
+
+    """
+    if not isinstance(kind, str):
+        kind = " ".join(kind)
+    records = []
+    for which in range(spiceypy.ktotal(kind)):
+        # Slice guards against the 5-tuple (extra `found` flag) that kdata
+        # returns when spiceypy's `catch_false_founds` config is disabled.
+        file, ktype, source, handle = spiceypy.kdata(which, kind)[:4]
+        records.append(LoadedKernel(file=file, ktype=ktype, source=source, handle=handle))
+    return records
 
 
 def object_frame(obj_name, as_id=False):

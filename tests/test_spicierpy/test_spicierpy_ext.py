@@ -122,6 +122,55 @@ class ExtTestCase(unittest.TestCase):
                 kern.unload(kernel=123)
         self.assertIn("Must specify `kernel` (str) or `all`=True.", raised.exception.args[0])
 
+    def test_loaded_kernels_lists_pool(self):
+        # Robust to kernels other tests may have left furnished (or SPICE
+        # de-duplicating a re-furnish): assert on membership and on the pool's
+        # file set returning to the baseline, not on counts.
+        baseline_files = {rec.file for rec in ext.loaded_kernels()}
+        with ext.load_kernel(self.kernels_all):
+            records = ext.loaded_kernels()
+            listed_files = {rec.file for rec in records}
+            for kernel_file in self.kernels_all:
+                self.assertIn(str(kernel_file), listed_files)
+            self.assertTrue(baseline_files.issubset(listed_files))
+            for rec in records:
+                self.assertIsInstance(rec, ext.LoadedKernel)
+                self.assertIsInstance(rec.file, str)
+                self.assertIsInstance(rec.ktype, str)
+                self.assertIsInstance(rec.source, str)
+                self.assertIsInstance(rec.handle, int)
+        self.assertEqual(baseline_files, {rec.file for rec in ext.loaded_kernels()})
+
+    def test_loaded_kernels_kind_filter(self):
+        with ext.load_kernel(self.kernels_all):
+            spk_records = ext.loaded_kernels(kind="SPK")
+            self.assertTrue(spk_records)
+            self.assertTrue(all(rec.ktype == "SPK" for rec in spk_records))
+            expected_spks = {str(fn) for fn in self.kernels["ephemeris"]}
+            self.assertTrue(expected_spks.issubset({rec.file for rec in spk_records}))
+            text_records = ext.loaded_kernels(kind="TEXT")
+            self.assertTrue(text_records)
+            self.assertTrue(all(rec.ktype == "TEXT" for rec in text_records))
+            self.assertTrue(all(rec.handle == 0 for rec in text_records))
+
+    def test_loaded_kernels_kind_enum_and_list(self):
+        with ext.load_kernel(self.kernels_all):
+            spk_records = ext.loaded_kernels(kind="SPK")
+            self.assertEqual(spk_records, ext.loaded_kernels(kind=ext.KernelType.SPK))
+
+            # A list of kinds matches the union of the individual filters.
+            combined = ext.loaded_kernels(kind=[ext.KernelType.SPK, "TEXT"])
+            expected = {rec.file for rec in spk_records} | {rec.file for rec in ext.loaded_kernels(kind="TEXT")}
+            self.assertEqual(expected, {rec.file for rec in combined})
+            self.assertTrue(combined)
+
+            # Text PCKs report as TEXT, never PCK (see KernelType docstring):
+            # the PCK (binary-only) filter must not include the .tpc kernels.
+            text_pcks = {str(fn) for fn in self.kernels_all if fn.suffix == ".tpc"}
+            self.assertTrue(text_pcks)
+            pck_files = {rec.file for rec in ext.loaded_kernels(kind=ext.KernelType.PCK)}
+            self.assertFalse(text_pcks & pck_files)
+
     def test_object_frame(self):
         # Load the kernels to activate name <--> code.
         #   Load frame kernel for name <--> code.
