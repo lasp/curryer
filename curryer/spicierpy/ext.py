@@ -201,18 +201,92 @@ def object_frame(obj_name, as_id=False):
     return spiceypy.cnmfrm(obj_name)[not as_id]
 
 
-def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
+def frame_class_id(frame: str | Body | Frame) -> int:
+    """Resolve a frame reference to the frame class ID used by binary PCKs.
+
+    Binary-PCK data (e.g. high-precision Earth orientation, lunar libration)
+    is keyed on the frame *class* ID (e.g. 3000 for ITRF93, 31006 for
+    MOON_PA_DE421), not the frame ID (13000, 31000). Class-4 (fixed-offset,
+    "TK") frames that alias another frame — e.g. ``MOON_PA``, which aliases
+    ``MOON_PA_DE421`` — are followed to the frame they alias. Non-built-in
+    definitions require their frame kernel (FK) to be loaded.
+
+    Parameters
+    ----------
+    frame : str or Body or Frame
+        Frame name or object. Body objects (or body names) resolve via the
+        body's associated frame (e.g. ``"MOON"`` -> ``MOON_PA`` -> 31006).
+
+    Returns
+    -------
+    int
+        Frame class ID, as used by `pckcov` / `pckfrm`.
+
+    Raises
+    ------
+    ValueError
+        If the reference does not resolve to a defined frame, or the frame
+        (after following aliases) is not a class-2 (PCK) frame.
+
+    """
+    if isinstance(frame, Body):
+        frame_id = spiceypy.cidfrm(frame.id)[0]
+    elif isinstance(frame, Frame):
+        frame_id = frame.id
+    elif isinstance(frame, str):
+        frame_id = spiceypy.namfrm(frame)
+        if frame_id == 0:
+            # Not a frame name; fall back to a body name's associated frame.
+            try:
+                frame_id = spiceypy.cidfrm(Body(frame).id)[0]
+            except SpiceyError as err:
+                raise ValueError(f"Unable to resolve {frame!r} to a frame or body; is its kernel loaded?") from err
+    else:
+        raise TypeError(f"Expected a frame name or Body/Frame object; got: {frame!r}")
+    if not isinstance(frame_id, int):
+        # Frame objects carry the name through when no loaded FK defines it.
+        raise ValueError(f"Frame {frame!r} is not defined; load its frame kernel (FK) first.")
+
+    seen = {frame_id}
+    _, frclss, clssid = spiceypy.frinfo(frame_id)
+    while frclss == 4:
+        # Fixed-offset (TK) frames alias another frame; follow the chain.
+        frame_id = int(spiceypy.tkfram(frame_id)[1])
+        if frame_id in seen:
+            raise ValueError(f"Circular TK-frame alias chain involving frame ID {frame_id}")
+        seen.add(frame_id)
+        _, frclss, clssid = spiceypy.frinfo(frame_id)
+    if frclss != 2:
+        name = spiceypy.frmnam(frame_id) or frame_id
+        raise ValueError(
+            f"Frame {name!r} (ID {frame_id}) is a class-{frclss} frame; binary-PCK data is keyed on"
+            f" class-2 (PCK) frames such as ITRF93 or MOON_PA_DE421."
+        )
+    return int(clssid)
+
+
+def kernel_coverage(
+    filename: str | Path,
+    body: int | str | Body | Frame,
+    as_segments: bool = False,
+    to_fmt: str = "ugps",
+) -> np.ndarray:
     """Determine the coverage window for an entire kernel file.
 
     Parameters
     ----------
     filename : str or Path
         SPICE kernel file.
-    body : int or str
+    body : int or str or Body or Frame
         NAIF body code or name to check coverage of. A string is assumed to be
         a body name, while an int is assumed to be a body code.
         Note: Using a body name requires that the body definition is loaded
         into memory; integer codes will work regardless.
+        For binary PCK kernels, coverage is keyed on the frame *class* ID
+        (e.g., 3000 for the ITRF93 Earth-orientation kernels); pass the class
+        ID as an integer, or a frame/body name or `Frame`/`Body` object to
+        resolve it (see `frame_class_id`; requires the frame definitions to
+        be loaded).
     as_segments : bool
         Option to return the coverage of each segment.
     to_fmt : str, optional
@@ -230,9 +304,9 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
     (CK)).
 
     """
-    # Determine the kernel type (returns uppercase).
+    # Determine the kernel architecture and type (returns uppercase).
     filename = str(filename)
-    _, ktype = spiceypy.getfat(filename)
+    arch, ktype = spiceypy.getfat(filename)
 
     # TODO: Switch to using objs for `body`.
 
@@ -256,10 +330,15 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
             body = Frame(body)
         window = spiceypy.ckcov(filename, idcode=body.id, needav=False, level="SEGMENT", tol=0, timsys="TDB")
 
-    # Valid, but unsupported kernel types.
-    elif ktype in ["PCK"]:
-        # TODO: Consider implementing using: pckcov
-        raise NotImplementedError(f"For kernel type: {ktype!r}")
+    # Orientation (binary PCK) kernel, e.g. Earth-orientation / ITRF93.
+    elif ktype == "PCK":
+        # Text PCKs (arch "KPL") carry constants, not time coverage.
+        if arch != "DAF":
+            raise NotImplementedError(f"Text PCK kernels carry constants, not time coverage: {filename!r}")
+        # Ints are taken as the frame class ID itself; everything else
+        # resolves through the frame system, following TK aliases (MOON_PA).
+        idcode = body if isinstance(body, int) else frame_class_id(body)
+        window = spiceypy.pckcov(filename, idcode=idcode)
 
     # Invalid kernel types (i.e., no related "coverage" function).
     else:
@@ -285,12 +364,12 @@ def kernel_coverage(filename, body, as_segments=False, to_fmt="ugps"):
     return spicetime.adapt(window, "et", to_fmt)
 
 
-def kernel_objects(filename, as_id=False):
+def kernel_objects(filename: str | Path, as_id: bool = False) -> tuple[Body | Frame | int, ...]:
     """Determine what objects (names or codes) are within a kernel file.
 
     Parameters
     ----------
-    filename : str
+    filename : str or Path
         SPICE kernel file.
     as_id : bool, optional
         If False (default) return the NAIF body names, otherwise return the
@@ -302,12 +381,13 @@ def kernel_objects(filename, as_id=False):
     -------
     tuple of str or tuple of ints
         Collection of NAIF body names (default) or codes found within the
-        kernel file (`filename`).
+        kernel file (`filename`). Binary PCK kernels contain frame *class*
+        IDs, which have no name lookup and require `as_id=True`.
 
     """
-    # Determine the kernel type (returns uppercase).
+    # Determine the kernel architecture and type (returns uppercase).
     filename = str(filename)
-    _, ktype = spiceypy.getfat(filename)
+    arch, ktype = spiceypy.getfat(filename)
 
     # Ephemeris kernel.
     if ktype == "SPK":
@@ -320,6 +400,18 @@ def kernel_objects(filename, as_id=False):
         objs = tuple(spiceypy.ckobj(filename))
         if not as_id:
             objs = tuple(Frame(v) for v in objs)
+
+    # Orientation (binary PCK) kernel: contains frame *class* IDs (e.g., 3000
+    # for ITRF93), which have no generic name lookup in SPICE.
+    elif ktype == "PCK":
+        # Text PCKs (arch "KPL") carry constants, not object/frame segments.
+        if arch != "DAF":
+            raise NotImplementedError(f"Text PCK kernels carry constants, not object segments: {filename!r}")
+        if not as_id:
+            raise NotImplementedError("Binary-PCK frame class IDs have no name lookup; use `as_id=True`.")
+        ids_cell = spiceypy.support_types.SPICEINT_CELL(1000)
+        spiceypy.pckfrm(filename, ids_cell)
+        objs = tuple(int(ids_cell[i]) for i in range(spiceypy.card(ids_cell)))
 
     # Valid, but unsupported kernel types.
     elif ktype in ["DSK"]:

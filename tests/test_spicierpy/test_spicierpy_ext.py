@@ -11,7 +11,7 @@ from unittest.mock import call, patch
 
 from spiceypy.utils.exceptions import SpiceyError
 
-from curryer import meta, spicierpy, utils
+from curryer import meta, spicetime, spicierpy, utils
 from curryer.spicierpy import ext, obj
 
 logger = logging.getLogger(__name__)
@@ -215,14 +215,14 @@ class ExtTestCase(unittest.TestCase):
                 ext.kernel_coverage(self.kernels["attitude"][-1], 0)
             self.assertIn("No data for body [Frame(0)] was found in the kernel", raised.exception.args[0])
 
-        # PCK is valid, but not implemented.
+        # Text PCK is valid, but carries constants, not time coverage.
         tmp_file = str(self.tmp_dir / "test1")
         with open(tmp_file, "w") as fobj:
             fobj.write("KPL/PCK\n\n")
 
         with self.assertRaises(NotImplementedError) as raised:
             ext.kernel_coverage(tmp_file, 0)
-        self.assertIn("For kernel type: 'PCK'", raised.exception.args[0])
+        self.assertIn("Text PCK", raised.exception.args[0])
 
         # Invalid kernel for coverage data.
         tmp_file = str(self.tmp_dir / "test2")
@@ -279,6 +279,103 @@ class ExtTestCase(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             ext.kernel_objects(tmp_file)
         self.assertIn("Unknown or unexpected kernel type: 'SCLK' from", raised.exception.args[0])
+
+    def _write_test_pck(self, filename, classid=3000, segments=((0.0, 86400.0),)):
+        """Write a minimal binary PCK with one type-2 segment per (start, stop) ET pair."""
+        handle = spicierpy.pckopn(str(filename), "test-bpc", 0)
+        polydg = 1
+        cdata = [0.0] * (3 * (polydg + 1))
+        for first, last in segments:
+            spicierpy.pckw02(handle, classid, "J2000", first, last, "testseg", last - first, 1, polydg, cdata, first)
+        spicierpy.pckcls(handle)
+        return filename
+
+    def test_kernel_coverage_pck(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test.bpc")
+        window = ext.kernel_coverage(pck_file, 3000, to_fmt="et")
+        self.assertEqual((0.0, 86400.0), tuple(window))
+
+        # Default output format is ugps.
+        ugps_window = ext.kernel_coverage(pck_file, 3000)
+        expected = spicetime.adapt([0.0, 86400.0], "et", "ugps")
+        self.assertEqual(tuple(expected), tuple(ugps_window))
+
+    def test_kernel_coverage_pck_frame_object(self):
+        # Frame objects map to the frame *class* ID (ITRF93: frame ID 13000,
+        # class ID 3000), so they must resolve the same coverage as the class ID.
+        pck_file = self._write_test_pck(self.tmp_dir / "test_frame.bpc")
+        with ext.load_kernel(self.generic_dir / "earth_assoc_itrf93.tf"):
+            window = ext.kernel_coverage(pck_file, obj.Frame("ITRF93"), to_fmt="et")
+            self.assertEqual((0.0, 86400.0), tuple(window))
+
+            # Body objects route via the body's associated frame.
+            body_window = ext.kernel_coverage(pck_file, obj.Body("EARTH"), to_fmt="et")
+            self.assertEqual((0.0, 86400.0), tuple(body_window))
+
+    def test_kernel_coverage_pck_segments_and_errors(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test_seg.bpc", segments=((0.0, 86400.0), (172800.0, 259200.0)))
+
+        # Overall window spans both segments; as_segments returns each.
+        window = ext.kernel_coverage(pck_file, 3000, to_fmt="et")
+        self.assertEqual((0.0, 259200.0), tuple(window))
+        segments = ext.kernel_coverage(pck_file, 3000, as_segments=True, to_fmt="et")
+        self.assertEqual((0.0, 86400.0, 172800.0, 259200.0), tuple(segments))
+
+        # A class ID absent from the kernel is an error that names the IDs it does contain.
+        with self.assertRaises(ValueError) as raised:
+            ext.kernel_coverage(pck_file, 4000, to_fmt="et")
+        self.assertIn("3000", str(raised.exception))
+
+        # Frame names resolve through the frame system (ITRF93 is built in).
+        named = ext.kernel_coverage(pck_file, "ITRF93", to_fmt="et")
+        self.assertEqual(tuple(window), tuple(named))
+
+    def test_kernel_coverage_pck_moon_alias(self):
+        # MOON_PA is a class-4 TK alias of MOON_PA_DE421 (class ID 31006):
+        # alias references must be followed to the aliased PCK frame's class
+        # ID rather than using the alias's own class ID (31000).
+        moon_bpc = self.generic_dir / "moon_pa_de421_1900-2050.bpc"
+        with ext.load_kernel([self.generic_dir / "moon_080317.tf", self.generic_dir / "moon_assoc_pa.tf"]):
+            expected = tuple(ext.kernel_coverage(moon_bpc, 31006, to_fmt="et"))
+            self.assertEqual(2, len(expected))
+            for target in ("MOON_PA_DE421", "MOON_PA", obj.Frame("MOON_PA"), "MOON", obj.Body(301)):
+                with self.subTest(target=target):
+                    self.assertEqual(expected, tuple(ext.kernel_coverage(moon_bpc, target, to_fmt="et")))
+            self.assertEqual((31006,), ext.kernel_objects(moon_bpc, as_id=True))
+
+    def test_kernel_coverage_pck_earth_real_kernel(self):
+        earth_bpc = self.generic_dir / "earth_720101_070426.bpc"
+        window = tuple(ext.kernel_coverage(earth_bpc, "ITRF93", to_fmt="et"))
+        self.assertEqual(2, len(window))
+        self.assertLess(window[0], window[1])
+        self.assertEqual(window, tuple(ext.kernel_coverage(earth_bpc, 3000, to_fmt="et")))
+        self.assertEqual((3000,), ext.kernel_objects(earth_bpc, as_id=True))
+
+    def test_frame_class_id_errors(self):
+        # Inertial (class-1) frames have no binary-PCK data.
+        with self.assertRaises(ValueError) as raised:
+            ext.frame_class_id("J2000")
+        self.assertIn("class-1", str(raised.exception))
+
+        with self.assertRaises(ValueError):
+            ext.frame_class_id("NOT_A_REAL_FRAME_NAME")
+
+        with self.assertRaises(TypeError):
+            ext.frame_class_id(1.5)
+
+    def test_kernel_objects_pck(self):
+        pck_file = self._write_test_pck(self.tmp_dir / "test_obj.bpc")
+        self.assertEqual((3000,), ext.kernel_objects(pck_file, as_id=True))
+        with self.assertRaises(NotImplementedError):
+            ext.kernel_objects(pck_file)
+
+        # Text PCKs carry constants, not object segments.
+        text_pck = str(self.tmp_dir / "test_text.tpc")
+        with open(text_pck, "w") as fobj:
+            fobj.write("KPL/PCK\n\n")
+        with self.assertRaises(NotImplementedError) as raised:
+            ext.kernel_objects(text_pck, as_id=True)
+        self.assertIn("Text PCK", raised.exception.args[0])
 
     def test_infer_kernel_ids_basic(self):
         ids = ext.infer_ids("iss_sc", -125544, instruments=["tim"])
