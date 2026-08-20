@@ -3,6 +3,6 @@
 @author: Brandon Stone
 """
 
-from . import attitude, classes, create, ephemeris, writer
+from . import attitude, classes, coverage, create, ephemeris, writer
 
-__all__ = ["attitude", "classes", "create", "ephemeris", "writer"]
+__all__ = ["attitude", "classes", "coverage", "create", "ephemeris", "writer"]
