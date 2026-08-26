@@ -950,6 +950,21 @@ class BoresightOffsetAnglesTestCase(unittest.TestCase):
         with pytest.raises(ValueError, match="`reference_vector` must be a single vector"):
             spatial.boresight_offset_angles(np.zeros((2, 3)), self.BORESIGHT, reference_vector=np.zeros(2))
 
+    def test_degenerate_triad_vectors_raise(self):
+        # A degenerate boresight or reference invalidates every row rather than one, so it
+        # raises instead of NaN-filling the way a bad target vector does. NaN has to be
+        # caught up front in particular: it slips past the parallel-reference check, which
+        # would otherwise leave the caller a silent all-NaN return.
+        for boresight in (np.zeros(3), np.array([np.nan, 0.0, 1.0]), np.array([np.inf, 0.0, 1.0])):
+            with self.subTest(boresight=boresight):
+                with pytest.raises(ValueError, match="`boresight_vector` must be finite and non-zero"):
+                    spatial.boresight_offset_angles(self.BORESIGHT, boresight)
+
+        for reference in (np.array([np.nan, 0.0, 0.0]), np.array([np.inf, 0.0, 0.0])):
+            with self.subTest(reference=reference):
+                with pytest.raises(ValueError, match="`reference_vector` must be finite"):
+                    spatial.boresight_offset_angles(self.BORESIGHT, self.BORESIGHT, reference_vector=reference)
+
 
 if __name__ == "__main__":
     unittest.main()

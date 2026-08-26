@@ -1380,8 +1380,10 @@ def boresight_offset_angles(
     Raises
     ------
     ValueError
-        If the vectors are not 3 values per point, or if `reference_vector` is
-        parallel to `boresight_vector` (leaving the azimuth origin undefined).
+        If the vectors are not 3 values per point, if `boresight_vector` is
+        non-finite or zero-length, if `reference_vector` is non-finite, or if
+        `reference_vector` is parallel to `boresight_vector` (leaving the
+        azimuth origin undefined).
 
     Notes
     -----
@@ -1400,9 +1402,15 @@ def boresight_offset_angles(
     if target_vectors.ndim != 2 or target_vectors.shape[-1] != 3:
         raise ValueError("`target_vectors` must have 3 values per point!")
 
+    # The boresight and the reference define the triad, not the data: a degenerate one
+    # makes every row NaN, so they raise rather than following the fill contract that
+    # `target_vectors` rows do.
     boresight_vector = np.asarray(boresight_vector, dtype=float).ravel()
     if boresight_vector.size != 3:
         raise ValueError("`boresight_vector` must be a single vector of 3 values!")
+    boresight_norm = np.linalg.norm(boresight_vector)
+    if not np.isfinite(boresight_norm) or boresight_norm == 0:
+        raise ValueError("`boresight_vector` must be finite and non-zero!")
 
     if reference_vector is None:
         reference_vector = np.array([1.0, 0.0, 0.0])
@@ -1410,10 +1418,12 @@ def boresight_offset_angles(
         reference_vector = np.asarray(reference_vector, dtype=float).ravel()
         if reference_vector.size != 3:
             raise ValueError("`reference_vector` must be a single vector of 3 values!")
+        if not np.isfinite(reference_vector).all():
+            raise ValueError("`reference_vector` must be finite!")
 
     # Boresight triad: +Z along the boresight, +X the reference direction made
     # perpendicular to it, +Y completing the right-handed set.
-    z_axis = boresight_vector / np.linalg.norm(boresight_vector)
+    z_axis = boresight_vector / boresight_norm
     x_axis = reference_vector - (reference_vector @ z_axis) * z_axis
     x_axis_norm = np.linalg.norm(x_axis)
     if x_axis_norm == 0:
