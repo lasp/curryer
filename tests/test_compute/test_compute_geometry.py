@@ -926,6 +926,8 @@ def test_geometry_field_enum_matches_registry():
     assert set(geometry._FIELDS) == set(constants.GeometryField)
     for field in constants.GeometryField:
         assert geometry._FIELDS[field].columns == field.columns
+        # The module docstring is the field catalog; a field missing from it is drift.
+        assert f"``{field.value}``" in geometry.__doc__, field.value
 
 
 def test_geometry_field_enum_interchangeable_with_strings():

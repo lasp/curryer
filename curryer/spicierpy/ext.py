@@ -529,6 +529,7 @@ class InstrumentFov(typing.NamedTuple):
     frame: str
     boresight: np.ndarray
     bounds: np.ndarray
+    ref_vector: np.ndarray | None = None
 
     def half_angle(self, degrees=False) -> float:
         """Half angle of the cone about the boresight that contains the field of view.
@@ -568,7 +569,8 @@ def instrument_fov(instrument, max_bounds=16):
     -------
     InstrumentFov
         The FOV shape, the name of the frame the boresight and boundary vectors are
-        defined in, the boresight vector, and the boundary vectors [N, 3].
+        defined in, the boresight vector, the boundary vectors [N, 3], and the FOV
+        reference vector if the IK declares one (`None` otherwise).
 
     Notes
     -----
@@ -577,14 +579,23 @@ def instrument_fov(instrument, max_bounds=16):
     define the FOV in a frame other than the instrument's own, and expressing a target
     direction in the FOV frame is what makes it directly comparable to the boresight.
 
+    `getfov` does not return `INS<id>_FOV_REF_VECTOR`, so it is read from the pool
+    separately. Only an "ANGLES" `FOV_CLASS_SPEC` declares one; a "CORNERS" FOV gives
+    `None`. It is the IK's own answer to which direction cross-boresight angles are
+    measured from, which `curryer.compute.spatial.boresight_offset_angles` otherwise
+    has to assume.
+
     """
     instrument = Instrument(instrument)
     shape, frame_name, boresight, n_bounds, bounds = spiceypy.getfov(instrument.id, max_bounds, 80, 80)
+    ref_keyword = f"INS{instrument.id}_FOV_REF_VECTOR"
+    ref_vector = np.asarray(spiceypy.gdpool(ref_keyword, 0, 3), dtype=float) if spiceypy.expool(ref_keyword) else None
     return InstrumentFov(
         shape=shape,
         frame=frame_name,
         boresight=np.asarray(boresight, dtype=float),
         bounds=np.atleast_2d(np.asarray(bounds, dtype=float))[:n_bounds],
+        ref_vector=ref_vector,
     )
 
 

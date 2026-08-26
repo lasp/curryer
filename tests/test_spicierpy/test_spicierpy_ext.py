@@ -451,6 +451,17 @@ class ExtTestCase(unittest.TestCase):
         self.assertAlmostEqual(widest, fov.half_angle(degrees=True))
         self.assertAlmostEqual(np.deg2rad(fov.half_angle(degrees=True)), fov.half_angle())
 
+        # The IK's own azimuth reference, which `getfov` drops. Declared only by an
+        # "ANGLES" FOV_CLASS_SPEC, and non-parallel to the boresight (SPICE enforces it).
+        self.assertIsNotNone(fov.ref_vector)
+        self.assertListEqual([1.0, 0.0, 0.0], list(fov.ref_vector))
+        self.assertGreater(np.linalg.norm(np.cross(fov.ref_vector, fov.boresight)), 0.0)
+
+    def test_instrument_fov_without_reference_vector(self):
+        # A "CORNERS" FOV declares no FOV_REF_VECTOR, so there is nothing to read and
+        # callers fall back to their own azimuth origin.
+        self.assertIsNone(ext.InstrumentFov("RECTANGLE", "F", np.array([0.0, 0.0, 1.0]), np.eye(3)).ref_vector)
+
 
 class _StubSpiceError:
     """Duck-typed stand-in for a SpiceyError: only the attributes the classifier reads."""

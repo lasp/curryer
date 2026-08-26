@@ -85,6 +85,13 @@ them). Each field expands to the columns below.
   observer state in ``inertial_frame`` (km, km/s).
 - ``boresight_inertial`` -> ``boresight_inertial_x/y/z`` -- instrument boresight unit
   vector in ``inertial_frame``.
+- ``moon_boresight_angle`` -> ``moon_boresight_angle`` -- angle between the instrument
+  boresight and the Moon.
+- ``moon_azimuth_offset`` / ``moon_elevation_offset`` -> same-named columns -- the Moon's
+  direction as offsets from the boresight.
+- ``moon_angular_radius`` -> ``moon_angular_radius`` -- apparent angular radius of the
+  lunar disk.
+- ``moon_distance`` -> ``moon_distance`` -- apparent observer-Moon distance (km).
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -94,6 +101,16 @@ CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so
 Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
 (``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
 in [0, 90] for Earth-disk views.
+
+The lunar fields are boresight-relative rather than surface angles, and use a different
+convention: ``moon_azimuth_offset`` / ``moon_elevation_offset`` are a signed intrinsic
+azimuth-then-elevation pair about the instrument boresight, in (-180, 180] and [-90, 90],
+with the azimuth origin taken from the instrument kernel's ``FOV_REF_VECTOR``. They are
+not two independent projected angles like ``along_track_angle`` / ``cross_track_angle``,
+and the sign of the elevation depends on the boresight's orientation in its FOV frame --
+see `curryer.compute.spatial.boresight_offset_angles`. ``moon_boresight_angle`` is the
+total separation, in [0, 180]. The Moon is queried as an apparent (LT+S) position, so
+``moon_distance`` is the light-time corrected range.
 """
 
 import logging
@@ -470,10 +487,12 @@ def _provider_moon_boresight_offsets(ugps_times, ctx):
         allow_nans=ctx.allow_nans,
     )[list(spicierpy.ext.POSITION_COLUMNS)].values
 
-    angles = spatial.boresight_offset_angles(position, fov.boresight, degrees=True)
+    # The IK's own reference vector fixes the azimuth origin; without one (a "CORNERS"
+    # FOV declares none) `boresight_offset_angles` falls back to the frame's +X.
+    angles = spatial.boresight_offset_angles(position, fov.boresight, reference_vector=fov.ref_vector, degrees=True)
     distance = np.linalg.norm(position, axis=-1)
     with np.errstate(invalid="ignore", divide="ignore"):
-        angular_radius = np.rad2deg(np.arcsin(np.clip(moon_radius / distance, -1.0, 1.0)))
+        angular_radius = np.rad2deg(np.arcsin(np.clip(moon_radius / distance, 0.0, 1.0)))
     return np.column_stack([angles, angular_radius, distance])
 
 
@@ -512,6 +531,10 @@ class _ProviderResults:
         (and ``*_inertial``) slice properties.
     sun_position, boresight, boresight_inertial : numpy.ndarray or None
         Base provider results, shape (N, 3).
+    moon_boresight_offsets : numpy.ndarray or None
+        Lunar boresight geometry, shape (N, 5) as [azimuth offset, elevation offset,
+        boresight angle, angular radius, distance]. Exposed as the ``moon_*`` slice
+        properties.
     attitude_quaternion : numpy.ndarray or None
         Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None

@@ -1,5 +1,6 @@
 import logging
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -927,8 +928,11 @@ class BoresightOffsetAnglesTestCase(unittest.TestCase):
         npt.assert_allclose(np.rad2deg(radians), degrees)
 
     def test_degenerate_and_nonfinite_rows_are_nan(self):
+        # No `errstate` guard here: the function promises to stay silent on these rows,
+        # so wrapping the call would suppress exactly what is under test.
         targets = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [np.nan, 0.0, 1.0]])
-        with np.errstate(invalid="ignore", divide="ignore"):
+        with np.errstate(all="raise"), warnings.catch_warnings():
+            warnings.simplefilter("error")
             angles = spatial.boresight_offset_angles(targets, self.BORESIGHT, degrees=True)
         npt.assert_allclose(angles[0], [0.0, 0.0, 0.0], atol=1e-12)
         assert np.isnan(angles[1:]).all()
@@ -949,6 +953,19 @@ class BoresightOffsetAnglesTestCase(unittest.TestCase):
             spatial.boresight_offset_angles(np.zeros((2, 3)), np.zeros(4))
         with pytest.raises(ValueError, match="`reference_vector` must be a single vector"):
             spatial.boresight_offset_angles(np.zeros((2, 3)), self.BORESIGHT, reference_vector=np.zeros(2))
+
+    def test_boresight_along_default_reference(self):
+        # A boresight along the default +X reference leaves the azimuth origin undefined.
+        # The error must blame the default rather than an argument the caller never passed,
+        # and supplying the kernel's own reference vector must resolve it.
+        with pytest.raises(ValueError, match="lies along the default \\+X azimuth reference"):
+            spatial.boresight_offset_angles([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+
+        target = [np.cos(np.deg2rad(3.0)), 0.0, np.sin(np.deg2rad(3.0))]
+        angles = spatial.boresight_offset_angles(
+            target, [1.0, 0.0, 0.0], reference_vector=[0.0, 0.0, 1.0], degrees=True
+        )
+        npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
 
     def test_degenerate_triad_vectors_raise(self):
         # A degenerate boresight or reference invalidates every row rather than one, so it

@@ -1364,8 +1364,9 @@ def boresight_offset_angles(
         `curryer.spicierpy.ext.instrument_fov`).
     reference_vector : np.ndarray, optional
         Vector [3] fixing the azimuth origin. Only its component perpendicular
-        to the boresight is used. Default is the frame's +X axis, matching the
-        usual instrument kernel FOV reference vector.
+        to the boresight is used. Default is the frame's +X axis; prefer the
+        instrument kernel's own ``INS<id>_FOV_REF_VECTOR``, which
+        `curryer.spicierpy.ext.instrument_fov` returns as ``ref_vector``.
     degrees : bool, optional
         If True, returns are in degrees, otherwise (default) radians.
 
@@ -1393,6 +1394,23 @@ def boresight_offset_angles(
     - The boresight angle is `arctan2` of the transverse magnitude against the
       along-boresight component rather than `arccos` of the latter, which stays
       conditioned at the small separations the value is usually wanted for.
+    - **Convention.** The offsets are an intrinsic azimuth-then-elevation Euler
+      pair, *not* two independent plane-projected angles. Azimuth is measured in
+      the boresight-reference plane; elevation is then measured out of that
+      plane, about the already-rotated axis. A target displaced equally toward
+      the two cross-boresight axes therefore gives *unequal* offsets (18.4349
+      and 17.5484 degrees), unlike ``along_track_angle`` / ``cross_track_angle``
+      in `curryer.compute.geometry`, which are `arctan2` in both axes. The
+      identity that does hold is
+      ``cos(boresight_angle) == cos(azimuth) * cos(elevation)``.
+    - **Sign.** Positive elevation runs toward ``boresight x reference``, so it
+      is fixed by the boresight's orientation in its frame, not by the frame
+      axes. A target displaced toward frame +Y reads +3 degrees under a +Z
+      boresight and -3 degrees under a -Z one, both with a +X reference.
+    - The pair describes a direction near the boresight. It stays valid over the
+      full sphere, but azimuth is discontinuous across +/-180 degrees and
+      elevation saturates at +/-90, so far off-boresight it is a poor
+      description of the direction and `boresight_angle` is the usable value.
 
     """
     target_vectors = np.asarray(target_vectors, dtype=float)
@@ -1412,7 +1430,8 @@ def boresight_offset_angles(
     if not np.isfinite(boresight_norm) or boresight_norm == 0:
         raise ValueError("`boresight_vector` must be finite and non-zero!")
 
-    if reference_vector is None:
+    defaulted_reference = reference_vector is None
+    if defaulted_reference:
         reference_vector = np.array([1.0, 0.0, 0.0])
     else:
         reference_vector = np.asarray(reference_vector, dtype=float).ravel()
@@ -1427,6 +1446,12 @@ def boresight_offset_angles(
     x_axis = reference_vector - (reference_vector @ z_axis) * z_axis
     x_axis_norm = np.linalg.norm(x_axis)
     if x_axis_norm == 0:
+        if defaulted_reference:
+            raise ValueError(
+                "`boresight_vector` lies along the default +X azimuth reference, leaving the azimuth"
+                " origin undefined; pass `reference_vector` explicitly (an instrument kernel's"
+                " FOV_REF_VECTOR, via `curryer.spicierpy.ext.instrument_fov`)!"
+            )
         raise ValueError("`reference_vector` is parallel to `boresight_vector`; azimuth origin is undefined!")
     x_axis /= x_axis_norm
     y_axis = np.cross(z_axis, x_axis)

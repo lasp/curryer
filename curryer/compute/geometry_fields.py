@@ -137,19 +137,25 @@ class GeometryField(str, Enum):
     MOON_AZIMUTH_OFFSET = (
         "moon_azimuth_offset",
         ("moon_azimuth_offset",),
-        "Signed Moon offset from the boresight about the cross-boresight elevation axis (deg).",
+        "Signed Moon azimuth offset from the boresight, in the boresight-reference plane (deg). "
+        "Intrinsic azimuth-then-elevation pair; see spatial.boresight_offset_angles.",
     )
     MOON_ELEVATION_OFFSET = (
         "moon_elevation_offset",
         ("moon_elevation_offset",),
-        "Signed Moon offset from the boresight about the cross-boresight azimuth axis (deg).",
+        "Signed Moon elevation offset from the boresight, out of the boresight-reference plane "
+        "(deg), positive toward boresight x reference. See spatial.boresight_offset_angles.",
     )
     MOON_ANGULAR_RADIUS = (
         "moon_angular_radius",
         ("moon_angular_radius",),
         "Apparent angular radius of the lunar disk from the observer (deg).",
     )
-    MOON_DISTANCE = ("moon_distance", ("moon_distance",), "Observer-Moon distance (km).")
+    MOON_DISTANCE = (
+        "moon_distance",
+        ("moon_distance",),
+        "Apparent (light-time corrected) observer-Moon distance (km).",
+    )
 
     def __new__(cls, value, columns=(), description=""):
         member = str.__new__(cls, value)
