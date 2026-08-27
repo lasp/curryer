@@ -105,7 +105,8 @@ in [0, 90] for Earth-disk views.
 The lunar fields are boresight-relative rather than surface angles, and use a different
 convention: ``moon_azimuth_offset`` / ``moon_elevation_offset`` are a signed intrinsic
 azimuth-then-elevation pair about the instrument boresight, in (-180, 180] and [-90, 90],
-with the azimuth origin taken from the instrument kernel's ``FOV_REF_VECTOR``. They are
+with the azimuth origin taken from the instrument kernel's ``FOV_REF_VECTOR``, or the FOV
+frame's +X where the IK declares none (a "CORNERS" ``FOV_CLASS_SPEC``). They are
 not two independent projected angles like ``along_track_angle`` / ``cross_track_angle``,
 and the sign of the elevation depends on the boresight's orientation in its FOV frame --
 see `curryer.compute.spatial.boresight_offset_angles`. ``moon_boresight_angle`` is the

@@ -696,6 +696,34 @@ class TestGeometryOrchestration:
         npt.assert_allclose(out[:, 3], np.rad2deg(np.arcsin(1737.4 / 4.0e5)))
         npt.assert_allclose(out[:, 4], 4.0e5)
 
+    def test_moon_provider_uses_kernel_reference_vector(self):
+        # The azimuth origin is the IK's own FOV_REF_VECTOR, not the frame's +X. With the
+        # reference on +Y the same target reads as pure (negative) elevation rather than
+        # pure azimuth -- which is what separates the pass-through from the fallback.
+        ctx = geometry.GeometryData("INST")
+        offset = np.deg2rad(3.0)
+        position = np.tile(4.0e5 * np.array([np.sin(offset), 0.0, np.cos(offset)]), (2, 1))
+        ephemeris = pd.DataFrame(position, columns=list(geometry.spicierpy.ext.POSITION_COLUMNS))
+
+        def _offsets(ref_vector):
+            fov = geometry.spicierpy.ext.InstrumentFov(
+                shape="CIRCLE",
+                frame="INST_FOV_FRAME",
+                boresight=np.array([0.0, 0.0, 1.0]),
+                bounds=np.array([[np.sin(np.deg2rad(1.0)), 0.0, np.cos(np.deg2rad(1.0))]]),
+                ref_vector=ref_vector,
+            )
+            with (
+                patch.object(geometry.spicierpy.ext, "instrument_fov", return_value=fov),
+                patch.object(geometry.spicierpy, "bodvrd", return_value=(3, np.array([1737.4, 1737.4, 1737.4]))),
+                patch.object(geometry.spicierpy.ext, "query_ephemeris", return_value=ephemeris),
+            ):
+                return geometry._provider_moon_boresight_offsets(self.UGPS, ctx)[:, :3]
+
+        npt.assert_allclose(_offsets(np.array([0.0, 1.0, 0.0])), [[0.0, -3.0, 3.0]] * 2, atol=1e-12)
+        # A "CORNERS" FOV declares no reference vector, and falls back to the frame's +X.
+        npt.assert_allclose(_offsets(None), [[3.0, 0.0, 3.0]] * 2, atol=1e-12)
+
     def test_moon_provider_nan_fills_missing_fov(self, caplog):
         # No instrument FOV (or no lunar radii) makes the one-time pool lookup raise.
         # Under allow_nans the provider NaN-fills and surfaces the swallowed error;

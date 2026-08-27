@@ -459,8 +459,17 @@ class ExtTestCase(unittest.TestCase):
 
     def test_instrument_fov_without_reference_vector(self):
         # A "CORNERS" FOV declares no FOV_REF_VECTOR, so there is nothing to read and
-        # callers fall back to their own azimuth origin.
-        self.assertIsNone(ext.InstrumentFov("RECTANGLE", "F", np.array([0.0, 0.0, 1.0]), np.eye(3)).ref_vector)
+        # callers fall back to their own azimuth origin. Every instrument in the committed
+        # kernels is an "ANGLES" spec, so the absent-keyword branch is forced here.
+        with ext.load_kernel([self.kernels["frame"], self.kernels["instrument"]]):
+            with patch.object(ext.spiceypy, "expool", return_value=False) as m_expool:
+                fov = ext.instrument_fov("tsis_tim_glint")
+
+        self.assertIsNone(fov.ref_vector)
+        self.assertTrue(m_expool.called)
+        # Everything `getfov` supplies still reads normally.
+        self.assertEqual("CIRCLE", fov.shape)
+        self.assertListEqual([0.0, 0.0, 1.0], list(fov.boresight))
 
 
 class _StubSpiceError:

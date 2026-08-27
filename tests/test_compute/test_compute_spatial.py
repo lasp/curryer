@@ -959,11 +959,11 @@ class BoresightOffsetAnglesTestCase(unittest.TestCase):
         # The error must blame the default rather than an argument the caller never passed,
         # and supplying the kernel's own reference vector must resolve it.
         with pytest.raises(ValueError, match="lies along the default \\+X azimuth reference"):
-            spatial.boresight_offset_angles([1.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+            spatial.boresight_offset_angles(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
 
-        target = [np.cos(np.deg2rad(3.0)), 0.0, np.sin(np.deg2rad(3.0))]
+        target = np.array([np.cos(np.deg2rad(3.0)), 0.0, np.sin(np.deg2rad(3.0))])
         angles = spatial.boresight_offset_angles(
-            target, [1.0, 0.0, 0.0], reference_vector=[0.0, 0.0, 1.0], degrees=True
+            target, np.array([1.0, 0.0, 0.0]), reference_vector=np.array([0.0, 0.0, 1.0]), degrees=True
         )
         npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
 

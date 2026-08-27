@@ -1398,8 +1398,9 @@ def boresight_offset_angles(
       pair, *not* two independent plane-projected angles. Azimuth is measured in
       the boresight-reference plane; elevation is then measured out of that
       plane, about the already-rotated axis. A target displaced equally toward
-      the two cross-boresight axes therefore gives *unequal* offsets (18.4349
-      and 17.5484 degrees), unlike ``along_track_angle`` / ``cross_track_angle``
+      the two cross-boresight axes therefore gives *unequal* offsets -- for
+      ``(1, 1, 3)`` about a +Z boresight, 18.4349 and 17.5484 degrees -- unlike
+      the ``along_track_angle`` / ``cross_track_angle`` pair
       in `curryer.compute.geometry`, which are `arctan2` in both axes. The
       identity that does hold is
       ``cos(boresight_angle) == cos(azimuth) * cos(elevation)``.
