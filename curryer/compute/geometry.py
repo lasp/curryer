@@ -72,12 +72,13 @@ them). Each field expands to the columns below.
 - ``cone_angle`` -> ``cone_angle`` -- boresight angle off the satellite-to-geocenter
   vector.
 - ``cone_angle_rate`` -> ``cone_angle_rate`` -- finite-difference time derivative of
-  ``cone_angle`` (deg/s) over the requested times.
+  ``cone_angle`` (deg/s) over the requested times. See the note below on gimbal rates.
 - ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
 - ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
   (body -> ``attitude_frame``, scalar-first).
 - ``clock_angle`` / ``clock_angle_rate`` -> same-named columns -- boresight azimuth in the
-  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s).
+  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s). See the
+  note below on gimbal rates.
 - ``along_track_angle`` / ``cross_track_angle`` -> same-named columns -- boresight look
   angles from nadir in the velocity-nadir and cross-track-nadir planes.
 - ``sc_position_inertial`` / ``sc_velocity_inertial`` ->
@@ -92,7 +93,17 @@ geodetic North in [0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are
 geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` uses the
 CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the
 Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
-(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
+(``min(raa, 360 - raa)``) is a separate, lossy, downstream step.
+
+``cone_angle_rate`` and ``clock_angle_rate`` are the time derivatives their names say they
+are: ``np.gradient`` of the orbital-frame angles above. They are **not** the ERBE/CERES L2
+product fields of the same names, which are finite differences of the instrument's *gimbal
+encoder* angles -- elevation for the cone rate, azimuth for the clock rate. The two agree
+away from nadir and part company at a nadir crossing, where the encoder keeps turning at
+the scan rate while the derivative of an azimuth about nadir is singular and the derivative
+of the cone angle passes smoothly through its minimum. A mission populating those product
+fields wants the encoder differences, which depend on its own gimbal frames and so belong
+in the mission's own code, not here. ``cone_angle`` is
 in [0, 90] for Earth-disk views.
 """
 
@@ -583,7 +594,13 @@ def _cone_angle_rate(p):
 
     ``np.gradient`` of :func:`_cone_angle` over the request times (``p.seconds``):
     second-order accurate in the interior, first-order at the ends, and honouring
-    non-uniform spacing. Its sign gives the direction the boresight sweeps relative to
+    non-uniform spacing.
+
+    This is the derivative of the *geometry*, not of the scan mechanism. Where a scan misses
+    nadir by some angle the cone angle has a smooth minimum, so this rate passes through zero
+    at closest approach even though the gimbal never stops. The ERBE/CERES product field named
+    ``Cone_Angle_Rate`` is the elevation encoder's rate and reports the scan rate there
+    instead; the two are not interchangeable. Its sign gives the direction the boresight sweeps relative to
     nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
     samples; a single-time request is NaN, since a rate needs at least two samples.
 
@@ -633,7 +650,10 @@ def _clock_angle_rate(p):
 
     Note the clock angle is an azimuth about nadir and is therefore singular there: as the
     boresight crosses nadir its azimuth swings ~180 degrees, so this rate legitimately
-    spikes on near-nadir samples.
+    spikes on near-nadir samples. The spike is a property of the coordinate, not of the
+    instrument's motion, and no gate on it recovers a mechanism rate -- the ERBE/CERES
+    product field named ``Clock_Angle_Rate`` is the azimuth encoder's rate, which has no
+    pole. Populate that field from the encoder, not by thresholding this.
     """
     clock = _clock_angle(p)
     if clock.shape[0] < 2:
