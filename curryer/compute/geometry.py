@@ -97,13 +97,16 @@ Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
 
 ``cone_angle_rate`` and ``clock_angle_rate`` are the time derivatives their names say they
 are: ``np.gradient`` of the orbital-frame angles above. They are **not** the ERBE/CERES L2
-product fields of the same names, which are finite differences of the instrument's *gimbal
-encoder* angles -- elevation for the cone rate, azimuth for the clock rate. The two agree
+product fields of the same names, which are backward two-point differences of the
+instrument's *gimbal encoder* angles over the sample interval -- elevation for the cone rate,
+azimuth for the clock rate (CERES BDS QA-6, with the rate fields at SCI-34/SCI-35). The two agree
 away from nadir and part company at a nadir crossing, where the encoder keeps turning at
 the scan rate while the derivative of an azimuth about nadir is singular and the derivative
 of the cone angle passes smoothly through its minimum. A mission populating those product
 fields wants the encoder differences, which depend on its own gimbal frames and so belong
-in the mission's own code, not here. ``cone_angle`` is
+in the mission's own code, not here. Note also that the heritage flags apply no range edit to
+those fields (QA-7): the only failure mode is a missing angle, so gating a large value is not
+a way to reconcile the two definitions. ``cone_angle`` is
 in [0, 90] for Earth-disk views.
 """
 
