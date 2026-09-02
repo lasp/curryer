@@ -93,21 +93,22 @@ geodetic North in [0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are
 geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` uses the
 CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the
 Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
-(``min(raa, 360 - raa)``) is a separate, lossy, downstream step.
+(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is in [0, 90] for Earth-disk views.
 
 ``cone_angle_rate`` and ``clock_angle_rate`` are the time derivatives their names say they
 are: ``np.gradient`` of the orbital-frame angles above. They are **not** the ERBE/CERES L2
 product fields of the same names, which are backward two-point differences of the
 instrument's *gimbal encoder* angles over the sample interval -- elevation for the cone rate,
-azimuth for the clock rate (CERES BDS QA-6, with the rate fields at SCI-34/SCI-35). The two agree
-away from nadir and part company at a nadir crossing, where the encoder keeps turning at
-the scan rate while the derivative of an azimuth about nadir is singular and the derivative
-of the cone angle passes smoothly through its minimum. A mission populating those product
-fields wants the encoder differences, which depend on its own gimbal frames and so belong
-in the mission's own code, not here. Note also that the heritage flags apply no range edit to
-those fields (QA-7): the only failure mode is a missing angle, so gating a large value is not
-a way to reconcile the two definitions. ``cone_angle`` is
-in [0, 90] for Earth-disk views.
+azimuth for the clock rate (CERES BDS QA-6, with the rate fields at SCI-34/SCI-35). The two
+agree away from nadir and part company near closest approach to it -- no crossing required,
+since a scan that misses nadir still drives the cone angle through a smooth minimum -- where the
+encoder keeps turning at the scan rate while the derivative of an azimuth about nadir peaks
+sharply, diverging as the miss goes to zero, and the derivative of the cone angle falls to
+zero. A mission populating those product fields wants the encoder differences, which depend
+on its own gimbal frames and so belong in the mission's own code, not here. Note also that the
+heritage flags apply no range edit to those fields (QA-7): the only failure mode is a missing
+angle, so gating a large value is not
+a way to reconcile the two definitions.
 """
 
 import logging
@@ -597,15 +598,15 @@ def _cone_angle_rate(p):
 
     ``np.gradient`` of :func:`_cone_angle` over the request times (``p.seconds``):
     second-order accurate in the interior, first-order at the ends, and honouring
-    non-uniform spacing.
+    non-uniform spacing. Its sign gives the direction the boresight sweeps relative to
+    nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
+    samples; a single-time request is NaN, since a rate needs at least two samples.
 
     This is the derivative of the *geometry*, not of the scan mechanism. Where a scan misses
     nadir by some angle the cone angle has a smooth minimum, so this rate passes through zero
     at closest approach even though the gimbal never stops. The ERBE/CERES product field named
     ``Cone_Angle_Rate`` is the elevation encoder's rate and reports the scan rate there
-    instead; the two are not interchangeable. Its sign gives the direction the boresight sweeps relative to
-    nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
-    samples; a single-time request is NaN, since a rate needs at least two samples.
+    instead; the two are not interchangeable.
 
     Parameters
     ----------
