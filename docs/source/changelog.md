@@ -1,5 +1,32 @@
 # Changelog
 
+## Version 0.5.2 (unreleased)
+
+Adds a per-pixel geolocation and surface-angle path for large focal planes.
+
+### Highlights
+
+- **New `curryer.compute.spatial.pixel_geometry`** -- geolocates an instrument's pixel
+  vectors and computes the solar and viewing zenith and azimuth, relative azimuth and
+  per-pixel quality flags at each ellipsoid intersection. ndarrays in, `(n_times, n_pixels)`
+  ndarrays out (`PixelGeometry`), no pandas product index, so it scales to multi-megapixel
+  imagers. Three SPICE calls per time; everything per pixel is the existing closed-form
+  numpy (`ray_intersect_ellipsoid`, `calc_azimuth`, `calc_zenith`). The viewing angles reuse
+  the spacecraft position the intersection queried, so no second ephemeris read is made.
+- **New `curryer.compute.spatial.relative_azimuth`** -- the CERES BDS R3V4 relative azimuth
+  (`mod(view - sun + 180, 360)`, Sun at 180) as a public vectorized helper. The
+  `GeometryData` `relative_azimuth` field now calls it, so boresight and per-pixel products
+  agree by construction.
+
+### Fixes
+
+- `ray_intersect_ellipsoid` no longer emits a NumPy `RuntimeWarning` for rays that miss the
+  ellipsoid (negative discriminant); misses were already documented as NaN. Degenerate
+  zero-length vectors still warn.
+- `calc_azimuth` and `calc_zenith` share one local-frame helper; results are unchanged for
+  float64 inputs.
+- `compute_ellipsoid_intersection` docstring: `ugps_times` are GPS microseconds, not seconds.
+
 ## Version 0.5.0 (2026-07)
 
 Expands `curryer.compute.geometry` from 6 to 24 computable fields and adds NumPy 2 support.
