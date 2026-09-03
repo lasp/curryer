@@ -528,13 +528,11 @@ class _ProviderResults:
 def _relative_azimuth(p):
     """Relative azimuth of the viewing direction about the solar plane, in [0, 360).
 
-    ``mod(viewing_azimuth - solar_azimuth + 180, 360)`` (azimuths clockwise from
-    geodetic North per ``spatial.calc_azimuth``), matching the CERES BDS R3V4 origin
-    so the Sun sits at 180. This is the lossless full-range value -- it keeps which
-    side of the principal plane the geometry is on. The CERES [0, 180] *fold*
-    (``min(raa, 360 - raa)``) is a separate, lossy step applied downstream if a
-    product wants it; curryer keeps the unfolded value, since a reference/wrap shift
-    is reversible but a fold is not.
+    :func:`spatial.relative_azimuth` of the boresight viewing and solar azimuths
+    (azimuths clockwise from geodetic North per ``spatial.calc_azimuth``): the CERES
+    BDS R3V4 origin with the Sun at 180, kept unfolded so the side of the principal
+    plane survives. The same helper serves per-pixel products, so a boresight and a
+    pixel relative azimuth agree by construction.
 
     Parameters
     ----------
@@ -551,7 +549,7 @@ def _relative_azimuth(p):
     intersection = p.boresight_intersection
     view_az = spatial.calc_azimuth(intersection, p.sc_position, degrees=True)
     sun_az = spatial.calc_azimuth(intersection, p.sun_position, degrees=True)
-    return np.mod(view_az - sun_az + 180.0, 360.0)
+    return spatial.relative_azimuth(view_az, sun_az, degrees=True)
 
 
 def _cone_angle(p):
