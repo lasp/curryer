@@ -21,6 +21,7 @@ from curryer.kernels.path_utils import (
     get_path_strategy_config,
     get_short_temp_dir,
     update_invalid_paths,
+    validate_path_length,
 )
 
 logger = logging.getLogger(__name__)
@@ -767,6 +768,76 @@ class TestEnvironmentVariableConfig(unittest.TestCase):
 
         self.assertFalse(config["disable_copy"], "Copy should be enabled by default")
         self.assertTrue(config["try_copy"], "try_copy should be True by default")
+
+
+class TestValidatePathLength(unittest.TestCase):
+    """Test validate_path_length() fail-fast check.
+
+    Tests the validation helper for callers that control their own file
+    placement and want a hard error instead of path rewriting when a path
+    exceeds SPICE's 80-character limit.
+    """
+
+    def test_short_path_passes(self):
+        """Test that a path within the limit does not raise."""
+        validate_path_length(Path("/tmp/short.tls"), max_len=80)
+
+    def test_long_path_raises(self):
+        """Test that an over-length path raises with a helpful message."""
+        long_path = Path("/tmp") / ("a" * 100) / "kernel.tls"
+
+        with self.assertRaises(ValueError) as context:
+            validate_path_length(long_path, max_len=80)
+
+        message = str(context.exception)
+        self.assertIn("exceeds limit (80)", message)
+        self.assertIn(str(long_path), message)
+        self.assertIn(str(len(os.path.abspath(long_path))), message)
+
+    def test_custom_max_length(self):
+        """Test that the limit is configurable in both directions."""
+        path = Path("/tmp/moderately_long_filename.bsp")
+
+        validate_path_length(path, max_len=1000)
+
+        with self.assertRaises(ValueError) as context:
+            validate_path_length(path, max_len=5)
+
+        message = str(context.exception)
+        self.assertIn("exceeds limit (5)", message)
+        self.assertIn(str(path), message)
+
+    def test_relative_path_measured_absolute(self):
+        """Test that relative paths are measured as absolute paths."""
+        # A short relative name can still exceed the limit once made absolute
+        # against a deep working directory.
+        deep_dir = Path(tempfile.mkdtemp(prefix="x" * 60, dir="/tmp"))  # noqa: S108
+        self.addCleanup(shutil.rmtree, deep_dir, ignore_errors=True)
+        orig_cwd = os.getcwd()
+        os.chdir(deep_dir)
+        self.addCleanup(os.chdir, orig_cwd)
+
+        with self.assertRaises(ValueError):
+            validate_path_length(Path("kernel_with_a_long_name.bsp"), max_len=80)
+
+    def test_symlink_measured_not_target(self):
+        """Test that a short symlink to a long target passes the check."""
+        # SPICE opens the symlink path itself, so the link's length is what
+        # matters, not its (much longer) resolved target.
+        long_dir = Path(tempfile.mkdtemp(prefix="y" * 60, dir="/tmp"))  # noqa: S108
+        self.addCleanup(shutil.rmtree, long_dir, ignore_errors=True)
+        target = long_dir / "kernel_with_a_long_name.bsp"
+        target.write_text("data")
+
+        link = Path("/tmp") / "curryer_test_validate_link.bsp"  # noqa: S108
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        self.addCleanup(link.unlink, missing_ok=True)
+        os.symlink(target, link)
+
+        with self.assertRaises(ValueError):
+            validate_path_length(target, max_len=80)
+        validate_path_length(link, max_len=80)
 
 
 class TestAdditionalCoverage(unittest.TestCase):
