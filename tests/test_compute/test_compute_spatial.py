@@ -1,5 +1,6 @@
 import logging
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -850,6 +851,136 @@ class SpatialTestCase(unittest.TestCase):
                 solar_azimuth = azimuth(fixed_pos, sun_xyz, degrees=True)
                 npt.assert_allclose(exp_el, -solar_zenith + 90)
                 npt.assert_allclose(exp_az, solar_azimuth)
+
+
+class BoresightOffsetAnglesTestCase(unittest.TestCase):
+    """`spatial.boresight_offset_angles` against hand-computed geometry (no SPICE)."""
+
+    BORESIGHT = np.array([0.0, 0.0, 1.0])
+
+    @staticmethod
+    def _tilt(axis_index, angle_deg):
+        """Unit vector `angle_deg` off +Z toward the given axis."""
+        vector = np.zeros(3)
+        vector[axis_index] = np.sin(np.deg2rad(angle_deg))
+        vector[2] = np.cos(np.deg2rad(angle_deg))
+        return vector
+
+    def test_on_boresight_is_all_zeros(self):
+        angles = spatial.boresight_offset_angles(self.BORESIGHT * 42.0, self.BORESIGHT, degrees=True)
+        npt.assert_allclose(angles, [0.0, 0.0, 0.0], atol=1e-12)
+
+    def test_offset_along_reference_axis_is_azimuth_only(self):
+        angles = spatial.boresight_offset_angles(self._tilt(0, 3.0), self.BORESIGHT, degrees=True)
+        npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
+
+    def test_offset_along_perpendicular_axis_is_elevation_only(self):
+        angles = spatial.boresight_offset_angles(self._tilt(1, 3.0), self.BORESIGHT, degrees=True)
+        npt.assert_allclose(angles, [0.0, 3.0, 3.0], atol=1e-12)
+
+    def test_offsets_are_signed(self):
+        for axis, expected in ((0, [-3.0, 0.0, 3.0]), (1, [0.0, -3.0, 3.0])):
+            with self.subTest(axis=axis):
+                angles = spatial.boresight_offset_angles(self._tilt(axis, -3.0), self.BORESIGHT, degrees=True)
+                npt.assert_allclose(angles, expected, atol=1e-12)
+
+    def test_boresight_angle_satisfies_direction_cosine_identity(self):
+        # cos(boresight angle) == cos(azimuth) * cos(elevation): the offsets and the total
+        # angle must describe the same direction, which catches an axis or ordering swap.
+        rng = np.random.default_rng(20260820)
+        targets = rng.normal(size=(64, 3))
+        azimuth, elevation, boresight_angle = np.deg2rad(
+            spatial.boresight_offset_angles(targets, self.BORESIGHT, degrees=True)
+        ).T
+        npt.assert_allclose(np.cos(boresight_angle), np.cos(azimuth) * np.cos(elevation), atol=1e-12)
+
+    def test_boresight_angle_spans_full_range(self):
+        targets = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
+        angles = spatial.boresight_offset_angles(targets, self.BORESIGHT, degrees=True)
+        npt.assert_allclose(angles[:, 2], [0.0, 90.0, 180.0], atol=1e-12)
+
+    def test_measured_from_boresight_not_frame_axis(self):
+        # A boresight that is no frame axis: a target on it still reads as zero offset,
+        # which is the whole reason the triad is built from the boresight.
+        boresight = np.array([1.0, 2.0, 3.0])
+        angles = spatial.boresight_offset_angles(boresight * 7.0, boresight, degrees=True)
+        npt.assert_allclose(angles, [0.0, 0.0, 0.0], atol=1e-12)
+
+    def test_reference_vector_sets_the_azimuth_origin(self):
+        # Pointing the reference at +Y moves the azimuth origin there, so an offset that
+        # read as pure elevation under the default +X reference now reads as pure azimuth.
+        target = self._tilt(1, 3.0)
+        angles = spatial.boresight_offset_angles(
+            target, self.BORESIGHT, reference_vector=np.array([0.0, 1.0, 0.0]), degrees=True
+        )
+        npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
+
+    def test_reference_vector_component_along_boresight_is_ignored(self):
+        angles = spatial.boresight_offset_angles(
+            self._tilt(0, 3.0), self.BORESIGHT, reference_vector=np.array([1.0, 0.0, 5.0]), degrees=True
+        )
+        npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
+
+    def test_degrees_matches_radians(self):
+        targets = np.array([[0.1, 0.2, 1.0], [-0.3, 0.05, 1.0]])
+        radians = spatial.boresight_offset_angles(targets, self.BORESIGHT)
+        degrees = spatial.boresight_offset_angles(targets, self.BORESIGHT, degrees=True)
+        npt.assert_allclose(np.rad2deg(radians), degrees)
+
+    def test_degenerate_and_nonfinite_rows_are_nan(self):
+        # No `errstate` guard here: the function promises to stay silent on these rows,
+        # so wrapping the call would suppress exactly what is under test.
+        targets = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [np.nan, 0.0, 1.0]])
+        with np.errstate(all="raise"), warnings.catch_warnings():
+            warnings.simplefilter("error")
+            angles = spatial.boresight_offset_angles(targets, self.BORESIGHT, degrees=True)
+        npt.assert_allclose(angles[0], [0.0, 0.0, 0.0], atol=1e-12)
+        assert np.isnan(angles[1:]).all()
+        assert np.isfinite(angles[0]).all()
+
+    def test_1d_input_returns_1d(self):
+        assert spatial.boresight_offset_angles(self.BORESIGHT, self.BORESIGHT).shape == (3,)
+        assert spatial.boresight_offset_angles(self.BORESIGHT[None], self.BORESIGHT).shape == (1, 3)
+
+    def test_reference_parallel_to_boresight_raises(self):
+        with pytest.raises(ValueError, match="azimuth origin is undefined"):
+            spatial.boresight_offset_angles(self.BORESIGHT, self.BORESIGHT, reference_vector=self.BORESIGHT * -2.0)
+
+    def test_bad_shapes_raise(self):
+        with pytest.raises(ValueError, match="`target_vectors` must have 3 values"):
+            spatial.boresight_offset_angles(np.zeros((2, 4)), self.BORESIGHT)
+        with pytest.raises(ValueError, match="`boresight_vector` must be a single vector"):
+            spatial.boresight_offset_angles(np.zeros((2, 3)), np.zeros(4))
+        with pytest.raises(ValueError, match="`reference_vector` must be a single vector"):
+            spatial.boresight_offset_angles(np.zeros((2, 3)), self.BORESIGHT, reference_vector=np.zeros(2))
+
+    def test_boresight_along_default_reference(self):
+        # A boresight along the default +X reference leaves the azimuth origin undefined.
+        # The error must blame the default rather than an argument the caller never passed,
+        # and supplying the kernel's own reference vector must resolve it.
+        with pytest.raises(ValueError, match="lies along the default \\+X azimuth reference"):
+            spatial.boresight_offset_angles(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+
+        target = np.array([np.cos(np.deg2rad(3.0)), 0.0, np.sin(np.deg2rad(3.0))])
+        angles = spatial.boresight_offset_angles(
+            target, np.array([1.0, 0.0, 0.0]), reference_vector=np.array([0.0, 0.0, 1.0]), degrees=True
+        )
+        npt.assert_allclose(angles, [3.0, 0.0, 3.0], atol=1e-12)
+
+    def test_degenerate_triad_vectors_raise(self):
+        # A degenerate boresight or reference invalidates every row rather than one, so it
+        # raises instead of NaN-filling the way a bad target vector does. NaN has to be
+        # caught up front in particular: it slips past the parallel-reference check, which
+        # would otherwise leave the caller a silent all-NaN return.
+        for boresight in (np.zeros(3), np.array([np.nan, 0.0, 1.0]), np.array([np.inf, 0.0, 1.0])):
+            with self.subTest(boresight=boresight):
+                with pytest.raises(ValueError, match="`boresight_vector` must be finite and non-zero"):
+                    spatial.boresight_offset_angles(self.BORESIGHT, boresight)
+
+        for reference in (np.array([np.nan, 0.0, 0.0]), np.array([np.inf, 0.0, 0.0])):
+            with self.subTest(reference=reference):
+                with pytest.raises(ValueError, match="`reference_vector` must be finite"):
+                    spatial.boresight_offset_angles(self.BORESIGHT, self.BORESIGHT, reference_vector=reference)
 
 
 if __name__ == "__main__":
