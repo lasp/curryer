@@ -1,5 +1,6 @@
 import logging
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -850,6 +851,278 @@ class SpatialTestCase(unittest.TestCase):
                 solar_azimuth = azimuth(fixed_pos, sun_xyz, degrees=True)
                 npt.assert_allclose(exp_el, -solar_zenith + 90)
                 npt.assert_allclose(exp_az, solar_azimuth)
+
+    # =========================================================================
+    # SECTION 5: PER-PIXEL GEOMETRY
+    # =========================================================================
+
+    @staticmethod
+    def _mock_pixel_instrument():
+        mock_instrument = MagicMock(spec=spicierpy.obj.Body)
+        mock_instrument.id = -999
+        mock_instrument.name = "MOCK_INSTRUMENT"
+        mock_instrument.frame.name = "DUMMY_FRAME"
+        return mock_instrument
+
+    # Identity rotation, spacecraft on the +X axis at 7000 km, Sun far along +X: pixel 0 looks
+    # straight down at (0, 0), pixel 1 looks slightly toward +Y (east), pixel 2 misses.
+    _PIXEL_SC = np.array([7000.0, 0.0, 0.0])
+    _PIXEL_SUN = np.array([1.5e8, 0.0, 0.0])
+    _PIXEL_VECTORS = np.array([[-1.0, 0.0, 0.0], [-1.0, 0.01, 0.0], [0.0, 1.0, 0.0]])
+
+    def test_unit_ray_intersect_miss_is_nan_without_warning(self):
+        """A ray that misses the ellipsoid is a NaN row and no NumPy warning."""
+        vectors = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            xyz = spatial.ray_intersect_ellipsoid(vectors, np.array([7000.0, 0.0, 0.0]))
+        npt.assert_allclose(xyz[0], [constants.WGS84_SEMI_MAJOR_AXIS_KM, 0.0, 0.0])
+        self.assertTrue(np.isnan(xyz[1]).all())
+
+    def test_unit_calc_azimuth_signed_and_calc_zenith_geocentric(self):
+        """The `signed` and `geocentric` branches of the shared local-frame helpers."""
+        surface_lla = np.array([[10.0, 45.0, 0.0], [10.0, 0.0, 0.0], [-120.0, 45.0, 0.0]])
+        surface = spatial.geodetic_to_ecef(surface_lla, degrees=True)
+        # A target 1000 km along each point's geodetic normal, and one far to the west.
+        overhead = spatial.geodetic_to_ecef(surface_lla + [0.0, 0.0, 1000.0], degrees=True)
+        west = spatial.geodetic_to_ecef(surface_lla + [-30.0, 0.0, 500.0], degrees=True)
+
+        unsigned = spatial.calc_azimuth(surface, west, degrees=True)
+        signed = spatial.calc_azimuth(surface, west, degrees=True, signed=True)
+        self.assertTrue((unsigned > 180.0).all(), "westward targets must wrap past 180 unsigned")
+        npt.assert_allclose(signed, unsigned - 360.0)
+
+        geodetic = spatial.calc_zenith(surface, overhead, degrees=True)
+        geocentric = spatial.calc_zenith(surface, overhead, degrees=True, geocentric=True)
+        # The overhead target lies on the geodetic normal to within the Ferrari round trip (~1e-6 deg).
+        npt.assert_allclose(geodetic, 0.0, atol=1e-5)
+        # Geodetic minus geocentric latitude at 45 degrees on WGS84 is 0.1923 degrees; 0 at the equator.
+        expected_offset = 45.0 - np.rad2deg(np.arctan((1 - constants.WGS84_ECCENTRICITY2) * np.tan(np.deg2rad(45.0))))
+        npt.assert_allclose(geocentric, [expected_offset, 0.0, expected_offset], atol=1e-6)
+
+    def test_unit_relative_azimuth_convention(self):
+        """Sun at 180, clockwise wrap, radians variant, NaN passthrough."""
+        npt.assert_allclose(spatial.relative_azimuth(np.array([30.0]), np.array([30.0]), degrees=True), [180.0])
+        npt.assert_allclose(spatial.relative_azimuth(np.array([120.0]), np.array([30.0]), degrees=True), [270.0])
+        npt.assert_allclose(spatial.relative_azimuth(np.array([10.0]), np.array([350.0]), degrees=True), [200.0])
+        npt.assert_allclose(spatial.relative_azimuth(np.array([0.0]), np.array([0.0])), [np.pi])
+        npt.assert_allclose(spatial.relative_azimuth(np.array([np.pi]), np.array([0.0])), [0.0])
+        self.assertTrue(np.isnan(spatial.relative_azimuth(np.array([np.nan]), np.array([0.0]), degrees=True)).all())
+
+    def test_unit_pixel_geometry_values_and_dataframe_equivalence(self):
+        """Hit, off-nadir hit and miss; identical to the DataFrame path (intersection + surface_angles)."""
+        instrument = self._mock_pixel_instrument()
+        ugps_times = np.array([0])
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            out = spatial.pixel_geometry(ugps_times, instrument, self._PIXEL_VECTORS)
+
+            ref_lla, ref_sc, ref_qf = spatial.compute_ellipsoid_intersection(
+                ugps_times, instrument, custom_pointing_vectors=self._PIXEL_VECTORS, give_geodetic_output=True
+            )
+            ref_xyz, _, _ = spatial.compute_ellipsoid_intersection(
+                ugps_times, instrument, custom_pointing_vectors=self._PIXEL_VECTORS
+            )
+            ref_sun = spatial.surface_angles(ref_xyz, target_obj="SUN", degrees=True, allow_nans=True)
+            ref_view = spatial.surface_angles(ref_xyz, target_positions=ref_sc, degrees=True)
+
+        self.assertIsInstance(out, spatial.PixelGeometry)
+        self.assertEqual(out.lon.shape, (1, 3))
+        self.assertEqual(out.surface_xyz.shape, (1, 3, 3))
+        self.assertEqual(out.quality_flags.dtype, np.int64)
+
+        # Nadir pixel.
+        npt.assert_allclose(out.lon[0, 0], 0.0)
+        npt.assert_allclose(out.lat[0, 0], 0.0)
+        npt.assert_allclose(out.alt[0, 0], 0.0)
+        npt.assert_allclose(out.viewing_zenith[0, 0], 0.0, atol=1e-9)
+        npt.assert_allclose(out.solar_zenith[0, 0], 0.0, atol=1e-9)
+        npt.assert_allclose(out.relative_azimuth[0, 0], 180.0)
+        # Off-nadir pixel east of the sub-satellite point: satellite and Sun lie to the west.
+        self.assertGreater(out.lon[0, 1], 0.0)
+        self.assertGreater(out.viewing_zenith[0, 1], out.solar_zenith[0, 1])
+        npt.assert_allclose(out.viewing_azimuth[0, 1], 270.0)
+        npt.assert_allclose(out.solar_azimuth[0, 1], 270.0)
+        npt.assert_allclose(out.relative_azimuth[0, 1], 180.0)
+        # Miss.
+        self.assertTrue(np.isnan(out.lon[0, 2]) and np.isnan(out.viewing_zenith[0, 2]))
+        self.assertTrue(np.isnan(out.surface_xyz[0, 2]).all())
+        npt.assert_array_equal(out.quality_flags[0], [SQF.GOOD, SQF.GOOD, SQF.CALC_ELLIPS_NO_INTERSECT])
+        npt.assert_array_equal(out.sc_position, [self._PIXEL_SC])
+        npt.assert_array_equal(out.sun_position, [self._PIXEL_SUN])
+
+        # Same numbers as the pandas path.
+        npt.assert_allclose(np.stack([out.lon[0], out.lat[0], out.alt[0]], axis=1), ref_lla.to_numpy())
+        npt.assert_array_equal(out.quality_flags[0], ref_qf.to_numpy())
+        npt.assert_allclose(out.solar_zenith[0], ref_sun["zenith"].to_numpy())
+        npt.assert_allclose(out.solar_azimuth[0], ref_sun["azimuth"].to_numpy())
+        npt.assert_allclose(out.viewing_zenith[0], ref_view["zenith"].to_numpy())
+        npt.assert_allclose(out.viewing_azimuth[0], ref_view["azimuth"].to_numpy())
+
+    def test_unit_pixel_geometry_radians(self):
+        """``degrees=False`` returns the same geometry in radians for every angular field."""
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            in_degrees = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS)
+            in_radians = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, degrees=False)
+
+        for name in ("lon", "lat", "solar_zenith", "solar_azimuth", "viewing_zenith", "viewing_azimuth"):
+            npt.assert_allclose(getattr(in_radians, name), np.deg2rad(getattr(in_degrees, name)), err_msg=name)
+        npt.assert_allclose(in_radians.relative_azimuth[0, :2], [np.pi, np.pi])
+        npt.assert_allclose(in_radians.viewing_azimuth[0, 1], 1.5 * np.pi)
+        npt.assert_array_equal(in_radians.alt, in_degrees.alt)
+
+    def test_unit_pixel_geometry_raises_without_allow_nans(self):
+        """``allow_nans=False`` lets the SPICE error out instead of filling the time."""
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+        with (
+            patch.object(spatial.spicierpy, "pxform", side_effect=spicierpy.utils.exceptions.SpiceyError("SPICE(X)")),
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+            pytest.raises(spicierpy.utils.exceptions.SpiceyError),
+        ):
+            spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, allow_nans=False)
+
+    def test_unit_pixel_geometry_flags_non_finite_angles(self):
+        """A NaN angle at a valid hit is flagged CALC_ANCIL_NOT_FINITE; misses keep only their own flag."""
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+        real_zenith = spatial._zenith_from_normal
+
+        def nan_first_pixel(*args, **kwargs):
+            zenith = real_zenith(*args, **kwargs)
+            zenith[0] = np.nan
+            return zenith
+
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+            patch.object(spatial, "_zenith_from_normal", side_effect=nan_first_pixel),
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            out = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS)
+
+        npt.assert_array_equal(
+            out.quality_flags[0], [SQF.CALC_ANCIL_NOT_FINITE, SQF.GOOD, SQF.CALC_ELLIPS_NO_INTERSECT]
+        )
+        self.assertTrue(np.isnan(out.viewing_zenith[0, 0]) and np.isfinite(out.viewing_azimuth[0, 0]))
+
+    def test_unit_pixel_geometry_passes_perspective_correction_to_both_queries(self):
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df) as mock_ephemeris,
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, perspective_correction="LT+S")
+
+        self.assertEqual(mock_query.call_args.args[2], "LT+S")
+        self.assertEqual(mock_ephemeris.call_args.kwargs["correction"], "LT+S")
+
+    def test_unit_pixel_geometry_spice_failure_fills_time(self):
+        """A failed rotation/position query leaves the whole time NaN and flags the cause."""
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN, self._PIXEL_SUN], columns=["x", "y", "z"])
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+        ):
+            mock_query.side_effect = [
+                ((np.eye(3), self._PIXEL_SC), SQF.GOOD),
+                ((np.full((3, 3), np.nan), np.full(3, np.nan)), SQF.SPICE_ERR_MISSING_ATTITUDE),
+            ]
+            out = spatial.pixel_geometry(np.array([0, 1_000_000]), instrument, self._PIXEL_VECTORS)
+
+        self.assertTrue(np.isfinite(out.lon[0, :2]).all())
+        self.assertTrue(np.isnan(out.lon[1]).all() and np.isnan(out.viewing_zenith[1]).all())
+        self.assertTrue(np.isnan(out.sc_position[1]).all())
+        npt.assert_array_equal(out.quality_flags[1], [SQF.SPICE_ERR_MISSING_ATTITUDE | SQF.CALC_ELLIPS_INSUFF_DATA] * 3)
+
+    def test_unit_pixel_geometry_missing_sun_keeps_viewing_angles(self):
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([[np.nan, np.nan, np.nan]], columns=["x", "y", "z"])
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            out = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS)
+
+        self.assertTrue(np.isfinite(out.viewing_zenith[0, :2]).all())
+        self.assertTrue(np.isnan(out.solar_zenith[0]).all() and np.isnan(out.relative_azimuth[0]).all())
+        npt.assert_array_equal(
+            out.quality_flags[0],
+            [
+                SQF.CALC_ANCIL_INSUFF_DATA,
+                SQF.CALC_ANCIL_INSUFF_DATA,
+                SQF.CALC_ANCIL_INSUFF_DATA | SQF.CALC_ELLIPS_NO_INTERSECT,
+            ],
+        )
+
+    def test_unit_pixel_geometry_rejects_bad_vectors(self):
+        instrument = self._mock_pixel_instrument()
+        for bad in (
+            np.array([-1.0, 0.0, 0.0]),
+            np.zeros((2, 2)),
+            np.zeros((0, 3)),
+            np.array([[np.nan, 0.0, 0.0]]),
+            np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+        ):
+            with self.subTest(shape=bad.shape), pytest.raises(ValueError, match="pointing_vectors"):
+                spatial.pixel_geometry(np.array([0]), instrument, bad)
+
+    def test_pixel_geometry_integration(self):
+        """E2E on the CPRS kernels: matches the DataFrame path and SPICE `azlcpo` at the middle pixel."""
+        ugps_times = spicetime.adapt(np.array(["2023-01-01", "2023-01-01T00:01"]), "iso")
+
+        with self.mkrn.load():
+            instrument = self.mkrn.mappings["CPRS_HYSICS"]
+            npix, pix_vecs = spatial.get_instrument_kernel_pointing_vectors(instrument)
+            out = spatial.pixel_geometry(ugps_times, instrument, pix_vecs)
+
+            ref_lla, ref_sc, ref_qf = spatial.compute_ellipsoid_intersection(
+                ugps_times, instrument, give_geodetic_output=True, give_lat_lon_in_degrees=True
+            )
+            ref_xyz, _, _ = spatial.compute_ellipsoid_intersection(ugps_times, instrument)
+            ref_sun = spatial.surface_angles(ref_xyz, target_obj="SUN", degrees=True)
+            ref_view = spatial.surface_angles(ref_xyz, target_positions=ref_sc, degrees=True)
+
+            mid = npix // 2
+            mid_xyz = out.surface_xyz[:, mid, :]
+            exp_sun_az, exp_sun_zen = spatial.spice_angles(ugps_times, mid_xyz, "SUN", degrees=True)
+            exp_view_az, exp_view_zen = spatial.spice_angles(ugps_times, mid_xyz, instrument.name, degrees=True)
+
+        self.assertEqual(out.lon.shape, (2, npix))
+        self.assertTrue(np.isfinite(out.lon).all(), "CPRS test case should see the Earth at every pixel")
+        npt.assert_array_equal(out.quality_flags, 0)
+
+        npt.assert_allclose(out.lon.ravel(), ref_lla["lon"].to_numpy())
+        npt.assert_allclose(out.lat.ravel(), ref_lla["lat"].to_numpy())
+        npt.assert_allclose(out.alt.ravel(), ref_lla["alt"].to_numpy())
+        npt.assert_array_equal(out.quality_flags.ravel(), ref_qf.to_numpy())
+        npt.assert_allclose(out.solar_zenith.ravel(), ref_sun["zenith"].to_numpy())
+        npt.assert_allclose(out.solar_azimuth.ravel(), ref_sun["azimuth"].to_numpy())
+        npt.assert_allclose(out.viewing_zenith.ravel(), ref_view["zenith"].to_numpy())
+        npt.assert_allclose(out.viewing_azimuth.ravel(), ref_view["azimuth"].to_numpy())
+        npt.assert_allclose(out.relative_azimuth, np.mod(out.viewing_azimuth - out.solar_azimuth + 180.0, 360.0))
+
+        # SPICE `azlcpo` uses the PCK Earth radii rather than WGS84; the measured disagreement on
+        # these kernels is below 1e-6 degrees, so 1e-5 leaves margin without hiding a real error.
+        npt.assert_allclose(out.solar_zenith[:, mid], exp_sun_zen, atol=1e-5)
+        npt.assert_allclose(out.solar_azimuth[:, mid], exp_sun_az, atol=1e-5)
+        npt.assert_allclose(out.viewing_zenith[:, mid], exp_view_zen, atol=1e-5)
+        npt.assert_allclose(out.viewing_azimuth[:, mid], exp_view_az, atol=1e-5)
 
 
 if __name__ == "__main__":
