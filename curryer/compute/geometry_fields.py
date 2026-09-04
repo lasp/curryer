@@ -129,22 +129,10 @@ class GeometryField(str, Enum):
         "Instrument boresight unit vector (inertial).",
     )
 
-    MOON_BORESIGHT_ANGLE = (
-        "moon_boresight_angle",
-        ("moon_boresight_angle",),
-        "Angle between the instrument boresight and the Moon (deg).",
-    )
-    MOON_AZIMUTH_OFFSET = (
-        "moon_azimuth_offset",
-        ("moon_azimuth_offset",),
-        "Signed Moon azimuth offset from the boresight, in the boresight-reference plane (deg). "
-        "Intrinsic azimuth-then-elevation pair; see spatial.boresight_offset_angles.",
-    )
-    MOON_ELEVATION_OFFSET = (
-        "moon_elevation_offset",
-        ("moon_elevation_offset",),
-        "Signed Moon elevation offset from the boresight, out of the boresight-reference plane "
-        "(deg), positive toward boresight x reference. See spatial.boresight_offset_angles.",
+    MOON_DIRECTION = (
+        "moon_direction",
+        ("moon_direction_x", "moon_direction_y", "moon_direction_z"),
+        "Apparent Moon direction, a unit vector in the instrument's FOV frame.",
     )
     MOON_ANGULAR_RADIUS = (
         "moon_angular_radius",

@@ -580,10 +580,12 @@ def instrument_fov(instrument, max_bounds=16):
     direction in the FOV frame is what makes it directly comparable to the boresight.
 
     `getfov` does not return `INS<id>_FOV_REF_VECTOR`, so it is read from the pool
-    separately. Only an "ANGLES" `FOV_CLASS_SPEC` declares one; a "CORNERS" FOV gives
-    `None`. It is the IK's own answer to which direction cross-boresight angles are
-    measured from, which `curryer.compute.spatial.boresight_offset_angles` otherwise
-    has to assume.
+    separately. It is a standard NAIF instrument-kernel keyword, required by the "ANGLES"
+    `FOV_CLASS_SPEC` alongside `FOV_REF_ANGLE` and `FOV_ANGLE_UNITS` -- an ANGLES FOV
+    missing it makes `getfov` signal `SPICE(REFVECTORMISSING)`. The "CORNERS" spec defines
+    no such vector, so those FOVs give `None`. It is the IK's own answer to which direction
+    cross-boresight angles are measured from, which
+    `curryer.compute.spatial.boresight_offset_angles` otherwise has to assume.
 
     """
     instrument = Instrument(instrument)

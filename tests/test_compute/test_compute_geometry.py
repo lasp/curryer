@@ -165,7 +165,7 @@ class TestGeometryOrchestration:
         sc_vel = np.array([[0.0, 7.5, 0.0], [-7.5, 0.0, 0.0]])
         attitude = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
         sc_state_inert = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [0.0, 7000.0, 0.0, -7.5, 0.0, 0.0]])
-        moon_offsets = np.array([[3.0, 0.0, 3.0, 0.26, 3.8e5], [-3.0, 1.0, 3.2, 0.25, 4.0e5]])
+        moon_geometry = np.array([[0.0, 0.0, 1.0, 0.26, 3.8e5], [0.6, 0.0, 0.8, 0.25, 4.0e5]])
         return _fake_providers(
             counter,
             sc_state=_state(sc_pos, sc_vel),
@@ -174,7 +174,7 @@ class TestGeometryOrchestration:
             attitude_quaternion=attitude,
             sc_state_inertial=sc_state_inert,
             boresight_inertial=boresight,
-            moon_boresight_offsets=moon_offsets,
+            moon_geometry=moon_geometry,
         )
 
     def test_default_fields_are_ephemeris_only(self):
@@ -292,7 +292,7 @@ class TestGeometryOrchestration:
         sc_vel = np.array([[1.0, 2.0, 3.0], [np.nan, np.nan, np.nan]])
         attitude = np.array([[1.0, 0.0, 0.0, 0.0], [np.nan, np.nan, np.nan, np.nan]])
         sc_state_inert = np.array([[7000.0, 0.0, 0.0, 0.0, 7.5, 0.0], [np.nan] * 6])
-        moon_offsets = np.array([[3.0, 0.0, 3.0, 0.26, 3.8e5], [np.nan] * 5])
+        moon_geometry = np.array([[0.0, 0.0, 1.0, 0.26, 3.8e5], [np.nan] * 5])
         geo = self._build()
         fakes = _fake_providers(
             counter,
@@ -302,7 +302,7 @@ class TestGeometryOrchestration:
             attitude_quaternion=attitude,
             sc_state_inertial=sc_state_inert,
             boresight_inertial=boresight,
-            moon_boresight_offsets=moon_offsets,
+            moon_geometry=moon_geometry,
         )
         with patch.dict(geometry._PROVIDERS, fakes):
             df = geo.get_geometry(self.UGPS, fields=[field])
@@ -642,19 +642,17 @@ class TestGeometryOrchestration:
         npt.assert_allclose(rate[[0, 4, 5]], 8.0, atol=1e-6)
 
     def test_moon_fields_share_one_provider(self):
-        # All five lunar fields are columns of one provider array, so requesting the whole
+        # All three lunar fields are columns of one provider array, so requesting the whole
         # set must cost a single read -- the reason they were grouped rather than split.
         counter = {}
-        moon = np.array([[-12.0, 3.0, 12.4, 0.26, 3.8e5], [7.0, -1.0, 7.1, 0.25, 4.0e5]])
+        moon = np.array([[0.0, 0.6, 0.8, 0.26, 3.8e5], [-0.6, 0.0, 0.8, 0.25, 4.0e5]])
         geo = self._build()
         moon_fields = [f for f in geometry._FIELDS if str(f).startswith("moon_")]
-        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, moon_boresight_offsets=moon)):
+        with patch.dict(geometry._PROVIDERS, _fake_providers(counter, moon_geometry=moon)):
             df = geo.get_geometry(self.UGPS, fields=moon_fields)
 
-        assert counter == {"moon_boresight_offsets": 1}
-        npt.assert_allclose(df["moon_azimuth_offset"].values, moon[:, 0])
-        npt.assert_allclose(df["moon_elevation_offset"].values, moon[:, 1])
-        npt.assert_allclose(df["moon_boresight_angle"].values, moon[:, 2])
+        assert counter == {"moon_geometry": 1}
+        npt.assert_allclose(df[["moon_direction_x", "moon_direction_y", "moon_direction_z"]].values, moon[:, :3])
         npt.assert_allclose(df["moon_angular_radius"].values, moon[:, 3])
         npt.assert_allclose(df["moon_distance"].values, moon[:, 4])
 
@@ -666,9 +664,10 @@ class TestGeometryOrchestration:
         assert not moon_fields & set(geometry._DEFAULT_FIELDS)
 
     def test_moon_provider_queries_fov_frame_with_apparent_position(self):
-        # The Moon must be read in the IK's *FOV* frame, so the direction and the boresight
-        # are co-framed without a rotation, and as an apparent position ("LT+S") since the
-        # question is where the Moon is seen, not where it is.
+        # The Moon must be read in the IK's *FOV* frame, so the reported direction and the
+        # boresight are co-framed without a rotation -- the whole reason the direction is
+        # reported in that frame -- and as an apparent position ("LT+S") since the question
+        # is where the Moon is seen, not where it is.
         ctx = geometry.GeometryData("INST")
         fov = geometry.spicierpy.ext.InstrumentFov(
             shape="CIRCLE",
@@ -685,44 +684,42 @@ class TestGeometryOrchestration:
             patch.object(geometry.spicierpy, "bodvrd", return_value=(3, np.array([1737.4, 1737.4, 1737.4]))),
             patch.object(geometry.spicierpy.ext, "query_ephemeris", return_value=ephemeris) as m_ephem,
         ):
-            out = geometry._provider_moon_boresight_offsets(self.UGPS, ctx)
+            out = geometry._provider_moon_geometry(self.UGPS, ctx)
 
         assert m_ephem.call_args.kwargs["ref_frame"] == "INST_FOV_FRAME"
         assert m_ephem.call_args.kwargs["correction"] == "LT+S"
         assert m_ephem.call_args.kwargs["target"] == ctx.moon
-        npt.assert_allclose(out[:, 0], 3.0)  # azimuth offset
-        npt.assert_allclose(out[:, 1], 0.0, atol=1e-12)  # elevation offset
-        npt.assert_allclose(out[:, 2], 3.0)  # boresight angle
+        # The reported direction is the queried position normalized -- nothing else.
+        npt.assert_allclose(out[:, :3], [[np.sin(offset), 0.0, np.cos(offset)]] * 2)
+        npt.assert_allclose(np.linalg.norm(out[:, :3], axis=-1), 1.0)
         npt.assert_allclose(out[:, 3], np.rad2deg(np.arcsin(1737.4 / 4.0e5)))
         npt.assert_allclose(out[:, 4], 4.0e5)
 
-    def test_moon_provider_uses_kernel_reference_vector(self):
-        # The azimuth origin is the IK's own FOV_REF_VECTOR, not the frame's +X. With the
-        # reference on +Y the same target reads as pure (negative) elevation rather than
-        # pure azimuth -- which is what separates the pass-through from the fallback.
+    def test_moon_provider_direction_is_the_center_not_the_limb(self):
+        # The direction is to the body center and the angular radius is reported beside it,
+        # so a caller subtracts one from the other to reach the near edge of the disk. A
+        # direction that already pointed at the limb would make that subtraction wrong.
         ctx = geometry.GeometryData("INST")
+        fov = geometry.spicierpy.ext.InstrumentFov(
+            shape="CIRCLE",
+            frame="INST_FOV_FRAME",
+            boresight=np.array([0.0, 0.0, 1.0]),
+            bounds=np.array([[np.sin(np.deg2rad(1.0)), 0.0, np.cos(np.deg2rad(1.0))]]),
+        )
         offset = np.deg2rad(3.0)
         position = np.tile(4.0e5 * np.array([np.sin(offset), 0.0, np.cos(offset)]), (2, 1))
         ephemeris = pd.DataFrame(position, columns=list(geometry.spicierpy.ext.POSITION_COLUMNS))
+        with (
+            patch.object(geometry.spicierpy.ext, "instrument_fov", return_value=fov),
+            patch.object(geometry.spicierpy, "bodvrd", return_value=(3, np.array([1737.4, 1737.4, 1737.4]))),
+            patch.object(geometry.spicierpy.ext, "query_ephemeris", return_value=ephemeris),
+        ):
+            out = geometry._provider_moon_geometry(self.UGPS, ctx)
 
-        def _offsets(ref_vector):
-            fov = geometry.spicierpy.ext.InstrumentFov(
-                shape="CIRCLE",
-                frame="INST_FOV_FRAME",
-                boresight=np.array([0.0, 0.0, 1.0]),
-                bounds=np.array([[np.sin(np.deg2rad(1.0)), 0.0, np.cos(np.deg2rad(1.0))]]),
-                ref_vector=ref_vector,
-            )
-            with (
-                patch.object(geometry.spicierpy.ext, "instrument_fov", return_value=fov),
-                patch.object(geometry.spicierpy, "bodvrd", return_value=(3, np.array([1737.4, 1737.4, 1737.4]))),
-                patch.object(geometry.spicierpy.ext, "query_ephemeris", return_value=ephemeris),
-            ):
-                return geometry._provider_moon_boresight_offsets(self.UGPS, ctx)[:, :3]
-
-        npt.assert_allclose(_offsets(np.array([0.0, 1.0, 0.0])), [[0.0, -3.0, 3.0]] * 2, atol=1e-12)
-        # A "CORNERS" FOV declares no reference vector, and falls back to the frame's +X.
-        npt.assert_allclose(_offsets(None), [[3.0, 0.0, 3.0]] * 2, atol=1e-12)
+        boresight_angle = np.rad2deg(np.arccos(out[:, :3] @ fov.boresight))
+        npt.assert_allclose(boresight_angle, 3.0)
+        # Not 3.0 minus the disk radius, which is what a limb-pointing direction would give.
+        assert (out[:, 3] > 0.24).all()
 
     def test_moon_provider_nan_fills_missing_fov(self, caplog):
         # No instrument FOV (or no lunar radii) makes the one-time pool lookup raise.
@@ -732,7 +729,7 @@ class TestGeometryOrchestration:
         boom = geometry.spicierpy.SpiceyError("SPICE(NOFRAMECONNECT)")
         with patch.object(geometry.spicierpy.ext, "instrument_fov", side_effect=boom):
             with caplog.at_level(logging.WARNING, logger="curryer.compute.geometry"):
-                out = geometry._provider_moon_boresight_offsets(self.UGPS, geo)
+                out = geometry._provider_moon_geometry(self.UGPS, geo)
             assert out.shape == (2, 5)
             assert np.isnan(out).all()
             assert "Instrument FOV or lunar radii unavailable" in caplog.text
@@ -740,7 +737,7 @@ class TestGeometryOrchestration:
 
             geo.allow_nans = False
             with pytest.raises(geometry.spicierpy.SpiceyError):
-                geometry._provider_moon_boresight_offsets(self.UGPS, geo)
+                geometry._provider_moon_geometry(self.UGPS, geo)
 
     def test_moon_body_is_overridable(self):
         assert geometry.GeometryData("INST").moon == "MOON"
@@ -923,28 +920,23 @@ class GeometryIntegrationTestCase(unittest.TestCase):
         # apparent disk radius to [0.241, 0.285] deg.
         self.assertTrue(df["moon_distance"].between(3.45e5, 4.15e5).all())
         self.assertTrue(df["moon_angular_radius"].between(0.240, 0.286).all())
-        self.assertTrue(df["moon_boresight_angle"].between(0.0, 180.0).all())
-        self.assertTrue(df["moon_azimuth_offset"].between(-180.0, 180.0).all())
-        self.assertTrue(df["moon_elevation_offset"].between(-90.0, 90.0).all())
 
-        # The offsets and the total angle describe one direction.
-        azimuth = np.deg2rad(df["moon_azimuth_offset"].values)
-        elevation = np.deg2rad(df["moon_elevation_offset"].values)
-        npt.assert_allclose(
-            np.cos(np.deg2rad(df["moon_boresight_angle"].values)),
-            np.cos(azimuth) * np.cos(elevation),
-            atol=1e-12,
-        )
+        direction_columns = list(geometry.GeometryField.MOON_DIRECTION.columns)
+        direction = df[direction_columns].values
+        npt.assert_allclose(np.linalg.norm(direction, axis=-1), 1.0, rtol=1e-12)
 
-        # Independent check of the same angle: the ephemeris direction in the FOV frame
-        # against the IK boresight, computed without the offset decomposition.
+        # Independent check: the ephemeris direction in the FOV frame, queried and
+        # normalized here rather than read back from the provider.
         with self.mkrn.load():
             position = spicierpy.ext.query_ephemeris(
                 self.ugps, target="MOON", observer=self.instrument, ref_frame=fov.frame, correction="LT+S"
             )[["x", "y", "z"]].values
-        unit = position / np.linalg.norm(position, axis=-1, keepdims=True)
-        expected = np.rad2deg(np.arccos(unit @ (fov.boresight / np.linalg.norm(fov.boresight))))
-        npt.assert_allclose(df["moon_boresight_angle"].values, expected, rtol=1e-9)
+        npt.assert_allclose(direction, position / np.linalg.norm(position, axis=-1, keepdims=True), rtol=1e-9)
+
+        # The point of reporting in the FOV frame: the boresight separation is a dot
+        # product against the IK boresight, with no rotation in between.
+        boresight_angle = np.rad2deg(np.arccos(direction @ (fov.boresight / np.linalg.norm(fov.boresight))))
+        self.assertTrue(np.logical_and(boresight_angle >= 0.0, boresight_angle <= 180.0).all())
 
 
 def test_geometry_field_enum_matches_registry():

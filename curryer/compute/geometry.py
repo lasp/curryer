@@ -85,10 +85,8 @@ them). Each field expands to the columns below.
   observer state in ``inertial_frame`` (km, km/s).
 - ``boresight_inertial`` -> ``boresight_inertial_x/y/z`` -- instrument boresight unit
   vector in ``inertial_frame``.
-- ``moon_boresight_angle`` -> ``moon_boresight_angle`` -- angle between the instrument
-  boresight and the Moon.
-- ``moon_azimuth_offset`` / ``moon_elevation_offset`` -> same-named columns -- the Moon's
-  direction as offsets from the boresight.
+- ``moon_direction`` -> ``moon_direction_x/y/z`` -- unit vector toward the Moon, in the
+  instrument's FOV frame.
 - ``moon_angular_radius`` -> ``moon_angular_radius`` -- apparent angular radius of the
   lunar disk.
 - ``moon_distance`` -> ``moon_distance`` -- apparent observer-Moon distance (km).
@@ -102,16 +100,21 @@ Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
 (``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
 in [0, 90] for Earth-disk views.
 
-The lunar fields are boresight-relative rather than surface angles, and use a different
-convention: ``moon_azimuth_offset`` / ``moon_elevation_offset`` are a signed intrinsic
-azimuth-then-elevation pair about the instrument boresight, in (-180, 180] and [-90, 90],
-with the azimuth origin taken from the instrument kernel's ``FOV_REF_VECTOR``, or the FOV
-frame's +X where the IK declares none (a "CORNERS" ``FOV_CLASS_SPEC``). They are
-not two independent projected angles like ``along_track_angle`` / ``cross_track_angle``,
-and the sign of the elevation depends on the boresight's orientation in its FOV frame --
-see `curryer.compute.spatial.boresight_offset_angles`. ``moon_boresight_angle`` is the
-total separation, in [0, 180]. The Moon is queried as an apparent (LT+S) position, so
-``moon_distance`` is the light-time corrected range.
+The lunar fields are a direction rather than surface angles. ``moon_direction_x/y/z`` is
+the unit vector from the observer to the Moon in the frame the instrument kernel declares
+its FOV in (``INS<id>_FOV_FRAME``), which is the frame the boresight and FOV boundary
+vectors already live in -- so the boresight separation is a dot product against the
+``boresight`` from `curryer.spicierpy.ext.instrument_fov`, with no rotation in between.
+A caller wanting a boresight-relative azimuth/elevation pair passes those same two
+vectors to `curryer.compute.spatial.boresight_offset_angles`, which takes the azimuth
+origin from the IK's own ``FOV_REF_VECTOR``.
+
+The direction is to the *center* of the Moon, not its limb: the nearest edge of the disk
+sits ``moon_angular_radius`` closer than the center direction implies. The target is the
+Moon body center (NAIF 301), not the Earth-Moon barycenter, and the angular radius uses
+the largest of the body's three radii, so the disk circumscribes rather than understates.
+The Moon is queried as an apparent (LT+S) position, so ``moon_distance`` is the
+light-time corrected range.
 """
 
 import logging
@@ -428,20 +431,23 @@ def _provider_attitude_quaternion(ugps_times, ctx):
     return quaternions.values
 
 
-def _provider_moon_boresight_offsets(ugps_times, ctx):
-    """Moon direction relative to the instrument boresight, shape (N, 5) as [azimuth offset,
-    elevation offset, boresight angle, angular radius, distance] in degrees and km.
+def _provider_moon_geometry(ugps_times, ctx):
+    """Moon direction, apparent size and range, shape (N, 5) as [direction x, y, z, angular
+    radius, distance] -- a unit vector in the instrument's FOV frame, then degrees and km.
 
     One ephemeris read plus two static kernel-pool reads, kept in one provider because they
-    are inseparable: the offsets are only meaningful against the boresight and the FOV frame
-    the IK declares it in, and the angular radius needs the same range the offsets come from.
+    are inseparable: the direction is only comparable to the boresight in the frame the IK
+    declares its FOV in, and the angular radius needs the same range the direction comes from.
     The Moon is queried in the instrument's *FOV* frame -- not its body frame, which an IK is
     free to define it separately from -- so the target direction and the boresight are
     co-framed by construction and need no rotation.
 
-    Apparent position ("LT+S") rather than geometric: at lunar range from low Earth orbit the
-    light-time and aberration shift is a few arcseconds, small but free, and it matches the
-    correction :func:`curryer.compute.pointing.check_fov` already uses for the same question.
+    The direction is to the Moon body center (NAIF 301, via ``ctx.moon``), neither the
+    Earth-Moon barycenter nor the limb; the angular radius is what a caller subtracts to
+    reach the nearest edge of the disk. Apparent position ("LT+S") rather than geometric: at
+    lunar range from low Earth orbit the light-time and aberration shift is a few arcseconds,
+    small but free, and it matches the correction :func:`curryer.compute.pointing.check_fov`
+    already uses for the same question.
 
     The one-time IK/PCK lookups are guarded like the boresight provider: a failure is logged
     and NaN-fills every row under ``ctx.allow_nans``. Per-sample ephemeris gaps, and the
@@ -459,7 +465,7 @@ def _provider_moon_boresight_offsets(ugps_times, ctx):
     Returns
     -------
     numpy.ndarray
-        Offsets, angular radius and distance, shape (N, 5). Rows where the ephemeris or
+        Direction, angular radius and distance, shape (N, 5). Rows where the ephemeris or
         pointing is unavailable are NaN (under ``allow_nans``).
 
     """
@@ -488,13 +494,12 @@ def _provider_moon_boresight_offsets(ugps_times, ctx):
         allow_nans=ctx.allow_nans,
     )[list(spicierpy.ext.POSITION_COLUMNS)].values
 
-    # The IK's own reference vector fixes the azimuth origin; without one (a "CORNERS"
-    # FOV declares none) `boresight_offset_angles` falls back to the frame's +X.
-    angles = spatial.boresight_offset_angles(position, fov.boresight, reference_vector=fov.ref_vector, degrees=True)
     distance = np.linalg.norm(position, axis=-1)
+    # Gaps arrive as NaN rows and stay NaN through both divisions; `errstate` keeps that silent.
     with np.errstate(invalid="ignore", divide="ignore"):
+        direction = position / distance[:, None]
         angular_radius = np.rad2deg(np.arcsin(np.clip(moon_radius / distance, 0.0, 1.0)))
-    return np.column_stack([angles, angular_radius, distance])
+    return np.column_stack([direction, angular_radius, distance])
 
 
 _PROVIDERS = {
@@ -504,7 +509,7 @@ _PROVIDERS = {
     "attitude_quaternion": _provider_attitude_quaternion,
     "boresight_inertial": _provider_boresight_inertial,
     "sc_state_inertial": _provider_sc_state_inertial,
-    "moon_boresight_offsets": _provider_moon_boresight_offsets,
+    "moon_geometry": _provider_moon_geometry,
 }
 
 
@@ -532,10 +537,10 @@ class _ProviderResults:
         (and ``*_inertial``) slice properties.
     sun_position, boresight, boresight_inertial : numpy.ndarray or None
         Base provider results, shape (N, 3).
-    moon_boresight_offsets : numpy.ndarray or None
-        Lunar boresight geometry, shape (N, 5) as [azimuth offset, elevation offset,
-        boresight angle, angular radius, distance]. Exposed as the ``moon_*`` slice
-        properties.
+    moon_geometry : numpy.ndarray or None
+        Lunar geometry, shape (N, 5) as [direction x, y, z, angular radius, distance], the
+        direction being a unit vector in the instrument's FOV frame. Exposed as the
+        ``moon_*`` slice properties.
     attitude_quaternion : numpy.ndarray or None
         Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None
@@ -549,7 +554,7 @@ class _ProviderResults:
     attitude_quaternion: np.ndarray | None = None
     sc_state_inertial: np.ndarray | None = None
     boresight_inertial: np.ndarray | None = None
-    moon_boresight_offsets: np.ndarray | None = None
+    moon_geometry: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
 
     @property
@@ -573,29 +578,19 @@ class _ProviderResults:
         return self.sc_state_inertial[:, 3:6]
 
     @property
-    def moon_azimuth_offset(self) -> np.ndarray:
-        """Signed Moon azimuth offset from the boresight (deg), column 0 of ``moon_boresight_offsets``."""
-        return self.moon_boresight_offsets[:, 0]
-
-    @property
-    def moon_elevation_offset(self) -> np.ndarray:
-        """Signed Moon elevation offset from the boresight (deg), column 1 of ``moon_boresight_offsets``."""
-        return self.moon_boresight_offsets[:, 1]
-
-    @property
-    def moon_boresight_angle(self) -> np.ndarray:
-        """Total boresight-to-Moon angle (deg), column 2 of ``moon_boresight_offsets``."""
-        return self.moon_boresight_offsets[:, 2]
+    def moon_direction(self) -> np.ndarray:
+        """Moon unit vector in the instrument's FOV frame (N, 3), the first half of ``moon_geometry``."""
+        return self.moon_geometry[:, :3]
 
     @property
     def moon_angular_radius(self) -> np.ndarray:
-        """Apparent angular radius of the lunar disk (deg), column 3 of ``moon_boresight_offsets``."""
-        return self.moon_boresight_offsets[:, 3]
+        """Apparent angular radius of the lunar disk (deg), column 3 of ``moon_geometry``."""
+        return self.moon_geometry[:, 3]
 
     @property
     def moon_distance(self) -> np.ndarray:
-        """Observer-Moon distance (km), column 4 of ``moon_boresight_offsets``."""
-        return self.moon_boresight_offsets[:, 4]
+        """Observer-Moon distance (km), column 4 of ``moon_geometry``."""
+        return self.moon_geometry[:, 4]
 
     @cached_property
     def orbital_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -858,29 +853,11 @@ _FIELD_SPECS = (
         {"sc_state_inertial", "boresight_inertial"},
         lambda p: _cross_track_angle(p)[:, None],
     ),
-    # Lunar fields: columns of the one moon provider array (see
-    # ``_provider_moon_boresight_offsets``), so requesting any subset costs one read.
-    (
-        GeometryField.MOON_BORESIGHT_ANGLE,
-        {"moon_boresight_offsets"},
-        lambda p: p.moon_boresight_angle[:, None],
-    ),
-    (
-        GeometryField.MOON_AZIMUTH_OFFSET,
-        {"moon_boresight_offsets"},
-        lambda p: p.moon_azimuth_offset[:, None],
-    ),
-    (
-        GeometryField.MOON_ELEVATION_OFFSET,
-        {"moon_boresight_offsets"},
-        lambda p: p.moon_elevation_offset[:, None],
-    ),
-    (
-        GeometryField.MOON_ANGULAR_RADIUS,
-        {"moon_boresight_offsets"},
-        lambda p: p.moon_angular_radius[:, None],
-    ),
-    (GeometryField.MOON_DISTANCE, {"moon_boresight_offsets"}, lambda p: p.moon_distance[:, None]),
+    # Lunar fields: columns of the one moon provider array (see ``_provider_moon_geometry``),
+    # so requesting any subset costs one read.
+    (GeometryField.MOON_DIRECTION, {"moon_geometry"}, lambda p: p.moon_direction),
+    (GeometryField.MOON_ANGULAR_RADIUS, {"moon_geometry"}, lambda p: p.moon_angular_radius[:, None]),
+    (GeometryField.MOON_DISTANCE, {"moon_geometry"}, lambda p: p.moon_distance[:, None]),
 )
 
 _FIELDS = {
