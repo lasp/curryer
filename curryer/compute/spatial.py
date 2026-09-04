@@ -1544,8 +1544,9 @@ def pixel_geometry(
     perspective_correction : str, optional
         SPICE aberration correction applied to both the instrument and the Sun position
         queries (e.g. ``"LT+S"``). Default None applies none, matching
-        `compute_ellipsoid_intersection` and `surface_angles` (which never corrects the Sun
-        query).
+        `compute_ellipsoid_intersection` and `surface_angles`. Note that the two diverge when
+        a correction is given: `surface_angles` always queries the Sun uncorrected, so passing
+        a correction here corrects a query that it leaves alone.
     allow_nans : bool, optional
         If True (default), a SPICE failure at a time (data gap, missing attitude) leaves
         that time's pixels NaN and sets their quality flags; otherwise the SPICE error is
