@@ -522,6 +522,85 @@ def instrument_boresight(instrument, n_vectors=1, norm=False):
     return boresight_vector
 
 
+class InstrumentFov(typing.NamedTuple):
+    """An instrument's field-of-view definition, as declared in its instrument kernel (IK)."""
+
+    shape: str
+    frame: str
+    boresight: np.ndarray
+    bounds: np.ndarray
+    ref_vector: np.ndarray | None = None
+
+    def half_angle(self, degrees=False) -> float:
+        """Half angle of the cone about the boresight that contains the field of view.
+
+        Parameters
+        ----------
+        degrees : bool, optional
+            If True, returns degrees, otherwise (default) radians.
+
+        Returns
+        -------
+        float
+            Angle from the boresight to the outermost FOV boundary vector. Exact for
+            a "CIRCLE" FOV; for the other shapes this is the circumscribing cone, so
+            it never understates the field of view.
+
+        """
+        boresight_uvec = self.boresight / np.linalg.norm(self.boresight)
+        bounds_uvec = self.bounds / np.linalg.norm(self.bounds, axis=-1, keepdims=True)
+        along = bounds_uvec @ boresight_uvec
+        across = np.linalg.norm(np.cross(bounds_uvec, boresight_uvec), axis=-1)
+        angle = float(np.arctan2(across, along).max())
+        return np.rad2deg(angle) if degrees else angle
+
+
+def instrument_fov(instrument, max_bounds=16):
+    """Retrieve an instrument's field-of-view definition from the kernel pool.
+
+    Parameters
+    ----------
+    instrument : str or int or spicierpy.obj.Instrument
+        The instrument ID, name or object to retrieve the FOV of.
+    max_bounds : int, optional
+        Maximum number of FOV boundary vectors to read. Default=16
+
+    Returns
+    -------
+    InstrumentFov
+        The FOV shape, the name of the frame the boresight and boundary vectors are
+        defined in, the boresight vector, the boundary vectors [N, 3], and the FOV
+        reference vector if the IK declares one (`None` otherwise).
+
+    Notes
+    -----
+    Unlike `instrument_boresight`, this keeps the FOV frame and boundary vectors that
+    `getfov` returns alongside the boresight. The frame matters because an IK may
+    define the FOV in a frame other than the instrument's own, and expressing a target
+    direction in the FOV frame is what makes it directly comparable to the boresight.
+
+    `getfov` does not return `INS<id>_FOV_REF_VECTOR`, so it is read from the pool
+    separately. It is a standard NAIF instrument-kernel keyword, required by the "ANGLES"
+    `FOV_CLASS_SPEC` alongside `FOV_REF_ANGLE` and `FOV_ANGLE_UNITS` -- an ANGLES FOV
+    missing it makes `getfov` signal `SPICE(REFVECTORMISSING)`. The "CORNERS" spec defines
+    no such vector, so those FOVs give `None`. It is the IK's own answer to which direction
+    cross-boresight angles are measured from, which
+    `curryer.compute.spatial.boresight_offset_angles` otherwise has to assume.
+
+    """
+    instrument = Instrument(instrument)
+    shape, frame_name, boresight, n_bounds, bounds = spiceypy.getfov(instrument.id, max_bounds, 80, 80)
+    ref_keyword = f"INS{instrument.id}_FOV_REF_VECTOR"
+    ref_vector = np.asarray(spiceypy.gdpool(ref_keyword, 0, 3), dtype=float) if spiceypy.expool(ref_keyword) else None
+    return InstrumentFov(
+        shape=shape,
+        frame=frame_name,
+        boresight=np.asarray(boresight, dtype=float),
+        bounds=np.atleast_2d(np.asarray(bounds, dtype=float))[:n_bounds],
+        ref_vector=ref_vector,
+    )
+
+
 def brief(kernel_file, bin_=None):
     """Brief summary of a kernel file."""
     if bin_ is None:

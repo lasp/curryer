@@ -85,6 +85,11 @@ them). Each field expands to the columns below.
   observer state in ``inertial_frame`` (km, km/s).
 - ``boresight_inertial`` -> ``boresight_inertial_x/y/z`` -- instrument boresight unit
   vector in ``inertial_frame``.
+- ``moon_direction`` -> ``moon_direction_x/y/z`` -- unit vector toward the Moon, in the
+  instrument's FOV frame.
+- ``moon_angular_radius`` -> ``moon_angular_radius`` -- apparent angular radius of the
+  lunar disk.
+- ``moon_distance`` -> ``moon_distance`` -- apparent observer-Moon distance (km).
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -94,6 +99,22 @@ CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so
 Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
 (``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
 in [0, 90] for Earth-disk views.
+
+The lunar fields are a direction rather than surface angles. ``moon_direction_x/y/z`` is
+the unit vector from the observer to the Moon in the frame the instrument kernel declares
+its FOV in (``INS<id>_FOV_FRAME``), which is the frame the boresight and FOV boundary
+vectors already live in -- so the boresight separation is a dot product against the
+``boresight`` from `curryer.spicierpy.ext.instrument_fov`, with no rotation in between.
+A caller wanting a boresight-relative azimuth/elevation pair passes those same two
+vectors to `curryer.compute.spatial.boresight_offset_angles`, which takes the azimuth
+origin from the IK's own ``FOV_REF_VECTOR``.
+
+The direction is to the *center* of the Moon, not its limb: the nearest edge of the disk
+sits ``moon_angular_radius`` closer than the center direction implies. The target is the
+Moon body center (NAIF 301), not the Earth-Moon barycenter, and the angular radius uses
+the largest of the body's three radii, so the disk circumscribes rather than understates.
+The Moon is queried as an apparent (LT+S) position, so ``moon_distance`` is the
+light-time corrected range.
 """
 
 import logging
@@ -410,6 +431,77 @@ def _provider_attitude_quaternion(ugps_times, ctx):
     return quaternions.values
 
 
+def _provider_moon_geometry(ugps_times, ctx):
+    """Moon direction, apparent size and range, shape (N, 5) as [direction x, y, z, angular
+    radius, distance] -- a unit vector in the instrument's FOV frame, then degrees and km.
+
+    One ephemeris read plus two static kernel-pool reads, kept in one provider because they
+    are inseparable: the direction is only comparable to the boresight in the frame the IK
+    declares its FOV in, and the angular radius needs the same range the direction comes from.
+    The Moon is queried in the instrument's *FOV* frame -- not its body frame, which an IK is
+    free to define it separately from -- so the target direction and the boresight are
+    co-framed by construction and need no rotation.
+
+    The direction is to the Moon body center (NAIF 301, via ``ctx.moon``), neither the
+    Earth-Moon barycenter nor the limb; the angular radius is what a caller subtracts to
+    reach the nearest edge of the disk. Apparent position ("LT+S") rather than geometric: at
+    lunar range from low Earth orbit the light-time and aberration shift is a few arcseconds,
+    small but free, and it matches the correction :func:`curryer.compute.pointing.check_fov`
+    already uses for the same question.
+
+    The one-time IK/PCK lookups are guarded like the boresight provider: a failure is logged
+    and NaN-fills every row under ``ctx.allow_nans``. Per-sample ephemeris gaps, and the
+    missing frame chain of an observer with no attitude, come back as NaN rows from the
+    ephemeris query.
+
+    Parameters
+    ----------
+    ugps_times : array_like of int
+        Times in GPS microseconds at which to evaluate the Moon direction.
+    ctx : GeometryData
+        Supplies the observing instrument (``ctx.observer``), the lunar body
+        (``ctx.moon``), and the NaN-fill toggle (``ctx.allow_nans``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Direction, angular radius and distance, shape (N, 5). Rows where the ephemeris or
+        pointing is unavailable are NaN (under ``allow_nans``).
+
+    """
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+
+    @spicierpy.ext.spice_error_to_val(err_value=None, err_flag=lambda err: err, disable=not ctx.allow_nans)
+    def _resolve_fov_and_radius():
+        fov = spicierpy.ext.instrument_fov(ctx.observer)
+        # Largest radius -> the circumscribing disk, so the angular radius never
+        # understates how much sky the body covers.
+        radii = spicierpy.bodvrd(spicierpy.obj.Body(ctx.moon).name, "RADII", 3)[1]
+        return fov, float(np.max(radii))
+
+    resolved, error = _resolve_fov_and_radius()
+    if resolved is None:  # no instrument FOV, or no lunar radii -> surface the error and NaN-fill.
+        logger.warning("Instrument FOV or lunar radii unavailable for observer %r: %s", ctx.observer, error)
+        return np.full((ugps_times.size, 5), np.nan)
+    fov, moon_radius = resolved
+
+    position = spicierpy.ext.query_ephemeris(
+        ugps_times,
+        target=ctx.moon,
+        observer=ctx.observer,
+        ref_frame=fov.frame,
+        correction="LT+S",
+        allow_nans=ctx.allow_nans,
+    )[list(spicierpy.ext.POSITION_COLUMNS)].values
+
+    distance = np.linalg.norm(position, axis=-1)
+    # Gaps arrive as NaN rows and stay NaN through both divisions; `errstate` keeps that silent.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        direction = position / distance[:, None]
+        angular_radius = np.rad2deg(np.arcsin(np.clip(moon_radius / distance, 0.0, 1.0)))
+    return np.column_stack([direction, angular_radius, distance])
+
+
 _PROVIDERS = {
     "sc_state": _provider_sc_state,
     "sun_position": _provider_sun_position,
@@ -417,6 +509,7 @@ _PROVIDERS = {
     "attitude_quaternion": _provider_attitude_quaternion,
     "boresight_inertial": _provider_boresight_inertial,
     "sc_state_inertial": _provider_sc_state_inertial,
+    "moon_geometry": _provider_moon_geometry,
 }
 
 
@@ -444,6 +537,10 @@ class _ProviderResults:
         (and ``*_inertial``) slice properties.
     sun_position, boresight, boresight_inertial : numpy.ndarray or None
         Base provider results, shape (N, 3).
+    moon_geometry : numpy.ndarray or None
+        Lunar geometry, shape (N, 5) as [direction x, y, z, angular radius, distance], the
+        direction being a unit vector in the instrument's FOV frame. Exposed as the
+        ``moon_*`` slice properties.
     attitude_quaternion : numpy.ndarray or None
         Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None
@@ -457,6 +554,7 @@ class _ProviderResults:
     attitude_quaternion: np.ndarray | None = None
     sc_state_inertial: np.ndarray | None = None
     boresight_inertial: np.ndarray | None = None
+    moon_geometry: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
 
     @property
@@ -478,6 +576,21 @@ class _ProviderResults:
     def sc_velocity_inertial(self) -> np.ndarray:
         """Inertial observer velocity (N, 3), the second half of ``sc_state_inertial``."""
         return self.sc_state_inertial[:, 3:6]
+
+    @property
+    def moon_direction(self) -> np.ndarray:
+        """Moon unit vector in the instrument's FOV frame (N, 3), the first half of ``moon_geometry``."""
+        return self.moon_geometry[:, :3]
+
+    @property
+    def moon_angular_radius(self) -> np.ndarray:
+        """Apparent angular radius of the lunar disk (deg), column 3 of ``moon_geometry``."""
+        return self.moon_geometry[:, 3]
+
+    @property
+    def moon_distance(self) -> np.ndarray:
+        """Observer-Moon distance (km), column 4 of ``moon_geometry``."""
+        return self.moon_geometry[:, 4]
 
     @cached_property
     def orbital_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -740,6 +853,11 @@ _FIELD_SPECS = (
         {"sc_state_inertial", "boresight_inertial"},
         lambda p: _cross_track_angle(p)[:, None],
     ),
+    # Lunar fields: columns of the one moon provider array (see ``_provider_moon_geometry``),
+    # so requesting any subset costs one read.
+    (GeometryField.MOON_DIRECTION, {"moon_geometry"}, lambda p: p.moon_direction),
+    (GeometryField.MOON_ANGULAR_RADIUS, {"moon_geometry"}, lambda p: p.moon_angular_radius[:, None]),
+    (GeometryField.MOON_DISTANCE, {"moon_geometry"}, lambda p: p.moon_distance[:, None]),
 )
 
 _FIELDS = {
@@ -802,9 +920,10 @@ class GeometryData(abstract.AbstractMissionData):
         spacecraft.
     microsecond_cadence : int, optional
         Default cadence for :meth:`get_times`, in microseconds.
-    earth, sun : str or int or spicierpy.obj.Body, optional
-        Central body and solar body for the ephemeris queries. Default
-        ``"EARTH"`` / ``"SUN"``; overridable so no body name is fixed in code.
+    earth, sun, moon : str or int or spicierpy.obj.Body, optional
+        Central body, solar body and lunar body for the ephemeris queries. Default
+        ``"EARTH"`` / ``"SUN"`` / ``"MOON"``; overridable so no body name is fixed in
+        code.
     earth_frame : str or spicierpy.obj.Frame, optional
         Earth-fixed (ECEF) reference frame. Default ``spatial.EARTH_FRAME``
         (ITRF93).
@@ -827,6 +946,7 @@ class GeometryData(abstract.AbstractMissionData):
         microsecond_cadence=None,
         earth="EARTH",
         sun="SUN",
+        moon="MOON",
         earth_frame=None,
         inertial_frame="J2000",
         attitude_frame=None,
@@ -838,6 +958,7 @@ class GeometryData(abstract.AbstractMissionData):
         self.observer = observer
         self.earth = earth
         self.sun = sun
+        self.moon = moon
         self.earth_frame = spatial.EARTH_FRAME if earth_frame is None else earth_frame
         self.inertial_frame = inertial_frame
         self.attitude_frame = inertial_frame if attitude_frame is None else attitude_frame

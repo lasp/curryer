@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
+import numpy as np
 from spiceypy.utils.exceptions import SpiceyError
 
 from curryer import meta, spicetime, spicierpy, utils
@@ -430,6 +431,45 @@ class ExtTestCase(unittest.TestCase):
         with ext.load_kernel([self.kernels["frame"], self.kernels["instrument"]]):
             arr = ext.instrument_boresight("tsis_tim_glint")
             self.assertListEqual([0.0, 0.0, 1.0], list(arr))
+
+    def test_instrument_fov(self):
+        with ext.load_kernel([self.kernels["frame"], self.kernels["instrument"]]):
+            fov = ext.instrument_fov("tsis_tim_glint")
+            boresight = ext.instrument_boresight("tsis_tim_glint")
+
+        # Same boresight as `instrument_boresight`, plus the frame and bounds it drops.
+        self.assertListEqual(list(boresight), list(fov.boresight))
+        self.assertTrue(fov.frame)
+        self.assertEqual(3, fov.bounds.shape[-1])
+        self.assertGreaterEqual(fov.bounds.shape[0], 1)
+
+        # The half angle bounds the FOV: every boundary vector is within it, and it
+        # agrees with the widest boresight-to-boundary angle.
+        bounds_uvec = fov.bounds / np.linalg.norm(fov.bounds, axis=-1, keepdims=True)
+        boresight_uvec = fov.boresight / np.linalg.norm(fov.boresight)
+        widest = np.rad2deg(np.arccos(bounds_uvec @ boresight_uvec).max())
+        self.assertAlmostEqual(widest, fov.half_angle(degrees=True))
+        self.assertAlmostEqual(np.deg2rad(fov.half_angle(degrees=True)), fov.half_angle())
+
+        # The IK's own azimuth reference, which `getfov` drops. Declared only by an
+        # "ANGLES" FOV_CLASS_SPEC, and non-parallel to the boresight (SPICE enforces it).
+        self.assertIsNotNone(fov.ref_vector)
+        self.assertListEqual([1.0, 0.0, 0.0], list(fov.ref_vector))
+        self.assertGreater(np.linalg.norm(np.cross(fov.ref_vector, fov.boresight)), 0.0)
+
+    def test_instrument_fov_without_reference_vector(self):
+        # A "CORNERS" FOV declares no FOV_REF_VECTOR, so there is nothing to read and
+        # callers fall back to their own azimuth origin. Every instrument in the committed
+        # kernels is an "ANGLES" spec, so the absent-keyword branch is forced here.
+        with ext.load_kernel([self.kernels["frame"], self.kernels["instrument"]]):
+            with patch.object(ext.spiceypy, "expool", return_value=False) as m_expool:
+                fov = ext.instrument_fov("tsis_tim_glint")
+
+        self.assertIsNone(fov.ref_vector)
+        self.assertTrue(m_expool.called)
+        # Everything `getfov` supplies still reads normally.
+        self.assertEqual("CIRCLE", fov.shape)
+        self.assertListEqual([0.0, 0.0, 1.0], list(fov.boresight))
 
 
 class _StubSpiceError:

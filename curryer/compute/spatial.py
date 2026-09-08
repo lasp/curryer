@@ -1341,6 +1341,144 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
     return zenith_ang.ravel() if given_1d else zenith_ang
 
 
+def boresight_offset_angles(
+    target_vectors: np.ndarray,
+    boresight_vector: np.ndarray,
+    reference_vector: np.ndarray = None,
+    degrees=False,
+) -> np.ndarray:
+    """Compute a target's angular offset from an instrument boresight (vectorized).
+
+    Decomposes each target direction in a right-handed triad built on the boresight:
+    an azimuth offset and an elevation offset about the two cross-boresight axes,
+    plus the total angle between the boresight and the target.
+
+    Parameters
+    ----------
+    target_vectors : np.ndarray
+        Observer-to-target vectors [N, 3] or [3], in the same frame as
+        `boresight_vector`. Magnitudes are ignored (normalized internally).
+    boresight_vector : np.ndarray
+        Instrument boresight vector [3], typically the instrument kernel's
+        boresight in its FOV frame (see
+        `curryer.spicierpy.ext.instrument_fov`).
+    reference_vector : np.ndarray, optional
+        Vector [3] fixing the azimuth origin. Only its component perpendicular
+        to the boresight is used. Default is the frame's +X axis; prefer the
+        instrument kernel's own ``INS<id>_FOV_REF_VECTOR``, which
+        `curryer.spicierpy.ext.instrument_fov` returns as ``ref_vector``.
+    degrees : bool, optional
+        If True, returns are in degrees, otherwise (default) radians.
+
+    Returns
+    -------
+    np.ndarray
+        Angles [N, 3] as [azimuth offset, elevation offset, boresight angle],
+        ranging over (-pi, pi], [-pi/2, pi/2] and [0, pi] respectively. A 1D
+        array of 3 values if `target_vectors` was 1D. Rows with a zero-length or
+        non-finite target vector are NaN.
+
+    Raises
+    ------
+    ValueError
+        If the vectors are not 3 values per point, if `boresight_vector` is
+        non-finite or zero-length, if `reference_vector` is non-finite, or if
+        `reference_vector` is parallel to `boresight_vector` (leaving the
+        azimuth origin undefined).
+
+    Notes
+    -----
+    - The triad is built from the boresight rather than from the frame axes, so
+      the offsets are measured from the instrument kernel's boresight even when
+      that boresight is not a frame axis.
+    - The boresight angle is `arctan2` of the transverse magnitude against the
+      along-boresight component rather than `arccos` of the latter, which stays
+      conditioned at the small separations the value is usually wanted for.
+    - **Convention.** The offsets are an intrinsic azimuth-then-elevation Euler
+      pair, *not* two independent plane-projected angles. Azimuth is measured in
+      the boresight-reference plane; elevation is then measured out of that
+      plane, about the already-rotated axis. A target displaced equally toward
+      the two cross-boresight axes therefore gives *unequal* offsets -- for
+      ``(1, 1, 3)`` about a +Z boresight, 18.4349 and 17.5484 degrees -- unlike
+      the ``along_track_angle`` / ``cross_track_angle`` pair
+      in `curryer.compute.geometry`, which are `arctan2` in both axes. The
+      identity that does hold is
+      ``cos(boresight_angle) == cos(azimuth) * cos(elevation)``.
+    - **Sign.** Positive elevation runs toward ``boresight x reference``, so it
+      is fixed by the boresight's orientation in its frame, not by the frame
+      axes. A target displaced toward frame +Y reads +3 degrees under a +Z
+      boresight and -3 degrees under a -Z one, both with a +X reference.
+    - The pair describes a direction near the boresight. It stays valid over the
+      full sphere, but azimuth is discontinuous across +/-180 degrees and
+      elevation saturates at +/-90, so far off-boresight it is a poor
+      description of the direction and `boresight_angle` is the usable value.
+
+    """
+    target_vectors = np.asarray(target_vectors, dtype=float)
+    given_1d = target_vectors.ndim == 1
+    if given_1d:
+        target_vectors = target_vectors[None, ...]
+    if target_vectors.ndim != 2 or target_vectors.shape[-1] != 3:
+        raise ValueError("`target_vectors` must have 3 values per point!")
+
+    # The boresight and the reference define the triad, not the data: a degenerate one
+    # makes every row NaN, so they raise rather than following the fill contract that
+    # `target_vectors` rows do.
+    boresight_vector = np.asarray(boresight_vector, dtype=float).ravel()
+    if boresight_vector.size != 3:
+        raise ValueError("`boresight_vector` must be a single vector of 3 values!")
+    boresight_norm = np.linalg.norm(boresight_vector)
+    if not np.isfinite(boresight_norm) or boresight_norm == 0:
+        raise ValueError("`boresight_vector` must be finite and non-zero!")
+
+    defaulted_reference = reference_vector is None
+    if defaulted_reference:
+        reference_vector = np.array([1.0, 0.0, 0.0])
+    else:
+        reference_vector = np.asarray(reference_vector, dtype=float).ravel()
+        if reference_vector.size != 3:
+            raise ValueError("`reference_vector` must be a single vector of 3 values!")
+        if not np.isfinite(reference_vector).all():
+            raise ValueError("`reference_vector` must be finite!")
+
+    # Boresight triad: +Z along the boresight, +X the reference direction made
+    # perpendicular to it, +Y completing the right-handed set.
+    z_axis = boresight_vector / boresight_norm
+    x_axis = reference_vector - (reference_vector @ z_axis) * z_axis
+    x_axis_norm = np.linalg.norm(x_axis)
+    if x_axis_norm == 0:
+        if defaulted_reference:
+            raise ValueError(
+                "`boresight_vector` lies along the default +X azimuth reference, leaving the azimuth"
+                " origin undefined; pass `reference_vector` explicitly (an instrument kernel's"
+                " FOV_REF_VECTOR, via `curryer.spicierpy.ext.instrument_fov`)!"
+            )
+        raise ValueError("`reference_vector` is parallel to `boresight_vector`; azimuth origin is undefined!")
+    x_axis /= x_axis_norm
+    y_axis = np.cross(z_axis, x_axis)
+
+    # Zero-length and non-finite targets normalize to NaN (never inf), honoring
+    # the fill contract of the callers; `errstate` keeps that silent.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        target_uvec = target_vectors / np.linalg.norm(target_vectors, axis=-1, keepdims=True)
+
+    along = target_uvec @ z_axis
+    across_ref = target_uvec @ x_axis
+    across_perp = target_uvec @ y_axis
+
+    angles = np.stack(
+        [
+            np.arctan2(across_ref, along),
+            np.arcsin(np.clip(across_perp, -1.0, 1.0)),
+            np.arctan2(np.hypot(across_ref, across_perp), along),
+        ],
+        axis=-1,
+    )
+    if degrees:
+        angles = np.rad2deg(angles)
+    return angles.ravel() if given_1d else angles
+
+
 def surface_angles(
     surface_positions: pd.DataFrame,
     target_positions: pd.DataFrame = None,
