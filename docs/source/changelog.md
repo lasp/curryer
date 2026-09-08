@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## Version 0.5.2 (2026-09)
 
 Adds the building blocks of a mission-agnostic kernel-management layer:
 pool introspection, kernel coverage queries and aggregation, NAIF
-generic-kernel discovery, and a local kernel file cache.
+generic-kernel discovery, and a local kernel file cache. Also adds lunar
+geometry fields and the instrument FOV wrapper they are measured against.
 
 - **`curryer.spicierpy.ext`** – `loaded_kernels()` lists the furnished
   kernel pool (with a `KernelType` filter enum); `kernel_coverage` /
@@ -28,6 +29,14 @@ generic-kernel discovery, and a local kernel file cache.
 - **Leapsecond updates survive upgrades** – a leapsecond kernel ships
   inside the package, and `spicetime.leapsecond.update_file` caches updates
   in a version-independent directory.
+- **New lunar geometry fields** – an opt-in `moon_geometry` provider
+  reports `moon_direction` (a unit vector in the frame the instrument
+  declares its FOV in), `moon_angular_radius` and `moon_distance`, from an
+  apparent (LT+S) position of the Moon body center.
+- **New `compute.spatial.boresight_offset_angles`** – decomposes a target
+  direction into signed azimuth/elevation offsets about an instrument
+  boresight, with `spicierpy.ext.instrument_fov` supplying the boresight,
+  `FOV_REF_VECTOR` and half angle it is measured against.
 
 ## Version 0.5.0 (2026-07)
 
