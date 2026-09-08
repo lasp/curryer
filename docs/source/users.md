@@ -29,8 +29,18 @@ and correction workflows, and `examples/correction/` for runnable scripts.
 
 ### Data / Binary Files
 
-_NOTE: Data files and precompiled binaries are not currently automated and thus
-require manual downloading. This will be addressed in the next major release._
+_NOTE: Precompiled binaries are not currently automated and thus require
+manual downloading. Generic NAIF kernels can now be resolved and cached
+automatically (see below)._
+
+Generic NAIF kernels (LSK, DE ephemerides, planetary-constant and
+Earth-orientation PCKs) can be discovered on the NAIF server and cached
+locally via `curryer.kernels.discovery` and `curryer.kernels.cache`; a
+leapsecond kernel also ships inside the package (`curryer/data/generic/`) so
+fresh installs work offline. The packaged copy is the authoritative default;
+the repo-root `data/generic/` copy exists for tests and examples. Updated
+leapsecond kernels downloaded with `curryer.spicetime.leapsecond.update_file`
+are cached in a version-independent directory and survive package upgrades.
 
 Download from the Curryer repo:
 

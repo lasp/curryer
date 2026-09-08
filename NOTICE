@@ -1,2 +1,7 @@
 Curryer
 Copyright (c) 2023 The Regents of the University of Colorado
+
+This product retrieves and redistributes SPICE kernel data produced by the
+Navigation and Ancillary Information Facility (NAIF), NASA Jet Propulsion
+Laboratory (https://naif.jpl.nasa.gov). NAIF SPICE data and toolkit software
+are provided by NAIF without licensing or export restrictions.
