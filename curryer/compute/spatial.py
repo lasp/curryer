@@ -21,7 +21,6 @@ Terms:
 import logging
 import time
 import warnings
-from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -32,6 +31,7 @@ from typing_extensions import deprecated
 from .. import spicetime, spicierpy
 from . import constants, elevation
 from .constants import SpatialQualityFlags as SQF
+from .geometry_fields import PixelField
 
 logger = logging.getLogger(__name__)
 
@@ -1603,44 +1603,31 @@ def surface_angles(
     return angles
 
 
-class PixelGeometry(NamedTuple):
-    """Per-time, per-pixel surface geometry returned by `pixel_geometry`.
+def _resolve_pixel_fields(fields) -> tuple[PixelField, ...]:
+    """Validate requested pixel fields, defaulting to every registered field.
 
-    Per-pixel arrays are shaped ``(n_times, n_pixels)`` and are NaN where the pixel misses
-    the ellipsoid or SPICE data was unavailable; `quality_flags` says which. Angles follow
-    the `surface_angles` conventions: azimuths clockwise from geodetic North in [0, 360),
-    zeniths geodetic from the local WGS84 surface normal in [0, 180], `relative_azimuth`
-    per :func:`relative_azimuth` (Sun at 180). Angles and lon/lat are in degrees when
-    `pixel_geometry` was called with ``degrees=True`` (the default), otherwise radians.
-
-    Attributes
+    Parameters
     ----------
-    lon, lat, alt : np.ndarray
-        Geodetic WGS84 coordinates of the intersection, ``(n_times, n_pixels)``; ``alt`` is
-        0 km at every hit.
-    surface_xyz : np.ndarray
-        Intersection in the body-fixed frame, km, ``(n_times, n_pixels, 3)``.
-    solar_zenith, solar_azimuth, viewing_zenith, viewing_azimuth, relative_azimuth : np.ndarray
-        Surface angles, ``(n_times, n_pixels)``.
-    quality_flags : np.ndarray
-        `SpatialQualityFlags` bitmask per pixel, int64, ``(n_times, n_pixels)``; 0 is good.
-    sc_position, sun_position : np.ndarray
-        Spacecraft and Sun positions in the body-fixed frame, km, ``(n_times, 3)``; NaN at
-        times SPICE could not resolve.
-    """
+    fields : iterable of PixelField or str, or None
+        Requested fields. None selects all of them.
 
-    lon: np.ndarray
-    lat: np.ndarray
-    alt: np.ndarray
-    surface_xyz: np.ndarray
-    solar_zenith: np.ndarray
-    solar_azimuth: np.ndarray
-    viewing_zenith: np.ndarray
-    viewing_azimuth: np.ndarray
-    relative_azimuth: np.ndarray
-    quality_flags: np.ndarray
-    sc_position: np.ndarray
-    sun_position: np.ndarray
+    Returns
+    -------
+    tuple of PixelField
+        The requested fields, in the order given.
+
+    Raises
+    ------
+    KeyError
+        If any name is not a registered `PixelField`.
+    """
+    if fields is None:
+        return tuple(PixelField)
+    by_selector = {field.value: field for field in PixelField}
+    unknown = [name for name in fields if str(name) not in by_selector]
+    if unknown:
+        raise KeyError(f"Unknown pixel geometry field(s): {unknown}. Available: {sorted(by_selector)}")
+    return tuple(by_selector[str(name)] for name in fields)
 
 
 def pixel_geometry(
@@ -1648,24 +1635,29 @@ def pixel_geometry(
     instrument: int | str | spicierpy.obj.Body,
     pointing_vectors: np.ndarray,
     *,
+    fields: list[str] | None = None,
     sun: int | str | spicierpy.obj.Body = "SUN",
     perspective_correction: str | None = None,
     allow_nans: bool = True,
     degrees: bool = True,
     observer_id: int = spicierpy.obj.Body("EARTH").id,
     fixed_frame_name: str = EARTH_FRAME,
-) -> PixelGeometry:
+) -> dict[str, np.ndarray]:
     """Geolocate an instrument's pixel vectors and compute the surface angles at each hit.
 
     The per-pixel counterpart of `Geolocate.calc_ancillary` (with `perspective_correction`
     unset) for focal planes too large for the pandas ``(time, pixel)`` product: ndarrays
-    in, ``(n_times, n_pixels)`` ndarrays out. Per time it makes three SPICE calls
+    in, ``(n_times, n_pixels)`` ndarrays out. Per time it makes at most three SPICE calls
     (instrument rotation and position, Sun position); everything per pixel is closed-form
     numpy: the ray-ellipsoid intersection (`ray_intersect_ellipsoid`), the geodetic
     conversion, and the azimuth and zenith of the spacecraft and the Sun at each
     intersection (the math behind `calc_azimuth` and `calc_zenith`). The viewing angles use
     the spacecraft position the intersection already queried, so no second ephemeris read
     is made.
+
+    Field selection mirrors `GeometryData.get_geometry`: name the `PixelField` members you
+    want and only the work behind them is done. Requesting no solar field skips the Sun
+    ephemeris query outright; requesting no angle at all skips the local-frame construction.
 
     Parameters
     ----------
@@ -1677,6 +1669,9 @@ def pixel_geometry(
     pointing_vectors : np.ndarray
         Pixel look vectors in the instrument frame, shape ``(n_pixels, 3)``, finite and
         non-zero. Need not be unit length. The same vectors are used at every time.
+    fields : list of PixelField or str, optional
+        Fields to compute. Default is every registered field. See
+        `curryer.compute.geometry_fields.PixelField`.
     sun : int, str or spicierpy.obj.Body, optional
         Body for the solar angles. Default ``"SUN"``.
     perspective_correction : str, optional
@@ -1700,19 +1695,29 @@ def pixel_geometry(
 
     Returns
     -------
-    PixelGeometry
-        Per-pixel lon/lat/alt, surface positions, solar and viewing angles, relative
-        azimuth and quality flags, plus the per-time spacecraft and Sun positions.
+    dict of {str: numpy.ndarray}
+        One entry per output column of each requested field (``PixelField.columns``), each
+        an ``(n_times, n_pixels)`` array. Float columns are NaN where the pixel misses the
+        ellipsoid or SPICE data was unavailable; ``quality_flags`` says which and is the one
+        integer column, deliberately not cast to float the way
+        `GeometryData.get_vectors` casts its output, so the bitmask stays exact.
 
     Raises
     ------
     ValueError
         If `pointing_vectors` is not a finite ``(n_pixels, 3)`` array.
+    KeyError
+        If `fields` names something that is not a `PixelField`.
     SpiceyError
         If `allow_nans` is False and a SPICE query fails.
 
     Notes
     -----
+    Angles follow the `surface_angles` conventions: azimuths clockwise from geodetic North
+    in [0, 360), zeniths geodetic from the local WGS84 surface normal in [0, 180],
+    ``relative_azimuth`` per :func:`relative_azimuth` (Sun at 180). ``altitude`` is 0 at
+    every hit.
+
     Memory: the transient working set for the time being processed (rotated vectors, the
     intersection in two coordinate systems, the local frame and the angles) peaks at about
     250 bytes per pixel on top of the returned arrays (measured with ``tracemalloc`` at one
@@ -1722,10 +1727,13 @@ def pixel_geometry(
     the ray misses the ellipsoid; the SPICE cause plus ``CALC_ELLIPS_INSUFF_DATA`` when
     the instrument rotation or position was unavailable at that time;
     ``CALC_ANCIL_INSUFF_DATA`` when the Sun position was unavailable (viewing angles are
-    still computed); ``CALC_ANCIL_NOT_FINITE`` where an angle is NaN at a valid hit.
+    still computed); ``CALC_ANCIL_NOT_FINITE`` where an angle is NaN at a valid hit. The
+    ancillary flags describe only the angles actually requested, so a call that asks for no
+    solar field never raises ``CALC_ANCIL_INSUFF_DATA``.
     """
     if not isinstance(instrument, spicierpy.obj.Body):
         instrument = spicierpy.obj.Body(instrument, frame=True)
+    requested = _resolve_pixel_fields(fields)
     pix_vectors = np.ascontiguousarray(pointing_vectors, dtype=np.float64)
     if pix_vectors.ndim != 2 or pix_vectors.shape[1] != 3 or pix_vectors.shape[0] == 0:
         raise ValueError(f"`pointing_vectors` must be shape (n_pixels, 3), got {pix_vectors.shape}.")
@@ -1736,33 +1744,39 @@ def pixel_geometry(
     et_times = np.atleast_1d(spicetime.adapt(ugps_times, to="et"))
     n_times, n_pixels = et_times.size, pix_vectors.shape[0]
     abcorr = "NONE" if perspective_correction is None else perspective_correction
-    logger.debug("Calculating [%s x %s] pixel geometry for [%s]", n_pixels, n_times, instrument)
 
-    sun_positions = spicierpy.ext.query_ephemeris(
-        ugps_times,
-        target=sun,
-        observer=observer_id,
-        ref_frame=fixed_frame_name,
-        correction=perspective_correction,
-        allow_nans=allow_nans,
-    )[list(spicierpy.ext.POSITION_COLUMNS)].to_numpy(dtype=np.float64)
+    wanted = set(requested)
+    want_solar = bool(wanted & {PixelField.SOLAR_ZENITH, PixelField.SOLAR_AZIMUTH, PixelField.RELATIVE_AZIMUTH})
+    want_viewing = bool(wanted & {PixelField.VIEWING_ZENITH, PixelField.VIEWING_AZIMUTH, PixelField.RELATIVE_AZIMUTH})
+    want_angles = want_solar or want_viewing
+    want_geodetic = PixelField.SURFACE_GEODETIC in wanted
+    want_surface = PixelField.SURFACE_POSITION in wanted
+    want_flags = PixelField.QUALITY_FLAGS in wanted
+    logger.debug(
+        "Calculating [%s x %s] pixel geometry for [%s], fields %s",
+        n_pixels,
+        n_times,
+        instrument,
+        [str(field) for field in requested],
+    )
 
-    per_pixel = {
-        name: np.full((n_times, n_pixels), np.nan)
-        for name in (
-            "lon",
-            "lat",
-            "alt",
-            "solar_zenith",
-            "solar_azimuth",
-            "viewing_zenith",
-            "viewing_azimuth",
-            "relative_azimuth",
-        )
-    }
-    surface_xyz = np.full((n_times, n_pixels, 3), np.nan)
-    quality_flags = np.zeros((n_times, n_pixels), dtype=np.int64)
-    sc_positions = np.full((n_times, 3), np.nan)
+    sun_positions = None
+    if want_solar:
+        sun_positions = spicierpy.ext.query_ephemeris(
+            ugps_times,
+            target=sun,
+            observer=observer_id,
+            ref_frame=fixed_frame_name,
+            correction=perspective_correction,
+            allow_nans=allow_nans,
+        )[list(spicierpy.ext.POSITION_COLUMNS)].to_numpy(dtype=np.float64)
+
+    out: dict[str, np.ndarray] = {}
+    for field in requested:
+        dtype = np.int64 if field is PixelField.QUALITY_FLAGS else float
+        fill = 0 if field is PixelField.QUALITY_FLAGS else np.nan
+        for column in field.columns:
+            out[column] = np.full((n_times, n_pixels), fill, dtype=dtype)
 
     for ith, et_time in enumerate(et_times):
         (rotation, sc_position), qf_val = SpatialQueries.query_rotation_and_position(
@@ -1774,54 +1788,74 @@ def pixel_geometry(
             fixed_frame_name=fixed_frame_name,
         )
         if qf_val != SQF.GOOD:
-            quality_flags[ith] = int(qf_val | SQF.CALC_ELLIPS_INSUFF_DATA)
+            if want_flags:
+                out["quality_flags"][ith] = int(qf_val | SQF.CALC_ELLIPS_INSUFF_DATA)
             continue
-        sc_positions[ith] = sc_position
 
         xyz = ray_intersect_ellipsoid((rotation @ pix_vectors.T).T, sc_position)
-        lla = _surface_xyz_to_geodetic(xyz)
-        surface_xyz[ith] = xyz
         hit = np.isfinite(xyz).all(axis=1)
-        qf_row = np.where(hit, int(SQF.GOOD), int(SQF.CALC_ELLIPS_NO_INTERSECT))
+        qf_row = np.where(hit, int(SQF.GOOD), int(SQF.CALC_ELLIPS_NO_INTERSECT)) if want_flags else None
 
-        # The intersection already yields exact geodetic lon/lat (alt = 0), so the local frame is
-        # built once here instead of re-deriving it inside each angle call. Misses are NaN rows
-        # and propagate as NaN through the angle math without warnings.
-        up, east, north = _local_frame_vectors(lla[:, 0], lla[:, 1])
-        sc_vector = sc_position - xyz
-        per_pixel["viewing_zenith"][ith] = _zenith_from_normal(sc_vector, up, degrees=degrees)
-        per_pixel["viewing_azimuth"][ith] = _azimuth_from_local_frame(sc_vector, east, north, degrees=degrees)
-        angles_finite = np.isfinite(per_pixel["viewing_zenith"][ith]) & np.isfinite(per_pixel["viewing_azimuth"][ith])
+        if want_surface:
+            for jth, column in enumerate(PixelField.SURFACE_POSITION.columns):
+                out[column][ith] = xyz[:, jth]
 
-        sun_position = sun_positions[ith]
-        if np.isfinite(sun_position).all():
-            sun_vector = sun_position - xyz
-            per_pixel["solar_zenith"][ith] = _zenith_from_normal(sun_vector, up, degrees=degrees)
-            per_pixel["solar_azimuth"][ith] = _azimuth_from_local_frame(sun_vector, east, north, degrees=degrees)
-            per_pixel["relative_azimuth"][ith] = relative_azimuth(
-                per_pixel["viewing_azimuth"][ith], per_pixel["solar_azimuth"][ith], degrees=degrees
-            )
-            angles_finite &= np.isfinite(per_pixel["solar_zenith"][ith]) & np.isfinite(per_pixel["solar_azimuth"][ith])
-        else:
-            qf_row |= int(SQF.CALC_ANCIL_INSUFF_DATA)
+        if not (want_geodetic or want_angles):
+            if want_flags:
+                out["quality_flags"][ith] = qf_row
+            continue
 
-        qf_row[hit & ~angles_finite] |= int(SQF.CALC_ANCIL_NOT_FINITE)
-        quality_flags[ith] = qf_row
+        lla = _surface_xyz_to_geodetic(xyz)
 
-        if degrees:
-            lla[:, :2] = np.rad2deg(lla[:, :2])
-        per_pixel["lon"][ith] = lla[:, 0]
-        per_pixel["lat"][ith] = lla[:, 1]
-        per_pixel["alt"][ith] = lla[:, 2]
+        if want_angles:
+            # The intersection already yields exact geodetic lon/lat (alt = 0), so the local frame is
+            # built once here instead of re-deriving it inside each angle call. Misses are NaN rows
+            # and propagate as NaN through the angle math without warnings.
+            up, east, north = _local_frame_vectors(lla[:, 0], lla[:, 1])
+            angles_finite = np.ones(n_pixels, dtype=bool)
+
+            viewing_azimuth = None
+            if want_viewing:
+                sc_vector = sc_position - xyz
+                viewing_zenith = _zenith_from_normal(sc_vector, up, degrees=degrees)
+                viewing_azimuth = _azimuth_from_local_frame(sc_vector, east, north, degrees=degrees)
+                angles_finite &= np.isfinite(viewing_zenith) & np.isfinite(viewing_azimuth)
+                if PixelField.VIEWING_ZENITH in wanted:
+                    out["viewing_zenith"][ith] = viewing_zenith
+                if PixelField.VIEWING_AZIMUTH in wanted:
+                    out["viewing_azimuth"][ith] = viewing_azimuth
+
+            if want_solar:
+                sun_position = sun_positions[ith]
+                if np.isfinite(sun_position).all():
+                    sun_vector = sun_position - xyz
+                    solar_zenith = _zenith_from_normal(sun_vector, up, degrees=degrees)
+                    solar_azimuth = _azimuth_from_local_frame(sun_vector, east, north, degrees=degrees)
+                    angles_finite &= np.isfinite(solar_zenith) & np.isfinite(solar_azimuth)
+                    if PixelField.SOLAR_ZENITH in wanted:
+                        out["solar_zenith"][ith] = solar_zenith
+                    if PixelField.SOLAR_AZIMUTH in wanted:
+                        out["solar_azimuth"][ith] = solar_azimuth
+                    if PixelField.RELATIVE_AZIMUTH in wanted:
+                        out["relative_azimuth"][ith] = relative_azimuth(viewing_azimuth, solar_azimuth, degrees=degrees)
+                elif want_flags:
+                    qf_row |= int(SQF.CALC_ANCIL_INSUFF_DATA)
+
+            if want_flags:
+                qf_row[hit & ~angles_finite] |= int(SQF.CALC_ANCIL_NOT_FINITE)
+
+        if want_flags:
+            out["quality_flags"][ith] = qf_row
+
+        if want_geodetic:
+            if degrees:
+                lla[:, :2] = np.rad2deg(lla[:, :2])
+            out["longitude"][ith] = lla[:, 0]
+            out["latitude"][ith] = lla[:, 1]
+            out["altitude"][ith] = lla[:, 2]
 
     logger.info("Completed [%s x %s] pixel geometry for [%s]", n_pixels, n_times, instrument)
-    return PixelGeometry(
-        surface_xyz=surface_xyz,
-        quality_flags=quality_flags,
-        sc_position=sc_positions,
-        sun_position=sun_positions,
-        **per_pixel,
-    )
+    return out
 
 
 def minmax_lon(lons: np.ndarray, degrees=False) -> (float, float):
