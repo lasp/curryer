@@ -66,6 +66,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+    "moto[s3]>=5",
     "pytest",
     "pytest-cov",
     "pytest-randomly",
