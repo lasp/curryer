@@ -7,7 +7,35 @@ without pulling in the broader constants module.
 from enum import Enum
 
 
-class GeometryField(str, Enum):
+class _FieldEnum(str, Enum):
+    """Base for the field-identifier enums: a string selector plus output columns.
+
+    Members are declared as ``(selector, columns, description)``. Subclassing works because
+    this class declares no members of its own.
+    """
+
+    def __new__(cls, value, columns=(), description=""):
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._columns = tuple(columns)
+        member._description = description
+        return member
+
+    def __str__(self):
+        return self._value_
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """Output column names this field expands to."""
+        return self._columns
+
+    @property
+    def description(self) -> str:
+        """One-line description of the field."""
+        return self._description
+
+
+class GeometryField(_FieldEnum):
     """Importable identifiers for the fields :class:`curryer.compute.geometry.GeometryData` computes.
 
     Each member's value is the selector passed to ``get_geometry(fields=...)``; :attr:`columns`
@@ -145,22 +173,58 @@ class GeometryField(str, Enum):
         "Apparent (light-time corrected) observer-Moon distance (km).",
     )
 
-    def __new__(cls, value, columns=(), description=""):
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._columns = tuple(columns)
-        member._description = description
-        return member
 
-    def __str__(self):
-        return self._value_
+class PixelField(_FieldEnum):
+    """Importable identifiers for the fields :func:`curryer.compute.spatial.pixel_geometry` computes.
 
-    @property
-    def columns(self) -> tuple[str, ...]:
-        """Output column names this field expands to."""
-        return self._columns
+    The per-pixel counterpart of :class:`GeometryField`, following the same contract: each member's
+    value is the selector passed to ``pixel_geometry(fields=...)``, :attr:`columns` lists the output
+    keys it expands to, and members are plain strings so ``PixelField.SOLAR_ZENITH`` and
+    ``"solar_zenith"`` are interchangeable.
 
-    @property
-    def description(self) -> str:
-        """One-line description of the field."""
-        return self._description
+    The five surface-angle members deliberately share their selector and column names with the
+    :class:`GeometryField` members of the same name. The quantity is the same one, evaluated at a
+    pixel intersection rather than at the boresight, so a per-pixel product and a boresight product
+    address it by the same key.
+    """
+
+    SURFACE_GEODETIC = (
+        "surface_geodetic",
+        ("latitude", "longitude", "altitude"),
+        "Geodetic WGS84 coordinates of the pixel's ellipsoid intersection (altitude 0 at every hit).",
+    )
+    VIEWING_ZENITH = (
+        "viewing_zenith",
+        ("viewing_zenith",),
+        "Geodetic zenith of the satellite at the pixel intersection.",
+    )
+    SOLAR_ZENITH = (
+        "solar_zenith",
+        ("solar_zenith",),
+        "Geodetic zenith of the Sun at the pixel intersection.",
+    )
+    VIEWING_AZIMUTH = (
+        "viewing_azimuth",
+        ("viewing_azimuth",),
+        "Satellite azimuth (clockwise from North) at the pixel intersection.",
+    )
+    SOLAR_AZIMUTH = (
+        "solar_azimuth",
+        ("solar_azimuth",),
+        "Solar azimuth (clockwise from North) at the pixel intersection.",
+    )
+    RELATIVE_AZIMUTH = (
+        "relative_azimuth",
+        ("relative_azimuth",),
+        "Viewing azimuth relative to solar azimuth (CERES origin, unfolded).",
+    )
+    SURFACE_POSITION = (
+        "surface_position",
+        ("surface_position_x", "surface_position_y", "surface_position_z"),
+        "Pixel ellipsoid intersection in the body-fixed frame (km).",
+    )
+    QUALITY_FLAGS = (
+        "quality_flags",
+        ("quality_flags",),
+        "SpatialQualityFlags bitmask per pixel; 0 is good.",
+    )

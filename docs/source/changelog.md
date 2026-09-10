@@ -1,5 +1,41 @@
 # Changelog
 
+## Version 0.5.3 (unreleased)
+
+Adds a per-pixel geolocation and surface-angle path for large focal planes.
+
+### Highlights
+
+- **New `curryer.compute.spatial.pixel_geometry`** -- geolocates an instrument's pixel
+  vectors and computes the solar and viewing zenith and azimuth, relative azimuth and
+  per-pixel quality flags at each ellipsoid intersection. ndarrays in, a
+  `{column: (n_times, n_pixels) ndarray}` dict out, no pandas product index, so it scales to
+  multi-megapixel imagers. At most three SPICE calls per time; everything per pixel is the
+  existing closed-form numpy (`ray_intersect_ellipsoid`, `calc_azimuth`, `calc_zenith`). The
+  viewing angles reuse the spacecraft position the intersection queried, so no second
+  ephemeris read is made.
+- **New `curryer.compute.geometry_fields.PixelField`** -- the field registry for
+  `pixel_geometry`, mirroring `GeometryField`: `pixel_geometry(fields=[...])` computes only
+  the requested fields and only the work behind them, so a call asking for no solar field
+  skips the Sun ephemeris query and a call asking for no angle skips the local-frame
+  construction. The five surface-angle members share their selector and column names with the
+  `GeometryField` members of the same name, so a boresight product and a per-pixel product
+  address the same quantity by the same key.
+  `spacecraft`/`sun` positions are not pixel fields; `GeometryData` already serves them.
+- **New `curryer.compute.spatial.relative_azimuth`** -- the CERES BDS R3V4 relative azimuth
+  (`mod(view - sun + 180, 360)`, Sun at 180) as a public vectorized helper. The
+  `GeometryData` `relative_azimuth` field now calls it, so boresight and per-pixel products
+  agree by construction.
+
+### Fixes
+
+- `ray_intersect_ellipsoid` no longer emits a NumPy `RuntimeWarning` for rays that miss the
+  ellipsoid (negative discriminant); misses were already documented as NaN. Degenerate
+  zero-length vectors still warn.
+- `calc_azimuth` and `calc_zenith` share one local-frame helper; results are unchanged for
+  float64 inputs.
+- `compute_ellipsoid_intersection` docstring: `ugps_times` are GPS microseconds, not seconds.
+
 ## Version 0.5.2 (2026-09)
 
 Adds the building blocks of a mission-agnostic kernel-management layer:
