@@ -1014,7 +1014,8 @@ class TestMatchingConfigAndCorrelation:
         assert mock_match.call_args.kwargs["search_config"] is setup.search
         assert float(ds["correlation"].values[0]) == pytest.approx(0.83)
 
-    def test_aggregation_keeps_correlation(self):
+    @pytest.mark.parametrize("corr_name", ["correlation", "ccv", "im_ccv"])
+    def test_aggregation_keeps_correlation(self, corr_name):
         from curryer.correction.verification import _aggregate_image_matching_results
 
         setup = _make_setup()
@@ -1023,7 +1024,7 @@ class TestMatchingConfigAndCorrelation:
                 {
                     "lat_error_deg": (["measurement"], [0.001]),
                     "lon_error_deg": (["measurement"], [0.002]),
-                    "correlation": (["measurement"], [ccv]),
+                    corr_name: (["measurement"], [ccv]),
                 },
                 coords={"measurement": [0]},
             )

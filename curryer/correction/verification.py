@@ -870,7 +870,14 @@ def _aggregate_image_matching_results(
     Returns
     -------
     xr.Dataset
-        Combined dataset with a single ``measurement`` dimension.
+        Combined dataset with a single ``measurement`` dimension. Per-result
+        correlation scores, named ``correlation``, ``ccv`` or ``im_ccv`` (first
+        present, in that order), are combined into ``correlation``.
+
+    Raises
+    ------
+    ValueError
+        If a correlation variable is present in some results but not all.
     """
     logger.info("Aggregating %d image matching results", len(image_matching_results))
 
@@ -904,8 +911,9 @@ def _aggregate_image_matching_results(
             all_gcp_lons.extend(result["gcp_lon_deg"].values)
         if "gcp_alt" in result:
             all_gcp_alts.extend(result["gcp_alt"].values)
-        if "correlation" in result:
-            all_correlations.extend(result["correlation"].values)
+        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in result), None)
+        if corr_name is not None:
+            all_correlations.extend(result[corr_name].values)
 
     n_total = len(all_lat_errors)
     aggregated = xr.Dataset(
@@ -934,7 +942,8 @@ def _aggregate_image_matching_results(
     if all_correlations:
         if len(all_correlations) != n_total:
             raise ValueError(
-                f"'correlation' is present in only some image-matching results "
+                f"A correlation variable ('correlation', 'ccv' or 'im_ccv') is present in only some "
+                f"image-matching results "
                 f"({len(all_correlations)} of {n_total} measurements); it must be in all or none."
             )
         aggregated["correlation"] = (["measurement"], np.array(all_correlations))
