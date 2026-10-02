@@ -797,8 +797,9 @@ def image_matching(
         search_config=SearchConfig(),
     )
 
-    # Convert errors km → degrees
-    lat_error_deg = result.lat_error_km / 111.0
+    # Convert errors km → degrees on the WGS-84 equatorial radius, the same radius
+    # ErrorStatsProcessor uses to convert them back to meters.
+    lat_error_deg = np.rad2deg(result.lat_error_km / constants.WGS84_SEMI_MAJOR_AXIS_KM)
     lon_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_center_lat))
     lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
@@ -1074,8 +1075,9 @@ def _run_image_matching_for_pairs(
             search_config=SearchConfig(),
         )
 
-        # Convert km errors to degrees
-        lat_error_deg = result.lat_error_km / 111.0
+        # Convert km errors to degrees on the WGS-84 equatorial radius, the same radius
+        # ErrorStatsProcessor uses to convert them back to meters.
+        lat_error_deg = np.rad2deg(result.lat_error_km / WGS84_SEMI_MAJOR_AXIS_KM)
         lon_radius_km = WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_lat))
         lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
 
