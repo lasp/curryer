@@ -1200,7 +1200,9 @@ def verify(
         pairing (including a missing file; the original exception is chained
         as ``__cause__``); or when image matching produces no results.
     FileNotFoundError
-        If any of the supplied file paths do not exist.
+        If *los_file* or *psf_file* does not exist, or if *gcp_directory*
+        does not exist in *observation_paths* mode. Missing observation or
+        GCP files found during pairing raise ``ValueError`` as above.
     """
     # Handle optional work_dir with sensible default
     if work_dir is None:
