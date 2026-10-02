@@ -855,6 +855,37 @@ class TestViewingGeometryFailures:
         np.testing.assert_allclose(ds[setup.boresight_name].values[0], expected, atol=1e-9)
         assert np.dot(expected, -r_sc / np.linalg.norm(r_sc)) < np.cos(np.deg2rad(30.0))
 
+    def test_error_degrees_round_trip_to_matched_meters(self, tmp_path):
+        """km → deg here and deg → m in ErrorStatsProcessor use the same radius."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.error_stats import _EARTH_RADIUS_M
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        match = SimpleNamespace(lat_error_km=0.3, lon_error_km=-0.2, ccv_final=0.9)
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+        ):
+            (ds,) = _run_image_matching_for_pairs(
+                [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
+            )
+
+        ns_m = _EARTH_RADIUS_M * np.deg2rad(float(ds["lat_error_deg"].values[0]))
+        ew_m = (
+            _EARTH_RADIUS_M
+            * np.cos(np.deg2rad(float(ds["gcp_lat_deg"].values[0])))
+            * np.deg2rad(float(ds["lon_error_deg"].values[0]))
+        )
+        assert ns_m == pytest.approx(300.0, abs=1e-9)
+        assert ew_m == pytest.approx(-200.0, abs=1e-9)
+
     @staticmethod
     def _image_matching_inputs(with_frame: bool):
         from curryer.correction.grid_types import ImageGrid
@@ -911,8 +942,9 @@ class TestViewingGeometryFailures:
         assert self.image_match_calls == 0
 
     def test_image_matching_spice_failure_propagates(self, tmp_path):
-        from spiceypy.utils.exceptions import SpiceyError
+        from curryer import spicierpy as sp
 
+        SpiceyError = sp.utils.exceptions.SpiceyError
         with pytest.raises(SpiceyError, match="no attitude coverage"):
             self._call_image_matching(tmp_path, with_frame=True, spice_side_effect=SpiceyError("no attitude coverage"))
         assert self.image_match_calls == 0
