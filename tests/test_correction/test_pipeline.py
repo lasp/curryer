@@ -33,6 +33,7 @@ from curryer.correction.pipeline import (
     _extract_error_metrics,
     _extract_parameter_values,
     _load_image_pair_data,
+    _per_pair_error_processor,
     _require_image_matching_inputs,
     _resolve_netcdf_config,
     _store_gcp_pair_results,
@@ -185,6 +186,28 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     assert isinstance(tlm_ds, pd.DataFrame)
     assert isinstance(sci_ds, pd.DataFrame)
     assert ugps is not None
+
+
+def test_per_pair_error_processor_ignores_correlation_threshold():
+    """Per-pair loop errors keep a below-threshold measurement; the setup's names are kept."""
+    from test_error_stats import create_test_dataset_13_cases
+
+    setup = SimpleNamespace(
+        geo=SimpleNamespace(minimum_correlation=0.5),
+        spacecraft_position_name="riss_ctrs",
+        boresight_name="bhat_hs",
+        transformation_matrix_name="t_hs2ctrs",
+    )
+    processor = _per_pair_error_processor(setup)
+    data = create_test_dataset_13_cases()
+    correlation = np.full(data.sizes["measurement"], 0.9)
+    correlation[0] = 0.1
+    data["correlation"] = (["measurement"], correlation)
+
+    out = processor.compute_nadir_equivalent_errors(data)
+
+    assert processor.config.minimum_correlation is None
+    assert out.sizes["measurement"] == data.sizes["measurement"]
 
 
 @pytest.mark.extra

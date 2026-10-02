@@ -391,10 +391,10 @@ class PSFSamplingConfig:
 
     gcp_step_m: float = 30.0
     motion_convolution_step_m: float | None = None  # defaults to gcp_step_m / 20.0 if None
-
-    __pydantic_config__ = ConfigDict(extra="forbid")
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
 
     def __post_init__(self) -> None:
         if self.motion_convolution_step_m is None:

@@ -544,6 +544,28 @@ def _resolve_netcdf_config(setup: "GeolocationSetup", output: "OutputConfig") ->
     return output.netcdf.model_copy(update={"performance_threshold_m": threshold_m})
 
 
+def _per_pair_error_processor(setup: GeolocationSetup) -> ErrorStatsProcessor:
+    """Return the error-stats processor for per-pair errors inside :func:`loop`.
+
+    Per-pair errors are not gated by ``setup.geo.minimum_correlation``: a low
+    correlation under one parameter set is an ordinary sweep outcome, not a
+    reason to stop the sweep.  The threshold applies to the aggregate pass
+    (:func:`call_error_stats_module`) and to
+    :func:`~curryer.correction.verification.verify`.
+
+    Parameters
+    ----------
+    setup : GeolocationSetup
+        Supplies the spacecraft-state variable names.
+
+    Returns
+    -------
+    ErrorStatsProcessor
+        Processor with the setup's variable names and no correlation threshold.
+    """
+    return ErrorStatsProcessor(config=replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None))
+
+
 def loop(
     setup: GeolocationSetup,
     sweep: Sweep,
@@ -657,13 +679,8 @@ def loop(
     calibration_data = _load_calibration_data(setup)
     _require_image_matching_inputs(setup, calibration_data)
 
-    # Create error stats processor once (setup is constant; processor is stateless).
-    # Per-pair errors inside the loop are not gated by minimum_correlation: a low
-    # correlation under one parameter set is an ordinary sweep outcome, not a reason
-    # to stop the sweep.  The threshold applies to the aggregate pass
-    # (call_error_stats_module) and to verify().
-    error_config = replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None)
-    error_processor = ErrorStatsProcessor(config=error_config)
+    # Create error stats processor once (setup is constant; processor is stateless)
+    error_processor = _per_pair_error_processor(setup)
 
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
