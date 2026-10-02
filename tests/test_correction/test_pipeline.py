@@ -217,6 +217,43 @@ def test_loop_optimized(root_dir, tmp_path):
         assert isinstance(r["aggregate_rms_error_m"], (int, float, np.number))
 
 
+@pytest.mark.extra
+def test_loop_does_not_gate_per_pair_errors_on_correlation(root_dir, tmp_path):
+    """With minimum_correlation set, a low-correlation measurement stays in the per-pair
+    errors and the sweep completes; the threshold applies only to the aggregate pass.
+    Requires GMTED – ``--run-extra``."""
+    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+    generic_dir = root_dir / "data" / "generic"
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    sweep.n_iterations = 2
+    output.output_filename = "test_loop_corr.nc"
+    work = tmp_path / "loop"
+    work.mkdir()
+    tlm_csv, sci_csv = work / "tlm.csv", work / "sci.csv"
+    load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
+    load_clarreo_science(data_dir).to_csv(sci_csv)
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.geo.minimum_correlation = 0.5
+
+    def matcher_with_one_low_correlation(*args, **kwargs):
+        ds = synthetic_image_matching(*args, **kwargs)
+        correlation = np.full(ds.sizes["measurement"], 0.9)
+        correlation[0] = 0.1
+        ds["correlation"] = (["measurement"], correlation)
+        return ds
+
+    setup.image_matching_func = matcher_with_one_low_correlation
+    sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
+    np.random.seed(42)
+    results, _nc = loop(setup, sweep, work, sets, output=output, resume_from_checkpoint=False)
+
+    assert len(results) == sweep.n_iterations
+    for r in results:
+        n_matched = r["image_matching"].sizes["measurement"]
+        assert r["error_stats"].sizes["measurement"] == n_matched
+        assert r["aggregate_rms_error_m"] is not None
+
+
 # ── _extract_spacecraft_position_midframe ─────────────────────────────────────
 
 

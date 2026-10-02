@@ -24,6 +24,7 @@ error stats) that the correction loop reuses for its own last three steps.
 import logging
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -656,8 +657,12 @@ def loop(
     calibration_data = _load_calibration_data(setup)
     _require_image_matching_inputs(setup, calibration_data)
 
-    # Create error stats processor once (setup is constant; processor is stateless)
-    error_config = ErrorStatsConfig.from_setup(setup)
+    # Create error stats processor once (setup is constant; processor is stateless).
+    # Per-pair errors inside the loop are not gated by minimum_correlation: a low
+    # correlation under one parameter set is an ordinary sweep outcome, not a reason
+    # to stop the sweep.  The threshold applies to the aggregate pass
+    # (call_error_stats_module) and to verify().
+    error_config = replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None)
     error_processor = ErrorStatsProcessor(config=error_config)
 
     # Store parameter values once (before loops)

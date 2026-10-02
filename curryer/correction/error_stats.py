@@ -82,7 +82,9 @@ class ErrorStatsConfig:
     minimum_correlation : float or None, optional
         Minimum correlation filter threshold (0.0–1.0).  Measurements whose
         correlation score falls below this value are excluded before
-        processing.  Default is ``None`` (no filtering).
+        processing.  When set, the input must carry a ``correlation`` (or
+        ``ccv`` / ``im_ccv``) variable or processing raises.  Default is
+        ``None`` (no filtering).
     variable_names : dict of str to str or None, optional
         Mission-agnostic variable name mappings from semantic names to actual
         dataset variable names.  If ``None``, generic defaults are used.
@@ -188,10 +190,15 @@ class ErrorStatsProcessor:
         Filter measurements by correlation coefficient threshold.
 
         Args:
-            data: Input dataset with optional 'correlation' or 'ccv' variable
+            data: Input dataset; must carry a 'correlation', 'ccv' or
+                'im_ccv' variable when ``minimum_correlation`` is set.
 
         Returns:
             Filtered dataset with low-correlation measurements removed
+
+        Raises:
+            ValueError: If ``minimum_correlation`` is set and *data* has no
+                correlation variable.
         """
         if self.config.minimum_correlation is None:
             return data
@@ -204,8 +211,10 @@ class ErrorStatsProcessor:
                 break
 
         if corr_var is None:
-            logger.warning("No correlation variable found; skipping filtering")
-            return data
+            raise ValueError(
+                f"minimum_correlation={self.config.minimum_correlation} is set but the input has no "
+                "correlation variable ('correlation', 'ccv' or 'im_ccv'); the threshold cannot be applied."
+            )
 
         # Apply filter
         valid_mask = data[corr_var] >= self.config.minimum_correlation
@@ -247,8 +256,9 @@ class ErrorStatsProcessor:
         Raises
         ------
         ValueError
-            If required variables are missing or all measurements are filtered
-            out by the correlation threshold.
+            If required variables are missing, ``minimum_correlation`` is set
+            but the input has no correlation variable, or all measurements are
+            filtered out by the correlation threshold.
         """
         self._validate_input_data(input_data)
         filtered_data = self._filter_by_correlation(input_data)

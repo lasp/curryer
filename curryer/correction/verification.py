@@ -57,7 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from curryer import spicetime
 from curryer import spicierpy as sp
 from curryer.compute import constants
-from curryer.correction.config import GeolocationSetup, PSFSamplingConfig, RequirementsConfig, SearchConfig
+from curryer.correction.config import GeolocationSetup, RequirementsConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.image_io import (
     geolocated_to_image_grid,
@@ -341,12 +341,17 @@ def _build_per_gcp_errors(
             correlation_values = aggregate_stats[corr_var].values
             break
 
+    # Measurement labels survive correlation filtering (``where(drop=True)``), so
+    # they index the unfiltered source_mapping even after measurements are dropped.
+    labels = aggregate_stats["measurement"].values
+
     errors: list[GCPError] = []
     for i in range(n):
-        if i < len(source_mapping):
-            sci_key, gcp_key = source_mapping[i]
+        label = int(labels[i])
+        if label < len(source_mapping):
+            sci_key, gcp_key = source_mapping[label]
         else:
-            sci_key, gcp_key = f"sci_{i}", f"gcp_{i}"
+            sci_key, gcp_key = f"sci_{label}", f"gcp_{label}"
 
         corr: float | None = None
         if correlation_values is not None:
@@ -356,7 +361,7 @@ def _build_per_gcp_errors(
 
         errors.append(
             GCPError(
-                gcp_index=i,
+                gcp_index=label,
                 science_key=sci_key,
                 gcp_key=gcp_key,
                 lat_error_deg=float(lat_errors[i]),
@@ -692,7 +697,9 @@ def image_matching(
     Returns
     -------
     xr.Dataset
-        Error measurements: ``lat_error_deg``, ``lon_error_deg``, and metadata.
+        Error measurements: ``lat_error_deg``, ``lon_error_deg``, ``correlation``
+        (final normalized cross-correlation coefficient, dimensionless, at most
+        1), geometry, and metadata.
 
     Raises
     ------
@@ -793,8 +800,8 @@ def image_matching(
         r_iss_midframe_m=r_iss_midframe,
         los_vectors_hs=los_vectors,
         optical_psfs=optical_psfs,
-        geolocation_config=PSFSamplingConfig(),
-        search_config=SearchConfig(),
+        geolocation_config=setup.psf_sampling,
+        search_config=setup.search,
     )
 
     # Convert errors km → degrees
@@ -825,6 +832,7 @@ def image_matching(
             "gcp_lat_deg": (["measurement"], [gcp_center_lat]),
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),
+            "correlation": (["measurement"], [result.ccv_final]),
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )
@@ -877,6 +885,7 @@ def _aggregate_image_matching_results(
     all_gcp_lats: list[float] = []
     all_gcp_lons: list[float] = []
     all_gcp_alts: list[float] = []
+    all_correlations: list[float] = []
 
     for result in image_matching_results:
         n = len(result["lat_error_deg"])
@@ -894,6 +903,8 @@ def _aggregate_image_matching_results(
             all_gcp_lons.extend(result["gcp_lon_deg"].values)
         if "gcp_alt" in result:
             all_gcp_alts.extend(result["gcp_alt"].values)
+        if "correlation" in result:
+            all_correlations.extend(result["correlation"].values)
 
     n_total = len(all_lat_errors)
     aggregated = xr.Dataset(
@@ -919,6 +930,13 @@ def _aggregate_image_matching_results(
         aggregated["gcp_lon_deg"] = (["measurement"], np.array(all_gcp_lons))
     if all_gcp_alts:
         aggregated["gcp_alt"] = (["measurement"], np.array(all_gcp_alts))
+    if all_correlations:
+        if len(all_correlations) != n_total:
+            raise ValueError(
+                f"'correlation' is present in only some image-matching results "
+                f"({len(all_correlations)} of {n_total} measurements); it must be in all or none."
+            )
+        aggregated["correlation"] = (["measurement"], np.array(all_correlations))
 
     aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
     aggregated.attrs["total_measurements"] = n_total
@@ -1036,7 +1054,6 @@ def _run_image_matching_for_pairs(
     """
     from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
 
-    from .config import PSFSamplingConfig, SearchConfig
     from .image_io import (
         load_image_grid,
         load_los_vectors,
@@ -1070,8 +1087,8 @@ def _run_image_matching_for_pairs(
             r_iss_midframe_m=r_iss_m,
             los_vectors_hs=los_vectors,
             optical_psfs=optical_psfs,
-            geolocation_config=PSFSamplingConfig(),
-            search_config=SearchConfig(),
+            geolocation_config=setup.psf_sampling,
+            search_config=setup.search,
         )
 
         # Convert km errors to degrees
@@ -1089,6 +1106,7 @@ def _run_image_matching_for_pairs(
                 sc_pos_name: (["measurement", "xyz"], [r_iss_m]),
                 boresight_name: (["measurement", "xyz"], [boresight]),
                 t_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
+                "correlation": (["measurement"], [result.ccv_final]),
             },
             coords={
                 "measurement": [0],

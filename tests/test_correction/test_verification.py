@@ -938,3 +938,152 @@ class TestViewingGeometryFailures:
         ):
             match_geolocated_to_gcp_files(geolocated, gcp_files, _make_setup())
         assert mock_matching.call_count == 2
+
+
+# ===========================================================================
+# Image-matching configuration and correlation carried through verification
+# ===========================================================================
+
+
+class TestMatchingConfigAndCorrelation:
+    """Setup-level search/PSF configuration and the per-measurement correlation."""
+
+    def test_setup_defaults_match_previous_hardcoded_values(self):
+        setup = _make_setup()
+        assert (setup.search.grid_size, setup.search.grid_span_km) == (44, 11.0)
+        assert (setup.search.reduction_factor, setup.search.spacing_limit_m) == (0.8, 10.0)
+        assert setup.psf_sampling.gcp_step_m == 30.0
+        assert setup.psf_sampling.motion_convolution_step_m == 1.5
+
+    def test_file_pair_matching_uses_setup_configs_and_records_correlation(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.config import PSFSamplingConfig, SearchConfig
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        setup = _make_setup(
+            psf_sampling=PSFSamplingConfig(gcp_step_m=100.0),
+            search=SearchConfig(grid_size=20, grid_span_km=40.0),
+        )
+        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83)
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+        ):
+            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+
+        assert mock_match.call_args.kwargs["geolocation_config"] is setup.psf_sampling
+        assert mock_match.call_args.kwargs["search_config"] is setup.search
+        assert float(ds["correlation"].values[0]) == pytest.approx(0.83)
+
+    def test_aggregation_keeps_correlation(self):
+        from curryer.correction.verification import _aggregate_image_matching_results
+
+        setup = _make_setup()
+        results = [
+            xr.Dataset(
+                {
+                    "lat_error_deg": (["measurement"], [0.001]),
+                    "lon_error_deg": (["measurement"], [0.002]),
+                    "correlation": (["measurement"], [ccv]),
+                },
+                coords={"measurement": [0]},
+            )
+            for ccv in (0.9, 0.4)
+        ]
+        aggregated = _aggregate_image_matching_results(results, setup)
+        np.testing.assert_allclose(aggregated["correlation"].values, [0.9, 0.4])
+
+    def test_aggregation_rejects_partial_correlation(self):
+        from curryer.correction.verification import _aggregate_image_matching_results
+
+        with_corr = xr.Dataset(
+            {
+                "lat_error_deg": (["measurement"], [0.001]),
+                "lon_error_deg": (["measurement"], [0.002]),
+                "correlation": (["measurement"], [0.9]),
+            },
+            coords={"measurement": [0]},
+        )
+        without_corr = with_corr.drop_vars("correlation")
+        with pytest.raises(ValueError, match="present in only some"):
+            _aggregate_image_matching_results([with_corr, without_corr], _make_setup())
+
+    def test_setup_configs_round_trip_through_json(self):
+        import json
+
+        from curryer.correction.config import PSFSamplingConfig, SearchConfig
+
+        data = json.loads(_make_setup().model_dump_json())
+        data["search"] = {"grid_size": 20, "grid_span_km": 40.0}
+        data["psf_sampling"] = {"gcp_step_m": 460.0}
+        setup = GeolocationSetup.model_validate_json(json.dumps(data))
+        assert setup.search == SearchConfig(grid_size=20, grid_span_km=40.0)
+        assert setup.psf_sampling == PSFSamplingConfig(gcp_step_m=460.0, motion_convolution_step_m=23.0)
+        assert GeolocationSetup.model_validate_json(setup.model_dump_json()) == setup
+
+    @pytest.mark.parametrize("field", ["search", "psf_sampling"])
+    def test_setup_config_rejects_unknown_keys(self, field):
+        data = _make_setup().model_dump()
+        data[field] = {"grid_spn_km": 40.0}
+        with pytest.raises(ValidationError, match="grid_spn_km"):
+            GeolocationSetup.model_validate(data)
+
+    def test_image_matching_uses_setup_configs_and_records_correlation(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.correction.config import PSFSamplingConfig, SearchConfig
+        from curryer.correction.verification import image_matching
+
+        grid, geolocated = TestViewingGeometryFailures._image_matching_inputs(with_frame=True)
+        setup = _make_setup(psf_sampling=PSFSamplingConfig(gcp_step_m=100.0), search=SearchConfig(grid_size=20))
+        match = SimpleNamespace(
+            lat_error_km=0.1,
+            lon_error_km=0.1,
+            ccv_final=0.77,
+            final_grid_step_m=30.0,
+            final_index_row=1,
+            final_index_col=1,
+        )
+        with (
+            patch("curryer.correction.verification.geolocated_to_image_grid", return_value=grid),
+            patch("curryer.correction.verification.load_image_grid", return_value=grid),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
+            patch(
+                "curryer.correction.verification._get_spice_boresight_and_rotation",
+                return_value=(np.array([0.0, 0.0, 1.0]), np.eye(3)),
+            ),
+        ):
+            ds = image_matching(
+                geolocated_data=geolocated,
+                gcp_reference_file=tmp_path / "gcp.nc",
+                setup=setup,
+                los_vectors_cached=np.array([[0.0, 0.0, 1.0]]),
+                optical_psfs_cached=[],
+                r_iss_midframe=np.array([-1.5e6, -5.9e6, 3.0e6]),
+            )
+        assert mock_match.call_args.kwargs["geolocation_config"] is setup.psf_sampling
+        assert mock_match.call_args.kwargs["search_config"] is setup.search
+        assert float(ds["correlation"].values[0]) == pytest.approx(0.77)
+
+    def test_verify_attributes_errors_to_surviving_gcps(self, tmp_path):
+        """When the threshold drops a measurement, per-GCP errors keep their own keys."""
+        setup = _make_setup(geo=_make_geo().model_copy(update={"minimum_correlation": 0.5}))
+        results = []
+        for i, ccv in enumerate((0.9, 0.1, 0.8)):
+            ds = _make_full_image_matching_dataset(n=1, seed=i)
+            ds["correlation"] = (["measurement"], [ccv])
+            ds.attrs.update({"sci_key": f"sci_{i}", "gcp_key": f"gcp_{i}"})
+            results.append(ds)
+
+        result = verify(setup, image_matching_results=results, work_dir=tmp_path)
+
+        kept = [(e.gcp_index, e.science_key, e.gcp_key, e.correlation) for e in result.per_gcp_errors]
+        assert kept == [(0, "sci_0", "gcp_0", pytest.approx(0.9)), (2, "sci_2", "gcp_2", pytest.approx(0.8))]

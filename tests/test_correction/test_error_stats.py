@@ -997,10 +997,11 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
         custom_config = _create_test_config(minimum_correlation=0.3)
         processor = ErrorStatsProcessor(custom_config)
         test_data = create_test_dataset_13_cases()
+        test_data["correlation"] = (["measurement"], np.full(test_data.sizes["measurement"], 0.9))
 
         results = processor.process_geolocation_errors(test_data)
 
-        # All 13 measurements should be present (no correlation variable in dataset → no filtering)
+        # All 13 measurements clear the 0.3 threshold
         self.assertEqual(results.attrs["total_measurements"], 13)
         # Standard threshold table entries must be present
         for key in (
@@ -1222,20 +1223,16 @@ class TestCorrelationFiltering(unittest.TestCase):
             # Should still filter correctly
             self.assertEqual(len(results.measurement), 6)
 
-    def test_missing_correlation_variable_logs_warning(self):
-        """Test graceful handling when correlation variable is missing."""
+    def test_missing_correlation_variable_raises(self):
+        """A threshold that cannot be applied raises instead of being skipped."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)
-        # Remove correlation variable
         test_data = test_data.drop_vars("correlation")
 
         config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
-        # Should process without filtering (and log warning)
-        results = processor.process_geolocation_errors(test_data)
-
-        # All measurements should remain
-        self.assertEqual(len(results.measurement), 10)
+        with self.assertRaisesRegex(ValueError, "no correlation variable"):
+            processor.process_geolocation_errors(test_data)
 
     def test_all_measurements_filtered_raises_error(self):
         """Test that filtering all measurements raises an error."""
@@ -1352,19 +1349,16 @@ class TestNetCDFReprocessing(unittest.TestCase):
         # Original config should be restored
         self.assertEqual(processor.config.minimum_correlation, 0.3)
 
-    def test_process_from_netcdf_without_correlation(self):
-        """Test reprocessing NetCDF file without correlation data."""
+    def test_process_from_netcdf_without_correlation_raises(self):
+        """A threshold on a NetCDF file without correlation data raises."""
         netcdf_path = self.test_dir / "test_no_correlation.nc"
         self._create_test_netcdf(netcdf_path, include_correlation=False, n_measurements=10)
 
-        # Should process without filtering (log warning)
         config = _create_test_config(minimum_correlation=0.5)
         processor = ErrorStatsProcessor(config=config)
 
-        results = processor.process_from_netcdf(netcdf_path)
-
-        # All measurements should remain
-        self.assertEqual(len(results.measurement), 10)
+        with self.assertRaisesRegex(ValueError, "no correlation variable"):
+            processor.process_from_netcdf(netcdf_path)
 
     def test_iterative_reprocessing_workflow(self):
         """Test realistic workflow of iterative threshold testing."""

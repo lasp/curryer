@@ -317,7 +317,12 @@ class GeolocationConfig(BaseModel):
     time_field
         Column name in the science DataFrame that holds uGPS timestamps.
     minimum_correlation
-        Optional image-matching quality filter threshold (0.0–1.0).
+        Optional image-matching quality threshold (0.0–1.0).  When set,
+        :func:`~curryer.correction.verification.verify` and the correction
+        loop's final aggregate statistics drop measurements whose
+        ``correlation`` is below it; per-pair errors inside the loop are not
+        gated.  Raises :class:`ValueError` if the image-matching results carry
+        no correlation variable or if no measurement survives.
     """
 
     meta_kernel_file: Path
@@ -386,6 +391,8 @@ class PSFSamplingConfig:
 
     gcp_step_m: float = 30.0
     motion_convolution_step_m: float | None = None  # defaults to gcp_step_m / 20.0 if None
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
 
@@ -420,6 +427,8 @@ class SearchConfig:
     grid_span_km: float = 11.0
     reduction_factor: float = 0.8
     spacing_limit_m: float = 10.0
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
 
 
 class RegridConfig(BaseModel):
@@ -568,6 +577,15 @@ class GeolocationSetup(BaseModel):
     spacecraft_position_name, boresight_name, transformation_matrix_name
         Variable names for the spacecraft-state fields in the image-matching
         ``xr.Dataset`` (mission-configurable; generic defaults).
+    psf_sampling
+        PSF sampling used by the built-in image matching.  Defaults to
+        :class:`PSFSamplingConfig` (30 m Landsat GCP grid).  When
+        ``motion_convolution_step_m`` is omitted it is derived as
+        ``gcp_step_m / 20``; a dumped config records the derived value, so
+        change both together when editing a dumped template.
+    search
+        Correlation search grid used by the built-in image matching.
+        Defaults to :class:`SearchConfig` (44 points spanning ±11 km).
     image_matching_func
         Optional custom image-matching callable.  ``None`` uses the built-in
         :func:`~curryer.correction.verification.image_matching`.  Excluded from
@@ -584,6 +602,9 @@ class GeolocationSetup(BaseModel):
     spacecraft_position_name: str = "sc_position"
     boresight_name: str = "boresight"
     transformation_matrix_name: str = "t_inst2ref"
+
+    psf_sampling: PSFSamplingConfig = Field(default_factory=PSFSamplingConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
     image_matching_func: Callable | None = Field(default=None, exclude=True)
 
