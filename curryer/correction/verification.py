@@ -1195,8 +1195,10 @@ def verify(
         ``setup.image_matching_func`` is not set; when *los_file* or
         *psf_file* is ``None`` for a file-path mode (*gcp_pairs* or
         *observation_paths* + *gcp_directory*); when *observation_paths* and
-        *gcp_directory* are not both supplied; or when image matching
-        produces no results.
+        *gcp_directory* are not both supplied; when an observation or GCP
+        file fails to load during *observation_paths* / *geolocated_data*
+        pairing (including a missing file; the original exception is chained
+        as ``__cause__``); or when image matching produces no results.
     FileNotFoundError
         If any of the supplied file paths do not exist.
     """
