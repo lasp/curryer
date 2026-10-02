@@ -786,3 +786,155 @@ class TestLogPairingSummary:
             _log_pairing_summary([])
 
         assert "Proceeding with 0 observation(s)" in "\n".join(caplog.messages)
+
+
+# ===========================================================================
+# Viewing geometry: no silent nadir fallback, no silently skipped pairs
+# ===========================================================================
+
+
+class TestViewingGeometryFailures:
+    """Geometry failures raise instead of degrading to nadir or dropping a pair."""
+
+    @staticmethod
+    def _write_grid_nc(path: Path, lat0: float, lon0: float, position_m: np.ndarray | None = None) -> Path:
+        lat, lon = np.meshgrid(lat0 + np.linspace(0.1, -0.1, 5), lon0 + np.linspace(-0.1, 0.1, 5), indexing="ij")
+        data_vars = {
+            "band_data": (["y", "x"], np.ones((5, 5))),
+            "lat": (["y", "x"], lat),
+            "lon": (["y", "x"], lon),
+        }
+        if position_m is not None:
+            data_vars["position"] = (["xyz"], position_m)
+        xr.Dataset(data_vars).to_netcdf(path)
+        return path
+
+    def test_gcp_pair_without_spacecraft_position_raises(self, tmp_path):
+        from unittest.mock import patch
+
+        obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33)
+        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match") as mock_match,
+            pytest.raises(ValueError, match="Spacecraft ECEF position is required"),
+        ):
+            verify(
+                _make_setup(),
+                gcp_pairs=[(obs, gcp)],
+                los_file=tmp_path / "los.mat",
+                psf_file=tmp_path / "psf.mat",
+                work_dir=tmp_path,
+            )
+        mock_match.assert_not_called()
+
+    def test_gcp_pair_records_line_of_sight_boresight(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        center = geodetic_to_ecef(np.array([-102.33, 26.15, 0.0]), meters=True, degrees=True)
+        east = np.array([-np.sin(np.deg2rad(-102.33)), np.cos(np.deg2rad(-102.33)), 0.0])
+        r_sc = center + 410_000.0 * center / np.linalg.norm(center) + 700_000.0 * east
+        obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9)
+        setup = _make_setup()
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+        ):
+            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+
+        np.testing.assert_allclose(mock_match.call_args.kwargs["r_iss_midframe_m"], r_sc)
+        expected = (center - r_sc) / np.linalg.norm(center - r_sc)
+        np.testing.assert_allclose(ds[setup.boresight_name].values[0], expected, atol=1e-9)
+        assert np.dot(expected, -r_sc / np.linalg.norm(r_sc)) < np.cos(np.deg2rad(30.0))
+
+    @staticmethod
+    def _image_matching_inputs(with_frame: bool):
+        from curryer.correction.grid_types import ImageGrid
+
+        lat, lon = np.meshgrid(np.linspace(26.2, 26.1, 3), np.linspace(-102.4, -102.3, 3), indexing="ij")
+        grid = ImageGrid(data=np.ones((3, 3)), lat=lat, lon=lon)
+        coords = {"frame": [1.4699e9, 1.4699e9 + 0.0667, 1.4699e9 + 0.1334]} if with_frame else {}
+        geolocated = xr.Dataset(
+            {"latitude": (["frame", "pixel"], lat), "longitude": (["frame", "pixel"], lon)}, coords=coords
+        )
+        return grid, geolocated
+
+    def _call_image_matching(
+        self, tmp_path, with_frame: bool, spice_side_effect=None, r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6)
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.correction.verification import image_matching
+
+        grid, geolocated = self._image_matching_inputs(with_frame)
+        match = SimpleNamespace(
+            lat_error_km=0.1,
+            lon_error_km=0.1,
+            ccv_final=0.9,
+            final_grid_step_m=30.0,
+            final_index_row=1,
+            final_index_col=1,
+        )
+        with (
+            patch("curryer.correction.verification.geolocated_to_image_grid", return_value=grid),
+            patch("curryer.correction.verification.load_image_grid", return_value=grid),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
+            patch(
+                "curryer.correction.verification._get_spice_boresight_and_rotation",
+                side_effect=spice_side_effect,
+            ),
+        ):
+            try:
+                return image_matching(
+                    geolocated_data=geolocated,
+                    gcp_reference_file=tmp_path / "gcp.nc",
+                    setup=_make_setup(),
+                    los_vectors_cached=np.array([[0.0, 0.0, 1.0]]),
+                    optical_psfs_cached=[],
+                    r_iss_midframe=np.array(r_iss_midframe),
+                )
+            finally:
+                self.image_match_calls = mock_match.call_count
+
+    def test_image_matching_without_midframe_time_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="mid-frame time"):
+            self._call_image_matching(tmp_path, with_frame=False)
+        assert self.image_match_calls == 0
+
+    def test_image_matching_spice_failure_propagates(self, tmp_path):
+        from spiceypy.utils.exceptions import SpiceyError
+
+        with pytest.raises(SpiceyError, match="no attitude coverage"):
+            self._call_image_matching(tmp_path, with_frame=True, spice_side_effect=SpiceyError("no attitude coverage"))
+        assert self.image_match_calls == 0
+
+    def test_image_matching_rejects_position_in_kilometers(self, tmp_path):
+        with pytest.raises(ValueError, match="inside the Earth"):
+            self._call_image_matching(tmp_path, with_frame=True, r_iss_midframe=(-1.5e3, -5.9e3, 3.0e3))
+        assert self.image_match_calls == 0
+
+    def test_match_geolocated_to_gcp_files_propagates_failure(self, tmp_path):
+        from unittest.mock import patch
+
+        from curryer.correction.verification import match_geolocated_to_gcp_files
+
+        _, geolocated = self._image_matching_inputs(with_frame=True)
+        gcp_files = [tmp_path / "gcp_a.nc", tmp_path / "gcp_b.nc"]
+        with (
+            patch(
+                "curryer.correction.verification.image_matching",
+                side_effect=[xr.Dataset(), ValueError("match failed for gcp_b")],
+            ) as mock_matching,
+            pytest.raises(ValueError, match="match failed for gcp_b"),
+        ):
+            match_geolocated_to_gcp_files(geolocated, gcp_files, _make_setup())
+        assert mock_matching.call_count == 2
