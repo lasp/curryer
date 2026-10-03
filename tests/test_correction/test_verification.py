@@ -829,18 +829,21 @@ class TestViewingGeometryFailures:
             )
         mock_match.assert_not_called()
 
-    def test_gcp_pair_records_line_of_sight_boresight(self, tmp_path):
+    def test_gcp_pair_records_line_of_sight_in_gcp_column(self, tmp_path):
+        """The boresight is aimed at the GCP's cross-track column, not the observation's centre."""
         from types import SimpleNamespace
         from unittest.mock import patch
 
         from curryer.compute.spatial import geodetic_to_ecef
         from curryer.correction.verification import _run_image_matching_for_pairs
 
-        center = geodetic_to_ecef(np.array([-102.33, 26.15, 0.0]), meters=True, degrees=True)
+        obs_center = geodetic_to_ecef(np.array([-102.33, 26.15, 0.0]), meters=True, degrees=True)
+        # GCP nearest pixel (3, 3); the mid-frame row is 2, so the viewed pixel is (2, 3).
+        mid_row_gcp_column = geodetic_to_ecef(np.array([-102.28, 26.15, 0.0]), meters=True, degrees=True)
         east = np.array([-np.sin(np.deg2rad(-102.33)), np.cos(np.deg2rad(-102.33)), 0.0])
-        r_sc = center + 410_000.0 * center / np.linalg.norm(center) + 700_000.0 * east
+        r_sc = obs_center + 410_000.0 * obs_center / np.linalg.norm(obs_center) + 700_000.0 * east
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
-        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.10, -102.28)
         match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9)
         setup = _make_setup()
         with (
@@ -851,9 +854,11 @@ class TestViewingGeometryFailures:
             (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
         np.testing.assert_allclose(mock_match.call_args.kwargs["r_iss_midframe_m"], r_sc)
-        expected = (center - r_sc) / np.linalg.norm(center - r_sc)
+        expected = (mid_row_gcp_column - r_sc) / np.linalg.norm(mid_row_gcp_column - r_sc)
         np.testing.assert_allclose(ds[setup.boresight_name].values[0], expected, atol=1e-9)
         assert np.dot(expected, -r_sc / np.linalg.norm(r_sc)) < np.cos(np.deg2rad(30.0))
+        to_obs_center = (obs_center - r_sc) / np.linalg.norm(obs_center - r_sc)
+        assert np.rad2deg(np.arccos(np.dot(expected, to_obs_center))) > 0.1
 
     def test_error_degrees_round_trip_to_matched_meters(self, tmp_path):
         """km → deg here and deg → m in ErrorStatsProcessor use the same radius."""
