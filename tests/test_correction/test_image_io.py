@@ -14,6 +14,7 @@ from curryer.correction.image_io import (
     load_gcp_chip_from_hdf,
     load_image_grid,
     load_named_image_grid,
+    observation_los_vectors,
     save_image_grid,
 )
 
@@ -613,3 +614,40 @@ class TestNetCDFLoadingEdgeCases:
             assert grid.lon.shape == (nrows, ncols)
         finally:
             tmp_path.unlink(missing_ok=True)
+
+
+class TestObservationLosVectors:
+    """LOS rows for an observation's detector columns."""
+
+    LOS = np.column_stack([np.zeros(8), np.linspace(-0.1, 0.1, 8), np.ones(8)])
+
+    @staticmethod
+    def _obs(tmp_path, detector_pixel=None, n_cols=3):
+        import xarray as xr
+
+        data_vars = {"band_data": (["frame", "pixel"], np.ones((4, n_cols)))}
+        if detector_pixel is not None:
+            data_vars["detector_pixel"] = (["pixel"], np.asarray(detector_pixel))
+        path = tmp_path / "obs.nc"
+        xr.Dataset(data_vars).to_netcdf(path)
+        return path
+
+    def test_detector_pixel_selects_table_rows(self, tmp_path):
+        path = self._obs(tmp_path, detector_pixel=[2, 3, 4])
+        np.testing.assert_array_equal(observation_los_vectors(path, self.LOS, 3), self.LOS[2:5])
+
+    def test_without_detector_pixel_the_table_must_match(self, tmp_path):
+        path = self._obs(tmp_path, n_cols=8)
+        assert observation_los_vectors(path, self.LOS, 8) is self.LOS
+        with pytest.raises(ValueError, match="must carry 'detector_pixel'"):
+            observation_los_vectors(self._obs(tmp_path, n_cols=3), self.LOS, 3)
+
+    @pytest.mark.parametrize(
+        "detector_pixel",
+        [[2, 3], [4, 3, 2], [6, 7, 8], [-1, 0, 1], [2.0, 3.0, 4.0]],
+        ids=["wrong-length", "decreasing", "past-table", "negative", "float"],
+    )
+    def test_invalid_detector_pixel_raises(self, tmp_path, detector_pixel):
+        path = self._obs(tmp_path, detector_pixel=detector_pixel, n_cols=len(detector_pixel))
+        with pytest.raises(ValueError, match="detector_pixel"):
+            observation_los_vectors(path, self.LOS, 3)

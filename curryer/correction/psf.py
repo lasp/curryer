@@ -252,6 +252,14 @@ def convolve_psf_with_spacecraft_motion(
     -------
     PSFGrid
         PSF convolved with spacecraft motion blur.
+
+    Notes
+    -----
+    The motion step is the mean lat/lon difference along axis 1 of
+    *composite_img*, matching the MATLAB reference and the test cases simulated
+    with it. For a frames x detector subimage this is the cross-track pixel step;
+    the along-track (frame) step is along axis 0. On the one cloud-free CLARREO
+    flight chip tested, axis 0 raises the correlation from 0.940 to 0.951.
     """
 
     logger.debug("Convolve with SC - Init")

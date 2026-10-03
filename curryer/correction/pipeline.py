@@ -547,9 +547,10 @@ def _resolve_netcdf_config(setup: "GeolocationSetup", output: "OutputConfig") ->
 def _per_pair_error_processor(setup: GeolocationSetup) -> ErrorStatsProcessor:
     """Return the error-stats processor for per-pair errors inside :func:`loop`.
 
-    Per-pair errors are not gated by ``setup.geo.minimum_correlation``: a low
-    correlation under one parameter set is an ordinary sweep outcome, not a
-    reason to stop the sweep.  The threshold applies to the aggregate pass
+    Per-pair errors are not gated by ``setup.geo.minimum_correlation`` or
+    ``minimum_peak_margin``: a weak match under one parameter set is an
+    ordinary sweep outcome, not a reason to stop the sweep.  The thresholds
+    apply to the aggregate pass
     (:func:`call_error_stats_module`) and to
     :func:`~curryer.correction.verification.verify`.
 
@@ -563,7 +564,9 @@ def _per_pair_error_processor(setup: GeolocationSetup) -> ErrorStatsProcessor:
     ErrorStatsProcessor
         Processor with the setup's variable names and no correlation threshold.
     """
-    return ErrorStatsProcessor(config=replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None))
+    return ErrorStatsProcessor(
+        config=replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None, minimum_peak_margin=None)
+    )
 
 
 def loop(

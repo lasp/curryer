@@ -1234,6 +1234,33 @@ class TestCorrelationFiltering(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no correlation variable"):
             processor.process_geolocation_errors(test_data)
 
+    def test_peak_margin_drops_non_distinct_matches(self):
+        """A match whose competing correlation is too close to its peak is dropped."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        secondary = test_data["correlation"].values - np.array([0.01, 0.2] * 5)
+        secondary[-1] = -np.inf  # no competing grid point: always distinct
+        test_data["correlation_secondary"] = (["measurement"], secondary)
+
+        processor = ErrorStatsProcessor(config=_create_test_config(minimum_peak_margin=0.05))
+        results = processor.process_geolocation_errors(test_data)
+
+        self.assertEqual(len(results.measurement), 5)
+        self.assertEqual(results.attrs["minimum_peak_margin_threshold"], 0.05)
+
+    def test_peak_margin_without_secondary_raises(self):
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        processor = ErrorStatsProcessor(config=_create_test_config(minimum_peak_margin=0.05))
+        with self.assertRaisesRegex(ValueError, "no 'correlation_secondary'"):
+            processor.process_geolocation_errors(test_data)
+
+    def test_peak_margin_and_correlation_combine(self):
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        test_data["correlation_secondary"] = test_data["correlation"] - np.array([0.01, 0.2] * 5)
+        processor = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5, minimum_peak_margin=0.05))
+        results = processor.process_geolocation_errors(test_data)
+        # correlation >= 0.5 keeps indices 4..9; distinct ones among them are 5, 7, 9
+        self.assertEqual(len(results.measurement), 3)
+
     def test_all_measurements_filtered_raises_error(self):
         """Test that filtering all measurements raises an error."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)

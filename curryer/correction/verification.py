@@ -834,6 +834,7 @@ def image_matching(
             "gcp_lon_deg": (["measurement"], [gcp_center_lon]),
             "gcp_alt": (["measurement"], [0.0]),
             "correlation": (["measurement"], [result.ccv_final]),
+            "correlation_secondary": (["measurement"], [result.ccv_secondary]),
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )
@@ -872,12 +873,14 @@ def _aggregate_image_matching_results(
     xr.Dataset
         Combined dataset with a single ``measurement`` dimension. Per-result
         correlation scores, named ``correlation``, ``ccv`` or ``im_ccv`` (first
-        present, in that order), are combined into ``correlation``.
+        present, in that order), are combined into ``correlation``, and
+        ``correlation_secondary`` is carried through.
 
     Raises
     ------
     ValueError
-        If a correlation variable is present in some results but not all.
+        If a correlation variable or ``correlation_secondary`` is present in
+        some results but not all.
     """
     logger.info("Aggregating %d image matching results", len(image_matching_results))
 
@@ -894,6 +897,7 @@ def _aggregate_image_matching_results(
     all_gcp_lons: list[float] = []
     all_gcp_alts: list[float] = []
     all_correlations: list[float] = []
+    all_secondary: list[float] = []
 
     for result in image_matching_results:
         n = len(result["lat_error_deg"])
@@ -914,6 +918,8 @@ def _aggregate_image_matching_results(
         corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in result), None)
         if corr_name is not None:
             all_correlations.extend(result[corr_name].values)
+        if "correlation_secondary" in result:
+            all_secondary.extend(result["correlation_secondary"].values)
 
     n_total = len(all_lat_errors)
     aggregated = xr.Dataset(
@@ -947,6 +953,13 @@ def _aggregate_image_matching_results(
                 f"({len(all_correlations)} of {n_total} measurements); it must be in all or none."
             )
         aggregated["correlation"] = (["measurement"], np.array(all_correlations))
+    if all_secondary:
+        if len(all_secondary) != n_total:
+            raise ValueError(
+                f"'correlation_secondary' is present in only some image-matching results "
+                f"({len(all_secondary)} of {n_total} measurements); it must be in all or none."
+            )
+        aggregated["correlation_secondary"] = (["measurement"], np.array(all_secondary))
 
     aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
     aggregated.attrs["total_measurements"] = n_total
@@ -1070,6 +1083,7 @@ def _run_image_matching_for_pairs(
         load_los_vectors,
         load_observation_file,
         load_optical_psf,
+        observation_los_vectors,
     )
     from .image_match import integrated_image_match
     from .psf import resolve_spacecraft_ecef
@@ -1084,6 +1098,7 @@ def _run_image_matching_for_pairs(
     datasets: list[xr.Dataset] = []
     for obs_path, gcp_path in pairs:
         obs_grid, r_sc_file = load_observation_file(obs_path)
+        obs_los = observation_los_vectors(obs_path, los_vectors, obs_grid.data.shape[1])
         gcp_grid = load_image_grid(gcp_path, mat_key="GCP")
 
         mid_i, mid_j = gcp_grid.mid_indices
@@ -1096,7 +1111,7 @@ def _run_image_matching_for_pairs(
             subimage=obs_grid,
             gcp=gcp_grid,
             r_iss_midframe_m=r_iss_m,
-            los_vectors_hs=los_vectors,
+            los_vectors_hs=obs_los,
             optical_psfs=optical_psfs,
             geolocation_config=setup.psf_sampling,
             search_config=setup.search,
@@ -1119,6 +1134,7 @@ def _run_image_matching_for_pairs(
                 boresight_name: (["measurement", "xyz"], [boresight]),
                 t_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
                 "correlation": (["measurement"], [result.ccv_final]),
+                "correlation_secondary": (["measurement"], [result.ccv_secondary]),
             },
             coords={
                 "measurement": [0],
@@ -1194,7 +1210,9 @@ def verify(
         file must carry the mid-frame spacecraft ECEF position in meters
         (``position`` in a NetCDF root group, ``R_ISS_midframe`` in ``.mat``),
         and its grid rows must be frames (the middle row being the mid-frame)
-        and its columns cross-track pixels.
+        and its columns cross-track pixels.  A NetCDF observation cropped to
+        some detector columns carries ``detector_pixel``, their rows in the
+        LOS table (see :func:`~curryer.correction.image_io.observation_los_vectors`).
     observation_paths : list of path or None
         Observation file paths for automatic GCP pairing.
         Requires *gcp_directory*, *los_file*, and *psf_file*.  Same

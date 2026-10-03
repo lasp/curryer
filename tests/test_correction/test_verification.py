@@ -815,7 +815,7 @@ class TestViewingGeometryFailures:
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33)
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
         with (
-            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match") as mock_match,
             pytest.raises(ValueError, match="Spacecraft ECEF position is required"),
@@ -844,10 +844,10 @@ class TestViewingGeometryFailures:
         r_sc = obs_center + 410_000.0 * obs_center / np.linalg.norm(obs_center) + 700_000.0 * east
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.10, -102.28)
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9)
+        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3)
         setup = _make_setup()
         with (
-            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
@@ -872,9 +872,9 @@ class TestViewingGeometryFailures:
         r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
-        match = SimpleNamespace(lat_error_km=0.3, lon_error_km=-0.2, ccv_final=0.9)
+        match = SimpleNamespace(lat_error_km=0.3, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3)
         with (
-            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match),
         ):
@@ -916,6 +916,7 @@ class TestViewingGeometryFailures:
             lat_error_km=0.1,
             lon_error_km=0.1,
             ccv_final=0.9,
+            ccv_secondary=0.3,
             final_grid_step_m=30.0,
             final_index_row=1,
             final_index_col=1,
@@ -989,8 +990,9 @@ class TestMatchingConfigAndCorrelation:
         setup = _make_setup()
         assert (setup.search.grid_size, setup.search.grid_span_km) == (44, 11.0)
         assert (setup.search.reduction_factor, setup.search.spacing_limit_m) == (0.8, 10.0)
-        assert setup.psf_sampling.gcp_step_m == 30.0
-        assert setup.psf_sampling.motion_convolution_step_m == 1.5
+        assert setup.search.peak_exclusion_km == 2.0
+        assert setup.psf_sampling.psf_lat_sample_dist_deg == 2.4397105613972e-05
+        assert setup.psf_sampling.psf_lon_sample_dist_deg == 2.8737038710207e-05
 
     def test_file_pair_matching_uses_setup_configs_and_records_correlation(self, tmp_path):
         from types import SimpleNamespace
@@ -1004,12 +1006,12 @@ class TestMatchingConfigAndCorrelation:
         obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
         setup = _make_setup(
-            psf_sampling=PSFSamplingConfig(gcp_step_m=100.0),
+            psf_sampling=PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4),
             search=SearchConfig(grid_size=20, grid_span_km=40.0),
         )
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83)
+        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4)
         with (
-            patch("curryer.correction.image_io.load_los_vectors", return_value=np.array([[0.0, 0.0, 1.0]])),
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
@@ -1038,6 +1040,54 @@ class TestMatchingConfigAndCorrelation:
         aggregated = _aggregate_image_matching_results(results, setup)
         np.testing.assert_allclose(aggregated["correlation"].values, [0.9, 0.4])
 
+    def test_file_pair_matching_uses_the_observation_detector_columns(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        with xr.open_dataset(obs) as ds:
+            cropped = ds.load().assign(detector_pixel=(["x"], np.arange(10, 15)))
+        cropped.to_netcdf(tmp_path / "obs_crop.nc")
+        gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        table = np.column_stack([np.zeros(20), np.linspace(-0.1, 0.1, 20), np.ones(20)])
+        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4)
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=table),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+        ):
+            (ds,) = _run_image_matching_for_pairs(
+                [(tmp_path / "obs_crop.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
+            )
+        np.testing.assert_array_equal(mock_match.call_args.kwargs["los_vectors_hs"], table[10:15])
+        assert float(ds["correlation_secondary"].values[0]) == pytest.approx(0.4)
+
+    def test_aggregation_keeps_secondary_correlation(self):
+        from curryer.correction.verification import _aggregate_image_matching_results
+
+        results = [
+            xr.Dataset(
+                {
+                    "lat_error_deg": (["measurement"], [0.001]),
+                    "lon_error_deg": (["measurement"], [0.002]),
+                    "correlation": (["measurement"], [ccv]),
+                    "correlation_secondary": (["measurement"], [ccv - 0.1]),
+                },
+                coords={"measurement": [0]},
+            )
+            for ccv in (0.9, 0.4)
+        ]
+        aggregated = _aggregate_image_matching_results(results, _make_setup())
+        np.testing.assert_allclose(aggregated["correlation_secondary"].values, [0.8, 0.3])
+        with pytest.raises(ValueError, match="'correlation_secondary' is present in only some"):
+            _aggregate_image_matching_results(
+                [results[0], results[1].drop_vars("correlation_secondary")], _make_setup()
+            )
+
     def test_aggregation_rejects_partial_correlation(self):
         from curryer.correction.verification import _aggregate_image_matching_results
 
@@ -1060,10 +1110,10 @@ class TestMatchingConfigAndCorrelation:
 
         data = json.loads(_make_setup().model_dump_json())
         data["search"] = {"grid_size": 20, "grid_span_km": 40.0}
-        data["psf_sampling"] = {"gcp_step_m": 460.0}
+        data["psf_sampling"] = {"psf_lat_sample_dist_deg": 1e-4}
         setup = GeolocationSetup.model_validate_json(json.dumps(data))
         assert setup.search == SearchConfig(grid_size=20, grid_span_km=40.0)
-        assert setup.psf_sampling == PSFSamplingConfig(gcp_step_m=460.0, motion_convolution_step_m=23.0)
+        assert setup.psf_sampling == PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4)
         assert GeolocationSetup.model_validate_json(setup.model_dump_json()) == setup
 
     @pytest.mark.parametrize("field", ["search", "psf_sampling"])
@@ -1081,11 +1131,14 @@ class TestMatchingConfigAndCorrelation:
         from curryer.correction.verification import image_matching
 
         grid, geolocated = TestViewingGeometryFailures._image_matching_inputs(with_frame=True)
-        setup = _make_setup(psf_sampling=PSFSamplingConfig(gcp_step_m=100.0), search=SearchConfig(grid_size=20))
+        setup = _make_setup(
+            psf_sampling=PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4), search=SearchConfig(grid_size=20)
+        )
         match = SimpleNamespace(
             lat_error_km=0.1,
             lon_error_km=0.1,
             ccv_final=0.77,
+            ccv_secondary=0.5,
             final_grid_step_m=30.0,
             final_index_row=1,
             final_index_col=1,

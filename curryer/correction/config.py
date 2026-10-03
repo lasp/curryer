@@ -323,6 +323,13 @@ class GeolocationConfig(BaseModel):
         ``correlation`` is below it; per-pair errors inside the loop are not
         gated.  Raises :class:`ValueError` if the image-matching results carry
         no correlation variable or if no measurement survives.
+    minimum_peak_margin
+        Optional distinctness threshold for a match (correlation units).  When
+        set, measurements whose ``correlation`` exceeds ``correlation_secondary``
+        (the strongest competing correlation, see
+        :attr:`SearchConfig.peak_exclusion_km`) by less than this are dropped,
+        under the same rules as *minimum_correlation*.  Raises
+        :class:`ValueError` if the results carry no ``correlation_secondary``.
     """
 
     meta_kernel_file: Path
@@ -331,6 +338,7 @@ class GeolocationConfig(BaseModel):
     instrument_name: str
     time_field: str
     minimum_correlation: float | None = None
+    minimum_peak_margin: float | None = None
 
 
 # ============================================================================
@@ -369,18 +377,10 @@ class PSFSamplingConfig:
     """Configuration for PSF sampling during image matching.
 
     Default values are calibrated for Landsat 30 m GCPs, which are the
-    standard reference for GCP-based geolocation verification. Override
-    all fields for instruments with different ground resolution or motion
-    characteristics.
+    standard reference for GCP-based geolocation verification.
 
     Parameters
     ----------
-    gcp_step_m : float, optional
-        Ground control point step size in meters. Default is 30.0.
-    motion_convolution_step_m : float or None, optional
-        Step size for spacecraft motion convolution in meters.
-        If ``None`` (default), derived as ``gcp_step_m / 20.0`` in
-        ``__post_init__``.
     psf_lat_sample_dist_deg : float, optional
         PSF sample distance in the latitude direction in degrees.
         Default approximately 2.7 m at the equator (Landsat calibration).
@@ -389,16 +389,10 @@ class PSFSamplingConfig:
         Default approximately 2.7 m at the equator (Landsat calibration).
     """
 
-    gcp_step_m: float = 30.0
-    motion_convolution_step_m: float | None = None  # defaults to gcp_step_m / 20.0 if None
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
 
     __pydantic_config__ = ConfigDict(extra="forbid")
-
-    def __post_init__(self) -> None:
-        if self.motion_convolution_step_m is None:
-            self.motion_convolution_step_m = self.gcp_step_m / 20.0
 
 
 @dataclass
@@ -414,21 +408,38 @@ class SearchConfig:
         Number of grid points per axis in the correlation search grid.
         Default 44 (Landsat-tuned).
     grid_span_km : float, optional
-        Half-width of the search grid in kilometers. Default 11.0.
+        Full width of the first search grid in kilometers (shifts up to about
+        ``grid_span_km / 2`` each way). Default 11.0.
     reduction_factor : float, optional
         Multiplicative reduction applied to grid spacing each iteration.
         Default 0.8.
     spacing_limit_m : float, optional
         Minimum grid spacing in meters; search stops when reached.
         Default 10.0 (Landsat-tuned).
+    peak_exclusion_km : float, optional
+        Distance from the first-pass correlation peak beyond which the
+        strongest competing correlation is reported (``ccv_secondary``), used
+        to judge whether a match is distinct. Default 2.0.
     """
 
     grid_size: int = 44
     grid_span_km: float = 11.0
     reduction_factor: float = 0.8
     spacing_limit_m: float = 10.0
+    peak_exclusion_km: float = 2.0
 
     __pydantic_config__ = ConfigDict(extra="forbid")
+
+    def max_shift_km(self) -> float:
+        """Upper bound (km) on how far the iterative search can move the subimage along each axis.
+
+        Each iteration re-centres a grid of ``grid_size // 2`` steps each way, and
+        the step shrinks by ``reduction_factor``; the sum of the geometric series
+        bounds the total shift.  A subimage that lies at least this far inside the
+        GCP chip on every side never samples outside it.
+        """
+        first_step_km = self.grid_span_km / (self.grid_size - 1)
+        return (self.grid_size // 2) * first_step_km / (1.0 - self.reduction_factor)
 
 
 class RegridConfig(BaseModel):
@@ -579,13 +590,10 @@ class GeolocationSetup(BaseModel):
         ``xr.Dataset`` (mission-configurable; generic defaults).
     psf_sampling
         PSF sampling used by the built-in image matching.  Defaults to
-        :class:`PSFSamplingConfig` (30 m Landsat GCP grid).  When
-        ``motion_convolution_step_m`` is omitted it is derived as
-        ``gcp_step_m / 20``; a dumped config records the derived value, so
-        change both together when editing a dumped template.
+        :class:`PSFSamplingConfig` (Landsat calibration).
     search
         Correlation search grid used by the built-in image matching.
-        Defaults to :class:`SearchConfig` (44 points spanning ±11 km).
+        Defaults to :class:`SearchConfig` (44 points, first grid 11 km wide).
     image_matching_func
         Optional custom image-matching callable.  ``None`` uses the built-in
         :func:`~curryer.correction.verification.image_matching`.  Excluded from

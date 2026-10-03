@@ -18,6 +18,7 @@ Public API (9 functions)
 :func:`load_named_image_grid`        — any image file → :class:`NamedImageGrid`
 :func:`load_observation_file`        — observation + spacecraft position
 :func:`load_los_vectors`             — LOS unit vectors from calibration file
+:func:`observation_los_vectors`      — LOS rows for an observation's detector columns
 :func:`load_optical_psf`             — PSF entries from calibration file
 :func:`load_gcp_chip_from_hdf`       — raw HDF chip (band + ECEF arrays)
 :func:`save_image_grid`              — write ImageGrid; format from extension
@@ -867,6 +868,64 @@ def load_observation_file(
     raise ValueError(
         f"Unsupported observation file format '{suffix}' for {filepath}. Supported formats: .mat, .nc, .netcdf, .nc4"
     )
+
+
+def observation_los_vectors(filepath: str | Path, los_vectors: np.ndarray, n_columns: int) -> np.ndarray:
+    """Return the rows of *los_vectors* that belong to an observation's columns.
+
+    A NetCDF observation that is a column crop of the detector carries a
+    ``detector_pixel`` variable: the 0-based row of *los_vectors* for each of
+    its columns.  Without it (and for ``.mat`` files) the observation's columns
+    must be the table's rows in order.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Observation file (local path or ``s3://`` URI).
+    los_vectors : ndarray, shape (n_pixels, 3)
+        Detector line-of-sight table (:func:`load_los_vectors`).
+    n_columns : int
+        Number of columns in the observation's image.
+
+    Returns
+    -------
+    ndarray, shape (n_columns, 3)
+        Line-of-sight rows matching the observation's columns.
+
+    Raises
+    ------
+    ValueError
+        If ``detector_pixel`` is not 1-D integers of length *n_columns*,
+        strictly increasing and within the table; or, without it, if the table
+        does not have *n_columns* rows.
+    """
+    detector_pixel = None
+    if Path(str(filepath)).suffix.lower() in (".nc", ".netcdf", ".nc4"):
+        with xr.open_dataset(resolve_path(filepath)) as ds:
+            if "detector_pixel" in ds:
+                detector_pixel = np.asarray(ds["detector_pixel"].values)
+
+    if detector_pixel is None:
+        if len(los_vectors) != n_columns:
+            raise ValueError(
+                f"{Path(str(filepath)).name} has {n_columns} columns but the LOS table has {len(los_vectors)} rows; "
+                "a column crop must carry 'detector_pixel'."
+            )
+        return los_vectors
+
+    if (
+        detector_pixel.ndim != 1
+        or detector_pixel.dtype.kind not in "iu"
+        or len(detector_pixel) != n_columns
+        or np.any(np.diff(detector_pixel) <= 0)
+        or detector_pixel.min() < 0
+        or detector_pixel.max() >= len(los_vectors)
+    ):
+        raise ValueError(
+            f"'detector_pixel' in {Path(str(filepath)).name} must be {n_columns} strictly increasing integers in "
+            f"[0, {len(los_vectors)}); got {detector_pixel!r}."
+        )
+    return los_vectors[detector_pixel]
 
 
 def infer_spacecraft_state(
