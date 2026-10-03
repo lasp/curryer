@@ -715,7 +715,7 @@ def image_matching(
     position is likewise a single mid-frame value.  Every GCP matched against
     the same dataset therefore receives the mid-frame off-nadir angle, wherever
     in the swath it was imaged.  For strongly off-nadir data this differs from
-    the per-observation line of sight used by the file-pair path
+    the per-GCP line of sight used by the file-pair path
     (:func:`~curryer.correction.psf.resolve_spacecraft_ecef`).
     """
     if params_info is None:
@@ -1031,9 +1031,10 @@ def _run_image_matching_for_pairs(
     Raises
     ------
     ValueError
-        If an observation file carries no valid spacecraft ECEF position
-        (see :func:`~curryer.correction.psf.resolve_spacecraft_ecef`), or a
-        file cannot be read.  No pair is skipped.
+        If an observation file carries no valid spacecraft ECEF position, or
+        the GCP chip centre lies outside the observation grid (see
+        :func:`~curryer.correction.psf.resolve_spacecraft_ecef`), or a file
+        cannot be read.  No pair is skipped.
     """
     from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
 
@@ -1063,7 +1064,7 @@ def _run_image_matching_for_pairs(
         gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
         gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
 
-        r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(obs_grid, r_sc_file)
+        r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(obs_grid, r_sc_file, gcp_lat, gcp_lon)
 
         result = integrated_image_match(
             subimage=obs_grid,
@@ -1164,7 +1165,9 @@ def verify(
         Explicit ``(observation_path, gcp_path)`` pairs.  Each path may be a
         local path or an ``s3://`` URI (requires ``boto3``).  Each observation
         file must carry the mid-frame spacecraft ECEF position in meters
-        (``position`` in a NetCDF root group, ``R_ISS_midframe`` in ``.mat``).
+        (``position`` in a NetCDF root group, ``R_ISS_midframe`` in ``.mat``),
+        and its grid rows must be frames (the middle row being the mid-frame)
+        and its columns cross-track pixels.
     observation_paths : list of path or None
         Observation file paths for automatic GCP pairing.
         Requires *gcp_directory*, *los_file*, and *psf_file*.  Same
@@ -1213,7 +1216,8 @@ def verify(
         *observation_paths* + *gcp_directory*); when *observation_paths* and
         *gcp_directory* are not both supplied; when an observation or GCP
         file cannot be read; when an observation file carries no valid
-        spacecraft position; or when image matching produces no results.
+        spacecraft position; when a GCP chip centre lies outside its
+        observation grid; or when image matching produces no results.
     FileNotFoundError
         If any of the supplied file paths do not exist.
     spiceypy.utils.exceptions.SpiceyError

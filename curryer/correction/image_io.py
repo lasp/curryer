@@ -878,7 +878,8 @@ def infer_spacecraft_state(
 
     *default_altitude_m* is accepted for signature compatibility and ignored:
     a missing *r_spacecraft_m* raises :class:`ValueError` instead of being
-    approximated as a nadir position.
+    approximated as a nadir position.  The boresight targets the grid's
+    central pixel.
     """
 
     warnings.warn(
@@ -887,7 +888,8 @@ def infer_spacecraft_state(
         stacklevel=2,
     )
 
-    return resolve_spacecraft_ecef(grid, r_spacecraft_m)
+    mid_i, mid_j = grid.mid_indices
+    return resolve_spacecraft_ecef(grid, r_spacecraft_m, float(grid.lat[mid_i, mid_j]), float(grid.lon[mid_i, mid_j]))
 
 
 def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:
