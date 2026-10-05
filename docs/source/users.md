@@ -80,9 +80,9 @@ against mission requirements. Two entry points:
 from curryer.correction import GeolocationSetup, load_setup_from_json, verify
 import xarray as xr
 
-setup = GeolocationSetup(...)           # or load_setup_from_json("config.json")
+setup = GeolocationSetup(...)  # or load_setup_from_json("config.json")
 result = verify(setup, image_matching_results=[xr.open_dataset("matching.nc")])
-print(result.summary_table)            # ASCII table with per-GCP pass/fail
+print(result.summary_table)  # ASCII table with per-GCP pass/fail
 print("Passed:", result.passed)
 ```
 
@@ -101,18 +101,18 @@ Time conversion:
 ```python
 from curryer import spicetime
 
-print(spicetime.adapt(0, from_='ugps', to='iso'))
+print(spicetime.adapt(0, from_="ugps", to="iso"))
 # 1980-01-06 00:00:00.000000
 
-print(spicetime.adapt('2024-11-13', 'iso'))
+print(spicetime.adapt("2024-11-13", "iso"))
 # 1415491218000000
 
-print(spicetime.adapt(1415491218000000, to='et'))
+print(spicetime.adapt(1415491218000000, to="et"))
 # 784728069.1827033
 
 import numpy as np
 
-print(repr(spicetime.adapt(np.arange(4) * 60e6 + 1415491218000000, to='dt64')))
+print(repr(spicetime.adapt(np.arange(4) * 60e6 + 1415491218000000, to="dt64")))
 # array(['2024-11-13T00:00:00.000000', '2024-11-13T00:01:00.000000',
 #        '2024-11-13T00:02:00.000000', '2024-11-13T00:03:00.000000'],
 #       dtype='datetime64[us]')
@@ -123,7 +123,7 @@ Abstractions:
 ```python
 from curryer import spicierpy
 
-spicierpy.ext.infer_ids('ISS', 25544, from_norad=True)
+spicierpy.ext.infer_ids("ISS", 25544, from_norad=True)
 # {'mission': 'ISS',
 #  'spacecraft': -125544,
 #  'clock': -125544,
@@ -131,32 +131,30 @@ spicierpy.ext.infer_ids('ISS', 25544, from_norad=True)
 #  'attitude': -125544000,
 #  'instruments': {}}
 
-earth = spicierpy.obj.Body('Earth')
+earth = spicierpy.obj.Body("Earth")
 print(earth, earth.id)
 # Body(EARTH) 399
 
 import curryer
 
-mkrn = curryer.meta.MetaKernel.from_json(
-    'data/tsis1/tsis_v01.kernels.tm.json', sds_dir='data/generic', relative=True
-)
+mkrn = curryer.meta.MetaKernel.from_json("data/tsis1/tsis_v01.kernels.tm.json", sds_dir="data/generic", relative=True)
 print(mkrn)
 # MetaKernel(Spacecraft(ISS_SC), Body(ISS_ELC3), Body(ISS_EXPA35), Body(TSIS_TADS),
 #   Body(TSIS_AZEL), Body(TSIS_TIM), Body(TSIS_TIM_GLINT))
 
 with spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    print(spicierpy.ext.instrument_boresight('TSIS_TIM'))
+    print(spicierpy.ext.instrument_boresight("TSIS_TIM"))
 # [0. 0. 1.]
 
 mkrn = curryer.meta.MetaKernel.from_json(
-    'tests/data/clarreo/cprs_v01.kernels.tm.json', sds_dir='data/generic', relative=True
+    "tests/data/clarreo/cprs_v01.kernels.tm.json", sds_dir="data/generic", relative=True
 )
 print(mkrn)
 # MetaKernel(Spacecraft(ISS_SC), Body(CPRS_BASE), Body(CPRS_PEDE),
 #   Body(CPRS_AZ), Body(CPRS_YOKE), Body(CPRS_EL), Body(CPRS_HYSICS))
 
 with spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    print(curryer.compute.spatial.get_instrument_kernel_pointing_vectors('CPRS_HYSICS'))
+    print(curryer.compute.spatial.get_instrument_kernel_pointing_vectors("CPRS_HYSICS"))
 # (480,
 #  array([[ 0.00173869, -0.08715574,  0.99619318],
 #         [ 0.0017315 , -0.08679351,  0.99622482],
@@ -174,16 +172,16 @@ Create CLARREO Dynamic Kernels:
 ```python
 import curryer
 
-meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
-generic_dir = 'data/generic'
+meta_kernel = "tests/data/clarreo/cprs_v01.kernels.tm.json"
+generic_dir = "data/generic"
 kernel_configs = [
-    'data/clarreo/iss_sc_v01.ephemeris.spk.json',
-    'data/clarreo/iss_sc_v01.attitude.ck.json',
-    'data/clarreo/cprs_az_v01.attitude.ck.json',
-    'data/clarreo/cprs_el_v01.attitude.ck.json',
+    "data/clarreo/iss_sc_v01.ephemeris.spk.json",
+    "data/clarreo/iss_sc_v01.attitude.ck.json",
+    "data/clarreo/cprs_az_v01.attitude.ck.json",
+    "data/clarreo/cprs_el_v01.attitude.ck.json",
 ]
-output_dir = '/tmp'
-input_file_or_obj = 'tests/data/demo/cprs_geolocation_tlm_20230101_20240430.nc'
+output_dir = "/tmp"
+input_file_or_obj = "tests/data/demo/cprs_geolocation_tlm_20230101_20240430.nc"
 
 # Load meta kernel details. Includes existing static kernels.
 mkrn = curryer.meta.MetaKernel.from_json(meta_kernel, relative=True, sds_dir=generic_dir)
@@ -195,10 +193,13 @@ creator = curryer.kernels.create.KernelCreator(overwrite=False, append=False)
 
 # Generate the kernels from the config and input data (file or object).
 for kernel_config in kernel_configs:
-    generated_kernels.append(creator.write_from_json(
-        kernel_config, output_kernel=output_dir, input_data=input_file_or_obj,
-    ))
-
+    generated_kernels.append(
+        creator.write_from_json(
+            kernel_config,
+            output_kernel=output_dir,
+            input_data=input_file_or_obj,
+        )
+    )
 ```
 
 ### Level-1 Geospatial Processing
@@ -209,21 +210,20 @@ Geolocate CLARREO HYSICS Instrument:
 import pandas as pd
 import curryer
 
-meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
-generic_dir = 'data/generic'
+meta_kernel = "tests/data/clarreo/cprs_v01.kernels.tm.json"
+generic_dir = "data/generic"
 
-time_range = ('2023-01-01', '2023-01-01T00:05:00')
-ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq='67ms', inclusive='left'), 'iso')
+time_range = ("2023-01-01", "2023-01-01T00:05:00")
+ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq="67ms", inclusive="left"), "iso")
 
 # Load meta kernel details. Includes existing static kernels.
 mkrn = curryer.meta.MetaKernel.from_json(meta_kernel, relative=True, sds_dir=generic_dir)
 
 # Geolocate all the individual pixels and create the L1A data product!
 with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    geoloc_inst = curryer.compute.spatial.Geolocate('CPRS_HYSICS')
+    geoloc_inst = curryer.compute.spatial.Geolocate("CPRS_HYSICS")
     l1a_dataset = geoloc_inst(ugps_times)
-    l1a_dataset.to_netcdf('cprs_geolocation_l1a_20230101.nc')
-
+    l1a_dataset.to_netcdf("cprs_geolocation_l1a_20230101.nc")
 ```
 
 _Assumes dynamic kernels have been created and their file names defined within
@@ -243,18 +243,18 @@ import pandas as pd
 import curryer
 from curryer.compute import geometry
 
-meta_kernel = 'tests/data/clarreo/cprs_v01.kernels.tm.json'
-generic_dir = 'data/generic'
+meta_kernel = "tests/data/clarreo/cprs_v01.kernels.tm.json"
+generic_dir = "data/generic"
 mkrn = curryer.meta.MetaKernel.from_json(meta_kernel, relative=True, sds_dir=generic_dir)
 
-time_range = ('2023-01-01', '2023-01-01T00:05:00')
-ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq='1s', inclusive='left'), 'iso')
+time_range = ("2023-01-01", "2023-01-01T00:05:00")
+ugps_times = curryer.spicetime.adapt(pd.date_range(*time_range, freq="1s", inclusive="left"), "iso")
 
 # Construct with the observing body (spacecraft or instrument). Kernels must be
 # furnished for the requested times -- GeometryData does not load them itself.
-geo = geometry.GeometryData('CPRS_HYSICS')
+geo = geometry.GeometryData("CPRS_HYSICS")
 with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    df = geo.get_geometry(ugps_times, fields=['subsatellite', 'sc_radius', 'earth_sun_distance'])
+    df = geo.get_geometry(ugps_times, fields=["subsatellite", "sc_radius", "earth_sun_distance"])
 
 print(df.columns.tolist())
 # ['subsatellite_latitude', 'subsatellite_longitude', 'subsatellite_colatitude',
@@ -266,10 +266,10 @@ For typed, per-field arrays instead of a flat table, use
 
 ```python
 with curryer.spicierpy.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
-    vectors = geo.get_vectors(ugps_times, fields=['sc_position', 'subsatellite'])
+    vectors = geo.get_vectors(ugps_times, fields=["sc_position", "subsatellite"])
 
-vectors['sc_position'].shape   # (N, 3) ECEF position, km
-vectors['subsatellite'].shape  # (N, 3) latitude / longitude / colatitude
+vectors["sc_position"].shape  # (N, 3) ECEF position, km
+vectors["subsatellite"].shape  # (N, 3) latitude / longitude / colatitude
 ```
 
 Things worth knowing:

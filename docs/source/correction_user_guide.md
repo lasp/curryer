@@ -38,9 +38,9 @@ and run.
 from curryer.correction import load_setup_from_json, verify
 
 setup = load_setup_from_json("mission.json")
-result = verify(setup, image_matching_results=[...])   # one dataset per GCP comparison
+result = verify(setup, image_matching_results=[...])  # one dataset per GCP comparison
 
-print(result.summary_table)        # per-point pass/fail table
+print(result.summary_table)  # per-point pass/fail table
 print("Passed:", result.passed)
 ```
 
@@ -119,7 +119,7 @@ Keep one `mission.json` and either point at per-experiment sweep files
 sections independently) or adjust in code:
 
 ```python
-grid  = sweep.with_strategy("grid", grid_points_per_param=5)         # deterministic grid search
+grid = sweep.with_strategy("grid", grid_points_per_param=5)  # deterministic grid search
 wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100, 100])  # widen one parameter
 run_correction(setup, wider, inputs, work_dir="out")
 ```
@@ -168,11 +168,11 @@ import xarray as xr
 from curryer.correction import load_setup_from_json, verify
 
 setup = load_setup_from_json("mission.json")
-results = [xr.open_dataset("matching_result_001.nc")]   # one per GCP comparison
+results = [xr.open_dataset("matching_result_001.nc")]  # one per GCP comparison
 
 result = verify(setup, image_matching_results=results)  # no SPICE kernels needed for this path
 
-print(result.summary_table)                 # per-point pass/fail table
+print(result.summary_table)  # per-point pass/fail table
 print("Passed:", result.passed)
 print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 ```
@@ -207,7 +207,9 @@ pass/fail verdict, a recommendation, and a summary table.
 ```python
 import pathlib
 from curryer.correction import (
-    CorrectionInput, load_config_files, run_correction,
+    CorrectionInput,
+    load_config_files,
+    run_correction,
 )
 
 # Load setup + sweep (+ output) from one JSON file (recommended for production)
@@ -260,6 +262,7 @@ A workflow template: `examples/correction/example_run_correction.py`
 
 ```python
 from curryer.correction import load_config_files
+
 setup, sweep, output = load_config_files("mission.json")
 ```
 
@@ -505,7 +508,7 @@ default.
 ```python
 result = verify(setup, image_matching_results=datasets)
 
-print(result.summary_table)         # ASCII table: per-GCP pass/fail
+print(result.summary_table)  # ASCII table: per-GCP pass/fail
 print("Passed:", result.passed)
 print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 
@@ -523,7 +526,7 @@ result.aggregate_stats.to_netcdf("verification_stats.nc")
 from curryer.correction import compare_results
 
 before = verify(setup, image_matching_results=pre_datasets)
-after  = verify(setup, image_matching_results=post_datasets)
+after = verify(setup, image_matching_results=post_datasets)
 print(compare_results(before, after))
 ```
 
@@ -552,7 +555,7 @@ from curryer.correction.dataio import S3Configuration, find_netcdf_objects, down
 
 s3_config = S3Configuration(
     bucket="my-mission-bucket",
-    base_prefix="image_match",   # date-partitioned subdirs: base_prefix/YYYYMMDD/
+    base_prefix="image_match",  # date-partitioned subdirs: base_prefix/YYYYMMDD/
 )
 
 object_keys = find_netcdf_objects(
@@ -654,9 +657,7 @@ from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
 # 1. Load raw chip (returns band data + ECEF X/Y/Z arrays)
-band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(
-    Path("LT08CHP.20140803.p002r071.c01.v001.hdf")
-)
+band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(Path("LT08CHP.20140803.p002r071.c01.v001.hdf"))
 
 # 2. Configure regridding (~100 m resolution for CLARREO)
 config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))
@@ -676,8 +677,8 @@ regridded = regrid_gcp_chip(
 )
 
 # 4. regridded is an ImageGrid — ready for image matching
-print(regridded.data.shape)   # e.g. (421, 433)
-print(regridded.lat[0, 0])    # top-left latitude
+print(regridded.data.shape)  # e.g. (421, 433)
+print(regridded.lat[0, 0])  # top-left latitude
 ```
 
 ### Batch processing — command-line script
@@ -728,7 +729,7 @@ from curryer.correction.config import RegridConfig
 from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
-input_dir  = Path("/data/landsat_gcps")
+input_dir = Path("/data/landsat_gcps")
 output_dir = Path("/data/regridded")
 output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -741,7 +742,9 @@ for hdf_file in hdf_files:
     try:
         band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(hdf_file)
         regrid_gcp_chip(
-            band, (ecef_x, ecef_y, ecef_z), config,
+            band,
+            (ecef_x, ecef_y, ecef_z),
+            config,
             output_file=str(nc_file),
             output_metadata={"source_file": hdf_file.name, "mission": "CLARREO Pathfinder"},
         )
@@ -769,10 +772,10 @@ gcp = load_image_grid(Path("regridded_chip.nc"))
 ```python
 from curryer.correction.config import RegridConfig
 
-config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))   # resolution-based (most common)
-config = RegridConfig(output_grid_size=(500, 500))               # fixed output size
-config = RegridConfig(                                           # explicit extent + resolution
-    output_bounds=(-116.5, -115.5, 38.0, 39.0),   # (minlon, maxlon, minlat, maxlat)
+config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))  # resolution-based (most common)
+config = RegridConfig(output_grid_size=(500, 500))  # fixed output size
+config = RegridConfig(  # explicit extent + resolution
+    output_bounds=(-116.5, -115.5, 38.0, 39.0),  # (minlon, maxlon, minlat, maxlat)
     output_resolution_deg=(0.001, 0.001),
 )
 ```
