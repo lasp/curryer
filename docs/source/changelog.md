@@ -34,6 +34,9 @@ Adds a per-pixel geolocation and surface-angle path for large focal planes.
   zero-length vectors still warn.
 - `calc_azimuth` and `calc_zenith` share one local-frame helper; results are unchanged for
   float64 inputs.
+- `calc_zenith` clamps the cosine before `arccos`, so a target along the surface normal (zenith
+  0 or 180) returns that angle instead of NaN. Rounding could put the dot product of the two
+  unit vectors a few ulps past 1. `pixel_geometry` shares the clamp.
 - `compute_ellipsoid_intersection` docstring: `ugps_times` are GPS microseconds, not seconds.
 
 ## Version 0.5.2 (2026-09)

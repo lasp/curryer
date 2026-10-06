@@ -901,6 +901,20 @@ class SpatialTestCase(unittest.TestCase):
         expected_offset = 45.0 - np.rad2deg(np.arctan((1 - constants.WGS84_ECCENTRICITY2) * np.tan(np.deg2rad(45.0))))
         npt.assert_allclose(geocentric, [expected_offset, 0.0, expected_offset], atol=1e-6)
 
+    def test_unit_calc_zenith_target_along_normal_is_not_nan(self):
+        """A target exactly along the normal is zenith 0 (or 180 below), not NaN from arccos."""
+        rng = np.random.default_rng(0)
+        lla = np.column_stack([rng.uniform(-180, 180, 10_000), rng.uniform(-80, 80, 10_000), np.zeros(10_000)])
+        surface = spatial.geodetic_to_ecef(lla, degrees=True)
+        # Scaling the position keeps the target exactly on the geocentric normal, where the
+        # unclamped cosine rounds past 1 for over a tenth of these points.
+        above = spatial.calc_zenith(surface, surface * 1.2, degrees=True, geocentric=True)
+        below = spatial.calc_zenith(surface, surface * 0.5, degrees=True, geocentric=True)
+        self.assertFalse(np.isnan(above).any())
+        self.assertFalse(np.isnan(below).any())
+        npt.assert_allclose(above, 0.0, atol=1e-5)
+        npt.assert_allclose(below, 180.0, atol=1e-5)
+
     def test_unit_relative_azimuth_convention(self):
         """Sun at 180, clockwise wrap, radians variant, NaN passthrough."""
         npt.assert_allclose(spatial.relative_azimuth(np.array([30.0]), np.array([30.0]), degrees=True), [180.0])

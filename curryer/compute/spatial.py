@@ -1493,9 +1493,13 @@ def _azimuth_from_local_frame(
 
 
 def _zenith_from_normal(trg_vector: np.ndarray, normal: np.ndarray, degrees=False) -> np.ndarray:
-    """Zenith of observer-to-target vectors (N, 3) about the observer's unit normal (N, 3)."""
+    """Zenith of observer-to-target vectors (N, 3) about the observer's unit normal (N, 3).
+
+    The cosine is clamped to [-1, 1]: for a target along the normal, rounding puts the dot
+    product of two unit vectors a few ulps past 1, where `arccos` returns NaN.
+    """
     trg_unit = trg_vector / np.linalg.norm(trg_vector, axis=1)[..., None]
-    zenith_ang = np.arccos((normal * trg_unit).sum(axis=1))
+    zenith_ang = np.arccos(np.clip((normal * trg_unit).sum(axis=1), -1.0, 1.0))
     return np.rad2deg(zenith_ang) if degrees else zenith_ang
 
 
