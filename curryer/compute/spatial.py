@@ -1622,11 +1622,20 @@ def _resolve_pixel_fields(fields) -> tuple[PixelField, ...]:
 
     Raises
     ------
+    TypeError
+        If `fields` is a single string or `PixelField` rather than a collection of them.
+    ValueError
+        If `fields` is empty.
     KeyError
         If any name is not a registered `PixelField`.
     """
     if fields is None:
         return tuple(PixelField)
+    if isinstance(fields, str):
+        raise TypeError(f"`fields` must be a collection of PixelField members or names, not the string {fields!r}.")
+    fields = tuple(fields)
+    if not fields:
+        raise ValueError("`fields` is empty; name at least one PixelField, or pass None for all of them.")
     by_selector = {field.value: field for field in PixelField}
     unknown = [name for name in fields if str(name) not in by_selector]
     if unknown:
@@ -1709,7 +1718,9 @@ def pixel_geometry(
     Raises
     ------
     ValueError
-        If `pointing_vectors` is not a finite ``(n_pixels, 3)`` array.
+        If `pointing_vectors` is not a finite ``(n_pixels, 3)`` array, or `fields` is empty.
+    TypeError
+        If `fields` is a single string or `PixelField` rather than a collection of them.
     KeyError
         If `fields` names something that is not a `PixelField`.
     SpiceyError

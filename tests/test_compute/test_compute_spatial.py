@@ -1145,6 +1145,17 @@ class SpatialTestCase(unittest.TestCase):
         with pytest.raises(KeyError, match="not_a_field"):
             spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, fields=["not_a_field"])
 
+    def test_unit_pixel_geometry_rejects_empty_or_bare_string_fields(self):
+        instrument = self._mock_pixel_instrument()
+        with pytest.raises(ValueError, match="empty"):
+            spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, fields=[])
+        # A one-shot iterable is read once, so validation cannot exhaust it into an empty request.
+        resolved = spatial._resolve_pixel_fields(name for name in ["solar_zenith"])
+        self.assertEqual(resolved, (PixelField.SOLAR_ZENITH,))
+        for bare in ("solar_zenith", PixelField.SOLAR_ZENITH):
+            with self.subTest(fields=bare), pytest.raises(TypeError, match="collection"):
+                spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, fields=bare)
+
     def test_unit_pixel_geometry_rejects_bad_vectors(self):
         instrument = self._mock_pixel_instrument()
         for bad in (
