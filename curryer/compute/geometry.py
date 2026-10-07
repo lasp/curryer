@@ -46,6 +46,8 @@ yields a NaN provider row; the math-only leaves are pure and propagate NaN
 elementwise, so every field is NaN on exactly the rows its inputs are missing and
 finite elsewhere -- per time, per field. Downstream maps those NaNs onto the
 product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
+A SPICE input that is NaN at *every* requested time logs a warning, or raises with
+``require_coverage=True`` -- the caller's statement that the kernels must cover the span.
 
 Available fields: request any by name (``GeometryData.available_fields()`` lists
 them). Each field expands to the columns below.
@@ -981,16 +983,17 @@ class GeometryData(abstract.AbstractMissionData):
             raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {available}")
         return list(fields)
 
-    def _gather_providers(self, fields, ugps_times):
+    def _gather_providers(self, fields, ugps_times, require_coverage=False):
         """Query the minimal set of providers for ``fields``, once each.
 
         Providers are evaluated in a stable (sorted) order so runs are
         reproducible. A provider that comes back entirely NaN almost always means
         the required kernels are not furnished (or do not cover the requested
-        span) rather than a genuine per-sample gap, so it is logged as a warning to
-        surface the likely misconfiguration. The all-NaN result still propagates
-        per the fill contract; set the instance ``allow_nans`` attribute to False
-        to raise on the underlying SPICE error instead.
+        span) rather than a genuine per-sample gap. With ``require_coverage`` it
+        raises ``ValueError``; otherwise it is logged as a warning and the all-NaN
+        result propagates per the fill contract. Setting the instance
+        ``allow_nans`` attribute to False instead raises on the first SPICE error,
+        including a single-sample gap.
         """
         needed = sorted(set().union(*(_FIELDS[name].providers for name in fields)))
         logger.debug("Querying providers %s for fields %s", needed, fields)
@@ -998,17 +1001,22 @@ class GeometryData(abstract.AbstractMissionData):
         for key in needed:
             values = _PROVIDERS[key](ugps_times, self)
             if np.size(values) and np.all(np.isnan(np.asarray(values, dtype=float))):
-                logger.warning(
-                    "Provider %r returned all-NaN over %d time(s); check that the required kernels "
-                    "are furnished and cover the requested span.",
-                    key,
-                    len(ugps_times),
+                readers = [str(name) for name in fields if key in _FIELDS[name].providers]
+                message = (
+                    f"Provider {key!r} (read by {readers}) returned all-NaN for observer {self.observer!r} over "
+                    f"{len(ugps_times)} time(s) from uGPS {ugps_times.min()} to {ugps_times.max()}; check that the "
+                    "required kernels are furnished and cover the requested span."
                 )
+                if require_coverage:
+                    raise ValueError(message)
+                logger.warning(message)
             gathered[key] = values
         return _ProviderResults(ugps_times=ugps_times, **gathered)
 
     @abstract.log_return()
-    def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:
+    def get_geometry(
+        self, ugps_times: np.ndarray, fields: list[str] | None = None, *, require_coverage: bool = False
+    ) -> pd.DataFrame:
         """Compute the requested fields as a table.
 
         Parameters
@@ -1020,6 +1028,10 @@ class GeometryData(abstract.AbstractMissionData):
             Field names to compute. Default is the ephemeris-only set (valid for
             any observer); attitude/instrument fields (e.g. ``boresight``) must be
             requested explicitly. See :meth:`available_fields` for the full list.
+        require_coverage : bool, optional
+            If True, raise when a SPICE input the requested fields read covers none of
+            `ugps_times`. Per-sample gaps still come back as NaN. Default False logs a
+            warning instead (see the module Fill contract).
 
         Returns
         -------
@@ -1030,10 +1042,19 @@ class GeometryData(abstract.AbstractMissionData):
             coverage are NaN across that field's columns (see the module Fill
             contract).
 
+        Raises
+        ------
+        KeyError
+            If `fields` names an unregistered field.
+        ValueError
+            If `require_coverage` is True and a SPICE input the requested fields read
+            is NaN at every time, e.g. its kernels are not furnished or do not cover the
+            span. Empty `ugps_times` never raises.
+
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
         fields = self._resolve_fields(fields)
-        providers = self._gather_providers(fields, ugps_times)
+        providers = self._gather_providers(fields, ugps_times, require_coverage=require_coverage)
 
         data = {}
         for name in fields:
@@ -1043,7 +1064,9 @@ class GeometryData(abstract.AbstractMissionData):
                 data[column] = values[:, jth]
         return pd.DataFrame(data, index=pd.Index(ugps_times, name="ugps"))
 
-    def get_vectors(self, ugps_times: np.ndarray, fields: list[str]) -> dict[str, np.ndarray]:
+    def get_vectors(
+        self, ugps_times: np.ndarray, fields: list[str], *, require_coverage: bool = False
+    ) -> dict[str, np.ndarray]:
         """Compute the requested fields as typed arrays.
 
         The typed sibling of :meth:`get_geometry`, addressed by field name rather
@@ -1056,6 +1079,8 @@ class GeometryData(abstract.AbstractMissionData):
             uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str
             Field names to compute.
+        require_coverage : bool, optional
+            As for :meth:`get_geometry`.
 
         Returns
         -------
@@ -1065,8 +1090,15 @@ class GeometryData(abstract.AbstractMissionData):
             frame (``ITRF93`` by default). Rows outside SPICE coverage are NaN
             (see the module Fill contract).
 
+        Raises
+        ------
+        KeyError
+            If `fields` names an unregistered field.
+        ValueError
+            As for :meth:`get_geometry`.
+
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
         fields = self._resolve_fields(fields)
-        providers = self._gather_providers(fields, ugps_times)
+        providers = self._gather_providers(fields, ugps_times, require_coverage=require_coverage)
         return {name: np.asarray(_FIELDS[name].evaluate(providers), dtype=float) for name in fields}

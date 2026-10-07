@@ -469,6 +469,41 @@ class TestGeometryOrchestration:
             rev = geo.get_geometry(ugps, fields=["cone_angle_rate"])
         npt.assert_allclose(rev["cone_angle_rate"].values, [-30.0, -30.0, -30.0], atol=1e-6)
 
+    def test_require_coverage_raises_on_an_all_nan_provider(self):
+        # A missing attitude CK NaNs only the attitude provider; the ephemeris fields stay
+        # finite, so a per-field union check would pass. The provider check names it.
+        fakes = self._full_fakes({})
+        fakes.update(_fake_providers({}, attitude_quaternion=np.full((2, 4), np.nan)))
+        fields = ["subsatellite", "satellite_attitude"]
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, fakes):
+            df = geo.get_geometry(self.UGPS, fields=fields)
+            with pytest.raises(ValueError, match=r"'attitude_quaternion' \(read by \['satellite_attitude'\]\)"):
+                geo.get_geometry(self.UGPS, fields=fields, require_coverage=True)
+            with pytest.raises(ValueError, match="attitude_quaternion"):
+                geo.get_vectors(self.UGPS, fields=fields, require_coverage=True)
+        assert df[list(geometry._FIELDS["satellite_attitude"].columns)].isna().all().all()
+        assert np.isfinite(df[list(geometry._FIELDS["subsatellite"].columns)]).all().all()
+
+    def test_require_coverage_allows_per_sample_gaps_and_empty_requests(self):
+        geo = self._build()
+        partial = np.array([[7000.0, 0.0, 0.0], [np.nan, np.nan, np.nan]])
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(partial))):
+            df = geo.get_geometry(self.UGPS, fields=["sc_position"], require_coverage=True)
+        assert df["spacecraft_position_x"].isna().tolist() == [False, True]
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=np.empty((0, 6)))):
+            assert geo.get_geometry(np.array([], dtype=np.int64), fields=["sc_position"], require_coverage=True).empty
+
+    def test_require_coverage_ignores_fields_nan_by_geometry(self):
+        # A rate needs two samples, so a covered single-sample request is NaN by construction,
+        # not for lack of kernels; only an all-NaN input may raise.
+        sc_pos = np.array([[7000.0, 0.0, 0.0]])
+        boresight = np.array([[-1.0, 0.0, 0.0]])
+        geo = self._build()
+        with patch.dict(geometry._PROVIDERS, _fake_providers({}, sc_state=_state(sc_pos), boresight=boresight)):
+            df = geo.get_geometry(np.array([1_000_000]), fields=["cone_angle_rate"], require_coverage=True)
+        assert np.isnan(df["cone_angle_rate"].values).all()
+
     def test_cone_angle_rate_single_sample_is_nan(self):
         # A rate needs at least two samples; a single-time request yields NaN rather
         # than raising from np.gradient.

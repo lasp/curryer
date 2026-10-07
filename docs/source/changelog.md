@@ -27,6 +27,13 @@ Adds a per-pixel geolocation and surface-angle path for large focal planes.
   `GeometryData` `relative_azimuth` field now calls it, so boresight and per-pixel products
   agree by construction.
 
+- **`GeometryData.get_geometry` and `get_vectors` take `require_coverage=`** -- when True, a
+  SPICE input the requested fields read that is NaN at every requested time (its kernels are
+  not furnished or do not cover the span) raises `ValueError` naming the input and the fields
+  that read it, instead of logging a warning. Per-sample gaps still come back as NaN, so a
+  product keeps per-frame fill while a missing kernel stops the run. Default False is
+  unchanged.
+
 ### Fixes
 
 - `ray_intersect_ellipsoid` no longer emits a NumPy `RuntimeWarning` for rays that miss the
