@@ -1123,6 +1123,27 @@ class SpatialTestCase(unittest.TestCase):
         # A run that asked for no solar field must not report the Sun as missing data.
         self.assertFalse((out["quality_flags"] & int(SQF.CALC_ANCIL_INSUFF_DATA)).any())
 
+    def test_unit_pixel_geometry_without_geodetic_or_angles_skips_the_conversion(self):
+        """Intersection-only fields skip the geodetic conversion and match a full call."""
+        instrument = self._mock_pixel_instrument()
+        sun_df = pd.DataFrame([self._PIXEL_SUN], columns=["x", "y", "z"])
+        subset = [PixelField.SURFACE_POSITION, PixelField.QUALITY_FLAGS]
+
+        with (
+            patch.object(spatial.SpatialQueries, "query_rotation_and_position") as mock_query,
+            patch.object(spatial.spicierpy.ext, "query_ephemeris", return_value=sun_df),
+        ):
+            mock_query.return_value = ((np.eye(3), self._PIXEL_SC), SQF.GOOD)
+            full = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS)
+            with patch.object(spatial, "_surface_xyz_to_geodetic") as mock_geodetic:
+                part = spatial.pixel_geometry(np.array([0]), instrument, self._PIXEL_VECTORS, fields=subset)
+
+        mock_geodetic.assert_not_called()
+        self.assertEqual(set(part), {"surface_position_x", "surface_position_y", "surface_position_z", "quality_flags"})
+        for column in part:
+            npt.assert_array_equal(part[column], full[column], err_msg=column)
+        npt.assert_array_equal(part["quality_flags"][0], [SQF.GOOD, SQF.GOOD, SQF.CALC_ELLIPS_NO_INTERSECT])
+
     def test_unit_pixel_geometry_relative_azimuth_alone_computes_its_own_inputs(self):
         """`relative_azimuth` needs both azimuths, so requesting it alone must still compute them."""
         instrument = self._mock_pixel_instrument()
