@@ -1,6 +1,6 @@
 # Changelog
 
-## Version 0.5.3 (unreleased)
+## Version 0.5.3 (2026-10)
 
 Adds a per-pixel geolocation and surface-angle path for large focal planes.
 
