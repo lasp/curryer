@@ -1260,11 +1260,16 @@ def verify(
         *psf_file* is ``None`` for a file-path mode (*gcp_pairs* or
         *observation_paths* + *gcp_directory*); when *observation_paths* and
         *gcp_directory* are not both supplied; when an observation or GCP
-        file cannot be read; when an observation file carries no valid
+        file fails to load during *observation_paths* / *geolocated_data*
+        pairing (including a missing file; the original exception is chained
+        as ``__cause__``); when an observation file carries no valid
         spacecraft position; when a GCP chip centre lies outside its
         observation grid; or when image matching produces no results.
     FileNotFoundError
-        If any of the supplied file paths do not exist.
+        If *los_file* or *psf_file* does not exist, if *gcp_directory* does
+        not exist in *observation_paths* mode, or if a file listed in
+        *gcp_pairs* does not exist. Missing observation or GCP files found
+        during pairing raise ``ValueError`` as above.
     spiceypy.utils.exceptions.SpiceyError
         In the *geolocated_data* mode, if the SPICE boresight query fails.
     """

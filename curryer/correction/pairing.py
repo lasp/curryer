@@ -451,7 +451,11 @@ def pair_files(
 
     Raises:
         FileNotFoundError: If gcp_directory doesn't exist.
-        ValueError: If no valid pairs found.
+        ValueError: If l1a_files is empty, no GCP files match gcp_pattern, or
+            any L1A or GCP file fails to load, including a missing file (the
+            message names the file; the original exception is chained as
+            ``__cause__``). An empty pair list is returned, not raised, when
+            the files load but nothing overlaps.
 
     Example:
         >>> # .mat subimages paired with .mat GCPs (original behaviour)
@@ -469,6 +473,9 @@ def pair_files(
     if not gcp_dir.is_dir():
         raise FileNotFoundError(f"GCP directory not found: {gcp_dir}")
 
+    if not l1a_files:
+        raise ValueError("No L1A files provided")
+
     logger.info(f"GCP Pairing: Loading {len(l1a_files)} L1A images...")
 
     l1a_images: list[NamedImageGrid] = []
@@ -477,10 +484,7 @@ def pair_files(
         try:
             l1a_images.append(load_named_image_grid(l1a_file, mat_key=mat_key))
         except Exception as e:
-            logger.warning(f"Failed to load L1A file {l1a_file}: {e}")
-
-    if not l1a_images:
-        raise ValueError("No L1A images loaded successfully")
+            raise ValueError(f"Failed to load L1A file {l1a_file}: {e}") from e
 
     gcp_files = discover_gcp_files(gcp_dir, pattern=gcp_pattern)
     if not gcp_files:
@@ -494,10 +498,7 @@ def pair_files(
         try:
             gcp_images.append(load_named_image_grid(gcp_file, mat_key=mat_key))
         except Exception as e:
-            logger.warning(f"Failed to load GCP file {gcp_file}: {e}")
-
-    if not gcp_images:
-        raise ValueError("No GCP images loaded successfully")
+            raise ValueError(f"Failed to load GCP file {gcp_file}: {e}") from e
 
     logger.info(f"GCP Pairing: Finding spatial overlaps (max_distance={max_distance_m}m)...")
     result = find_l1a_gcp_pairs(l1a_images, gcp_images, max_distance_m)
@@ -558,10 +559,11 @@ def pair_geolocated_dataset_with_gcp_files(
         footprint, ordered by their original position in *gcp_files*.
         Empty when no overlap is found or when *gcp_files* is empty.
 
-    Notes
-    -----
-    Files that cannot be loaded are silently skipped with a DEBUG log entry.
-    This mirrors the behaviour of :func:`pair_files` for individual files.
+    Raises
+    ------
+    ValueError
+        If any GCP file fails to load (the message names the file; the
+        original exception is chained as ``__cause__``).
 
     Examples
     --------
@@ -587,20 +589,14 @@ def pair_geolocated_dataset_with_gcp_files(
         name="observation",
     )
 
-    # Load GCP files, skipping any that fail.
     gcp_named: list[NamedImageGrid] = []
-    valid_gcp_files: list[Path] = []
     for gcp_file in gcp_files:
         mat_key = gcp_key if Path(gcp_file).suffix.lower() == ".mat" else "GCP"
         try:
             gcp_named.append(load_named_image_grid(gcp_file, mat_key=mat_key))
-            valid_gcp_files.append(Path(gcp_file))
-        except Exception as exc:
-            logger.debug("Could not load GCP chip %s for pairing: %s", Path(gcp_file).name, exc)
-
-    if not gcp_named:
-        return []
+        except Exception as e:
+            raise ValueError(f"Failed to load GCP file {gcp_file}: {e}") from e
 
     pairing_result = find_l1a_gcp_pairs([obs_named], gcp_named, max_distance_m)
     matched_indices = {m.gcp_index for m in pairing_result.matches}
-    return [valid_gcp_files[i] for i in sorted(matched_indices)]
+    return [Path(gcp_files[i]) for i in sorted(matched_indices)]
