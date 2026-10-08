@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
+import xarray as xr
 
+from ..compute import constants
 from .config import PSFSamplingConfig, SearchConfig
 from .grid_types import (
     ImageGrid,
@@ -22,10 +23,7 @@ from .psf import (
     resample_psf_to_gcp_resolution,
     zero_pad_psf,
 )
-from .search import im_search
-
-if TYPE_CHECKING:
-    import xarray as xr
+from .search import emulate_image, im_search
 
 logger = logging.getLogger(__name__)
 
@@ -185,4 +183,59 @@ def integrated_image_match(
         dynamic_psf=dynamic_psf,
         projected_psf=projected_psf,
         convolved_gcp=gcp_convolved,
+    )
+
+
+def chip_image_dataset(subimage: ImageGrid, gcp: ImageGrid, result: IntegratedImageMatchResult) -> xr.Dataset:
+    """Collect the images behind one GCP match for review.
+
+    The emulated image is the PSF-convolved GCP chip sampled at the observation
+    pixels shifted by the matched error, i.e. the image whose correlation with
+    the observation is ``result.ccv_final``.
+
+    Parameters
+    ----------
+    subimage : ImageGrid
+        Observation subimage that was matched (rows = frames, columns =
+        cross-track pixels), lat/lon in degrees.
+    gcp : ImageGrid
+        GCP reference chip as loaded, before PSF convolution.
+    result : IntegratedImageMatchResult
+        Output of :func:`integrated_image_match` for *subimage* and *gcp*.
+
+    Returns
+    -------
+    xr.Dataset
+        On dims ``(row, col)``: ``observed``, ``emulated``, ``latitude`` and
+        ``longitude`` of the observation.  On dims ``(gcp_row, gcp_col)``:
+        ``reference``, ``reference_convolved``, ``reference_latitude`` and
+        ``reference_longitude``.  Attributes ``lat_error_km``,
+        ``lon_error_km``, ``correlation`` and ``correlation_secondary``.
+    """
+    n_rows, n_cols = subimage.data.shape
+    mid_lat = float(subimage.lat[n_rows // 2, n_cols // 2])
+    radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM
+    lat_shift_deg = np.rad2deg(result.lat_error_km / radius_km)
+    lon_shift_deg = np.rad2deg(result.lon_error_km / (radius_km * np.cos(np.deg2rad(mid_lat))))
+    emulated = emulate_image(subimage.lon - lon_shift_deg, subimage.lat - lat_shift_deg, result.convolved_gcp)
+
+    pixel = ("row", "col")
+    chip = ("gcp_row", "gcp_col")
+    return xr.Dataset(
+        {
+            "observed": (pixel, np.asarray(subimage.data, dtype=float)),
+            "emulated": (pixel, emulated, {"long_name": "PSF-convolved GCP sampled at the matched positions"}),
+            "latitude": (pixel, subimage.lat, {"units": "degrees_north"}),
+            "longitude": (pixel, subimage.lon, {"units": "degrees_east"}),
+            "reference": (chip, np.asarray(gcp.data, dtype=float)),
+            "reference_convolved": (chip, np.asarray(result.convolved_gcp.data, dtype=float)),
+            "reference_latitude": (chip, gcp.lat, {"units": "degrees_north"}),
+            "reference_longitude": (chip, gcp.lon, {"units": "degrees_east"}),
+        },
+        attrs={
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation": result.ccv_final,
+            "correlation_secondary": result.ccv_secondary,
+        },
     )

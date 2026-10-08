@@ -21,6 +21,7 @@ etc.) directly.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Union
 
@@ -73,6 +74,50 @@ def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
     return float(np.sum(errors < threshold_m) / len(errors) * 100)
 
 
+QUALITY_WEIGHT_MAX_CORRELATION: float = 0.99
+_STANDARD_THRESHOLDS_M = (100.0, 250.0, 500.0, 750.0, 1000.0)
+
+
+def match_snr_weight(correlation: np.ndarray, max_correlation: float = QUALITY_WEIGHT_MAX_CORRELATION) -> np.ndarray:
+    """Return the match signal-to-noise weight ``rho**2 / (1 - rho**2)`` of each correlation.
+
+    If an observed image is the emulated scene plus independent noise, the
+    squared correlation ``rho**2`` is the scene's share of the variance, so
+    ``rho**2 / (1 - rho**2)`` is the signal-to-noise ratio of the match.  The
+    variance of a correlation-registration error scales as noise over signal,
+    which makes this an inverse-variance weight: ``rho`` 0.80 gives 1.8, 0.95
+    gives 9.3, 0.99 gives 49.
+
+    Parameters
+    ----------
+    correlation : np.ndarray
+        Correlation at each match, dimensionless.
+    max_correlation : float, optional
+        Cap on ``rho`` (default :data:`QUALITY_WEIGHT_MAX_CORRELATION`, 0.99,
+        weight 49) so that one near-perfect match does not dominate.  A
+        non-positive correlation weighs 0.
+
+    Returns
+    -------
+    np.ndarray
+        Weights, same shape as *correlation*, in ``[0, max_correlation**2 /
+        (1 - max_correlation**2)]``.
+
+    Raises
+    ------
+    ValueError
+        If *max_correlation* is not in ``(0, 1)`` or *correlation* is not
+        finite.
+    """
+    if not 0.0 < max_correlation < 1.0:
+        raise ValueError(f"max_correlation must be in (0, 1), got {max_correlation}.")
+    rho = np.asarray(correlation, dtype=float)
+    if not np.all(np.isfinite(rho)):
+        raise ValueError(f"Correlation must be finite to weight a match, got {rho[~np.isfinite(rho)]}.")
+    rho = np.clip(rho, 0.0, max_correlation)
+    return rho**2 / (1.0 - rho**2)
+
+
 @dataclass
 class ErrorStatsConfig:
     """Configuration for geolocation error statistics processing.
@@ -80,17 +125,19 @@ class ErrorStatsConfig:
     Parameters
     ----------
     minimum_correlation : float or None, optional
-        Minimum correlation filter threshold (0.0–1.0).  Measurements whose
-        correlation score falls below this value are excluded before
-        processing.  When set, the input must carry a ``correlation`` (or
-        ``ccv`` / ``im_ccv``) variable or processing raises.  Default is
-        ``None`` (no filtering).
+        Minimum correlation (0.0–1.0).  Measurements whose correlation score
+        falls below it are rejected: kept in the output with ``accepted``
+        False and a ``rejection_reason``, and left out of the statistics.
+        When set, the input must carry a ``correlation`` (or ``ccv`` /
+        ``im_ccv``) variable or processing raises.  Default is ``None`` (no
+        gate).
     minimum_peak_margin : float or None, optional
         Minimum amount by which a measurement's correlation must exceed
         ``correlation_secondary`` (the strongest competing correlation away
-        from the peak).  Measurements below it are excluded before
-        processing; the input must then carry ``correlation_secondary`` and a
-        correlation variable or processing raises.  Default is ``None``.
+        from the peak).  Measurements below it are rejected as for
+        ``minimum_correlation``; the input must then carry
+        ``correlation_secondary`` and a correlation variable or processing
+        raises.  Default is ``None``.
     variable_names : dict of str to str or None, optional
         Mission-agnostic variable name mappings from semantic names to actual
         dataset variable names.  If ``None``, generic defaults are used.
@@ -175,6 +222,83 @@ class ErrorStatsConfig:
         return self.variable_names[semantic_name]
 
 
+def quality_weights(correlation: np.ndarray, accepted: np.ndarray) -> xr.DataArray:
+    """Return the ``quality_weight`` variable: :func:`match_snr_weight` where accepted, 0 elsewhere.
+
+    Raises
+    ------
+    ValueError
+        As :func:`match_snr_weight`, for an accepted measurement's correlation.
+    """
+    weights = np.zeros(len(accepted))
+    weights[accepted] = match_snr_weight(np.asarray(correlation)[accepted])
+    return xr.DataArray(
+        weights,
+        dims=["measurement"],
+        attrs={
+            "long_name": "Match signal-to-noise weight rho^2/(1-rho^2); 0 when rejected",
+            "max_correlation": QUALITY_WEIGHT_MAX_CORRELATION,
+        },
+    )
+
+
+def weighted_statistics(errors_m: np.ndarray, weights: np.ndarray) -> dict[str, float]:
+    """Return weighted error statistics.
+
+    Parameters
+    ----------
+    errors_m : np.ndarray
+        Nadir-equivalent errors, meters.
+    weights : np.ndarray
+        Non-negative weights, same length as *errors_m*.
+
+    Returns
+    -------
+    dict of str to float
+        ``weighted_mean_error_m``, ``weighted_rms_error_m``,
+        ``weighted_percent_below_<T>m`` for T in 100, 250, 500, 750, 1000, and
+        ``effective_measurements`` = ``(sum w)**2 / sum w**2``, the number of
+        equal-weight measurements with the same statistical power.
+
+    Raises
+    ------
+    ValueError
+        If the lengths differ, a weight is negative or not finite, or the
+        weights sum to 0.
+    """
+    errors_m = np.asarray(errors_m, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if errors_m.shape != weights.shape:
+        raise ValueError(f"errors_m {errors_m.shape} and weights {weights.shape} must have the same shape.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("Weights must be finite and non-negative.")
+    total = weights.sum()
+    if total == 0:
+        raise ValueError("Weights sum to 0; weighted statistics are undefined.")
+    stats = {
+        "weighted_mean_error_m": float(np.sum(weights * errors_m) / total),
+        "weighted_rms_error_m": float(np.sqrt(np.sum(weights * errors_m**2) / total)),
+        "effective_measurements": float(total**2 / np.sum(weights**2)),
+    }
+    for threshold in _STANDARD_THRESHOLDS_M:
+        stats[f"weighted_percent_below_{threshold:.0f}m"] = weighted_percent_below(errors_m, weights, threshold)
+    return stats
+
+
+def weighted_percent_below(errors_m: np.ndarray, weights: np.ndarray, threshold_m: float) -> float:
+    """Return the weighted percentage (0–100) of *errors_m* strictly below *threshold_m*.
+
+    Raises
+    ------
+    ValueError
+        If the weights sum to 0.
+    """
+    total = float(np.sum(weights))
+    if total == 0:
+        raise ValueError("Weights sum to 0; the weighted percentage is undefined.")
+    return float(np.sum(weights * (np.asarray(errors_m) < threshold_m)) / total * 100.0)
+
+
 class ErrorStatsProcessor:
     """Production-ready processor for geolocation error statistics."""
 
@@ -193,61 +317,60 @@ class ErrorStatsProcessor:
             raise ValueError("ErrorStatsConfig is required. Use ErrorStatsConfig.from_setup(setup) to create.")
         self.config = config
 
-    def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:
+    def rejection_reasons(self, data: xr.Dataset) -> np.ndarray:
+        """Return why each measurement fails the match-quality gates.
+
+        The gates are ``minimum_correlation`` (correlation at the match) and
+        ``minimum_peak_margin`` (correlation minus ``correlation_secondary``).
+        A rejected measurement is a match that worked but is not trusted, e.g.
+        a cloud-covered or featureless scene; it stays in the output, flagged,
+        and is left out of the statistics.
+
+        Parameters
+        ----------
+        data : xr.Dataset
+            Measurements with a ``measurement`` dimension; must carry a
+            ``correlation``, ``ccv`` or ``im_ccv`` variable when either gate is
+            set, and ``correlation_secondary`` when ``minimum_peak_margin`` is set.
+
+        Returns
+        -------
+        np.ndarray of str, shape (n_measurements,)
+            ``""`` for an accepted measurement; otherwise each failed gate with
+            its value and threshold, joined by ``"; "`` (e.g.
+            ``"correlation 0.4120 < 0.8"``).  A NaN correlation fails both gates.
+
+        Raises
+        ------
+        ValueError
+            If a gate is set and *data* lacks the variable it needs.
         """
-        Filter measurements by correlation and peak-distinctness thresholds.
-
-        Args:
-            data: Input dataset; must carry a 'correlation', 'ccv' or
-                'im_ccv' variable when ``minimum_correlation`` or
-                ``minimum_peak_margin`` is set, and 'correlation_secondary'
-                when ``minimum_peak_margin`` is set.
-
-        Returns:
-            Filtered dataset with low-correlation and non-distinct
-            measurements removed
-
-        Raises:
-            ValueError: If a threshold is set and *data* lacks the variable it
-                needs.
-        """
+        n = data.sizes["measurement"]
         if self.config.minimum_correlation is None and self.config.minimum_peak_margin is None:
-            return data
+            return np.full(n, "", dtype=object)
 
-        # Check for correlation variable (try multiple names)
-        corr_var = None
-        for var_name in ["correlation", "ccv", "im_ccv"]:
-            if var_name in data.data_vars:
-                corr_var = var_name
-                break
-
+        corr_var = next((name for name in ("correlation", "ccv", "im_ccv") if name in data.data_vars), None)
         if corr_var is None:
             raise ValueError(
                 f"minimum_correlation={self.config.minimum_correlation} / minimum_peak_margin="
                 f"{self.config.minimum_peak_margin} is set but the input has no correlation variable "
                 "('correlation', 'ccv' or 'im_ccv'); the threshold cannot be applied."
             )
-
-        valid_mask = xr.ones_like(data[corr_var], dtype=bool)
+        corr = data[corr_var].values
+        failed: list[list[str]] = [[] for _ in range(n)]
         if self.config.minimum_correlation is not None:
-            valid_mask &= data[corr_var] >= self.config.minimum_correlation
+            for i in np.flatnonzero(~(corr >= self.config.minimum_correlation)):
+                failed[i].append(f"correlation {corr[i]:.4f} < {self.config.minimum_correlation}")
         if self.config.minimum_peak_margin is not None:
             if "correlation_secondary" not in data.data_vars:
                 raise ValueError(
                     f"minimum_peak_margin={self.config.minimum_peak_margin} is set but the input has no "
                     "'correlation_secondary' variable; the threshold cannot be applied."
                 )
-            valid_mask &= (data[corr_var] - data["correlation_secondary"]) >= self.config.minimum_peak_margin
-        n_before = len(data.measurement)
-        filtered_data = data.where(valid_mask, drop=True)
-        n_after = len(filtered_data.measurement)
-
-        logger.info(
-            f"Correlation filtering: {n_before} → {n_after} measurements (minimum_correlation="
-            f"{self.config.minimum_correlation}, minimum_peak_margin={self.config.minimum_peak_margin})"
-        )
-
-        return filtered_data
+            margin = corr - data["correlation_secondary"].values
+            for i in np.flatnonzero(~(margin >= self.config.minimum_peak_margin)):
+                failed[i].append(f"peak margin {margin[i]:.4f} < {self.config.minimum_peak_margin}")
+        return np.array(["; ".join(reasons) for reasons in failed], dtype=object)
 
     def compute_nadir_equivalent_errors(self, input_data: xr.Dataset) -> xr.Dataset:
         """Compute per-measurement nadir-equivalent errors WITHOUT aggregate statistics.
@@ -262,60 +385,126 @@ class ErrorStatsProcessor:
         Call :meth:`process_geolocation_errors` for the final aggregate pass
         (nadir-equivalent + comprehensive statistics).
 
+        Every input measurement is in the output.  Those failing the
+        match-quality gates (:meth:`rejection_reasons`) have ``accepted`` False
+        and keep their computed errors for review.
+
         Parameters
         ----------
         input_data : xr.Dataset
             Dataset with required error measurement variables and a
-            ``measurement`` dimension.
+            ``measurement`` dimension.  When it carries ``track_azimuth_deg``
+            (ground azimuth of the along-track direction at each GCP, degrees
+            clockwise from north), the error is also resolved into
+            along-track and cross-track components.
 
         Returns
         -------
         xr.Dataset
             Dataset with ``nadir_equiv_total_error_m`` and related intermediate
-            variables.  No statistical attributes are set on the output.
+            variables, ``accepted`` (bool), ``rejection_reason`` (str, ``""``
+            when accepted), and, when the input carries ``track_azimuth_deg``,
+            ``along_track_error_m`` (positive along the azimuth) and
+            ``cross_track_error_m`` (positive 90° clockwise from it), in meters,
+            from the same north/east error as the view-plane components.
+            With a correlation variable in the input, ``quality_weight``:
+            :func:`match_snr_weight` for accepted measurements, 0 for
+            rejected ones.  Attributes ``n_matched``, ``n_accepted`` and
+            ``n_rejected``; no statistics.
 
         Raises
         ------
         ValueError
-            If required variables are missing, ``minimum_correlation`` is set
-            but the input has no correlation variable, or all measurements are
-            filtered out by the correlation threshold.
+            If required variables are missing, or a match-quality gate is set
+            but the input lacks the variable it needs.
         """
         self._validate_input_data(input_data)
-        filtered_data = self._filter_by_correlation(input_data)
+        reasons = self.rejection_reasons(input_data)
 
-        if len(filtered_data.measurement) == 0:
-            raise ValueError("No measurements remaining after correlation filtering")
-
-        n_measurements = len(filtered_data.measurement)
+        n_measurements = len(input_data.measurement)
 
         sc_pos_var = self.config.get_variable_name("spacecraft_position")
         boresight_var = self.config.get_variable_name("boresight")
         transform_var = self.config.get_variable_name("transformation_matrix")
 
-        lat_error_rad = np.deg2rad(filtered_data.lat_error_deg.values)
-        lon_error_rad = np.deg2rad(filtered_data.lon_error_deg.values)
-        gcp_lat_rad = np.deg2rad(filtered_data.gcp_lat_deg.values)
-        gcp_lon_rad = np.deg2rad(filtered_data.gcp_lon_deg.values)
+        lat_error_rad = np.deg2rad(input_data.lat_error_deg.values)
+        lon_error_rad = np.deg2rad(input_data.lon_error_deg.values)
+        gcp_lat_rad = np.deg2rad(input_data.gcp_lat_deg.values)
+        gcp_lon_rad = np.deg2rad(input_data.gcp_lon_deg.values)
 
         ns_error_dist_m = _EARTH_RADIUS_M * lat_error_rad
         ew_error_dist_m = _EARTH_RADIUS_M * np.cos(gcp_lat_rad) * lon_error_rad
 
         bhat_ctrs = self._transform_boresight_vectors(
-            filtered_data[boresight_var].values, filtered_data[transform_var].values
+            input_data[boresight_var].values, input_data[transform_var].values
         )
 
         results = self._process_to_nadir_equivalent(
             ns_error_dist_m,
             ew_error_dist_m,
-            filtered_data[sc_pos_var].values,
+            input_data[sc_pos_var].values,
             bhat_ctrs,
             gcp_lat_rad,
             gcp_lon_rad,
             n_measurements,
         )
+        if "track_azimuth_deg" in input_data.data_vars:
+            azimuth_rad = np.deg2rad(input_data["track_azimuth_deg"].values)
+            results["along_track_error_m"] = ns_error_dist_m * np.cos(azimuth_rad) + ew_error_dist_m * np.sin(
+                azimuth_rad
+            )
+            results["cross_track_error_m"] = ew_error_dist_m * np.cos(azimuth_rad) - ns_error_dist_m * np.sin(
+                azimuth_rad
+            )
 
-        return self._create_output_dataset(filtered_data, results)
+        output = self._create_output_dataset(input_data, results, reasons)
+        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in output.data_vars), None)
+        if corr_name is not None:
+            output["quality_weight"] = quality_weights(output[corr_name].values, output["accepted"].values)
+        logger.info(
+            "Match-quality gates: %d of %d measurements accepted (minimum_correlation=%s, minimum_peak_margin=%s)",
+            output.attrs["n_accepted"],
+            n_measurements,
+            self.config.minimum_correlation,
+            self.config.minimum_peak_margin,
+        )
+        return output
+
+    def add_statistics(self, per_measurement: xr.Dataset) -> xr.Dataset:
+        """Add aggregate statistics over the accepted measurements as attributes.
+
+        Parameters
+        ----------
+        per_measurement : xr.Dataset
+            Output of :meth:`compute_nadir_equivalent_errors`.
+
+        Returns
+        -------
+        xr.Dataset
+            *per_measurement* with the statistics of
+            :meth:`_calculate_statistics` added to its attributes;
+            ``total_measurements`` counts accepted measurements only.  With a
+            ``quality_weight`` variable whose accepted weights sum above 0,
+            also the weighted statistics of :func:`weighted_statistics`
+            (``weighted_*`` and ``effective_measurements``).
+
+        Raises
+        ------
+        ValueError
+            If no measurement is accepted.
+        """
+        accepted = per_measurement["accepted"].values
+        if not accepted.any():
+            raise ValueError(
+                f"No measurements remaining after correlation filtering: all {accepted.size} were rejected."
+            )
+        output = per_measurement.copy()
+        errors = output["nadir_equiv_total_error_m"].values[accepted]
+        output.attrs.update(self._calculate_statistics(errors))
+        weights = output["quality_weight"].values[accepted] if "quality_weight" in output.data_vars else np.zeros(1)
+        if weights.sum() > 0:
+            output.attrs.update(weighted_statistics(errors, weights))
+        return output
 
     def process_geolocation_errors(self, input_data: xr.Dataset) -> xr.Dataset:
         """Full processing: nadir-equivalent errors + aggregate statistics.
@@ -333,14 +522,17 @@ class ErrorStatsProcessor:
         Returns
         -------
         xr.Dataset
-            Dataset with ``nadir_equiv_total_error_m`` and related intermediate
-            variables, plus comprehensive statistics as global attributes.
-        """
-        output_data = self.compute_nadir_equivalent_errors(input_data)
-        stats = self._calculate_statistics(output_data["nadir_equiv_total_error_m"].values)
-        output_data.attrs.update(stats)
+            Output of :meth:`compute_nadir_equivalent_errors` for every
+            measurement, with statistics over the accepted measurements as
+            global attributes (:meth:`add_statistics`).
 
-        return output_data
+        Raises
+        ------
+        ValueError
+            As :meth:`compute_nadir_equivalent_errors`, or if no measurement is
+            accepted.
+        """
+        return self.add_statistics(self.compute_nadir_equivalent_errors(input_data))
 
     def _validate_input_data(self, data: xr.Dataset) -> None:
         """Validate that input dataset contains all required variables."""
@@ -500,11 +692,36 @@ class ErrorStatsProcessor:
 
         return ScalingFactors(vp_factor=vp_factor, xvp_factor=xvp_factor)
 
-    def _create_output_dataset(self, input_data: xr.Dataset, results: dict[str, np.ndarray]) -> xr.Dataset:
+    def _create_output_dataset(
+        self, input_data: xr.Dataset, results: dict[str, np.ndarray], reasons: np.ndarray
+    ) -> xr.Dataset:
         """Create output Xarray Dataset with processing results."""
 
         # Create data variables for output
         data_vars = {}
+
+        accepted = reasons == ""
+        data_vars["accepted"] = (
+            ["measurement"],
+            accepted.astype(bool),
+            {"long_name": "Measurement passed the match-quality gates and enters the statistics"},
+        )
+        data_vars["rejection_reason"] = (
+            ["measurement"],
+            reasons.astype(str),
+            {"long_name": "Match-quality gates failed; empty when accepted"},
+        )
+        if "along_track_error_m" in results:
+            data_vars["along_track_error_m"] = (
+                ["measurement"],
+                results["along_track_error_m"],
+                {"units": "meters", "long_name": "Error component along the ground-track azimuth"},
+            )
+            data_vars["cross_track_error_m"] = (
+                ["measurement"],
+                results["cross_track_error_m"],
+                {"units": "meters", "long_name": "Error component 90 degrees clockwise from the ground-track azimuth"},
+            )
 
         # Nadir-equivalent errors (main results)
         data_vars["nadir_equiv_total_error_m"] = (
@@ -567,15 +784,18 @@ class ErrorStatsProcessor:
             coords=input_data.coords,
             attrs={
                 "title": "Geolocation Error Statistics Results",
-                "processing_timestamp": np.datetime64("now"),
+                "processing_timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "earth_radius_m": _EARTH_RADIUS_M,
+                "n_matched": int(accepted.size),
+                "n_accepted": int(accepted.sum()),
+                "n_rejected": int((~accepted).sum()),
             },
         )
 
         # Add correlation filtering metadata if applied
         if self.config.minimum_correlation is not None:
             output_ds.attrs["minimum_correlation_threshold"] = self.config.minimum_correlation
-            output_ds.attrs["correlation_filtering_applied"] = True
+            output_ds.attrs["correlation_filtering_applied"] = 1  # NetCDF attributes cannot hold a bool
         if self.config.minimum_peak_margin is not None:
             output_ds.attrs["minimum_peak_margin_threshold"] = self.config.minimum_peak_margin
 

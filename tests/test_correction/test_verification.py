@@ -87,14 +87,18 @@ def _make_setup(**overrides) -> GeolocationSetup:
     return GeolocationSetup(**defaults)
 
 
-def _make_aggregate_stats_dataset(nadir_errors_m: list[float]) -> xr.Dataset:
-    """Minimal dataset with ``nadir_equiv_total_error_m`` for threshold tests."""
+def _make_aggregate_stats_dataset(nadir_errors_m: list[float], rejected: tuple[int, ...] = ()) -> xr.Dataset:
+    """Minimal error-stats output for threshold tests; *rejected* indexes rejected measurements."""
     n = len(nadir_errors_m)
+    accepted = np.ones(n, dtype=bool)
+    accepted[list(rejected)] = False
     return xr.Dataset(
         {
             "nadir_equiv_total_error_m": (["measurement"], np.array(nadir_errors_m, dtype=float)),
             "lat_error_deg": (["measurement"], np.zeros(n)),
             "lon_error_deg": (["measurement"], np.zeros(n)),
+            "accepted": (["measurement"], accepted),
+            "rejection_reason": (["measurement"], np.where(accepted, "", "correlation 0.1000 < 0.5")),
         },
         coords={"measurement": np.arange(n)},
     )
@@ -129,6 +133,32 @@ class TestRequirementsConfig:
         assert req.performance_threshold_m == 250.0
         assert req.performance_spec_percent == 39.0
 
+    def test_passed_contradicting_status_raises(self):
+        with pytest.raises(ValueError, match="contradicts status"):
+            GCPError(
+                gcp_index=0,
+                science_key="s",
+                gcp_key="g",
+                lat_error_deg=0.0,
+                lon_error_deg=0.0,
+                passed=True,
+                status="fail",
+            )
+
+    @pytest.mark.parametrize(("status", "reason"), [("rejected", None), ("fail", "correlation 0.1000 < 0.5")])
+    def test_rejection_reason_only_when_rejected(self, status, reason):
+        with pytest.raises(ValueError, match="rejection_reason"):
+            GCPError(
+                gcp_index=0,
+                science_key="s",
+                gcp_key="g",
+                lat_error_deg=0.0,
+                lon_error_deg=0.0,
+                passed=False,
+                status=status,
+                rejection_reason=reason,
+            )
+
     def test_json_round_trip(self):
         req = RequirementsConfig(performance_threshold_m=500.0, performance_spec_percent=80.0)
         restored = RequirementsConfig.model_validate_json(req.model_dump_json())
@@ -156,6 +186,7 @@ class TestGCPError:
             nadir_equiv_error_m=120.5,
             correlation=0.87,
             passed=True,
+            status="pass",
         )
         assert err.passed is True
         assert err.nadir_equiv_error_m == pytest.approx(120.5)
@@ -168,6 +199,7 @@ class TestGCPError:
             lat_error_deg=0.0,
             lon_error_deg=0.0,
             passed=False,
+            status="fail",
         )
         assert err.nadir_equiv_error_m is None
         assert err.correlation is None
@@ -182,6 +214,7 @@ class TestGCPError:
             nadir_equiv_error_m=300.0,
             correlation=0.65,
             passed=False,
+            status="fail",
         )
         raw = json.loads(err.model_dump_json())
         assert raw["gcp_index"] == 2
@@ -205,6 +238,7 @@ class TestVerificationResult:
                 lon_error_deg=0.001,
                 nadir_equiv_error_m=100.0,
                 passed=True,
+                status="pass",
             )
         ]
         stats = _make_aggregate_stats_dataset([100.0])
@@ -263,6 +297,17 @@ class TestCheckThreshold:
             performance_threshold_m=_THRESHOLD_M,
             performance_spec_percent=spec_pct,
         )
+
+    def test_rejected_measurements_excluded(self):
+        """Only accepted measurements enter the percentage."""
+        stats = _make_aggregate_stats_dataset([100.0, 900.0, 950.0], rejected=(1, 2))
+        passed, pct = _check_threshold(stats, self._req())
+        assert pct == pytest.approx(100.0)
+        assert passed
+
+    def test_all_rejected_fails_at_zero(self):
+        stats = _make_aggregate_stats_dataset([100.0, 200.0], rejected=(0, 1))
+        assert _check_threshold(stats, self._req()) == (False, 0.0)
 
     def test_zero_percent_within_threshold_fails(self):
         """All errors above threshold → 0 % pass → FAILED."""
@@ -357,6 +402,7 @@ class TestFormatSummaryTable:
                 lon_error_deg=-0.00045,
                 nadir_equiv_error_m=145.2,
                 passed=True,
+                status="pass",
             ),
             GCPError(
                 gcp_index=1,
@@ -366,6 +412,7 @@ class TestFormatSummaryTable:
                 lon_error_deg=0.00234,
                 nadir_equiv_error_m=312.8,
                 passed=False,
+                status="fail",
             ),
         ]
 
@@ -392,10 +439,29 @@ class TestFormatSummaryTable:
         assert "250.0m" in table
         assert "39.0%" in table
 
-    def test_checkmark_and_cross_present(self):
-        table = _format_summary_table(self._errors(), self._req(), 50.0, False)
-        assert "✓" in table
-        assert "✗" in table
+    def test_status_names_and_rejection_count_present(self):
+        rejected = GCPError(
+            gcp_index=2,
+            science_key="sci_2",
+            gcp_key="gcp_2",
+            lat_error_deg=0.01,
+            lon_error_deg=0.01,
+            nadir_equiv_error_m=1240.6,
+            passed=False,
+            status="rejected",
+            rejection_reason="correlation 0.412 < 0.8",
+        )
+        table = _format_summary_table([*self._errors(), rejected], self._req(), 50.0, False)
+        assert "PASS" in table
+        assert "FAIL" in table
+        assert "REJECTED" in table
+        assert "2 accepted, 1 rejected" in table
+
+    def test_rows_aligned_when_footer_is_widest(self):
+        errors = [e.model_copy(update={"quality_weight": 4.0}) for e in self._errors()]
+        table = _format_summary_table(errors, self._req(), 50.0, False, weighted_percent=50.0)
+        assert "effective n = 2.0" in table
+        assert len({len(line) for line in table.splitlines()}) == 1
 
     def test_empty_errors_list(self):
         """Should not raise with zero measurements."""
@@ -412,6 +478,7 @@ class TestFormatSummaryTable:
                 lon_error_deg=0.0,
                 nadir_equiv_error_m=None,
                 passed=False,
+                status="fail",
             )
         ]
         table = _format_summary_table(errors, self._req(), 0.0, False)
@@ -434,9 +501,37 @@ class TestBuildPerGcpErrors:
                 "nadir_equiv_total_error_m": (["measurement"], np.array(nadir_errors)),
                 "lat_error_deg": (["measurement"], np.linspace(0.001, 0.005, n)),
                 "lon_error_deg": (["measurement"], np.linspace(-0.001, 0.001, n)),
+                "accepted": (["measurement"], np.ones(n, dtype=bool)),
+                "rejection_reason": (["measurement"], np.full(n, "")),
             },
             coords={"measurement": np.arange(n)},
         )
+
+    def test_rejected_measurement_has_status_and_reason(self):
+        stats = self._stats_with_errors([100.0, 1300.0])
+        stats["accepted"].values[1] = False
+        stats["rejection_reason"] = (["measurement"], np.array(["", "peak margin 0.0100 < 0.05"]))
+        errors = _build_per_gcp_errors(stats, [], self._req())
+        assert [e.status for e in errors] == ["pass", "rejected"]
+        assert errors[1].rejection_reason == "peak margin 0.0100 < 0.05"
+        assert errors[1].nadir_equiv_error_m == pytest.approx(1300.0)
+
+    def test_track_and_view_fields_extracted_when_present(self):
+        stats = self._stats_with_errors([100.0, 300.0])
+        stats["along_track_error_m"] = (["measurement"], np.array([90.0, -280.0]))
+        stats["cross_track_error_m"] = (["measurement"], np.array([-40.0, 100.0]))
+        stats["off_nadir_angle_deg"] = (["measurement"], np.array([1.5, 52.2]))
+        stats["correlation_secondary"] = (["measurement"], np.array([0.4, -np.inf]))
+        errors = _build_per_gcp_errors(stats, [], self._req())
+        assert (errors[0].along_track_error_m, errors[0].cross_track_error_m) == (90.0, -40.0)
+        assert errors[1].off_nadir_angle_deg == pytest.approx(52.2)
+        assert errors[0].correlation_secondary == pytest.approx(0.4)
+        assert errors[1].correlation_secondary is None
+
+    def test_track_fields_none_without_azimuth(self):
+        errors = _build_per_gcp_errors(self._stats_with_errors([100.0]), [], self._req())
+        assert errors[0].along_track_error_m is None
+        assert errors[0].cross_track_error_m is None
 
     def test_length_matches_measurements(self):
         stats = self._stats_with_errors([100.0, 300.0, 200.0])
@@ -463,16 +558,8 @@ class TestBuildPerGcpErrors:
         assert errors[1].gcp_key == "gcp_1"
 
     def test_correlation_extracted_when_present(self):
-        n = 2
-        stats = xr.Dataset(
-            {
-                "nadir_equiv_total_error_m": (["measurement"], [100.0, 200.0]),
-                "lat_error_deg": (["measurement"], [0.001, 0.002]),
-                "lon_error_deg": (["measurement"], [0.001, 0.002]),
-                "correlation": (["measurement"], [0.85, 0.92]),
-            },
-            coords={"measurement": np.arange(n)},
-        )
+        stats = self._stats_with_errors([100.0, 200.0])
+        stats["correlation"] = (["measurement"], [0.85, 0.92])
         errors = _build_per_gcp_errors(stats, [], self._req())
         assert errors[0].correlation == pytest.approx(0.85)
         assert errors[1].correlation == pytest.approx(0.92)
@@ -851,7 +938,7 @@ class TestViewingGeometryFailures:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+            (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
         np.testing.assert_allclose(mock_match.call_args.kwargs["r_iss_midframe_m"], r_sc)
         expected = (mid_row_gcp_column - r_sc) / np.linalg.norm(mid_row_gcp_column - r_sc)
@@ -878,7 +965,7 @@ class TestViewingGeometryFailures:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match),
         ):
-            (ds,) = _run_image_matching_for_pairs(
+            (ds,), _ = _run_image_matching_for_pairs(
                 [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
             )
 
@@ -1015,11 +1102,13 @@ class TestMatchingConfigAndCorrelation:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+            (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
         assert mock_match.call_args.kwargs["geolocation_config"] is setup.psf_sampling
         assert mock_match.call_args.kwargs["search_config"] is setup.search
         assert float(ds["correlation"].values[0]) == pytest.approx(0.83)
+        # The test grid's rows run north to south.
+        assert float(ds["track_azimuth_deg"].values[0]) == pytest.approx(180.0, abs=0.01)
 
     @pytest.mark.parametrize("corr_name", ["correlation", "ccv", "im_ccv"])
     def test_aggregation_keeps_correlation(self, corr_name):
@@ -1060,7 +1149,7 @@ class TestMatchingConfigAndCorrelation:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs(
+            (ds,), _ = _run_image_matching_for_pairs(
                 [(tmp_path / "obs_crop.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
             )
         np.testing.assert_array_equal(mock_match.call_args.kwargs["los_vectors_hs"], table[10:15])
@@ -1102,6 +1191,38 @@ class TestMatchingConfigAndCorrelation:
         without_corr = with_corr.drop_vars("correlation")
         with pytest.raises(ValueError, match="present in only some"):
             _aggregate_image_matching_results([with_corr, without_corr], _make_setup())
+
+    def test_aggregation_carries_track_azimuth_and_rejects_partial(self):
+        from curryer.correction.verification import _aggregate_image_matching_results
+
+        with_az = xr.Dataset(
+            {
+                "lat_error_deg": (["measurement"], [0.001]),
+                "lon_error_deg": (["measurement"], [0.002]),
+                "track_azimuth_deg": (["measurement"], [191.5]),
+            },
+            coords={"measurement": [0]},
+        )
+        aggregated = _aggregate_image_matching_results([with_az, with_az], _make_setup())
+        np.testing.assert_array_equal(aggregated["track_azimuth_deg"].values, [191.5, 191.5])
+        with pytest.raises(ValueError, match="'track_azimuth_deg' is present in only some"):
+            _aggregate_image_matching_results([with_az, with_az.drop_vars("track_azimuth_deg")], _make_setup())
+
+    def test_verify_with_every_measurement_rejected_reports_them(self, tmp_path):
+        setup = _make_setup(geo=_make_geo().model_copy(update={"minimum_correlation": 0.95}))
+        results = []
+        for i in range(2):
+            ds = _make_full_image_matching_dataset(n=1, seed=i)
+            ds["correlation"] = (["measurement"], [0.3])
+            results.append(ds)
+
+        result = verify(setup, image_matching_results=results, work_dir=tmp_path)
+
+        assert result.passed is False
+        assert result.percent_within_threshold == 0.0
+        assert [e.status for e in result.per_gcp_errors] == ["rejected", "rejected"]
+        assert "total_measurements" not in result.aggregate_stats.attrs
+        assert "0 accepted, 2 rejected" in result.summary_table
 
     def test_setup_configs_round_trip_through_json(self):
         import json
@@ -1164,8 +1285,8 @@ class TestMatchingConfigAndCorrelation:
         assert mock_match.call_args.kwargs["search_config"] is setup.search
         assert float(ds["correlation"].values[0]) == pytest.approx(0.77)
 
-    def test_verify_attributes_errors_to_surviving_gcps(self, tmp_path):
-        """When the threshold drops a measurement, per-GCP errors keep their own keys."""
+    def test_verify_keeps_rejected_gcps_with_their_keys(self, tmp_path):
+        """A rejected measurement stays in per-GCP errors, flagged, with its own keys."""
         setup = _make_setup(geo=_make_geo().model_copy(update={"minimum_correlation": 0.5}))
         results = []
         for i, ccv in enumerate((0.9, 0.1, 0.8)):
@@ -1176,5 +1297,216 @@ class TestMatchingConfigAndCorrelation:
 
         result = verify(setup, image_matching_results=results, work_dir=tmp_path)
 
-        kept = [(e.gcp_index, e.science_key, e.gcp_key, e.correlation) for e in result.per_gcp_errors]
-        assert kept == [(0, "sci_0", "gcp_0", pytest.approx(0.9)), (2, "sci_2", "gcp_2", pytest.approx(0.8))]
+        rows = [(e.gcp_index, e.science_key, e.gcp_key, e.correlation) for e in result.per_gcp_errors]
+        assert rows == [
+            (0, "sci_0", "gcp_0", pytest.approx(0.9)),
+            (1, "sci_1", "gcp_1", pytest.approx(0.1)),
+            (2, "sci_2", "gcp_2", pytest.approx(0.8)),
+        ]
+        rejected = result.per_gcp_errors[1]
+        assert rejected.status == "rejected"
+        assert rejected.passed is False
+        assert rejected.rejection_reason == "correlation 0.1000 < 0.5"
+        assert rejected.nadir_equiv_error_m is not None
+        assert all(e.status != "rejected" and e.rejection_reason is None for e in result.per_gcp_errors[::2])
+        assert result.aggregate_stats.attrs["total_measurements"] == 2
+        assert result.aggregate_stats.attrs["n_rejected"] == 1
+
+
+class TestChipImagesSaveAndReview:
+    """keep_images, save_verification / load_verification, and the review round trip."""
+
+    @staticmethod
+    def _result(tmp_path, correlations=(0.9, 0.1, 0.8)):
+        setup = _make_setup(geo=_make_geo().model_copy(update={"minimum_correlation": 0.5}))
+        results = []
+        for i, ccv in enumerate(correlations):
+            ds = _make_full_image_matching_dataset(n=1, seed=i)
+            ds["correlation"] = (["measurement"], [ccv])
+            ds.attrs.update({"sci_key": f"sci_{i}", "gcp_key": f"gcp_{i}"})
+            results.append(ds)
+        return verify(setup, image_matching_results=results, work_dir=tmp_path / "work")
+
+    @staticmethod
+    def _chips(n):
+        return [
+            xr.Dataset({"observed": (("row", "col"), np.full((2, 3), float(i)))}, attrs={"gcp_index": i})
+            for i in range(n)
+        ]
+
+    def test_file_pair_matching_keeps_images(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.image_io import load_image_grid
+
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        match = SimpleNamespace(
+            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4, convolved_gcp=load_image_grid(gcp)
+        )
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+        ):
+            _, kept = _run_image_matching_for_pairs(
+                [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup(), keep_images=True
+            )
+            _, not_kept = _run_image_matching_for_pairs(
+                [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
+            )
+
+        assert not_kept == []
+        (chip,) = kept
+        assert (chip.attrs["science_key"], chip.attrs["gcp_key"]) == ("obs.nc", "gcp_regridded.nc")
+        assert chip["observed"].shape == (5, 5)
+        assert chip.attrs["correlation"] == pytest.approx(0.83)
+
+    def test_keep_images_with_precomputed_results_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="keep_images requires"):
+            verify(
+                _make_setup(),
+                image_matching_results=[_make_full_image_matching_dataset(n=1)],
+                work_dir=tmp_path,
+                keep_images=True,
+            )
+
+    def test_chip_images_never_serialised(self, tmp_path):
+        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        assert "chip_images" not in json.loads(result.model_dump_json(exclude={"aggregate_stats"}))
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        from curryer.correction import load_verification, save_verification
+
+        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        save_verification(result, tmp_path / "saved")
+
+        assert sorted(p.name for p in (tmp_path / "saved").iterdir()) == [
+            "aggregate_stats.nc",
+            "chips",
+            "result.json",
+            "summary.csv",
+        ]
+        loaded = load_verification(tmp_path / "saved")
+        assert loaded.per_gcp_errors == result.per_gcp_errors
+        assert loaded.percent_within_threshold == result.percent_within_threshold
+        np.testing.assert_array_equal(loaded.aggregate_stats["accepted"], result.aggregate_stats["accepted"])
+        assert [int(c.attrs["gcp_index"]) for c in loaded.chip_images] == [0, 1, 2]
+        np.testing.assert_array_equal(loaded.chip_images[2]["observed"], 2.0)
+
+    def test_save_refuses_to_overwrite(self, tmp_path):
+        from curryer.correction import save_verification
+
+        result = self._result(tmp_path)
+        save_verification(result, tmp_path / "saved")
+        with pytest.raises(FileExistsError):
+            save_verification(result, tmp_path / "saved")
+
+    def test_summary_csv_review_column_round_trip(self, tmp_path):
+        import pandas as pd
+
+        from curryer.correction import read_review_decisions, save_verification
+
+        save_verification(self._result(tmp_path), tmp_path / "saved")
+        summary = pd.read_csv(tmp_path / "saved" / "summary.csv", keep_default_na=False)
+        assert list(summary["status"])[1] == "rejected"
+        assert summary["rejection_reason"][1] == "correlation 0.1000 < 0.5"
+        assert list(summary["review"]) == ["", "", ""]
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {}
+
+        summary["review"] = ["reject", "accept", ""]
+        summary.to_csv(tmp_path / "saved" / "summary.csv", index=False)
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {0: "reject", 1: "accept"}
+
+    @pytest.mark.parametrize(
+        ("column", "value", "match"), [("review", "maybe", "expected 'accept'"), (None, None, "column")]
+    )
+    def test_read_review_decisions_rejects_bad_input(self, tmp_path, column, value, match):
+        import pandas as pd
+
+        from curryer.correction import read_review_decisions
+
+        table = pd.DataFrame({"gcp_index": [0], "review": ["accept"]})
+        if column is None:
+            table = table.drop(columns="review")
+        else:
+            table[column] = value
+        table.to_csv(tmp_path / "summary.csv", index=False)
+        with pytest.raises(ValueError, match=match):
+            read_review_decisions(tmp_path / "summary.csv")
+
+    def test_apply_review_moves_gcps_in_and_out_of_the_statistics(self, tmp_path):
+        from curryer.correction import apply_review
+
+        result = self._result(tmp_path)
+        reviewed = apply_review(result, {1: "accept", 2: "reject"})
+
+        before = [e.status for e in result.per_gcp_errors]
+        after = {e.gcp_index: e for e in reviewed.per_gcp_errors}
+        assert before[1] == "rejected"
+        assert after[1].status in ("pass", "fail")
+        assert after[1].review == "accept"
+        assert after[2].status == "rejected"
+        assert after[2].rejection_reason == "rejected in review"
+        assert after[0].review is None
+        assert reviewed.aggregate_stats.attrs["total_measurements"] == 2
+        assert reviewed.aggregate_stats.attrs["n_rejected"] == 1
+        assert list(reviewed.aggregate_stats["review"].values) == ["", "accept", "reject"]
+        assert [e.status for e in result.per_gcp_errors] == before  # input untouched
+
+    def test_weighted_percent_reported_alongside(self, tmp_path):
+        from curryer.correction.error_stats import match_snr_weight
+
+        result = self._result(tmp_path)
+        weights = {e.gcp_index: e.quality_weight for e in result.per_gcp_errors}
+        assert weights[1] == 0.0
+        assert weights[0] == pytest.approx(match_snr_weight(np.array([0.9]))[0])
+        assert result.weighted_percent_within_threshold is not None
+        assert "weighted" in result.summary_table
+        assert "effective n" in result.summary_table
+
+    def test_apply_review_reweights(self, tmp_path):
+        from curryer.correction import apply_review
+        from curryer.correction.error_stats import match_snr_weight
+
+        reviewed = apply_review(self._result(tmp_path), {1: "accept", 2: "reject"})
+        weights = {e.gcp_index: e.quality_weight for e in reviewed.per_gcp_errors}
+        assert weights[1] == pytest.approx(match_snr_weight(np.array([0.1]))[0])
+        assert weights[2] == 0.0
+        assert reviewed.aggregate_stats.attrs["effective_measurements"] < 2.0
+
+    def test_apply_review_rejecting_everything_drops_statistics(self, tmp_path):
+        from curryer.correction import apply_review
+
+        reviewed = apply_review(self._result(tmp_path), {0: "reject", 2: "reject"})
+        assert reviewed.passed is False
+        assert reviewed.percent_within_threshold == 0.0
+        assert "total_measurements" not in reviewed.aggregate_stats.attrs
+        assert "0 accepted, 3 rejected" in reviewed.summary_table
+        assert reviewed.weighted_percent_within_threshold is None
+        assert "weighted_mean_error_m" not in reviewed.aggregate_stats.attrs
+
+    @pytest.mark.parametrize(("decisions", "match"), [({7: "accept"}, "not in the result"), ({0: "ok"}, "must be")])
+    def test_apply_review_bad_decisions_raise(self, tmp_path, decisions, match):
+        from curryer.correction import apply_review
+
+        with pytest.raises(ValueError, match=match):
+            apply_review(self._result(tmp_path), decisions)
+
+    def test_review_contradicting_status_raises(self):
+        with pytest.raises(ValueError, match="review='reject' contradicts"):
+            GCPError(
+                gcp_index=0,
+                science_key="s",
+                gcp_key="g",
+                lat_error_deg=0.0,
+                lon_error_deg=0.0,
+                passed=True,
+                status="pass",
+                review="reject",
+            )

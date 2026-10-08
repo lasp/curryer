@@ -41,6 +41,7 @@ import pytest
 import xarray as xr
 
 from curryer import utils
+from curryer.compute import constants
 from curryer.correction.error_stats import (
     ErrorStatsConfig,
     ErrorStatsProcessor,
@@ -925,7 +926,10 @@ class GeolocationErrorStatsTestCase(unittest.TestCase):
             "xvp_scaling_factor": np.array([1.05, 1.15, 1.25]),
         }
 
-        output_ds = self.processor._create_output_dataset(self.minimal_test_data, sample_results)
+        reasons = np.array(["", "correlation 0.300 < 0.5", ""], dtype=object)
+        output_ds = self.processor._create_output_dataset(self.minimal_test_data, sample_results, reasons)
+        np.testing.assert_array_equal(output_ds.accepted.values, [True, False, True])
+        self.assertEqual(output_ds.attrs["n_rejected"], 1)
 
         # Check that all expected variables are present
         expected_vars = [
@@ -1189,8 +1193,11 @@ class TestCorrelationFiltering(unittest.TestCase):
 
         results = processor.process_geolocation_errors(test_data)
 
-        # Should have 6 measurements with correlation >= 0.5
-        self.assertEqual(len(results.measurement), 6)
+        # 6 measurements have correlation >= 0.5; the other 4 stay in the output, rejected
+        self.assertEqual(len(results.measurement), 10)
+        self.assertEqual(int(results.accepted.sum()), 6)
+        self.assertEqual(results.attrs["total_measurements"], 6)
+        self.assertEqual(results.attrs["n_rejected"], 4)
         self.assertIn("correlation_filtering_applied", results.attrs)
         self.assertTrue(results.attrs["correlation_filtering_applied"])
         self.assertEqual(results.attrs["minimum_correlation_threshold"], 0.5)
@@ -1204,8 +1211,9 @@ class TestCorrelationFiltering(unittest.TestCase):
 
         results = processor.process_geolocation_errors(test_data)
 
-        # Should have 3 measurements with correlation >= 0.8
-        self.assertEqual(len(results.measurement), 3)
+        # 3 measurements have correlation >= 0.8
+        self.assertEqual(int(results.accepted.sum()), 3)
+        self.assertEqual(results.attrs["total_measurements"], 3)
         self.assertTrue(results.attrs["correlation_filtering_applied"])
 
     def test_filtering_with_alternative_variable_names(self):
@@ -1221,7 +1229,7 @@ class TestCorrelationFiltering(unittest.TestCase):
             results = processor.process_geolocation_errors(test_data)
 
             # Should still filter correctly
-            self.assertEqual(len(results.measurement), 6)
+            self.assertEqual(int(results.accepted.sum()), 6)
 
     def test_missing_correlation_variable_raises(self):
         """A threshold that cannot be applied raises instead of being skipped."""
@@ -1244,8 +1252,10 @@ class TestCorrelationFiltering(unittest.TestCase):
         processor = ErrorStatsProcessor(config=_create_test_config(minimum_peak_margin=0.05))
         results = processor.process_geolocation_errors(test_data)
 
-        self.assertEqual(len(results.measurement), 5)
+        self.assertEqual(int(results.accepted.sum()), 5)
         self.assertEqual(results.attrs["minimum_peak_margin_threshold"], 0.05)
+        rejected = results.rejection_reason.values[~results.accepted.values]
+        self.assertTrue(all(r.startswith("peak margin 0.0100 < 0.05") for r in rejected))
 
     def test_peak_margin_without_secondary_raises(self):
         test_data = self._create_test_data_with_correlation(n_measurements=10)
@@ -1259,7 +1269,9 @@ class TestCorrelationFiltering(unittest.TestCase):
         processor = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5, minimum_peak_margin=0.05))
         results = processor.process_geolocation_errors(test_data)
         # correlation >= 0.5 keeps indices 4..9; distinct ones among them are 5, 7, 9
-        self.assertEqual(len(results.measurement), 3)
+        np.testing.assert_array_equal(np.flatnonzero(results.accepted.values), [5, 7, 9])
+        self.assertEqual(results.rejection_reason.values[0], "correlation 0.2000 < 0.5; peak margin 0.0100 < 0.05")
+        self.assertEqual(results.rejection_reason.values[4], "peak margin 0.0100 < 0.05")
 
     def test_all_measurements_filtered_raises_error(self):
         """Test that filtering all measurements raises an error."""
@@ -1284,8 +1296,67 @@ class TestCorrelationFiltering(unittest.TestCase):
 
         # Correlation should be in output
         self.assertIn("correlation", results.data_vars)
-        # All remaining correlations should be >= 0.5
-        self.assertTrue((results.correlation >= 0.5).all())
+        # All accepted correlations are >= 0.5, all rejected ones below it
+        self.assertTrue((results.correlation[results.accepted] >= 0.5).all())
+        self.assertTrue((results.correlation[~results.accepted] < 0.5).all())
+
+
+class TestTrackFrameErrors:
+    """Along/cross-track decomposition from ``track_azimuth_deg``."""
+
+    @staticmethod
+    def _north_east_m(data: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
+        radius_m = constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0
+        north = radius_m * np.deg2rad(data.lat_error_deg.values)
+        east = radius_m * np.cos(np.deg2rad(data.gcp_lat_deg.values)) * np.deg2rad(data.lon_error_deg.values)
+        return north, east
+
+    @pytest.mark.parametrize(
+        ("azimuth_deg", "along_from", "cross_from"),
+        [(0.0, ("n", 1), ("e", 1)), (90.0, ("e", 1), ("n", -1)), (180.0, ("n", -1), ("e", -1))],
+    )
+    def test_rotation_at_cardinal_azimuths(self, azimuth_deg, along_from, cross_from):
+        data = _sample_from_validated_test_cases(4, seed=3)
+        data["track_azimuth_deg"] = (["measurement"], np.full(4, azimuth_deg))
+        out = ErrorStatsProcessor(config=_create_test_config()).compute_nadir_equivalent_errors(data)
+        north, east = self._north_east_m(data)
+        component = {"n": north, "e": east}
+        npt.assert_allclose(out.along_track_error_m.values, along_from[1] * component[along_from[0]], atol=1e-6)
+        npt.assert_allclose(out.cross_track_error_m.values, cross_from[1] * component[cross_from[0]], atol=1e-6)
+
+    def test_rotation_preserves_magnitude(self):
+        data = _sample_from_validated_test_cases(6, seed=5)
+        data["track_azimuth_deg"] = (["measurement"], np.linspace(5.0, 355.0, 6))
+        out = ErrorStatsProcessor(config=_create_test_config()).compute_nadir_equivalent_errors(data)
+        north, east = self._north_east_m(data)
+        npt.assert_allclose(np.hypot(out.along_track_error_m, out.cross_track_error_m), np.hypot(north, east))
+
+    def test_absent_without_azimuth(self):
+        out = ErrorStatsProcessor(config=_create_test_config()).compute_nadir_equivalent_errors(
+            _sample_from_validated_test_cases(2, seed=1)
+        )
+        assert "along_track_error_m" not in out.data_vars
+        assert "cross_track_error_m" not in out.data_vars
+
+    def test_output_writes_to_netcdf(self, tmp_path):
+        data = _sample_from_validated_test_cases(3, seed=2)
+        data["correlation"] = (["measurement"], [0.9, 0.2, 0.95])
+        out = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5)).process_geolocation_errors(data)
+        out.to_netcdf(tmp_path / "stats.nc")
+        reloaded = xr.load_dataset(tmp_path / "stats.nc")
+        np.testing.assert_array_equal(reloaded["accepted"], [True, False, True])
+        assert list(reloaded["rejection_reason"].values) == ["", "correlation 0.2000 < 0.5", ""]
+
+    def test_rejected_measurements_keep_errors_but_not_statistics(self):
+        data = _sample_from_validated_test_cases(4, seed=2)
+        data["correlation"] = (["measurement"], [0.9, 0.2, 0.95, 0.1])
+        processor = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5))
+        out = processor.process_geolocation_errors(data)
+        errors = out.nadir_equiv_total_error_m.values
+        assert np.all(np.isfinite(errors))
+        assert out.attrs["n_matched"] == 4
+        assert out.attrs["n_accepted"] == 2
+        assert out.attrs["max_error_m"] == pytest.approx(errors[[0, 2]].max())
 
 
 class TestNetCDFReprocessing(unittest.TestCase):
@@ -1334,8 +1405,8 @@ class TestNetCDFReprocessing(unittest.TestCase):
         results_80 = self.processor.process_from_netcdf(netcdf_path, minimum_correlation=0.8)
 
         # Different thresholds should yield different numbers of measurements
-        self.assertEqual(len(results_50.measurement), 6)
-        self.assertEqual(len(results_80.measurement), 3)
+        self.assertEqual(results_50.attrs["total_measurements"], 6)
+        self.assertEqual(results_80.attrs["total_measurements"], 3)
 
         # Check metadata
         self.assertEqual(results_50.attrs["correlation_threshold_override"], 0.5)
@@ -1516,3 +1587,79 @@ if __name__ == "__main__":
     else:
         # Arguments provided - run unittest
         unittest.main()
+
+
+class TestQualityWeights:
+    """match_snr_weight, weighted_statistics, and the quality_weight variable."""
+
+    def test_snr_weight_values_and_cap(self):
+        from curryer.correction.error_stats import match_snr_weight
+
+        npt.assert_allclose(
+            match_snr_weight(np.array([0.8, 0.95, 0.99])), [0.64 / 0.36, 0.9025 / 0.0975, 0.9801 / 0.0199]
+        )
+        assert match_snr_weight(np.array([0.999]))[0] == pytest.approx(0.9801 / 0.0199)
+        npt.assert_array_equal(match_snr_weight(np.array([-0.3, 0.0])), [0.0, 0.0])
+
+    @pytest.mark.parametrize(
+        ("correlation", "cap", "match"), [([np.nan], 0.99, "finite"), ([0.5], 1.0, "max_correlation")]
+    )
+    def test_snr_weight_bad_input_raises(self, correlation, cap, match):
+        from curryer.correction.error_stats import match_snr_weight
+
+        with pytest.raises(ValueError, match=match):
+            match_snr_weight(np.array(correlation), max_correlation=cap)
+
+    def test_weighted_statistics_equal_weights_match_unweighted(self):
+        from curryer.correction.error_stats import weighted_statistics
+
+        errors = np.array([100.0, 200.0, 300.0, 1200.0])
+        stats = weighted_statistics(errors, np.full(4, 2.5))
+        assert stats["weighted_mean_error_m"] == pytest.approx(errors.mean())
+        assert stats["weighted_rms_error_m"] == pytest.approx(np.sqrt(np.mean(errors**2)))
+        assert stats["weighted_percent_below_250m"] == pytest.approx(50.0)
+        assert stats["effective_measurements"] == pytest.approx(4.0)
+
+    def test_weighted_statistics_favour_heavy_measurements(self):
+        from curryer.correction.error_stats import weighted_statistics
+
+        stats = weighted_statistics(np.array([100.0, 1000.0]), np.array([9.0, 1.0]))
+        assert stats["weighted_percent_below_250m"] == pytest.approx(90.0)
+        assert stats["effective_measurements"] == pytest.approx(100.0 / 82.0)
+
+    @pytest.mark.parametrize(
+        ("weights", "match"), [([1.0], "same shape"), ([1.0, -1.0], "non-negative"), ([0.0, 0.0], "sum to 0")]
+    )
+    def test_weighted_statistics_bad_weights_raise(self, weights, match):
+        from curryer.correction.error_stats import weighted_statistics
+
+        with pytest.raises(ValueError, match=match):
+            weighted_statistics(np.array([100.0, 200.0]), np.array(weights))
+
+    def test_quality_weight_zero_for_rejected_and_statistics_weighted(self):
+        from curryer.correction.error_stats import match_snr_weight
+
+        data = _sample_from_validated_test_cases(4, seed=2)
+        data["correlation"] = (["measurement"], [0.9, 0.2, 0.95, 0.1])
+        out = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5)).process_geolocation_errors(data)
+        npt.assert_allclose(
+            out.quality_weight.values,
+            [*match_snr_weight(np.array([0.9])), 0.0, *match_snr_weight(np.array([0.95])), 0.0],
+        )
+        assert out.attrs["effective_measurements"] < 2.0
+        assert "weighted_percent_below_250m" in out.attrs
+
+    def test_no_quality_weight_without_correlation(self):
+        out = ErrorStatsProcessor(config=_create_test_config()).process_geolocation_errors(
+            _sample_from_validated_test_cases(3, seed=1)
+        )
+        assert "quality_weight" not in out.data_vars
+        assert "weighted_mean_error_m" not in out.attrs
+
+    def test_weighted_statistics_omitted_when_weights_sum_to_zero(self):
+        data = _sample_from_validated_test_cases(2, seed=1)
+        data["correlation"] = (["measurement"], [-0.2, 0.0])
+        out = ErrorStatsProcessor(config=_create_test_config()).process_geolocation_errors(data)
+        npt.assert_array_equal(out.quality_weight.values, [0.0, 0.0])
+        assert "weighted_mean_error_m" not in out.attrs
+        assert out.attrs["total_measurements"] == 2

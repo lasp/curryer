@@ -1,4 +1,4 @@
-"""Tests for ``curryer.correction.psf.resolve_spacecraft_ecef`` (viewing geometry)."""
+"""Tests for the viewing and ground-track geometry in ``curryer.correction.psf``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import xarray as xr
 from curryer.compute.spatial import geodetic_to_ecef
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 from curryer.correction.grid_types import ImageGrid
-from curryer.correction.psf import resolve_spacecraft_ecef
+from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
 
 CENTER_LON, CENTER_LAT = -102.33, 26.15
 ALTITUDE_M = 410_000.0
@@ -155,3 +155,50 @@ def test_non_finite_mid_frame_pixel_raises():
     r = _spacecraft_at_view_zenith(30.0, 500_000.0)
     with pytest.raises(ValueError, match=r"Mid-frame pixel \(1, 2\)"):
         resolve_spacecraft_ecef(_grid(h=h), r, CENTER_LAT + 0.01, CENTER_LON + 0.01)
+
+
+def _track_grid(azimuth_deg: float, rows: int = 7, cols: int = 5, step_deg: float = 0.004) -> ImageGrid:
+    """Grid whose rows advance along *azimuth_deg* and columns 90 degrees clockwise from it."""
+    az = np.deg2rad(azimuth_deg)
+    r = np.arange(rows)[:, None] - rows // 2
+    c = np.arange(cols)[None, :] - cols // 2
+    lat = CENTER_LAT + step_deg * (r * np.cos(az) - c * np.sin(az))
+    lon = CENTER_LON + step_deg * (r * np.sin(az) + c * np.cos(az)) / np.cos(np.deg2rad(CENTER_LAT))
+    return ImageGrid(data=np.ones((rows, cols)), lat=lat, lon=lon)
+
+
+@pytest.mark.parametrize("azimuth_deg", [12.0, 168.0, 191.0, 348.0])
+def test_ground_track_azimuth_ascending_and_descending(azimuth_deg):
+    grid = _track_grid(azimuth_deg)
+    assert ground_track_azimuth_deg(grid, CENTER_LAT, CENTER_LON) == pytest.approx(azimuth_deg, abs=0.2)
+
+
+@pytest.mark.parametrize("row", [0, -1])
+def test_ground_track_azimuth_at_first_and_last_row(row):
+    grid = _track_grid(191.0)
+    lat, lon = float(grid.lat[row, 2]), float(grid.lon[row, 2])
+    assert ground_track_azimuth_deg(grid, lat, lon) == pytest.approx(191.0, abs=0.2)
+
+
+def test_ground_track_azimuth_target_outside_grid_raises():
+    with pytest.raises(ValueError, match="outside the observation grid"):
+        ground_track_azimuth_deg(_track_grid(191.0), CENTER_LAT + 1.0, CENTER_LON)
+
+
+def test_ground_track_azimuth_single_row_raises():
+    grid = _track_grid(191.0, rows=1)
+    with pytest.raises(ValueError, match="at least two"):
+        ground_track_azimuth_deg(grid, CENTER_LAT, CENTER_LON)
+
+
+def test_ground_track_azimuth_non_finite_neighbour_raises():
+    grid = _track_grid(191.0)
+    grid.lat[4, 2] = np.nan
+    with pytest.raises(ValueError, match="finite lat/lon"):
+        ground_track_azimuth_deg(grid, CENTER_LAT, CENTER_LON)
+
+
+@pytest.mark.parametrize(("target", "match"), [((np.nan, CENTER_LON), "must be finite")])
+def test_ground_track_azimuth_non_finite_target_raises(target, match):
+    with pytest.raises(ValueError, match=match):
+        ground_track_azimuth_deg(_track_grid(191.0), *target)

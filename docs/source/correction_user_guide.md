@@ -368,15 +368,15 @@ The parameter-variation experiment, varied between runs. Use
 
 ### Kernels & instrument — `setup.geo`
 
-| Field                 | Type            | Notes                                                                                                                                                                                                             |
-| --------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                         |
-| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                 |
-| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                            |
-| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                 |
-| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                           |
-| `minimum_correlation` | `float \| None` | Image-matching quality filter (0.0–1.0); `None` disables. When set, results must carry `correlation` or verification raises                                                                                       |
-| `minimum_peak_margin` | `float \| None` | Match-distinctness filter: drops measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises |
+| Field                 | Type            | Notes                                                                                                                                                                                                              |
+| --------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                          |
+| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                  |
+| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                             |
+| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                  |
+| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                            |
+| `minimum_correlation` | `float \| None` | Match-quality gate (0.0–1.0): measurements with a lower `correlation` are rejected (kept, flagged, left out of the statistics); `None` disables. When set, results must carry `correlation` or verification raises |
+| `minimum_peak_margin` | `float \| None` | Match-distinctness gate: rejects measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises  |
 
 ### Parameters — `sweep.parameters[]`
 
@@ -506,17 +506,109 @@ default.
 ```python
 result = verify(setup, image_matching_results=datasets)
 
-print(result.summary_table)         # ASCII table: per-GCP pass/fail
+print(result.summary_table)         # ASCII table: per-GCP status
 print("Passed:", result.passed)
 print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 
 for err in result.per_gcp_errors:
-    print(f"GCP {err.gcp_index}: nadir_error={err.nadir_equiv_error_m:.1f} m  passed={err.passed}")
+    print(
+        f"GCP {err.gcp_index}: {err.status:8s} nadir_error={err.nadir_equiv_error_m:.1f} m  "
+        f"along={err.along_track_error_m} m  cross={err.cross_track_error_m} m  {err.rejection_reason or ''}"
+    )
 
 # Serialise to JSON (xr.Dataset field must be excluded)
 json_str = result.model_dump_json(exclude={"aggregate_stats"})
 result.aggregate_stats.to_netcdf("verification_stats.nc")
 ```
+
+Every matched GCP appears in `per_gcp_errors` with a `status`:
+
+| Status     | Meaning                                                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pass`     | Accepted match, nadir-equivalent error below `performance_threshold_m`                                                                                      |
+| `fail`     | Accepted match, error at or above the threshold                                                                                                             |
+| `rejected` | The match failed `minimum_correlation` or `minimum_peak_margin` (e.g. cloud or a featureless scene); `rejection_reason` names the gate, value and threshold |
+
+Rejected GCPs keep their computed errors so they can be reviewed, but only accepted GCPs
+enter `percent_within_threshold` and the statistics in `aggregate_stats.attrs`
+(`total_measurements` counts accepted GCPs; `n_matched`, `n_accepted` and `n_rejected`
+give the split). When every GCP is rejected, `verify()` still returns the result, with
+`passed` False and no statistics.
+
+`along_track_error_m` / `cross_track_error_m` resolve the error along the ground-track
+direction (the direction of increasing observation row, i.e. frame time, at the GCP) and
+90° clockwise from it. A timing error shows up along track; a roll error across track.
+They are `None` when the matching path did not record `track_azimuth_deg`.
+
+### Quality weighting
+
+Each accepted GCP gets a `quality_weight`, the match signal-to-noise ratio
+`ρ² / (1 − ρ²)` of its correlation `ρ` (`error_stats.match_snr_weight`). If the observed
+image is the emulated scene plus independent noise, `ρ²` is the scene's share of the
+variance, and the variance of a correlation-registration error scales as noise over
+signal, so this is an inverse-variance weight. `ρ` is capped at 0.99 (weight 49) so one
+near-perfect match cannot dominate; rejected GCPs weigh 0.
+
+| ρ      | 0.80 | 0.90 | 0.95 | 0.99 |
+| ------ | ---- | ---- | ---- | ---- |
+| weight | 1.8  | 4.3  | 9.3  | 49   |
+
+`result.weighted_percent_within_threshold` and the `weighted_*` attributes of
+`aggregate_stats` (mean, RMS, percent below 100–1000 m) are reported **next to** the
+unweighted values; `passed` always uses the unweighted percentage, as the requirement is
+written. `effective_measurements = (Σw)² / Σw²` is the number of equally good GCPs the
+weighted set is worth: when it is much smaller than the accepted count, a few GCPs carry
+the weighted statistics.
+
+### Reviewing every GCP
+
+For review, ask `verify()` to keep the images behind each match (file-pair modes only:
+`gcp_pairs` or `observation_paths`), then save the result:
+
+```python
+from curryer.correction import apply_review, load_verification, read_review_decisions, save_verification
+
+result = verify(setup, gcp_pairs=pairs, los_file=los, psf_file=psf, keep_images=True)
+save_verification(result, Path("verification/2026-08-05"))
+```
+
+| File                 | Contents                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `result.json`        | The `VerificationResult` (per-GCP errors, statuses, requirements, provenance)                                                                                   |
+| `summary.csv`        | One row per GCP: status, rejection reason, nadir-equivalent / along / cross-track errors, correlation, view angle, quality weight, and an empty `review` column |
+| `aggregate_stats.nc` | Per-GCP error-stats dataset with the statistics as attributes                                                                                                   |
+| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (PSF-convolved GCP at the matched position), `reference`, `reference_convolved`, and their latitude/longitude grids             |
+
+CSV and NetCDF read directly in MATLAB (`readtable`, `ncread`; `ncread` returns 2-D
+arrays transposed) and Python. Plotting is left to the mission: everything a review
+figure needs is in these files. Figures that have worked well for review:
+
+- **Chip panel**, one per GCP: `observed`, the PSF-convolved GCP sampled at the
+  observation's own `latitude`/`longitude` (`search.emulate_image` on
+  `reference_convolved`), and `emulated`; side by side they show the misregistration
+  and, for a rejected GCP, why (cloud, featureless scene). Title it with the status and
+  `rejection_reason`.
+- **Map**, one per observation: a box around each GCP chip (`reference_latitude` /
+  `reference_longitude` extents) coloured by status, over the observation.
+- **Error scatter**: `along_track_error_m` against `cross_track_error_m` for every GCP,
+  rejected ones hollow, with a circle at `performance_threshold_m`.
+
+A reviewer fills the `review` column of `summary.csv` with `accept` or `reject`. Applying
+it recomputes the statistics without re-running image matching:
+
+```python
+saved = load_verification(Path("verification/2026-08-05"))
+reviewed = apply_review(saved, read_review_decisions(Path("verification/2026-08-05/summary.csv")))
+print(reviewed.summary_table)
+save_verification(reviewed, Path("verification/2026-08-05-reviewed"))
+```
+
+`accept` brings a GCP into the statistics (status `pass` or `fail` by its error); `reject`
+takes it out (status `rejected`, reason `rejected in review`). Each `GCPError.review`
+records the decision, and quality weights are recomputed, so a low-correlation GCP
+accepted in review counts fully in the unweighted statistics but little in the weighted
+ones. `examples/correction/example_verification.py` runs the whole cycle: verify, save,
+mark a decision in `summary.csv`, apply it.
 
 ### Comparing Before and After
 

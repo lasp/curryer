@@ -12,7 +12,7 @@ from scipy.ndimage import map_coordinates
 from scipy.signal import convolve2d, fftconvolve
 
 from ..compute import constants
-from ..compute.spatial import ecef_to_geodetic, geodetic_to_ecef
+from ..compute.spatial import calc_azimuth, ecef_to_geodetic, geodetic_to_ecef
 from .config import PSFSamplingConfig
 from .grid_types import (
     ImageGrid,
@@ -627,3 +627,49 @@ def resolve_spacecraft_ecef(
     line_of_sight = p_view - r
     boresight = line_of_sight / np.linalg.norm(line_of_sight)
     return r, boresight, np.eye(3)
+
+
+def ground_track_azimuth_deg(grid: ImageGrid, target_lat_deg: float, target_lon_deg: float) -> float:
+    """Return the ground azimuth of increasing row at the grid pixel nearest a target.
+
+    With rows = frames, this is the direction in which successive frames
+    advance over the ground at the target: the along-track direction used to
+    resolve a geolocation error into along-track and cross-track components.
+    It is the azimuth, at the previous row, of the ellipsoid point of the next
+    row in the target's column (one-sided at the first and last rows).
+
+    Parameters
+    ----------
+    grid : ImageGrid
+        Observation grid with rows = frames (along track) and columns =
+        cross-track pixels; ``grid.lat``/``grid.lon`` in degrees.
+    target_lat_deg, target_lon_deg : float
+        Geodetic latitude and longitude of the target, degrees.  Must lie
+        within *grid*.
+
+    Returns
+    -------
+    float
+        Azimuth in degrees clockwise from north, in ``[0, 360)``.
+
+    Raises
+    ------
+    ValueError
+        If the target lat/lon is not finite or lies outside *grid*; if *grid*
+        has fewer than two rows; or if the two pixels used are not finite or
+        coincide.
+    """
+    if not (np.isfinite(target_lat_deg) and np.isfinite(target_lon_deg)):
+        raise ValueError(f"Target lat/lon must be finite, got ({target_lat_deg}, {target_lon_deg}).")
+    n_rows = grid.lat.shape[0]
+    if n_rows < 2:
+        raise ValueError(f"Observation grid has {n_rows} row; the ground-track direction needs at least two.")
+    row, col = _nearest_grid_pixel(grid, target_lat_deg, target_lon_deg)
+    rows = (max(row - 1, 0), min(row + 1, n_rows - 1))
+    lon_lat = np.array([[grid.lon[r, col], grid.lat[r, col], 0.0] for r in rows], dtype=float)
+    if not np.all(np.isfinite(lon_lat)):
+        raise ValueError(f"Pixels in rows {rows}, column {col} must have finite lat/lon, got {lon_lat[:, 1::-1]}.")
+    p_from, p_to = geodetic_to_ecef(lon_lat, meters=False, degrees=True)
+    if np.array_equal(p_from, p_to):
+        raise ValueError(f"Pixels in rows {rows}, column {col} coincide; the ground-track direction is undefined.")
+    return float(calc_azimuth(p_from, p_to, degrees=True)[0])
