@@ -457,6 +457,12 @@ class TestFormatSummaryTable:
         assert "REJECTED" in table
         assert "2 accepted, 1 rejected" in table
 
+    def test_rows_aligned_when_footer_is_widest(self):
+        errors = [e.model_copy(update={"quality_weight": 4.0}) for e in self._errors()]
+        table = _format_summary_table(errors, self._req(), 50.0, False, weighted_percent=50.0)
+        assert "effective n = 2.0" in table
+        assert len({len(line) for line in table.splitlines()}) == 1
+
     def test_empty_errors_list(self):
         """Should not raise with zero measurements."""
         table = _format_summary_table([], self._req(), 0.0, False)

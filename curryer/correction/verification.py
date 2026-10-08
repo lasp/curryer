@@ -585,8 +585,9 @@ def _format_summary_table(
         effective = sum(weights) ** 2 / sum(w**2 for w in weights)
         counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective:.1f})"
 
-    # inner_width must accommodate columns, title, AND footer
+    # inner_width must accommodate columns, title, AND footer; the Status column takes any extra width
     inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
+    w_status += inner_width - col_inner
 
     def _h_sep(left, mid, right, fill="─"):
         """Build a column-width separator, then pad to inner_width."""

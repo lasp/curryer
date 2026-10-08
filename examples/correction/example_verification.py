@@ -4,6 +4,7 @@ example_verification.py — End-to-end verification using the public API.
 
 Demonstrates the recommended workflow:
   load image-matching results → call verify() → inspect VerificationResult
+  → save it → review GCPs → recompute the statistics with the review applied
 
 **Primary path:** uses CLARREO test image-match data from
 ``tests/data/clarreo/image_match/`` to run real image matching and produce
@@ -27,9 +28,11 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from curryer.correction import (
@@ -37,7 +40,10 @@ from curryer.correction import (
     GeolocationSetup,
     RequirementsConfig,
     VerificationResult,
+    apply_review,
     compare_results,
+    read_review_decisions,
+    save_verification,
     verify,
 )
 
@@ -137,9 +143,8 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
     )
 
     # Convert km-errors to degrees
-    meas_lat_error_deg = result.lat_error_km / 111.0
-    lon_radius_km = 6378.0 * np.cos(np.deg2rad(gcp_center_lat))
-    meas_lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+    meas_lat_error_deg = np.rad2deg(result.lat_error_km / earth_radius_km)
+    meas_lon_error_deg = np.rad2deg(result.lon_error_km / (earth_radius_km * np.cos(np.deg2rad(gcp_center_lat))))
 
     # Fixed (nominal) spacecraft state from the ancil file
     boresight = np.array([0.0, 0.0625969755450201, 0.99803888634292])
@@ -155,6 +160,8 @@ def _load_clarreo_matching_result() -> xr.Dataset | None:
         {
             "lat_error_deg": (["measurement"], [meas_lat_error_deg]),
             "lon_error_deg": (["measurement"], [meas_lon_error_deg]),
+            # Match quality: the quality gates and weights use it
+            "correlation": (["measurement"], [result.ccv_final]),
             # Spacecraft-state variables (required by ErrorStatsProcessor)
             "riss_ctrs": (["measurement", "xyz"], [r_iss_midframe]),
             "bhat_hs": (["measurement", "xyz"], [boresight]),
@@ -211,34 +218,43 @@ def _make_synthetic_matching_result(n: int = 50, seed: int = 42) -> xr.Dataset:
         Synthetic dataset with ``lat_error_deg``, ``lon_error_deg``, and the
         spacecraft-state variables expected by ``ErrorStatsProcessor``.
     """
+    from curryer.compute.spatial import geodetic_to_ecef
+
     rng = np.random.RandomState(seed)
 
-    # Spacecraft in ~400 km LEO, expressed in metres (CTRS)
-    altitude_m = 4.0e5
-    orbit_radius_m = 6.371e6 + altitude_m
-    positions = rng.normal(0, 1, (n, 3))
-    positions = positions / np.linalg.norm(positions, axis=1, keepdims=True) * orbit_radius_m
+    # GCPs anywhere between 60S and 60N, each viewed from ~400 km directly above
+    gcp_lat = rng.uniform(-60, 60, n)
+    gcp_lon = rng.uniform(-180, 180, n)
+    gcp_alt = rng.uniform(0, 2000, n)
+    positions = geodetic_to_ecef(np.column_stack([gcp_lon, gcp_lat, np.full(n, 4.0e5)]), meters=True, degrees=True)
 
-    # Nadir-pointing boresights (mostly [0, 0, 1] + small off-nadir component)
-    boresights = rng.normal([0, 0, 1], [0.01, 0.01, 0.001], (n, 3))
+    # Instrument frame: +z towards the Earth centre; columns are the instrument
+    # axes in CTRS, so t_hs2ctrs @ [0, 0, 1] points at nadir
+    z_axis = -positions / np.linalg.norm(positions, axis=1, keepdims=True)
+    x_axis = np.cross([0.0, 0.0, 1.0], z_axis)
+    x_axis /= np.linalg.norm(x_axis, axis=1, keepdims=True)
+    y_axis = np.cross(z_axis, x_axis)
+    t_matrices = np.stack([x_axis, y_axis, z_axis], axis=2)
+
+    # Boresights within ~1 degree of the instrument +z axis
+    boresights = rng.normal([0, 0, 1], [0.01, 0.01, 0.0], (n, 3))
     boresights = boresights / np.linalg.norm(boresights, axis=1, keepdims=True)
-
-    # Random-ish rotation matrices (not necessarily orthogonal — synthetic only)
-    t_matrices = rng.normal(0, 0.5, (n, 3, 3))
 
     return xr.Dataset(
         {
             # Geolocation errors ~0.002° ≈ 222 m — straddles the 250 m threshold
             "lat_error_deg": (["measurement"], rng.normal(0.0, 0.002, n)),
             "lon_error_deg": (["measurement"], rng.normal(0.0, 0.002, n)),
+            # Match quality: below setup.geo.minimum_correlation a GCP is rejected
+            "correlation": (["measurement"], rng.uniform(0.5, 0.99, n)),
             # Spacecraft state — variable names must match the setup's name fields
             "riss_ctrs": (["measurement", "xyz"], positions),
             "bhat_hs": (["measurement", "xyz"], boresights),
             "t_hs2ctrs": (["measurement", "r", "c"], t_matrices),
-            # GCP reference location (optional — informational)
-            "gcp_lat_deg": (["measurement"], rng.uniform(-60, 60, n)),
-            "gcp_lon_deg": (["measurement"], rng.uniform(-180, 180, n)),
-            "gcp_alt": (["measurement"], rng.uniform(0, 2000, n)),
+            # GCP reference location
+            "gcp_lat_deg": (["measurement"], gcp_lat),
+            "gcp_lon_deg": (["measurement"], gcp_lon),
+            "gcp_alt": (["measurement"], gcp_alt),
         },
         coords={"measurement": np.arange(n)},
         attrs={"sci_key": "synthetic_001", "gcp_key": "synthetic_gcp_001"},
@@ -272,6 +288,8 @@ def _make_setup() -> GeolocationSetup:
             generic_kernel_dir=Path("data/generic"),
             instrument_name="CPRS_HYSICS",
             time_field="corrected_timestamp",
+            # Quality gate: matches below this correlation are kept but rejected
+            minimum_correlation=0.8,
         ),
         # CLARREO mission requirements
         requirements=RequirementsConfig(
@@ -309,7 +327,7 @@ def main() -> int:
     # In production, replace this block with your pipeline's output from
     # run_image_matching() or a pre-computed NetCDF file.
 
-    print("\n[1/3] Loading image-matching results…")
+    print("\n[1/4] Loading image-matching results…")
     clarreo_ds = _load_clarreo_matching_result()
 
     if clarreo_ds is not None:
@@ -326,7 +344,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Step 2: Build config
     # ------------------------------------------------------------------
-    print("\n[2/3] Building configuration…")
+    print("\n[2/4] Building configuration…")
     setup = _make_setup()
 
     # Static instrument calibration and a custom image matcher are now attached
@@ -347,7 +365,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Step 3: Run verification (the public API call)
     # ------------------------------------------------------------------
-    print("\n[3/3] Running verify()…")
+    print("\n[3/4] Running verify()…")
     result: VerificationResult = verify(setup, image_matching_results=image_matching_results)
 
     # ------------------------------------------------------------------
@@ -362,16 +380,39 @@ def main() -> int:
     )
     print(f"Elapsed        : {result.elapsed_time_s:.2f} s" if result.elapsed_time_s else "")
 
-    # Per-measurement detail (first 5)
+    if result.weighted_percent_within_threshold is not None:
+        print(f"Quality-weighted : {result.weighted_percent_within_threshold:.1f}% (reported, not used for pass/fail)")
+
+    # Per-measurement detail (first 5): rejected GCPs stay in the result with a reason
     if result.per_gcp_errors:
         print("\nPer-measurement detail (first 5):")
         for err in result.per_gcp_errors[:5]:
-            status = "✓" if err.passed else "✗"
             nadir = f"{err.nadir_equiv_error_m:.1f} m" if err.nadir_equiv_error_m is not None else "N/A"
             print(
                 f"  #{err.gcp_index:>3}  lat={err.lat_error_deg:+.5f}°  "
-                f"lon={err.lon_error_deg:+.5f}°  nadir={nadir}  {status}"
+                f"lon={err.lon_error_deg:+.5f}°  nadir={nadir}  {err.status.upper()}  {err.rejection_reason or ''}"
             )
+
+    # ------------------------------------------------------------------
+    # Step 4: Save, review, recompute
+    # ------------------------------------------------------------------
+    # save_verification writes summary.csv with an empty "review" column.  A
+    # reviewer fills it with accept / reject (in a spreadsheet, MATLAB, or
+    # code, as here); apply_review recomputes the statistics without
+    # re-matching.
+    print("\n[4/4] Saving and applying a review…")
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = Path(tmp) / "verification"
+        save_verification(result, saved)
+        summary = saved / "summary.csv"
+        table = pd.read_csv(summary, dtype={"review": str}, keep_default_na=False)
+        decision = "accept" if table.loc[0, "status"] == "rejected" else "reject"
+        table.loc[0, "review"] = decision
+        table.to_csv(summary, index=False)
+        print(f"  Reviewer marks GCP {table.loc[0, 'gcp_index']} ({table.loc[0, 'status']}) as {decision!r}")
+
+        reviewed = apply_review(result, read_review_decisions(summary))
+    print("\n" + reviewed.summary_table)
 
     # Demonstrate compare_results() with a "before" baseline
     # (here we reuse the same result as the baseline for illustration)

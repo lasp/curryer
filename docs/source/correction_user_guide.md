@@ -572,15 +572,26 @@ result = verify(setup, gcp_pairs=pairs, los_file=los, psf_file=psf, keep_images=
 save_verification(result, Path("verification/2026-08-05"))
 ```
 
-| File                 | Contents                                                                                                                                            |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `result.json`        | The `VerificationResult` (per-GCP errors, statuses, requirements, provenance)                                                                       |
-| `summary.csv`        | One row per GCP: status, rejection reason, nadir-equivalent / along / cross-track errors, correlation, view angle, and an empty `review` column     |
-| `aggregate_stats.nc` | Per-GCP error-stats dataset with the statistics as attributes                                                                                       |
-| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (PSF-convolved GCP at the matched position), `reference`, `reference_convolved`, and their latitude/longitude grids |
+| File                 | Contents                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `result.json`        | The `VerificationResult` (per-GCP errors, statuses, requirements, provenance)                                                                                   |
+| `summary.csv`        | One row per GCP: status, rejection reason, nadir-equivalent / along / cross-track errors, correlation, view angle, quality weight, and an empty `review` column |
+| `aggregate_stats.nc` | Per-GCP error-stats dataset with the statistics as attributes                                                                                                   |
+| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (PSF-convolved GCP at the matched position), `reference`, `reference_convolved`, and their latitude/longitude grids             |
 
-CSV and NetCDF read directly in MATLAB (`readtable`, `ncread`) and Python. Plotting is
-left to the mission: everything a figure needs is in these files.
+CSV and NetCDF read directly in MATLAB (`readtable`, `ncread`; `ncread` returns 2-D
+arrays transposed) and Python. Plotting is left to the mission: everything a review
+figure needs is in these files. Figures that have worked well for review:
+
+- **Chip panel**, one per GCP: `observed`, the PSF-convolved GCP sampled at the
+  observation's own `latitude`/`longitude` (`search.emulate_image` on
+  `reference_convolved`), and `emulated`; side by side they show the misregistration
+  and, for a rejected GCP, why (cloud, featureless scene). Title it with the status and
+  `rejection_reason`.
+- **Map**, one per observation: a box around each GCP chip (`reference_latitude` /
+  `reference_longitude` extents) coloured by status, over the observation.
+- **Error scatter**: `along_track_error_m` against `cross_track_error_m` for every GCP,
+  rejected ones hollow, with a circle at `performance_threshold_m`.
 
 A reviewer fills the `review` column of `summary.csv` with `accept` or `reject`. Applying
 it recomputes the statistics without re-running image matching:
@@ -594,7 +605,10 @@ save_verification(reviewed, Path("verification/2026-08-05-reviewed"))
 
 `accept` brings a GCP into the statistics (status `pass` or `fail` by its error); `reject`
 takes it out (status `rejected`, reason `rejected in review`). Each `GCPError.review`
-records the decision.
+records the decision, and quality weights are recomputed, so a low-correlation GCP
+accepted in review counts fully in the unweighted statistics but little in the weighted
+ones. `examples/correction/example_verification.py` runs the whole cycle: verify, save,
+mark a decision in `summary.csv`, apply it.
 
 ### Comparing Before and After
 
