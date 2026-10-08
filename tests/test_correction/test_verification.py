@@ -1453,6 +1453,27 @@ class TestChipImagesSaveAndReview:
         assert list(reviewed.aggregate_stats["review"].values) == ["", "accept", "reject"]
         assert [e.status for e in result.per_gcp_errors] == before  # input untouched
 
+    def test_weighted_percent_reported_alongside(self, tmp_path):
+        from curryer.correction.error_stats import match_snr_weight
+
+        result = self._result(tmp_path)
+        weights = {e.gcp_index: e.quality_weight for e in result.per_gcp_errors}
+        assert weights[1] == 0.0
+        assert weights[0] == pytest.approx(match_snr_weight(np.array([0.9]))[0])
+        assert result.weighted_percent_within_threshold is not None
+        assert "weighted" in result.summary_table
+        assert "effective n" in result.summary_table
+
+    def test_apply_review_reweights(self, tmp_path):
+        from curryer.correction import apply_review
+        from curryer.correction.error_stats import match_snr_weight
+
+        reviewed = apply_review(self._result(tmp_path), {1: "accept", 2: "reject"})
+        weights = {e.gcp_index: e.quality_weight for e in reviewed.per_gcp_errors}
+        assert weights[1] == pytest.approx(match_snr_weight(np.array([0.1]))[0])
+        assert weights[2] == 0.0
+        assert reviewed.aggregate_stats.attrs["effective_measurements"] < 2.0
+
     def test_apply_review_rejecting_everything_drops_statistics(self, tmp_path):
         from curryer.correction import apply_review
 
@@ -1461,6 +1482,8 @@ class TestChipImagesSaveAndReview:
         assert reviewed.percent_within_threshold == 0.0
         assert "total_measurements" not in reviewed.aggregate_stats.attrs
         assert "0 accepted, 3 rejected" in reviewed.summary_table
+        assert reviewed.weighted_percent_within_threshold is None
+        assert "weighted_mean_error_m" not in reviewed.aggregate_stats.attrs
 
     @pytest.mark.parametrize(("decisions", "match"), [({7: "accept"}, "not in the result"), ({0: "ok"}, "must be")])
     def test_apply_review_bad_decisions_raise(self, tmp_path, decisions, match):

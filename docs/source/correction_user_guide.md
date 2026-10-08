@@ -540,6 +540,26 @@ direction (the direction of increasing observation row, i.e. frame time, at the 
 90° clockwise from it. A timing error shows up along track; a roll error across track.
 They are `None` when the matching path did not record `track_azimuth_deg`.
 
+### Quality weighting
+
+Each accepted GCP gets a `quality_weight`, the match signal-to-noise ratio
+`ρ² / (1 − ρ²)` of its correlation `ρ` (`error_stats.match_snr_weight`). If the observed
+image is the emulated scene plus independent noise, `ρ²` is the scene's share of the
+variance, and the variance of a correlation-registration error scales as noise over
+signal, so this is an inverse-variance weight. `ρ` is capped at 0.99 (weight 49) so one
+near-perfect match cannot dominate; rejected GCPs weigh 0.
+
+| ρ      | 0.80 | 0.90 | 0.95 | 0.99 |
+| ------ | ---- | ---- | ---- | ---- |
+| weight | 1.8  | 4.3  | 9.3  | 49   |
+
+`result.weighted_percent_within_threshold` and the `weighted_*` attributes of
+`aggregate_stats` (mean, RMS, percent below 100–1000 m) are reported **next to** the
+unweighted values; `passed` always uses the unweighted percentage, as the requirement is
+written. `effective_measurements = (Σw)² / Σw²` is the number of equally good GCPs the
+weighted set is worth: when it is much smaller than the accepted count, a few GCPs carry
+the weighted statistics.
+
 ### Reviewing every GCP
 
 For review, ask `verify()` to keep the images behind each match (file-pair modes only:

@@ -1587,3 +1587,79 @@ if __name__ == "__main__":
     else:
         # Arguments provided - run unittest
         unittest.main()
+
+
+class TestQualityWeights:
+    """match_snr_weight, weighted_statistics, and the quality_weight variable."""
+
+    def test_snr_weight_values_and_cap(self):
+        from curryer.correction.error_stats import match_snr_weight
+
+        npt.assert_allclose(
+            match_snr_weight(np.array([0.8, 0.95, 0.99])), [0.64 / 0.36, 0.9025 / 0.0975, 0.9801 / 0.0199]
+        )
+        assert match_snr_weight(np.array([0.999]))[0] == pytest.approx(0.9801 / 0.0199)
+        npt.assert_array_equal(match_snr_weight(np.array([-0.3, 0.0])), [0.0, 0.0])
+
+    @pytest.mark.parametrize(
+        ("correlation", "cap", "match"), [([np.nan], 0.99, "finite"), ([0.5], 1.0, "max_correlation")]
+    )
+    def test_snr_weight_bad_input_raises(self, correlation, cap, match):
+        from curryer.correction.error_stats import match_snr_weight
+
+        with pytest.raises(ValueError, match=match):
+            match_snr_weight(np.array(correlation), max_correlation=cap)
+
+    def test_weighted_statistics_equal_weights_match_unweighted(self):
+        from curryer.correction.error_stats import weighted_statistics
+
+        errors = np.array([100.0, 200.0, 300.0, 1200.0])
+        stats = weighted_statistics(errors, np.full(4, 2.5))
+        assert stats["weighted_mean_error_m"] == pytest.approx(errors.mean())
+        assert stats["weighted_rms_error_m"] == pytest.approx(np.sqrt(np.mean(errors**2)))
+        assert stats["weighted_percent_below_250m"] == pytest.approx(50.0)
+        assert stats["effective_measurements"] == pytest.approx(4.0)
+
+    def test_weighted_statistics_favour_heavy_measurements(self):
+        from curryer.correction.error_stats import weighted_statistics
+
+        stats = weighted_statistics(np.array([100.0, 1000.0]), np.array([9.0, 1.0]))
+        assert stats["weighted_percent_below_250m"] == pytest.approx(90.0)
+        assert stats["effective_measurements"] == pytest.approx(100.0 / 82.0)
+
+    @pytest.mark.parametrize(
+        ("weights", "match"), [([1.0], "same shape"), ([1.0, -1.0], "non-negative"), ([0.0, 0.0], "sum to 0")]
+    )
+    def test_weighted_statistics_bad_weights_raise(self, weights, match):
+        from curryer.correction.error_stats import weighted_statistics
+
+        with pytest.raises(ValueError, match=match):
+            weighted_statistics(np.array([100.0, 200.0]), np.array(weights))
+
+    def test_quality_weight_zero_for_rejected_and_statistics_weighted(self):
+        from curryer.correction.error_stats import match_snr_weight
+
+        data = _sample_from_validated_test_cases(4, seed=2)
+        data["correlation"] = (["measurement"], [0.9, 0.2, 0.95, 0.1])
+        out = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5)).process_geolocation_errors(data)
+        npt.assert_allclose(
+            out.quality_weight.values,
+            [*match_snr_weight(np.array([0.9])), 0.0, *match_snr_weight(np.array([0.95])), 0.0],
+        )
+        assert out.attrs["effective_measurements"] < 2.0
+        assert "weighted_percent_below_250m" in out.attrs
+
+    def test_no_quality_weight_without_correlation(self):
+        out = ErrorStatsProcessor(config=_create_test_config()).process_geolocation_errors(
+            _sample_from_validated_test_cases(3, seed=1)
+        )
+        assert "quality_weight" not in out.data_vars
+        assert "weighted_mean_error_m" not in out.attrs
+
+    def test_weighted_statistics_omitted_when_weights_sum_to_zero(self):
+        data = _sample_from_validated_test_cases(2, seed=1)
+        data["correlation"] = (["measurement"], [-0.2, 0.0])
+        out = ErrorStatsProcessor(config=_create_test_config()).process_geolocation_errors(data)
+        npt.assert_array_equal(out.quality_weight.values, [0.0, 0.0])
+        assert "weighted_mean_error_m" not in out.attrs
+        assert out.attrs["total_measurements"] == 2

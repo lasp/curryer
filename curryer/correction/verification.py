@@ -60,7 +60,13 @@ from curryer import spicetime
 from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction.config import GeolocationSetup, RequirementsConfig
-from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
+from curryer.correction.error_stats import (
+    ErrorStatsConfig,
+    ErrorStatsProcessor,
+    quality_weights,
+    weighted_percent_below,
+    weighted_statistics,
+)
 from curryer.correction.image_io import (
     geolocated_to_image_grid,
     load_image_grid,
@@ -122,6 +128,10 @@ class GCPError(BaseModel):
     review : {"accept", "reject"} or None
         A reviewer's decision applied with :func:`apply_review`, which sets
         :attr:`status` accordingly; ``None`` when not reviewed.
+    quality_weight : float or None
+        Match signal-to-noise weight
+        (:func:`~curryer.correction.error_stats.match_snr_weight`); 0 when
+        rejected, ``None`` without a correlation.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -141,6 +151,7 @@ class GCPError(BaseModel):
     along_track_error_m: float | None = None
     cross_track_error_m: float | None = None
     review: Literal["accept", "reject"] | None = None
+    quality_weight: float | None = None
 
     @model_validator(mode="after")
     def _check_status(self) -> GCPError:
@@ -179,8 +190,13 @@ class VerificationResult(BaseModel):
     summary_table : str
         Human-readable ASCII table suitable for logging or reports.
     percent_within_threshold : float
-        Percentage of measurements with nadir-equivalent error below
-        :attr:`requirements.performance_threshold_m`.
+        Percentage of accepted measurements with nadir-equivalent error below
+        :attr:`requirements.performance_threshold_m`; decides :attr:`passed`.
+    weighted_percent_within_threshold : float or None
+        The same percentage with each accepted measurement weighted by its
+        ``quality_weight``, reported alongside, never deciding :attr:`passed`;
+        ``None`` without correlations, or when the accepted weights sum to 0
+        (e.g. every measurement rejected).
     warnings : list[str]
         Non-empty when :attr:`passed` is ``False``.
     timestamp : datetime
@@ -218,6 +234,7 @@ class VerificationResult(BaseModel):
     elapsed_time_s: float | None = None
     config_snapshot: dict | None = None
     chip_images: list[xr.Dataset] | None = Field(default=None, exclude=True)
+    weighted_percent_within_threshold: float | None = None
 
 
 # ============================================================================
@@ -332,6 +349,21 @@ def _check_threshold(
     return passed, percent_below
 
 
+def _weighted_percent_within(aggregate_stats: xr.Dataset, requirements: RequirementsConfig) -> float | None:
+    """Quality-weighted percentage of accepted measurements below the threshold, or ``None``."""
+    accepted = aggregate_stats["accepted"].values
+    if (
+        "quality_weight" not in aggregate_stats.data_vars
+        or not aggregate_stats["quality_weight"].values[accepted].sum()
+    ):
+        return None
+    return weighted_percent_below(
+        aggregate_stats["nadir_equiv_total_error_m"].values[accepted],
+        aggregate_stats["quality_weight"].values[accepted],
+        requirements.performance_threshold_m,
+    )
+
+
 def _generate_warnings(
     passed: bool,
     percent_below: float,
@@ -439,6 +471,7 @@ def _build_per_gcp_errors(
                 along_track_error_m=_finite_or_none("along_track_error_m", i),
                 cross_track_error_m=_finite_or_none("cross_track_error_m", i),
                 review=str(reviews[i]) or None,
+                quality_weight=_finite_or_none("quality_weight", i),
             )
         )
     return errors
@@ -491,6 +524,7 @@ def _format_summary_table(
     requirements: RequirementsConfig,
     percent_within: float,
     passed: bool,
+    weighted_percent: float | None = None,
 ) -> str:
     """Generate a human-readable summary table.
 
@@ -519,6 +553,9 @@ def _format_summary_table(
         Percentage of measurements within the threshold.
     passed : bool
         Overall pass/fail result.
+    weighted_percent : float or None, optional
+        Quality-weighted percentage within the threshold, shown on its own
+        line when given.
 
     Returns
     -------
@@ -543,6 +580,10 @@ def _format_summary_table(
 
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
     counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected"
+    if weighted_percent is not None:
+        weights = [err.quality_weight for err in per_gcp_errors if err.status != "rejected"]
+        effective = sum(weights) ** 2 / sum(w**2 for w in weights)
+        counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective:.1f})"
 
     # inner_width must accommodate columns, title, AND footer
     inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
@@ -1586,6 +1627,7 @@ def verify(
     # Step 3: Threshold check
     # ------------------------------------------------------------------
     passed, percent_within = _check_threshold(aggregate_stats, requirements)
+    weighted_percent = _weighted_percent_within(aggregate_stats, requirements)
 
     # ------------------------------------------------------------------
     # Step 4: Per-GCP detail
@@ -1598,7 +1640,7 @@ def verify(
     # Step 5: Warnings + summary table
     # ------------------------------------------------------------------
     warnings = _generate_warnings(passed, percent_within, requirements)
-    summary_table = _format_summary_table(per_gcp_errors, requirements, percent_within, passed)
+    summary_table = _format_summary_table(per_gcp_errors, requirements, percent_within, passed, weighted_percent)
 
     if warnings:
         for w in warnings:
@@ -1635,6 +1677,7 @@ def verify(
         elapsed_time_s=elapsed_time_s,
         config_snapshot=config_snapshot,
         chip_images=chip_images,
+        weighted_percent_within_threshold=weighted_percent,
     )
 
 
@@ -1714,6 +1757,7 @@ _SUMMARY_COLUMNS = (
     "correlation",
     "correlation_secondary",
     "off_nadir_angle_deg",
+    "quality_weight",
 )
 _REVIEW_DECISIONS = ("accept", "reject")
 
@@ -1729,8 +1773,8 @@ def save_verification(result: VerificationResult, out_dir: Path) -> None:
       ``gcp_key``, ``status``, ``rejection_reason``, ``review``,
       ``nadir_equiv_error_m``, ``along_track_error_m``,
       ``cross_track_error_m``, ``lat_error_deg``, ``lon_error_deg``,
-      ``correlation``, ``correlation_secondary``, ``off_nadir_angle_deg``;
-      empty cells for ``None``).  A reviewer fills ``review`` with ``accept``
+      ``correlation``, ``correlation_secondary``, ``off_nadir_angle_deg``,
+      ``quality_weight``; empty cells for ``None``).  A reviewer fills ``review`` with ``accept``
       or ``reject``; see :func:`read_review_decisions`.
     - ``chips/gcp_<index>.nc``: one file per entry of
       :attr:`VerificationResult.chip_images`, when present.
@@ -1846,10 +1890,12 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     Returns
     -------
     VerificationResult
-        A new result: ``aggregate_stats`` gains a ``review`` variable and
-        statistics over the accepted GCPs (none when every one is rejected);
+        A new result: ``aggregate_stats`` gains a ``review`` variable, its
+        ``quality_weight`` follows the new acceptance, and its statistics
+        cover the accepted GCPs (none when every one is rejected);
         ``per_gcp_errors``, ``passed``, ``percent_within_threshold``,
-        ``warnings`` and ``summary_table`` are recomputed.  *result* is not
+        ``weighted_percent_within_threshold``, ``warnings`` and
+        ``summary_table`` are recomputed.  *result* is not
         modified.
 
     Raises
@@ -1881,15 +1927,19 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     stats["accepted"] = (["measurement"], accepted)
     stats["rejection_reason"] = (["measurement"], reasons.astype(str))
     stats["review"] = (["measurement"], reviews.astype(str))
+    if "quality_weight" in stats.data_vars:
+        corr_name = next(name for name in ("correlation", "ccv", "im_ccv") if name in stats.data_vars)
+        stats["quality_weight"] = quality_weights(stats[corr_name].values, accepted)
 
     processor = ErrorStatsProcessor(config=ErrorStatsConfig())
-    for key in processor._calculate_statistics(np.zeros(1)):
+    for key in [*processor._calculate_statistics(np.zeros(1)), *weighted_statistics(np.zeros(1), np.ones(1))]:
         stats.attrs.pop(key, None)
     stats.attrs.update(n_accepted=int(accepted.sum()), n_rejected=int((~accepted).sum()))
     stats = _with_statistics(processor, stats)
 
     requirements = result.requirements
     passed, percent_within = _check_threshold(stats, requirements)
+    weighted_percent = _weighted_percent_within(stats, requirements)
     source_mapping = [
         (err.science_key, err.gcp_key) for err in sorted(result.per_gcp_errors, key=lambda e: e.gcp_index)
     ]
@@ -1898,9 +1948,12 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
         update={
             "passed": passed,
             "percent_within_threshold": percent_within,
+            "weighted_percent_within_threshold": weighted_percent,
             "aggregate_stats": stats,
             "per_gcp_errors": per_gcp_errors,
             "warnings": _generate_warnings(passed, percent_within, requirements),
-            "summary_table": _format_summary_table(per_gcp_errors, requirements, percent_within, passed),
+            "summary_table": _format_summary_table(
+                per_gcp_errors, requirements, percent_within, passed, weighted_percent
+            ),
         }
     )

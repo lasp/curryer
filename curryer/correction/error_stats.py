@@ -74,6 +74,50 @@ def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
     return float(np.sum(errors < threshold_m) / len(errors) * 100)
 
 
+QUALITY_WEIGHT_MAX_CORRELATION: float = 0.99
+_STANDARD_THRESHOLDS_M = (100.0, 250.0, 500.0, 750.0, 1000.0)
+
+
+def match_snr_weight(correlation: np.ndarray, max_correlation: float = QUALITY_WEIGHT_MAX_CORRELATION) -> np.ndarray:
+    """Return the match signal-to-noise weight ``rho**2 / (1 - rho**2)`` of each correlation.
+
+    If an observed image is the emulated scene plus independent noise, the
+    squared correlation ``rho**2`` is the scene's share of the variance, so
+    ``rho**2 / (1 - rho**2)`` is the signal-to-noise ratio of the match.  The
+    variance of a correlation-registration error scales as noise over signal,
+    which makes this an inverse-variance weight: ``rho`` 0.80 gives 1.8, 0.95
+    gives 9.3, 0.99 gives 49.
+
+    Parameters
+    ----------
+    correlation : np.ndarray
+        Correlation at each match, dimensionless.
+    max_correlation : float, optional
+        Cap on ``rho`` (default :data:`QUALITY_WEIGHT_MAX_CORRELATION`, 0.99,
+        weight 49) so that one near-perfect match does not dominate.  A
+        non-positive correlation weighs 0.
+
+    Returns
+    -------
+    np.ndarray
+        Weights, same shape as *correlation*, in ``[0, max_correlation**2 /
+        (1 - max_correlation**2)]``.
+
+    Raises
+    ------
+    ValueError
+        If *max_correlation* is not in ``(0, 1)`` or *correlation* is not
+        finite.
+    """
+    if not 0.0 < max_correlation < 1.0:
+        raise ValueError(f"max_correlation must be in (0, 1), got {max_correlation}.")
+    rho = np.asarray(correlation, dtype=float)
+    if not np.all(np.isfinite(rho)):
+        raise ValueError(f"Correlation must be finite to weight a match, got {rho[~np.isfinite(rho)]}.")
+    rho = np.clip(rho, 0.0, max_correlation)
+    return rho**2 / (1.0 - rho**2)
+
+
 @dataclass
 class ErrorStatsConfig:
     """Configuration for geolocation error statistics processing.
@@ -176,6 +220,83 @@ class ErrorStatsConfig:
             )
 
         return self.variable_names[semantic_name]
+
+
+def quality_weights(correlation: np.ndarray, accepted: np.ndarray) -> xr.DataArray:
+    """Return the ``quality_weight`` variable: :func:`match_snr_weight` where accepted, 0 elsewhere.
+
+    Raises
+    ------
+    ValueError
+        As :func:`match_snr_weight`, for an accepted measurement's correlation.
+    """
+    weights = np.zeros(len(accepted))
+    weights[accepted] = match_snr_weight(np.asarray(correlation)[accepted])
+    return xr.DataArray(
+        weights,
+        dims=["measurement"],
+        attrs={
+            "long_name": "Match signal-to-noise weight rho^2/(1-rho^2); 0 when rejected",
+            "max_correlation": QUALITY_WEIGHT_MAX_CORRELATION,
+        },
+    )
+
+
+def weighted_statistics(errors_m: np.ndarray, weights: np.ndarray) -> dict[str, float]:
+    """Return weighted error statistics.
+
+    Parameters
+    ----------
+    errors_m : np.ndarray
+        Nadir-equivalent errors, meters.
+    weights : np.ndarray
+        Non-negative weights, same length as *errors_m*.
+
+    Returns
+    -------
+    dict of str to float
+        ``weighted_mean_error_m``, ``weighted_rms_error_m``,
+        ``weighted_percent_below_<T>m`` for T in 100, 250, 500, 750, 1000, and
+        ``effective_measurements`` = ``(sum w)**2 / sum w**2``, the number of
+        equal-weight measurements with the same statistical power.
+
+    Raises
+    ------
+    ValueError
+        If the lengths differ, a weight is negative or not finite, or the
+        weights sum to 0.
+    """
+    errors_m = np.asarray(errors_m, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if errors_m.shape != weights.shape:
+        raise ValueError(f"errors_m {errors_m.shape} and weights {weights.shape} must have the same shape.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("Weights must be finite and non-negative.")
+    total = weights.sum()
+    if total == 0:
+        raise ValueError("Weights sum to 0; weighted statistics are undefined.")
+    stats = {
+        "weighted_mean_error_m": float(np.sum(weights * errors_m) / total),
+        "weighted_rms_error_m": float(np.sqrt(np.sum(weights * errors_m**2) / total)),
+        "effective_measurements": float(total**2 / np.sum(weights**2)),
+    }
+    for threshold in _STANDARD_THRESHOLDS_M:
+        stats[f"weighted_percent_below_{threshold:.0f}m"] = weighted_percent_below(errors_m, weights, threshold)
+    return stats
+
+
+def weighted_percent_below(errors_m: np.ndarray, weights: np.ndarray, threshold_m: float) -> float:
+    """Return the weighted percentage (0–100) of *errors_m* strictly below *threshold_m*.
+
+    Raises
+    ------
+    ValueError
+        If the weights sum to 0.
+    """
+    total = float(np.sum(weights))
+    if total == 0:
+        raise ValueError("Weights sum to 0; the weighted percentage is undefined.")
+    return float(np.sum(weights * (np.asarray(errors_m) < threshold_m)) / total * 100.0)
 
 
 class ErrorStatsProcessor:
@@ -286,8 +407,10 @@ class ErrorStatsProcessor:
             ``along_track_error_m`` (positive along the azimuth) and
             ``cross_track_error_m`` (positive 90° clockwise from it), in meters,
             from the same north/east error as the view-plane components.
-            Attributes ``n_matched``, ``n_accepted`` and ``n_rejected``; no
-            statistics.
+            With a correlation variable in the input, ``quality_weight``:
+            :func:`match_snr_weight` for accepted measurements, 0 for
+            rejected ones.  Attributes ``n_matched``, ``n_accepted`` and
+            ``n_rejected``; no statistics.
 
         Raises
         ------
@@ -335,6 +458,9 @@ class ErrorStatsProcessor:
             )
 
         output = self._create_output_dataset(input_data, results, reasons)
+        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in output.data_vars), None)
+        if corr_name is not None:
+            output["quality_weight"] = quality_weights(output[corr_name].values, output["accepted"].values)
         logger.info(
             "Match-quality gates: %d of %d measurements accepted (minimum_correlation=%s, minimum_peak_margin=%s)",
             output.attrs["n_accepted"],
@@ -357,7 +483,10 @@ class ErrorStatsProcessor:
         xr.Dataset
             *per_measurement* with the statistics of
             :meth:`_calculate_statistics` added to its attributes;
-            ``total_measurements`` counts accepted measurements only.
+            ``total_measurements`` counts accepted measurements only.  With a
+            ``quality_weight`` variable whose accepted weights sum above 0,
+            also the weighted statistics of :func:`weighted_statistics`
+            (``weighted_*`` and ``effective_measurements``).
 
         Raises
         ------
@@ -370,7 +499,11 @@ class ErrorStatsProcessor:
                 f"No measurements remaining after correlation filtering: all {accepted.size} were rejected."
             )
         output = per_measurement.copy()
-        output.attrs.update(self._calculate_statistics(output["nadir_equiv_total_error_m"].values[accepted]))
+        errors = output["nadir_equiv_total_error_m"].values[accepted]
+        output.attrs.update(self._calculate_statistics(errors))
+        weights = output["quality_weight"].values[accepted] if "quality_weight" in output.data_vars else np.zeros(1)
+        if weights.sum() > 0:
+            output.attrs.update(weighted_statistics(errors, weights))
         return output
 
     def process_geolocation_errors(self, input_data: xr.Dataset) -> xr.Dataset:
