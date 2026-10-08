@@ -1338,6 +1338,15 @@ class TestTrackFrameErrors:
         assert "along_track_error_m" not in out.data_vars
         assert "cross_track_error_m" not in out.data_vars
 
+    def test_output_writes_to_netcdf(self, tmp_path):
+        data = _sample_from_validated_test_cases(3, seed=2)
+        data["correlation"] = (["measurement"], [0.9, 0.2, 0.95])
+        out = ErrorStatsProcessor(config=_create_test_config(minimum_correlation=0.5)).process_geolocation_errors(data)
+        out.to_netcdf(tmp_path / "stats.nc")
+        reloaded = xr.load_dataset(tmp_path / "stats.nc")
+        np.testing.assert_array_equal(reloaded["accepted"], [True, False, True])
+        assert list(reloaded["rejection_reason"].values) == ["", "correlation 0.2000 < 0.5", ""]
+
     def test_rejected_measurements_keep_errors_but_not_statistics(self):
         data = _sample_from_validated_test_cases(4, seed=2)
         data["correlation"] = (["measurement"], [0.9, 0.2, 0.95, 0.1])

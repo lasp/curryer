@@ -21,6 +21,7 @@ etc.) directly.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Union
 
@@ -650,7 +651,7 @@ class ErrorStatsProcessor:
             coords=input_data.coords,
             attrs={
                 "title": "Geolocation Error Statistics Results",
-                "processing_timestamp": np.datetime64("now"),
+                "processing_timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "earth_radius_m": _EARTH_RADIUS_M,
                 "n_matched": int(accepted.size),
                 "n_accepted": int(accepted.sum()),
@@ -661,7 +662,7 @@ class ErrorStatsProcessor:
         # Add correlation filtering metadata if applied
         if self.config.minimum_correlation is not None:
             output_ds.attrs["minimum_correlation_threshold"] = self.config.minimum_correlation
-            output_ds.attrs["correlation_filtering_applied"] = True
+            output_ds.attrs["correlation_filtering_applied"] = 1  # NetCDF attributes cannot hold a bool
         if self.config.minimum_peak_margin is not None:
             output_ds.attrs["minimum_peak_margin_threshold"] = self.config.minimum_peak_margin
 

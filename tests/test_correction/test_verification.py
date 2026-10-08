@@ -932,7 +932,7 @@ class TestViewingGeometryFailures:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+            (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
         np.testing.assert_allclose(mock_match.call_args.kwargs["r_iss_midframe_m"], r_sc)
         expected = (mid_row_gcp_column - r_sc) / np.linalg.norm(mid_row_gcp_column - r_sc)
@@ -959,7 +959,7 @@ class TestViewingGeometryFailures:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match),
         ):
-            (ds,) = _run_image_matching_for_pairs(
+            (ds,), _ = _run_image_matching_for_pairs(
                 [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
             )
 
@@ -1096,7 +1096,7 @@ class TestMatchingConfigAndCorrelation:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
+            (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
         assert mock_match.call_args.kwargs["geolocation_config"] is setup.psf_sampling
         assert mock_match.call_args.kwargs["search_config"] is setup.search
@@ -1143,7 +1143,7 @@ class TestMatchingConfigAndCorrelation:
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
             patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
         ):
-            (ds,) = _run_image_matching_for_pairs(
+            (ds,), _ = _run_image_matching_for_pairs(
                 [(tmp_path / "obs_crop.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
             )
         np.testing.assert_array_equal(mock_match.call_args.kwargs["los_vectors_hs"], table[10:15])
@@ -1305,3 +1305,179 @@ class TestMatchingConfigAndCorrelation:
         assert all(e.status != "rejected" and e.rejection_reason is None for e in result.per_gcp_errors[::2])
         assert result.aggregate_stats.attrs["total_measurements"] == 2
         assert result.aggregate_stats.attrs["n_rejected"] == 1
+
+
+class TestChipImagesSaveAndReview:
+    """keep_images, save_verification / load_verification, and the review round trip."""
+
+    @staticmethod
+    def _result(tmp_path, correlations=(0.9, 0.1, 0.8)):
+        setup = _make_setup(geo=_make_geo().model_copy(update={"minimum_correlation": 0.5}))
+        results = []
+        for i, ccv in enumerate(correlations):
+            ds = _make_full_image_matching_dataset(n=1, seed=i)
+            ds["correlation"] = (["measurement"], [ccv])
+            ds.attrs.update({"sci_key": f"sci_{i}", "gcp_key": f"gcp_{i}"})
+            results.append(ds)
+        return verify(setup, image_matching_results=results, work_dir=tmp_path / "work")
+
+    @staticmethod
+    def _chips(n):
+        return [
+            xr.Dataset({"observed": (("row", "col"), np.full((2, 3), float(i)))}, attrs={"gcp_index": i})
+            for i in range(n)
+        ]
+
+    def test_file_pair_matching_keeps_images(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.image_io import load_image_grid
+
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
+        gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
+        match = SimpleNamespace(
+            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4, convolved_gcp=load_image_grid(gcp)
+        )
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+        ):
+            _, kept = _run_image_matching_for_pairs(
+                [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup(), keep_images=True
+            )
+            _, not_kept = _run_image_matching_for_pairs(
+                [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
+            )
+
+        assert not_kept == []
+        (chip,) = kept
+        assert (chip.attrs["science_key"], chip.attrs["gcp_key"]) == ("obs.nc", "gcp_regridded.nc")
+        assert chip["observed"].shape == (5, 5)
+        assert chip.attrs["correlation"] == pytest.approx(0.83)
+
+    def test_keep_images_with_precomputed_results_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="keep_images requires"):
+            verify(
+                _make_setup(),
+                image_matching_results=[_make_full_image_matching_dataset(n=1)],
+                work_dir=tmp_path,
+                keep_images=True,
+            )
+
+    def test_chip_images_never_serialised(self, tmp_path):
+        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        assert "chip_images" not in json.loads(result.model_dump_json(exclude={"aggregate_stats"}))
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        from curryer.correction import load_verification, save_verification
+
+        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        save_verification(result, tmp_path / "saved")
+
+        assert sorted(p.name for p in (tmp_path / "saved").iterdir()) == [
+            "aggregate_stats.nc",
+            "chips",
+            "result.json",
+            "summary.csv",
+        ]
+        loaded = load_verification(tmp_path / "saved")
+        assert loaded.per_gcp_errors == result.per_gcp_errors
+        assert loaded.percent_within_threshold == result.percent_within_threshold
+        np.testing.assert_array_equal(loaded.aggregate_stats["accepted"], result.aggregate_stats["accepted"])
+        assert [int(c.attrs["gcp_index"]) for c in loaded.chip_images] == [0, 1, 2]
+        np.testing.assert_array_equal(loaded.chip_images[2]["observed"], 2.0)
+
+    def test_save_refuses_to_overwrite(self, tmp_path):
+        from curryer.correction import save_verification
+
+        result = self._result(tmp_path)
+        save_verification(result, tmp_path / "saved")
+        with pytest.raises(FileExistsError):
+            save_verification(result, tmp_path / "saved")
+
+    def test_summary_csv_review_column_round_trip(self, tmp_path):
+        import pandas as pd
+
+        from curryer.correction import read_review_decisions, save_verification
+
+        save_verification(self._result(tmp_path), tmp_path / "saved")
+        summary = pd.read_csv(tmp_path / "saved" / "summary.csv", keep_default_na=False)
+        assert list(summary["status"])[1] == "rejected"
+        assert summary["rejection_reason"][1] == "correlation 0.1000 < 0.5"
+        assert list(summary["review"]) == ["", "", ""]
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {}
+
+        summary["review"] = ["reject", "accept", ""]
+        summary.to_csv(tmp_path / "saved" / "summary.csv", index=False)
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {0: "reject", 1: "accept"}
+
+    @pytest.mark.parametrize(
+        ("column", "value", "match"), [("review", "maybe", "expected 'accept'"), (None, None, "column")]
+    )
+    def test_read_review_decisions_rejects_bad_input(self, tmp_path, column, value, match):
+        import pandas as pd
+
+        from curryer.correction import read_review_decisions
+
+        table = pd.DataFrame({"gcp_index": [0], "review": ["accept"]})
+        if column is None:
+            table = table.drop(columns="review")
+        else:
+            table[column] = value
+        table.to_csv(tmp_path / "summary.csv", index=False)
+        with pytest.raises(ValueError, match=match):
+            read_review_decisions(tmp_path / "summary.csv")
+
+    def test_apply_review_moves_gcps_in_and_out_of_the_statistics(self, tmp_path):
+        from curryer.correction import apply_review
+
+        result = self._result(tmp_path)
+        reviewed = apply_review(result, {1: "accept", 2: "reject"})
+
+        before = [e.status for e in result.per_gcp_errors]
+        after = {e.gcp_index: e for e in reviewed.per_gcp_errors}
+        assert before[1] == "rejected"
+        assert after[1].status in ("pass", "fail")
+        assert after[1].review == "accept"
+        assert after[2].status == "rejected"
+        assert after[2].rejection_reason == "rejected in review"
+        assert after[0].review is None
+        assert reviewed.aggregate_stats.attrs["total_measurements"] == 2
+        assert reviewed.aggregate_stats.attrs["n_rejected"] == 1
+        assert list(reviewed.aggregate_stats["review"].values) == ["", "accept", "reject"]
+        assert [e.status for e in result.per_gcp_errors] == before  # input untouched
+
+    def test_apply_review_rejecting_everything_drops_statistics(self, tmp_path):
+        from curryer.correction import apply_review
+
+        reviewed = apply_review(self._result(tmp_path), {0: "reject", 2: "reject"})
+        assert reviewed.passed is False
+        assert reviewed.percent_within_threshold == 0.0
+        assert "total_measurements" not in reviewed.aggregate_stats.attrs
+        assert "0 accepted, 3 rejected" in reviewed.summary_table
+
+    @pytest.mark.parametrize(("decisions", "match"), [({7: "accept"}, "not in the result"), ({0: "ok"}, "must be")])
+    def test_apply_review_bad_decisions_raise(self, tmp_path, decisions, match):
+        from curryer.correction import apply_review
+
+        with pytest.raises(ValueError, match=match):
+            apply_review(self._result(tmp_path), decisions)
+
+    def test_review_contradicting_status_raises(self):
+        with pytest.raises(ValueError, match="review='reject' contradicts"):
+            GCPError(
+                gcp_index=0,
+                science_key="s",
+                gcp_key="g",
+                lat_error_deg=0.0,
+                lon_error_deg=0.0,
+                passed=True,
+                status="pass",
+                review="reject",
+            )

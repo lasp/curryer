@@ -540,6 +540,42 @@ direction (the direction of increasing observation row, i.e. frame time, at the 
 90° clockwise from it. A timing error shows up along track; a roll error across track.
 They are `None` when the matching path did not record `track_azimuth_deg`.
 
+### Reviewing every GCP
+
+For review, ask `verify()` to keep the images behind each match (file-pair modes only:
+`gcp_pairs` or `observation_paths`), then save the result:
+
+```python
+from curryer.correction import apply_review, load_verification, read_review_decisions, save_verification
+
+result = verify(setup, gcp_pairs=pairs, los_file=los, psf_file=psf, keep_images=True)
+save_verification(result, Path("verification/2026-08-05"))
+```
+
+| File                 | Contents                                                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `result.json`        | The `VerificationResult` (per-GCP errors, statuses, requirements, provenance)                                                                       |
+| `summary.csv`        | One row per GCP: status, rejection reason, nadir-equivalent / along / cross-track errors, correlation, view angle, and an empty `review` column     |
+| `aggregate_stats.nc` | Per-GCP error-stats dataset with the statistics as attributes                                                                                       |
+| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (PSF-convolved GCP at the matched position), `reference`, `reference_convolved`, and their latitude/longitude grids |
+
+CSV and NetCDF read directly in MATLAB (`readtable`, `ncread`) and Python. Plotting is
+left to the mission: everything a figure needs is in these files.
+
+A reviewer fills the `review` column of `summary.csv` with `accept` or `reject`. Applying
+it recomputes the statistics without re-running image matching:
+
+```python
+saved = load_verification(Path("verification/2026-08-05"))
+reviewed = apply_review(saved, read_review_decisions(Path("verification/2026-08-05/summary.csv")))
+print(reviewed.summary_table)
+save_verification(reviewed, Path("verification/2026-08-05-reviewed"))
+```
+
+`accept` brings a GCP into the statistics (status `pass` or `fail` by its error); `reject`
+takes it out (status `rejected`, reason `rejected in review`). Each `GCPError.review`
+records the decision.
+
 ### Comparing Before and After
 
 ```python

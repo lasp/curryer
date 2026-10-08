@@ -44,6 +44,7 @@ Models
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -118,6 +119,9 @@ class GCPError(BaseModel):
         Ground error along the ground-track direction and 90° clockwise from
         it, meters, or ``None`` when the matching path did not record the
         ground-track azimuth.
+    review : {"accept", "reject"} or None
+        A reviewer's decision applied with :func:`apply_review`, which sets
+        :attr:`status` accordingly; ``None`` when not reviewed.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -136,6 +140,7 @@ class GCPError(BaseModel):
     off_nadir_angle_deg: float | None = None
     along_track_error_m: float | None = None
     cross_track_error_m: float | None = None
+    review: Literal["accept", "reject"] | None = None
 
     @model_validator(mode="after")
     def _check_status(self) -> GCPError:
@@ -143,6 +148,8 @@ class GCPError(BaseModel):
             raise ValueError(f"passed={self.passed} contradicts status={self.status!r}.")
         if (self.status == "rejected") != (self.rejection_reason is not None):
             raise ValueError("rejection_reason must be given exactly when status is 'rejected'.")
+        if self.review is not None and (self.review == "reject") != (self.status == "rejected"):
+            raise ValueError(f"review={self.review!r} contradicts status={self.status!r}.")
         return self
 
 
@@ -187,6 +194,12 @@ class VerificationResult(BaseModel):
     config_snapshot : dict or None
         Key config fields used for this run (threshold, spec percent,
         instrument name), for reproducibility records.
+    chip_images : list[xr.Dataset] or None
+        With ``verify(..., keep_images=True)``, the images behind each match
+        (:func:`~curryer.correction.image_match.chip_image_dataset`), one per
+        entry of :attr:`per_gcp_errors` and in the same order, each with
+        ``gcp_index``, ``science_key`` and ``gcp_key`` attributes; ``None``
+        otherwise.  Never included in ``model_dump`` / ``model_dump_json``.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -204,6 +217,7 @@ class VerificationResult(BaseModel):
     files_processed: list[str] = Field(default_factory=list)
     elapsed_time_s: float | None = None
     config_snapshot: dict | None = None
+    chip_images: list[xr.Dataset] | None = Field(default=None, exclude=True)
 
 
 # ============================================================================
@@ -273,7 +287,11 @@ def _run_error_stats(
     """
     error_config = ErrorStatsConfig.from_setup(setup)
     processor = ErrorStatsProcessor(config=error_config)
-    per_measurement = processor.compute_nadir_equivalent_errors(aggregated)
+    return _with_statistics(processor, processor.compute_nadir_equivalent_errors(aggregated))
+
+
+def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset) -> xr.Dataset:
+    """Add statistics over the accepted measurements, or none when every one is rejected."""
     if not per_measurement["accepted"].values.any():
         logger.warning(
             "All %d matched measurements were rejected by the match-quality gates.",
@@ -378,6 +396,7 @@ def _build_per_gcp_errors(
     lon_errors = aggregate_stats["lon_error_deg"].values
     accepted = aggregate_stats["accepted"].values
     reasons = aggregate_stats["rejection_reason"].values
+    reviews = aggregate_stats["review"].values if "review" in aggregate_stats.data_vars else np.full(n, "")
 
     def _finite_or_none(name: str, i: int) -> float | None:
         if name not in aggregate_stats.data_vars:
@@ -419,6 +438,7 @@ def _build_per_gcp_errors(
                 off_nadir_angle_deg=_finite_or_none("off_nadir_angle_deg", i),
                 along_track_error_m=_finite_or_none("along_track_error_m", i),
                 cross_track_error_m=_finite_or_none("cross_track_error_m", i),
+                review=str(reviews[i]) or None,
             )
         )
     return errors
@@ -486,7 +506,7 @@ def _format_summary_table(
         │    2 │    0.01020 │   0.00810  │  1240.6  │ REJECTED │
         ├──────┴────────────┴────────────┴──────────┴──────────┤
         │ Result: FAILED — 50.0% within 250.0m (req: 60.0%)    │
-        │ 2 accepted, 1 rejected by match-quality gates        │
+        │ 2 accepted, 1 rejected                               │
         └──────────────────────────────────────────────────────┘
 
     Parameters
@@ -522,7 +542,7 @@ def _format_summary_table(
     )
 
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
-    counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected by match-quality gates"
+    counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected"
 
     # inner_width must accommodate columns, title, AND footer
     inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
@@ -1117,7 +1137,8 @@ def _run_image_matching_for_pairs(
     los_file: str | Path,
     psf_file: str | Path,
     setup: GeolocationSetup,
-) -> list[xr.Dataset]:
+    keep_images: bool = False,
+) -> tuple[list[xr.Dataset], list[xr.Dataset]]:
     """Run image matching for a list of (observation, gcp) file-path pairs.
 
     Loads each observation and GCP file, resolves the viewing geometry from
@@ -1136,13 +1157,19 @@ def _run_image_matching_for_pairs(
         Optical PSF ``.mat`` file.
     setup : GeolocationSetup
         Used for spacecraft-state variable names.
+    keep_images : bool, optional
+        Also return the images behind each match
+        (:func:`~curryer.correction.image_match.chip_image_dataset`).
 
     Returns
     -------
-    list[xr.Dataset]
+    datasets : list[xr.Dataset]
         One dataset per pair, in *pairs* order, with ``track_azimuth_deg``
         (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the GCP
         centre) alongside the errors, correlation and geometry.
+    chip_images : list[xr.Dataset]
+        One image dataset per pair, in *pairs* order, with ``science_key``
+        and ``gcp_key`` attributes; empty unless *keep_images*.
 
     Raises
     ------
@@ -1161,7 +1188,7 @@ def _run_image_matching_for_pairs(
         load_optical_psf,
         observation_los_vectors,
     )
-    from .image_match import integrated_image_match
+    from .image_match import chip_image_dataset, integrated_image_match
     from .psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
 
     sc_pos_name = setup.spacecraft_position_name
@@ -1172,6 +1199,7 @@ def _run_image_matching_for_pairs(
     optical_psfs = load_optical_psf(psf_file)
 
     datasets: list[xr.Dataset] = []
+    chip_images: list[xr.Dataset] = []
     for obs_path, gcp_path in pairs:
         obs_grid, r_sc_file = load_observation_file(obs_path)
         obs_los = observation_los_vectors(obs_path, los_vectors, obs_grid.data.shape[1])
@@ -1231,6 +1259,10 @@ def _run_image_matching_for_pairs(
             },
         )
         datasets.append(ds)
+        if keep_images:
+            chip = chip_image_dataset(obs_grid, gcp_grid, result)
+            chip.attrs.update({"science_key": Path(obs_path).name, "gcp_key": Path(gcp_path).name})
+            chip_images.append(chip)
         logger.info(
             "  Matched %s → %s: lat_err=%.3f km  lon_err=%.3f km  ccv=%.3f",
             Path(obs_path).name,
@@ -1240,7 +1272,7 @@ def _run_image_matching_for_pairs(
             result.ccv_final,
         )
 
-    return datasets
+    return datasets, chip_images
 
 
 def verify(
@@ -1257,6 +1289,7 @@ def verify(
     image_matching_results: list[xr.Dataset] | None = None,
     geolocated_data: xr.Dataset | None = None,
     work_dir: Path | None = None,
+    keep_images: bool = False,
 ) -> VerificationResult:
     """Evaluate current alignment against mission requirements.
 
@@ -1322,6 +1355,13 @@ def verify(
         the mid-frame geometry this records.
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
+    keep_images : bool, optional
+        Keep the images behind each match in
+        :attr:`VerificationResult.chip_images` (observed, emulated and
+        reference images; see
+        :func:`~curryer.correction.image_match.chip_image_dataset`).  Only
+        for the *gcp_pairs* and *observation_paths* modes, which load the
+        images.  A GCP chip can be tens of MB.
 
     Returns
     -------
@@ -1342,7 +1382,9 @@ def verify(
         pairing (including a missing file; the original exception is chained
         as ``__cause__``); when an observation file carries no valid
         spacecraft position; when a GCP chip centre lies outside its
-        observation grid; or when image matching produces no results.
+        observation grid; when image matching produces no results; or when
+        *keep_images* is set with *image_matching_results* or
+        *geolocated_data*.
     FileNotFoundError
         If *los_file* or *psf_file* does not exist, if *gcp_directory* does
         not exist in *observation_paths* mode, or if a file listed in
@@ -1371,6 +1413,12 @@ def verify(
     # Step 1: Obtain image-matching results
     # ------------------------------------------------------------------
     source_mapping: list[tuple[str, str]] = []
+    chip_images: list[xr.Dataset] | None = None
+    if keep_images and (image_matching_results is not None or geolocated_data is not None):
+        raise ValueError(
+            "keep_images requires the gcp_pairs or observation_paths mode; "
+            "image_matching_results and geolocated_data do not carry the matched images."
+        )
 
     if image_matching_results is not None:
         if not image_matching_results:
@@ -1469,12 +1517,8 @@ def verify(
             pairs.append((str(obs_p), str(gcp_p)))
 
         logger.info("Running image matching on %d explicit observation/GCP pair(s)", len(pairs))
-        matched = _run_image_matching_for_pairs(
-            pairs,
-            str(los_file),
-            str(psf_file),
-            setup,
-        )
+        matched, chips = _run_image_matching_for_pairs(pairs, str(los_file), str(psf_file), setup, keep_images)
+        chip_images = chips if keep_images else None
         if not matched:
             raise ValueError("Image matching produced no results for the supplied gcp_pairs.")
         source_mapping = _build_source_mapping(matched)
@@ -1518,12 +1562,8 @@ def verify(
                 f"No observations could be paired with GCP chips in '{gcp_dir}' (pattern: '{gcp_pattern}')."
             )
 
-        matched = _run_image_matching_for_pairs(
-            raw_pairs,
-            str(los_file),
-            str(psf_file),
-            setup,
-        )
+        matched, chips = _run_image_matching_for_pairs(raw_pairs, str(los_file), str(psf_file), setup, keep_images)
+        chip_images = chips if keep_images else None
         if not matched:
             raise ValueError("Image matching produced no results for the observation/GCP pairs.")
         source_mapping = _build_source_mapping(matched)
@@ -1551,6 +1591,8 @@ def verify(
     # Step 4: Per-GCP detail
     # ------------------------------------------------------------------
     per_gcp_errors = _build_per_gcp_errors(aggregate_stats, source_mapping, requirements)
+    for index, chip in enumerate(chip_images or []):
+        chip.attrs["gcp_index"] = index
 
     # ------------------------------------------------------------------
     # Step 5: Warnings + summary table
@@ -1592,6 +1634,7 @@ def verify(
         files_processed=files_processed,
         elapsed_time_s=elapsed_time_s,
         config_snapshot=config_snapshot,
+        chip_images=chip_images,
     )
 
 
@@ -1650,3 +1693,214 @@ def compare_results(before: VerificationResult, after: VerificationResult) -> st
     lines.append(f"{'Overall':<30} {b_verdict:>12} {a_verdict:>12}")
 
     return "\n".join(lines)
+
+
+# ============================================================================
+# Saving, loading and review
+# ============================================================================
+
+_SUMMARY_COLUMNS = (
+    "gcp_index",
+    "science_key",
+    "gcp_key",
+    "status",
+    "rejection_reason",
+    "review",
+    "nadir_equiv_error_m",
+    "along_track_error_m",
+    "cross_track_error_m",
+    "lat_error_deg",
+    "lon_error_deg",
+    "correlation",
+    "correlation_secondary",
+    "off_nadir_angle_deg",
+)
+_REVIEW_DECISIONS = ("accept", "reject")
+
+
+def save_verification(result: VerificationResult, out_dir: Path) -> None:
+    """Write *result* to *out_dir* for review and for :func:`load_verification`.
+
+    Files written:
+
+    - ``result.json``: the result without ``aggregate_stats`` and ``chip_images``.
+    - ``aggregate_stats.nc``: :attr:`VerificationResult.aggregate_stats`.
+    - ``summary.csv``: one row per GCP (columns ``gcp_index``, ``science_key``,
+      ``gcp_key``, ``status``, ``rejection_reason``, ``review``,
+      ``nadir_equiv_error_m``, ``along_track_error_m``,
+      ``cross_track_error_m``, ``lat_error_deg``, ``lon_error_deg``,
+      ``correlation``, ``correlation_secondary``, ``off_nadir_angle_deg``;
+      empty cells for ``None``).  A reviewer fills ``review`` with ``accept``
+      or ``reject``; see :func:`read_review_decisions`.
+    - ``chips/gcp_<index>.nc``: one file per entry of
+      :attr:`VerificationResult.chip_images`, when present.
+
+    Parameters
+    ----------
+    result : VerificationResult
+        Result to save.
+    out_dir : Path
+        Directory; created if absent.
+
+    Raises
+    ------
+    FileExistsError
+        If *out_dir* already holds a ``result.json``.
+    """
+    out_dir = Path(out_dir)
+    if (out_dir / "result.json").exists():
+        raise FileExistsError(f"{out_dir} already holds a saved verification result.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    (out_dir / "result.json").write_text(result.model_dump_json(indent=2, exclude={"aggregate_stats"}))
+    result.aggregate_stats.to_netcdf(out_dir / "aggregate_stats.nc")
+    rows = [err.model_dump(include=set(_SUMMARY_COLUMNS)) for err in result.per_gcp_errors]
+    pd.DataFrame(rows, columns=list(_SUMMARY_COLUMNS)).to_csv(out_dir / "summary.csv", index=False)
+    if result.chip_images is not None:
+        (out_dir / "chips").mkdir()
+        for chip in result.chip_images:
+            chip.to_netcdf(out_dir / "chips" / f"gcp_{chip.attrs['gcp_index']:04d}.nc")
+
+
+def load_verification(out_dir: Path) -> VerificationResult:
+    """Load a result written by :func:`save_verification`.
+
+    Parameters
+    ----------
+    out_dir : Path
+        Directory written by :func:`save_verification`.
+
+    Returns
+    -------
+    VerificationResult
+        With ``aggregate_stats`` and, when ``chips/`` exists, ``chip_images``
+        in ``gcp_index`` order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``result.json`` or ``aggregate_stats.nc`` is missing.
+    """
+    out_dir = Path(out_dir)
+    data = json.loads((out_dir / "result.json").read_text())
+    data["aggregate_stats"] = xr.load_dataset(out_dir / "aggregate_stats.nc")
+    chip_dir = out_dir / "chips"
+    if chip_dir.is_dir():
+        data["chip_images"] = sorted(
+            (xr.load_dataset(path) for path in chip_dir.glob("gcp_*.nc")), key=lambda chip: chip.attrs["gcp_index"]
+        )
+    return VerificationResult.model_validate(data)
+
+
+def read_review_decisions(summary_csv: Path) -> dict[int, Literal["accept", "reject"]]:
+    """Read the reviewer's decisions from a ``summary.csv`` written by :func:`save_verification`.
+
+    Parameters
+    ----------
+    summary_csv : Path
+        CSV with ``gcp_index`` and ``review`` columns.  An empty ``review``
+        cell means no decision.
+
+    Returns
+    -------
+    dict of int to {"accept", "reject"}
+        ``gcp_index`` to decision, for the rows with one.
+
+    Raises
+    ------
+    ValueError
+        If the CSV lacks either column, or a ``review`` cell holds anything
+        but ``accept``, ``reject`` or nothing.
+    """
+    table = pd.read_csv(summary_csv, dtype={"review": str}, keep_default_na=False)
+    missing = {"gcp_index", "review"} - set(table.columns)
+    if missing:
+        raise ValueError(f"{summary_csv} has no {sorted(missing)} column(s).")
+    decisions: dict[int, Literal["accept", "reject"]] = {}
+    for index, decision in zip(table["gcp_index"], table["review"].str.strip(), strict=True):
+        if decision == "":
+            continue
+        if decision not in _REVIEW_DECISIONS:
+            raise ValueError(
+                f"{summary_csv}: gcp_index {index} has review {decision!r}; expected 'accept', 'reject' or empty."
+            )
+        decisions[int(index)] = decision
+    return decisions
+
+
+def apply_review(result: VerificationResult, decisions: dict[int, Literal["accept", "reject"]]) -> VerificationResult:
+    """Apply reviewer decisions and recompute the statistics without re-matching.
+
+    ``"accept"`` brings a GCP into the statistics (status ``pass`` / ``fail``
+    by its error); ``"reject"`` takes it out (status ``rejected``, reason
+    ``"rejected in review"`` unless the match-quality gates already rejected
+    it).  GCPs without a decision keep their current state.
+
+    Parameters
+    ----------
+    result : VerificationResult
+        Result from :func:`verify` or :func:`load_verification`.
+    decisions : dict of int to {"accept", "reject"}
+        ``gcp_index`` to decision, e.g. from :func:`read_review_decisions`.
+
+    Returns
+    -------
+    VerificationResult
+        A new result: ``aggregate_stats`` gains a ``review`` variable and
+        statistics over the accepted GCPs (none when every one is rejected);
+        ``per_gcp_errors``, ``passed``, ``percent_within_threshold``,
+        ``warnings`` and ``summary_table`` are recomputed.  *result* is not
+        modified.
+
+    Raises
+    ------
+    ValueError
+        If a decision names a ``gcp_index`` not in *result*, or is not
+        ``"accept"`` or ``"reject"``.
+    """
+    stats = result.aggregate_stats.copy(deep=True)
+    labels = [int(label) for label in stats["measurement"].values]
+    unknown = sorted(set(decisions) - set(labels))
+    if unknown:
+        raise ValueError(f"Review decisions for gcp_index {unknown}, which are not in the result.")
+    invalid = {index: decision for index, decision in decisions.items() if decision not in _REVIEW_DECISIONS}
+    if invalid:
+        raise ValueError(f"Review decisions must be 'accept' or 'reject', got {invalid}.")
+
+    accepted = stats["accepted"].values.copy()
+    reasons = stats["rejection_reason"].values.astype(object)
+    reviews = stats["review"].values.astype(object) if "review" in stats.data_vars else np.full(len(labels), "", object)
+    for i, label in enumerate(labels):
+        decision = decisions.get(label)
+        if decision == "accept":
+            accepted[i], reasons[i] = True, ""
+        elif decision == "reject" and accepted[i]:
+            accepted[i], reasons[i] = False, "rejected in review"
+        if decision is not None:
+            reviews[i] = decision
+    stats["accepted"] = (["measurement"], accepted)
+    stats["rejection_reason"] = (["measurement"], reasons.astype(str))
+    stats["review"] = (["measurement"], reviews.astype(str))
+
+    processor = ErrorStatsProcessor(config=ErrorStatsConfig())
+    for key in processor._calculate_statistics(np.zeros(1)):
+        stats.attrs.pop(key, None)
+    stats.attrs.update(n_accepted=int(accepted.sum()), n_rejected=int((~accepted).sum()))
+    stats = _with_statistics(processor, stats)
+
+    requirements = result.requirements
+    passed, percent_within = _check_threshold(stats, requirements)
+    source_mapping = [
+        (err.science_key, err.gcp_key) for err in sorted(result.per_gcp_errors, key=lambda e: e.gcp_index)
+    ]
+    per_gcp_errors = _build_per_gcp_errors(stats, source_mapping, requirements)
+    return result.model_copy(
+        update={
+            "passed": passed,
+            "percent_within_threshold": percent_within,
+            "aggregate_stats": stats,
+            "per_gcp_errors": per_gcp_errors,
+            "warnings": _generate_warnings(passed, percent_within, requirements),
+            "summary_table": _format_summary_table(per_gcp_errors, requirements, percent_within, passed),
+        }
+    )
