@@ -48,11 +48,12 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from curryer import spicetime
 from curryer import spicierpy as sp
@@ -66,7 +67,7 @@ from curryer.correction.image_io import (
     load_optical_psf,
 )
 from curryer.correction.image_match import integrated_image_match
-from curryer.correction.psf import validate_spacecraft_ecef_m
+from curryer.correction.psf import ground_track_azimuth_deg, validate_spacecraft_ecef_m
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,28 @@ class GCPError(BaseModel):
         Longitude error in degrees (positive = eastward shift).
     nadir_equiv_error_m : float or None
         Nadir-equivalent total geolocation error in meters, or ``None`` when
-        error-stats processing was not performed.
+        error-stats processing was not performed.  Computed for rejected
+        measurements too, for review; they do not enter the statistics.
     correlation : float or None
         Image-matching correlation score, or ``None`` when not available.
     passed : bool
-        Whether this measurement satisfies the per-measurement threshold.
+        ``True`` when :attr:`status` is ``"pass"``; a contradiction raises.
+    status : {"pass", "fail", "rejected"}
+        ``"rejected"`` when the match failed a match-quality gate
+        (``minimum_correlation`` / ``minimum_peak_margin``); otherwise
+        ``"pass"`` or ``"fail"`` against the per-measurement threshold.
+    rejection_reason : str or None
+        The gates failed, with values and thresholds; given exactly when
+        :attr:`status` is ``"rejected"``.
+    correlation_secondary : float or None
+        Strongest competing correlation away from the peak, or ``None`` when
+        not available or when no competing point exists.
+    off_nadir_angle_deg : float or None
+        Off-nadir viewing angle of the measurement, degrees.
+    along_track_error_m, cross_track_error_m : float or None
+        Ground error along the ground-track direction and 90° clockwise from
+        it, meters, or ``None`` when the matching path did not record the
+        ground-track azimuth.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -112,6 +130,20 @@ class GCPError(BaseModel):
     nadir_equiv_error_m: float | None = None
     correlation: float | None = None
     passed: bool
+    status: Literal["pass", "fail", "rejected"]
+    rejection_reason: str | None = None
+    correlation_secondary: float | None = None
+    off_nadir_angle_deg: float | None = None
+    along_track_error_m: float | None = None
+    cross_track_error_m: float | None = None
+
+    @model_validator(mode="after")
+    def _check_status(self) -> GCPError:
+        if self.passed != (self.status == "pass"):
+            raise ValueError(f"passed={self.passed} contradicts status={self.status!r}.")
+        if (self.status == "rejected") != (self.rejection_reason is not None):
+            raise ValueError("rejection_reason must be given exactly when status is 'rejected'.")
+        return self
 
 
 class VerificationResult(BaseModel):
@@ -234,12 +266,21 @@ def _run_error_stats(
     Returns
     -------
     xr.Dataset
-        Processed dataset with ``nadir_equiv_total_error_m`` and related
-        intermediate variables.
+        Every measurement with ``nadir_equiv_total_error_m``, ``accepted``,
+        ``rejection_reason`` and related variables; statistics over the
+        accepted measurements as attributes, or none when every measurement
+        was rejected.
     """
     error_config = ErrorStatsConfig.from_setup(setup)
     processor = ErrorStatsProcessor(config=error_config)
-    return processor.process_geolocation_errors(aggregated)
+    per_measurement = processor.compute_nadir_equivalent_errors(aggregated)
+    if not per_measurement["accepted"].values.any():
+        logger.warning(
+            "All %d matched measurements were rejected by the match-quality gates.",
+            per_measurement.sizes["measurement"],
+        )
+        return per_measurement
+    return processor.add_statistics(per_measurement)
 
 
 def _check_threshold(
@@ -248,8 +289,9 @@ def _check_threshold(
 ) -> tuple[bool, float]:
     """Evaluate whether performance meets the threshold requirement.
 
-    Uses ``nadir_equiv_total_error_m`` from the
-    :class:`~curryer.correction.error_stats.ErrorStatsProcessor` output.
+    Uses ``nadir_equiv_total_error_m`` of the accepted measurements in the
+    :class:`~curryer.correction.error_stats.ErrorStatsProcessor` output; with
+    none accepted the check fails at 0 %.
 
     Parameters
     ----------
@@ -263,7 +305,7 @@ def _check_threshold(
     tuple[bool, float]
         ``(passed, percent_within_threshold)``
     """
-    nadir_errors = aggregate_stats["nadir_equiv_total_error_m"].values
+    nadir_errors = aggregate_stats["nadir_equiv_total_error_m"].values[aggregate_stats["accepted"].values]
     if len(nadir_errors) == 0:
         return False, 0.0
     count_below = int(np.sum(nadir_errors < requirements.performance_threshold_m))
@@ -320,11 +362,12 @@ def _build_per_gcp_errors(
         If shorter than the number of measurements the remainder fall back to
         ``("sci_{i}", "gcp_{i}")``.
     requirements : RequirementsConfig
-        Used for per-measurement pass/fail evaluation.
+        Used for per-measurement pass/fail evaluation of accepted measurements.
 
     Returns
     -------
     list[GCPError]
+        Accepted and rejected measurements alike, in measurement order.
     """
     n = aggregate_stats.sizes.get("measurement", 0)
     if n == 0:
@@ -333,16 +376,16 @@ def _build_per_gcp_errors(
     nadir_errors = aggregate_stats["nadir_equiv_total_error_m"].values
     lat_errors = aggregate_stats["lat_error_deg"].values
     lon_errors = aggregate_stats["lon_error_deg"].values
+    accepted = aggregate_stats["accepted"].values
+    reasons = aggregate_stats["rejection_reason"].values
 
-    # Optional correlation variable (several possible names)
-    correlation_values: np.ndarray | None = None
-    for corr_var in ("correlation", "ccv", "im_ccv"):
-        if corr_var in aggregate_stats.data_vars:
-            correlation_values = aggregate_stats[corr_var].values
-            break
+    def _finite_or_none(name: str, i: int) -> float | None:
+        if name not in aggregate_stats.data_vars:
+            return None
+        value = float(aggregate_stats[name].values[i])
+        return value if np.isfinite(value) else None
 
-    # Measurement labels survive correlation filtering (``where(drop=True)``), so
-    # they index the unfiltered source_mapping even after measurements are dropped.
+    corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in aggregate_stats.data_vars), "")
     labels = aggregate_stats["measurement"].values
 
     errors: list[GCPError] = []
@@ -353,11 +396,12 @@ def _build_per_gcp_errors(
         else:
             sci_key, gcp_key = f"sci_{label}", f"gcp_{label}"
 
-        corr: float | None = None
-        if correlation_values is not None:
-            raw = float(correlation_values[i])
-            if np.isfinite(raw):  # type: ignore[arg-type]
-                corr = raw
+        if not accepted[i]:
+            status = "rejected"
+        elif float(nadir_errors[i]) < requirements.performance_threshold_m:
+            status = "pass"
+        else:
+            status = "fail"
 
         errors.append(
             GCPError(
@@ -367,8 +411,14 @@ def _build_per_gcp_errors(
                 lat_error_deg=float(lat_errors[i]),
                 lon_error_deg=float(lon_errors[i]),
                 nadir_equiv_error_m=float(nadir_errors[i]),
-                correlation=corr,
-                passed=float(nadir_errors[i]) < requirements.performance_threshold_m,
+                correlation=_finite_or_none(corr_name, i),
+                passed=status == "pass",
+                status=status,
+                rejection_reason=str(reasons[i]) if status == "rejected" else None,
+                correlation_secondary=_finite_or_none("correlation_secondary", i),
+                off_nadir_angle_deg=_finite_or_none("off_nadir_angle_deg", i),
+                along_track_error_m=_finite_or_none("along_track_error_m", i),
+                cross_track_error_m=_finite_or_none("cross_track_error_m", i),
             )
         )
     return errors
@@ -431,10 +481,12 @@ def _format_summary_table(
         ├──────┬────────────┬────────────┬──────────┬──────────┤
         │  GCP │ Lat err(°) │ Lon err(°) │ Nadir(m) │  Status  │
         ├──────┼────────────┼────────────┼──────────┼──────────┤
-        │    0 │    0.00123 │  -0.00045  │   145.2  │    ✓    │
-        │    1 │    0.00567 │   0.00234  │   312.8  │    ✗    │
+        │    0 │    0.00123 │  -0.00045  │   145.2  │   PASS   │
+        │    1 │    0.00567 │   0.00234  │   312.8  │   FAIL   │
+        │    2 │    0.01020 │   0.00810  │  1240.6  │ REJECTED │
         ├──────┴────────────┴────────────┴──────────┴──────────┤
-        │ Result: PASSED — 60.0% within 250.0m (req: 39.0%)   │
+        │ Result: FAILED — 50.0% within 250.0m (req: 60.0%)    │
+        │ 2 accepted, 1 rejected by match-quality gates        │
         └──────────────────────────────────────────────────────┘
 
     Parameters
@@ -458,7 +510,7 @@ def _format_summary_table(
     w_lat = 12
     w_lon = 12
     w_nadir = 10
-    w_status = 8
+    w_status = 10
     col_inner = w_gcp + w_lat + w_lon + w_nadir + w_status + 4  # 4 column separators
 
     title = " Verification Summary"
@@ -469,8 +521,11 @@ def _format_summary_table(
         f"(req: {requirements.performance_spec_percent}%)"
     )
 
+    n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
+    counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected by match-quality gates"
+
     # inner_width must accommodate columns, title, AND footer
-    inner_width = max(col_inner, len(title) + 2, len(footer_text))
+    inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
 
     def _h_sep(left, mid, right, fill="─"):
         """Build a column-width separator, then pad to inner_width."""
@@ -512,12 +567,13 @@ def _format_summary_table(
             c_nadir = f"{err.nadir_equiv_error_m:.1f}".center(w_nadir)
         else:
             c_nadir = "N/A".center(w_nadir)
-        c_status = ("  ✓  " if err.passed else "  ✗  ").center(w_status)
+        c_status = err.status.upper().center(w_status)
         lines.append(f"│{c_gcp}│{c_lat}│{c_lon}│{c_nadir}│{c_status}│")
 
     # Footer
     lines.append("├" + "─" * inner_width + "┤")
     lines.append("│" + footer_text.ljust(inner_width) + "│")
+    lines.append("│" + counts_text.ljust(inner_width) + "│")
     lines.append("└" + "─" * inner_width + "┘")
 
     return "\n".join(lines)
@@ -699,7 +755,9 @@ def image_matching(
     xr.Dataset
         Error measurements: ``lat_error_deg``, ``lon_error_deg``, ``correlation``
         (final normalized cross-correlation coefficient, dimensionless, at most
-        1), geometry, and metadata.
+        1), ``correlation_secondary``, ``track_azimuth_deg`` (ground-track
+        azimuth at the GCP centre, :func:`~curryer.correction.psf.ground_track_azimuth_deg`),
+        geometry, and metadata.
 
     Raises
     ------
@@ -710,7 +768,9 @@ def image_matching(
         calibration files are missing; if the mid-frame time cannot be
         determined (no ``frame`` coordinate and no ``setup.geo.time_field``
         telemetry column); or if ``setup.geo.instrument_name`` is not set.
-        All of these are checked before the image match runs.
+        All of these are checked before the image match runs.  After it, if
+        the GCP centre lies outside the geolocated grid (no ground-track
+        azimuth).
     spiceypy.utils.exceptions.SpiceyError
         If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
         not furnished or no coverage at the mid-frame time).
@@ -835,6 +895,10 @@ def image_matching(
             "gcp_alt": (["measurement"], [0.0]),
             "correlation": (["measurement"], [result.ccv_final]),
             "correlation_secondary": (["measurement"], [result.ccv_secondary]),
+            "track_azimuth_deg": (
+                ["measurement"],
+                [ground_track_azimuth_deg(subimage, gcp_center_lat, gcp_center_lon)],
+            ),
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )
@@ -874,13 +938,13 @@ def _aggregate_image_matching_results(
         Combined dataset with a single ``measurement`` dimension. Per-result
         correlation scores, named ``correlation``, ``ccv`` or ``im_ccv`` (first
         present, in that order), are combined into ``correlation``, and
-        ``correlation_secondary`` is carried through.
+        ``correlation_secondary`` and ``track_azimuth_deg`` are carried through.
 
     Raises
     ------
     ValueError
-        If a correlation variable or ``correlation_secondary`` is present in
-        some results but not all.
+        If a correlation variable, ``correlation_secondary`` or
+        ``track_azimuth_deg`` is present in some results but not all.
     """
     logger.info("Aggregating %d image matching results", len(image_matching_results))
 
@@ -898,6 +962,7 @@ def _aggregate_image_matching_results(
     all_gcp_alts: list[float] = []
     all_correlations: list[float] = []
     all_secondary: list[float] = []
+    all_azimuths: list[float] = []
 
     for result in image_matching_results:
         n = len(result["lat_error_deg"])
@@ -920,6 +985,8 @@ def _aggregate_image_matching_results(
             all_correlations.extend(result[corr_name].values)
         if "correlation_secondary" in result:
             all_secondary.extend(result["correlation_secondary"].values)
+        if "track_azimuth_deg" in result:
+            all_azimuths.extend(result["track_azimuth_deg"].values)
 
     n_total = len(all_lat_errors)
     aggregated = xr.Dataset(
@@ -960,6 +1027,13 @@ def _aggregate_image_matching_results(
                 f"({len(all_secondary)} of {n_total} measurements); it must be in all or none."
             )
         aggregated["correlation_secondary"] = (["measurement"], np.array(all_secondary))
+    if all_azimuths:
+        if len(all_azimuths) != n_total:
+            raise ValueError(
+                f"'track_azimuth_deg' is present in only some image-matching results "
+                f"({len(all_azimuths)} of {n_total} measurements); it must be in all or none."
+            )
+        aggregated["track_azimuth_deg"] = (["measurement"], np.array(all_azimuths))
 
     aggregated.attrs["source_gcp_pairs"] = len(image_matching_results)
     aggregated.attrs["total_measurements"] = n_total
@@ -1066,7 +1140,9 @@ def _run_image_matching_for_pairs(
     Returns
     -------
     list[xr.Dataset]
-        One dataset per pair, in *pairs* order.
+        One dataset per pair, in *pairs* order, with ``track_azimuth_deg``
+        (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the GCP
+        centre) alongside the errors, correlation and geometry.
 
     Raises
     ------
@@ -1086,7 +1162,7 @@ def _run_image_matching_for_pairs(
         observation_los_vectors,
     )
     from .image_match import integrated_image_match
-    from .psf import resolve_spacecraft_ecef
+    from .psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
 
     sc_pos_name = setup.spacecraft_position_name
     boresight_name = setup.boresight_name
@@ -1106,6 +1182,7 @@ def _run_image_matching_for_pairs(
         gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
 
         r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(obs_grid, r_sc_file, gcp_lat, gcp_lon)
+        track_azimuth = ground_track_azimuth_deg(obs_grid, gcp_lat, gcp_lon)
 
         result = integrated_image_match(
             subimage=obs_grid,
@@ -1135,6 +1212,7 @@ def _run_image_matching_for_pairs(
                 t_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
                 "correlation": (["measurement"], [result.ccv_final]),
                 "correlation_secondary": (["measurement"], [result.ccv_secondary]),
+                "track_azimuth_deg": (["measurement"], [track_azimuth]),
             },
             coords={
                 "measurement": [0],

@@ -368,15 +368,15 @@ The parameter-variation experiment, varied between runs. Use
 
 ### Kernels & instrument — `setup.geo`
 
-| Field                 | Type            | Notes                                                                                                                                                                                                             |
-| --------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                         |
-| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                 |
-| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                            |
-| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                 |
-| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                           |
-| `minimum_correlation` | `float \| None` | Image-matching quality filter (0.0–1.0); `None` disables. When set, results must carry `correlation` or verification raises                                                                                       |
-| `minimum_peak_margin` | `float \| None` | Match-distinctness filter: drops measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises |
+| Field                 | Type            | Notes                                                                                                                                                                                                              |
+| --------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                          |
+| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                  |
+| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                             |
+| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                  |
+| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                            |
+| `minimum_correlation` | `float \| None` | Match-quality gate (0.0–1.0): measurements with a lower `correlation` are rejected (kept, flagged, left out of the statistics); `None` disables. When set, results must carry `correlation` or verification raises |
+| `minimum_peak_margin` | `float \| None` | Match-distinctness gate: rejects measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises  |
 
 ### Parameters — `sweep.parameters[]`
 
@@ -506,17 +506,39 @@ default.
 ```python
 result = verify(setup, image_matching_results=datasets)
 
-print(result.summary_table)         # ASCII table: per-GCP pass/fail
+print(result.summary_table)         # ASCII table: per-GCP status
 print("Passed:", result.passed)
 print(f"Within threshold: {result.percent_within_threshold:.1f}%")
 
 for err in result.per_gcp_errors:
-    print(f"GCP {err.gcp_index}: nadir_error={err.nadir_equiv_error_m:.1f} m  passed={err.passed}")
+    print(
+        f"GCP {err.gcp_index}: {err.status:8s} nadir_error={err.nadir_equiv_error_m:.1f} m  "
+        f"along={err.along_track_error_m} m  cross={err.cross_track_error_m} m  {err.rejection_reason or ''}"
+    )
 
 # Serialise to JSON (xr.Dataset field must be excluded)
 json_str = result.model_dump_json(exclude={"aggregate_stats"})
 result.aggregate_stats.to_netcdf("verification_stats.nc")
 ```
+
+Every matched GCP appears in `per_gcp_errors` with a `status`:
+
+| Status     | Meaning                                                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pass`     | Accepted match, nadir-equivalent error below `performance_threshold_m`                                                                                      |
+| `fail`     | Accepted match, error at or above the threshold                                                                                                             |
+| `rejected` | The match failed `minimum_correlation` or `minimum_peak_margin` (e.g. cloud or a featureless scene); `rejection_reason` names the gate, value and threshold |
+
+Rejected GCPs keep their computed errors so they can be reviewed, but only accepted GCPs
+enter `percent_within_threshold` and the statistics in `aggregate_stats.attrs`
+(`total_measurements` counts accepted GCPs; `n_matched`, `n_accepted` and `n_rejected`
+give the split). When every GCP is rejected, `verify()` still returns the result, with
+`passed` False and no statistics.
+
+`along_track_error_m` / `cross_track_error_m` resolve the error along the ground-track
+direction (the direction of increasing observation row, i.e. frame time, at the GCP) and
+90° clockwise from it. A timing error shows up along track; a roll error across track.
+They are `None` when the matching path did not record `track_azimuth_deg`.
 
 ### Comparing Before and After
 
