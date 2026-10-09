@@ -107,7 +107,7 @@ from .image_io import (
     save_image_grid,
 )
 from .io import resolve_path
-from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
+from .pipeline import compute_error_stats, load_loop_observation, loop, run_correction, run_image_matching
 from .results import CorrectionResult, ParameterSetResult
 from .verification import (
     GCPError,
@@ -116,6 +116,7 @@ from .verification import (
     compare_results,
     load_verification,
     match_geolocated_to_gcp_files,
+    match_observation,
     read_review_decisions,
     save_verification,
     verify,
@@ -161,10 +162,12 @@ __all__ = [
     "load_sweep_from_json",
     # Pipeline entry points
     "loop",
+    "load_loop_observation",
     "run_correction",
     "compute_error_stats",
     "run_image_matching",
     "match_geolocated_to_gcp_files",
+    "match_observation",
     # Data structures
     "ImageGrid",
     "PSFGrid",

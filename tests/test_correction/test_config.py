@@ -125,39 +125,70 @@ def minimal_sweep(param_constant) -> Sweep:
 # ===========================================================================
 
 
+class TestParameterUnits:
+    """ParameterConfig accepts only the units its type converts."""
+
+    @pytest.mark.parametrize(
+        ("ptype", "units"),
+        [
+            (ParameterType.CONSTANT_KERNEL, "degrees"),
+            (ParameterType.CONSTANT_KERNEL, "radians"),
+            (ParameterType.OFFSET_KERNEL, "degrees"),
+            (ParameterType.OFFSET_TIME, "ms"),
+        ],
+    )
+    def test_unknown_units_raise(self, ptype, units):
+        with pytest.raises(ValidationError, match="units must be one of"):
+            ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="f", units=units))
+
+    @pytest.mark.parametrize(
+        ("ptype", "units"),
+        [
+            (ParameterType.CONSTANT_KERNEL, "arcseconds"),
+            (ParameterType.OFFSET_KERNEL, "radians"),
+            (ParameterType.OFFSET_TIME, "microseconds"),
+            (ParameterType.OFFSET_TIME, None),
+        ],
+    )
+    def test_known_units_accepted(self, ptype, units):
+        ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="f", units=units))
+
+
 class TestDataConfig:
     def test_defaults(self):
         dc = DataConfig()
         assert dc.file_format == "csv"
-        assert dc.time_scale_factor == 1.0
+        assert dc.position_columns is None
 
     def test_custom_values(self):
-        dc = DataConfig(file_format="netcdf", time_scale_factor=1e6)
+        dc = DataConfig(file_format="netcdf")
         assert dc.file_format == "netcdf"
-        assert dc.time_scale_factor == 1e6
+
+    def test_unknown_field_raises(self):
+        """Removed fields (e.g. the former science time_scale_factor) are rejected, not ignored."""
+        with pytest.raises(ValidationError, match="time_scale_factor"):
+            DataConfig(file_format="netcdf", time_scale_factor=1e6)
 
     def test_invalid_file_format(self):
         with pytest.raises(ValidationError):
             DataConfig(file_format="xml")
 
     def test_json_round_trip(self):
-        dc = DataConfig(file_format="hdf5", time_scale_factor=1.0)
+        dc = DataConfig(file_format="hdf5")
         restored = DataConfig.model_validate_json(dc.model_dump_json())
         assert restored.file_format == "hdf5"
-        assert restored.time_scale_factor == 1.0
 
     def test_embedded_in_setup(self, geo):
         """DataConfig round-trips through GeolocationSetup serialisation."""
         setup = GeolocationSetup(
             geo=geo,
             requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
-            data_config=DataConfig(file_format="csv", time_scale_factor=1e6),
+            data_config=DataConfig(file_format="csv"),
         )
         json_str = setup.model_dump_json()
         restored = GeolocationSetup.model_validate_json(json_str)
         assert restored.data_config is not None
         assert restored.data_config.file_format == "csv"
-        assert restored.data_config.time_scale_factor == 1e6
 
     def test_none_data_field_is_valid(self, geo):
         """GeolocationSetup.data_config defaults to None."""
@@ -454,7 +485,7 @@ class TestSetupSweepOutput:
         return GeolocationSetup(
             geo=self._geo(),
             requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
-            data_config=DataConfig(file_format="netcdf", time_scale_factor=1.0),
+            data_config=DataConfig(file_format="netcdf"),
             calibration=CalibrationFiles(psf_file=Path("psf.mat"), los_vectors_file=Path("los.mat")),
             spacecraft_position_name="riss_ctrs",
             boresight_name="bhat_hs",
@@ -490,6 +521,7 @@ class TestSetupSweepOutput:
         assert setup.transformation_matrix_name == "t_inst2ref"
         assert setup.calibration is None
         assert setup.image_matching_func is None
+        assert setup.observation_matching_func is None
 
     def test_setup_requires_geo_and_requirements(self):
         with pytest.raises(ValidationError):
@@ -498,8 +530,10 @@ class TestSetupSweepOutput:
     def test_setup_json_round_trip_excludes_callable(self):
         setup = self._setup()
         setup.image_matching_func = lambda *a, **k: None  # callable hook
+        setup.observation_matching_func = lambda *a, **k: None
         json_str = setup.model_dump_json()
         assert "image_matching_func" not in json_str
+        assert "observation_matching_func" not in json_str
         restored = GeolocationSetup.model_validate_json(json_str)
         assert restored.geo.instrument_name == "CPRS_HYSICS"
         assert restored.requirements.performance_threshold_m == 250.0
@@ -536,7 +570,7 @@ class TestSetupSweepOutput:
                     "time_field": "corrected_timestamp",
                 },
                 "requirements": {"performance_threshold_m": 250.0, "performance_spec_percent": 39.0},
-                "data_config": {"file_format": "netcdf", "time_scale_factor": 1.0},
+                "data_config": {"file_format": "netcdf"},
                 "calibration": {"psf_file": "psf.mat", "los_vectors_file": "los.mat"},
                 "spacecraft_position_name": "riss_ctrs",
             },

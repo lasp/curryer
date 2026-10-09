@@ -67,14 +67,15 @@ from curryer.correction.error_stats import (
     weighted_percent_below,
     weighted_statistics,
 )
+from curryer.correction.grid_types import ImageGrid
 from curryer.correction.image_io import (
     geolocated_to_image_grid,
     load_image_grid,
     load_los_vectors,
     load_optical_psf,
 )
-from curryer.correction.image_match import integrated_image_match
-from curryer.correction.psf import ground_track_azimuth_deg, validate_spacecraft_ecef_m
+from curryer.correction.image_match import IntegratedImageMatchResult, integrated_image_match
+from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef, validate_spacecraft_ecef_m
 
 logger = logging.getLogger(__name__)
 
@@ -1221,8 +1222,6 @@ def _run_image_matching_for_pairs(
         :func:`~curryer.correction.psf.resolve_spacecraft_ecef`), or a file
         cannot be read.  No pair is skipped.
     """
-    from curryer.compute.constants import WGS84_SEMI_MAJOR_AXIS_KM  # noqa: PLC0415
-
     from .image_io import (
         load_image_grid,
         load_los_vectors,
@@ -1230,12 +1229,7 @@ def _run_image_matching_for_pairs(
         load_optical_psf,
         observation_los_vectors,
     )
-    from .image_match import chip_image_dataset, integrated_image_match
-    from .psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
-
-    sc_pos_name = setup.spacecraft_position_name
-    boresight_name = setup.boresight_name
-    t_matrix_name = setup.transformation_matrix_name
+    from .image_match import chip_image_dataset
 
     los_vectors = load_los_vectors(los_file)
     optical_psfs = load_optical_psf(psf_file)
@@ -1247,58 +1241,14 @@ def _run_image_matching_for_pairs(
         obs_los = observation_los_vectors(obs_path, los_vectors, obs_grid.data.shape[1])
         gcp_grid = load_image_grid(gcp_path, mat_key="GCP")
 
-        mid_i, mid_j = gcp_grid.mid_indices
-        gcp_lat = float(gcp_grid.lat[mid_i, mid_j])
-        gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
-
-        r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(obs_grid, r_sc_file, gcp_lat, gcp_lon)
-        track_azimuth = ground_track_azimuth_deg(obs_grid, gcp_lat, gcp_lon)
-
-        result = integrated_image_match(
-            subimage=obs_grid,
-            gcp=gcp_grid,
-            r_iss_midframe_m=r_iss_m,
-            los_vectors_hs=obs_los,
-            optical_psfs=optical_psfs,
-            geolocation_config=setup.psf_sampling,
-            search_config=setup.search,
-        )
-
-        # Convert km errors to degrees on the WGS-84 equatorial radius, the same radius
-        # ErrorStatsProcessor uses to convert them back to meters.
-        lat_error_deg = np.rad2deg(result.lat_error_km / WGS84_SEMI_MAJOR_AXIS_KM)
-        lon_radius_km = WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_lat))
-        lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
-
-        ds = xr.Dataset(
+        ds, result = _match_observation(obs_grid, gcp_grid, r_sc_file, obs_los, optical_psfs, setup)
+        ds.attrs.update(
             {
-                "lat_error_deg": (["measurement"], [lat_error_deg]),
-                "lon_error_deg": (["measurement"], [lon_error_deg]),
-                "gcp_lat_deg": (["measurement"], [gcp_lat]),
-                "gcp_lon_deg": (["measurement"], [gcp_lon]),
-                "gcp_alt": (["measurement"], [0.0]),
-                sc_pos_name: (["measurement", "xyz"], [r_iss_m]),
-                boresight_name: (["measurement", "xyz"], [boresight]),
-                t_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
-                "correlation": (["measurement"], [result.ccv_final]),
-                "correlation_secondary": (["measurement"], [result.ccv_secondary]),
-                "track_azimuth_deg": (["measurement"], [track_azimuth]),
-            },
-            coords={
-                "measurement": [0],
-                "xyz": ["x", "y", "z"],
-                "xyz_from": ["x", "y", "z"],
-                "xyz_to": ["x", "y", "z"],
-            },
-            attrs={
-                "lat_error_km": result.lat_error_km,
-                "lon_error_km": result.lon_error_km,
-                "correlation_ccv": result.ccv_final,
                 "obs_file": Path(obs_path).name,
                 "gcp_file": Path(gcp_path).name,
                 "sci_key": Path(obs_path).name,
                 "gcp_key": Path(gcp_path).name,
-            },
+            }
         )
         datasets.append(ds)
         if keep_images:
@@ -1315,6 +1265,125 @@ def _run_image_matching_for_pairs(
         )
 
     return datasets, chip_images
+
+
+def _match_observation(
+    observation: ImageGrid,
+    gcp: ImageGrid,
+    r_spacecraft_m: np.ndarray | None,
+    los_vectors: np.ndarray,
+    optical_psfs: list,
+    setup: GeolocationSetup,
+) -> tuple[xr.Dataset, IntegratedImageMatchResult]:
+    """Match one observation subimage to one GCP chip; return the measurement and the raw result.
+
+    See :func:`match_observation`, which returns only the measurement.
+    """
+    mid_i, mid_j = gcp.mid_indices
+    gcp_lat = float(gcp.lat[mid_i, mid_j])
+    gcp_lon = float(gcp.lon[mid_i, mid_j])
+
+    r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(observation, r_spacecraft_m, gcp_lat, gcp_lon)
+    track_azimuth = ground_track_azimuth_deg(observation, gcp_lat, gcp_lon)
+
+    result = integrated_image_match(
+        subimage=observation,
+        gcp=gcp,
+        r_iss_midframe_m=r_iss_m,
+        los_vectors_hs=los_vectors,
+        optical_psfs=optical_psfs,
+        geolocation_config=setup.psf_sampling,
+        search_config=setup.search,
+    )
+
+    # Convert km errors to degrees on the WGS-84 equatorial radius, the same radius
+    # ErrorStatsProcessor uses to convert them back to meters.
+    lat_error_deg = np.rad2deg(result.lat_error_km / constants.WGS84_SEMI_MAJOR_AXIS_KM)
+    lon_radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM * np.cos(np.deg2rad(gcp_lat))
+    lon_error_deg = result.lon_error_km / (lon_radius_km * np.pi / 180.0)
+
+    ds = xr.Dataset(
+        {
+            "lat_error_deg": (["measurement"], [lat_error_deg]),
+            "lon_error_deg": (["measurement"], [lon_error_deg]),
+            "gcp_lat_deg": (["measurement"], [gcp_lat]),
+            "gcp_lon_deg": (["measurement"], [gcp_lon]),
+            "gcp_alt": (["measurement"], [0.0]),
+            setup.spacecraft_position_name: (["measurement", "xyz"], [r_iss_m]),
+            setup.boresight_name: (["measurement", "xyz"], [boresight]),
+            setup.transformation_matrix_name: (["measurement", "xyz_from", "xyz_to"], t_matrix[np.newaxis]),
+            "correlation": (["measurement"], [result.ccv_final]),
+            "correlation_secondary": (["measurement"], [result.ccv_secondary]),
+            "track_azimuth_deg": (["measurement"], [track_azimuth]),
+        },
+        coords={
+            "measurement": [0],
+            "xyz": ["x", "y", "z"],
+            "xyz_from": ["x", "y", "z"],
+            "xyz_to": ["x", "y", "z"],
+        },
+        attrs={
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation_ccv": result.ccv_final,
+            "final_grid_step_m": result.final_grid_step_m,
+        },
+    )
+    return ds, result
+
+
+def match_observation(
+    observation: ImageGrid,
+    gcp: ImageGrid,
+    r_spacecraft_m: np.ndarray,
+    los_vectors: np.ndarray,
+    optical_psfs: list,
+    setup: GeolocationSetup,
+) -> xr.Dataset:
+    """Match one observation subimage to one GCP chip and return the error measurement.
+
+    The built-in image matching for an observation subimage: the matching used by
+    :func:`verify` for observation files and by the correction loop
+    (:func:`~curryer.correction.pipeline.loop`) on each parameter set's re-geolocated
+    subimage.  A replacement set as ``setup.observation_matching_func`` takes the same
+    arguments and returns a dataset of the same form.
+
+    Parameters
+    ----------
+    observation : ImageGrid
+        Subimage with rows = frames (along track) and columns = detector pixels;
+        ``data`` is radiance, ``lat``/``lon`` in degrees, ``h`` in meters above the
+        WGS-84 ellipsoid (0 when ``None``).
+    gcp : ImageGrid
+        GCP reference chip.
+    r_spacecraft_m : ndarray, shape (3,)
+        Spacecraft ITRF93 (ECEF) position in meters at the observation's middle row.
+    los_vectors : ndarray, shape (n_columns, 3)
+        Instrument-frame line of sight of each observation column.
+    optical_psfs : list
+        Optical PSF entries (:func:`~curryer.correction.image_io.load_optical_psf`).
+    setup : GeolocationSetup
+        Supplies ``psf_sampling``, ``search`` and the spacecraft-state variable names.
+
+    Returns
+    -------
+    xr.Dataset
+        One ``measurement``: ``lat_error_deg``, ``lon_error_deg``, the GCP centre
+        (``gcp_lat_deg``, ``gcp_lon_deg``, ``gcp_alt``), the spacecraft state under the
+        setup's names (position in meters, unit boresight in ECEF, identity rotation),
+        ``correlation``, ``correlation_secondary`` and ``track_azimuth_deg``; attributes
+        ``lat_error_km``, ``lon_error_km``, ``correlation_ccv`` and ``final_grid_step_m``.
+
+    Raises
+    ------
+    ValueError
+        If the spacecraft position or the GCP centre fails
+        :func:`~curryer.correction.psf.resolve_spacecraft_ecef`, or the correlation
+        search samples the subimage outside the chip
+        (:func:`~curryer.correction.search.im_search`).
+    """
+    ds, _ = _match_observation(observation, gcp, r_spacecraft_m, los_vectors, optical_psfs, setup)
+    return ds
 
 
 def verify(

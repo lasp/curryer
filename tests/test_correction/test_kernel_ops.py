@@ -35,12 +35,7 @@ _TLM = pd.DataFrame(
     }
 )
 
-_SCI = pd.DataFrame(
-    {
-        "corrected_timestamp": [1_000_000.0, 2_000_000.0, 3_000_000.0, 4_000_000.0, 5_000_000.0],
-        "measurement": [1.0, 2.0, 3.0, 4.0, 5.0],
-    }
-)
+_FRAME_UGPS = np.array([1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000], dtype=np.int64)
 
 
 @pytest.fixture(scope="module")
@@ -55,16 +50,17 @@ def clarreo_cfg(root_dir):
 # ── apply_offset tests ────────────────────────────────────────────────────────
 
 
-def test_apply_offset_kernel_arcseconds():
-    """OFFSET_KERNEL converts arcseconds to radians and adds the offset."""
+def test_apply_offset_kernel_adds_radians():
+    """OFFSET_KERNEL adds the value as given: load_param_sets has already converted it to radians."""
     p = ParameterConfig(
         ptype=ParameterType.OFFSET_KERNEL,
         config_file=Path("cprs_az.json"),
         spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
     original = _TLM["hps.az_ang_nonlin"].mean()
-    modified = apply_offset(p, 100.0, _TLM)
-    assert modified["hps.az_ang_nonlin"].mean() - original == pytest.approx(np.deg2rad(100.0 / 3600.0), rel=1e-6)
+    offset_rad = np.deg2rad(100.0 / 3600.0)
+    modified = apply_offset(p, offset_rad, _TLM)
+    assert modified["hps.az_ang_nonlin"].mean() - original == pytest.approx(offset_rad, rel=1e-9)
     assert isinstance(modified, pd.DataFrame)
 
 
@@ -75,42 +71,38 @@ def test_apply_offset_kernel_negative():
         spec=dict(field="hps.el_ang_nonlin", units="arcseconds"),
     )
     original = _TLM["hps.el_ang_nonlin"].mean()
-    modified = apply_offset(p, -50.0, _TLM)
-    assert modified["hps.el_ang_nonlin"].mean() - original == pytest.approx(np.deg2rad(-50.0 / 3600.0), rel=1e-6)
+    modified = apply_offset(p, -2.5e-4, _TLM)
+    assert modified["hps.el_ang_nonlin"].mean() - original == pytest.approx(-2.5e-4, rel=1e-9)
 
 
-def test_apply_offset_kernel_missing_field():
-    """Non-existent field: returns original DataFrame unchanged."""
+def test_apply_offset_kernel_missing_field_raises():
+    """A field that is not a telemetry column raises rather than writing an unperturbed kernel."""
     p = ParameterConfig(
         ptype=ParameterType.OFFSET_KERNEL,
         config_file=Path("dummy.json"),
         spec=dict(field="nonexistent_field", units="arcseconds"),
     )
-    modified = apply_offset(p, 10.0, _TLM)
-    pd.testing.assert_frame_equal(modified, _TLM)
+    with pytest.raises(KeyError, match="nonexistent_field"):
+        apply_offset(p, 10.0, _TLM)
 
 
-def test_apply_offset_time_milliseconds():
-    """OFFSET_TIME: seconds input → microsecond output on timestamp column."""
-    p = ParameterConfig(
-        ptype=ParameterType.OFFSET_TIME,
-        config_file=None,
-        spec=dict(field="corrected_timestamp", units="milliseconds"),
-    )
-    original = _SCI["corrected_timestamp"].mean()
-    modified = apply_offset(p, 10.0 / 1000.0, _SCI)  # 10 ms in seconds
-    assert modified["corrected_timestamp"].mean() - original == pytest.approx(10_000.0, rel=1e-6)
+def test_apply_offset_time_shifts_frame_times():
+    """OFFSET_TIME: seconds added to the uGPS frame times."""
+    p = ParameterConfig(ptype=ParameterType.OFFSET_TIME, spec=dict(field="corrected_timestamp", units="milliseconds"))
+    modified = apply_offset(p, 10.0 / 1000.0, _FRAME_UGPS)
+    np.testing.assert_allclose(modified - _FRAME_UGPS, 10_000.0)
 
 
 def test_apply_offset_time_negative():
-    p = ParameterConfig(
-        ptype=ParameterType.OFFSET_TIME,
-        config_file=None,
-        spec=dict(field="corrected_timestamp", units="milliseconds"),
-    )
-    original = _SCI["corrected_timestamp"].mean()
-    modified = apply_offset(p, -5.5 / 1000.0, _SCI)
-    assert modified["corrected_timestamp"].mean() - original == pytest.approx(-5500.0, rel=1e-6)
+    p = ParameterConfig(ptype=ParameterType.OFFSET_TIME, spec=dict(field="corrected_timestamp", units="milliseconds"))
+    modified = apply_offset(p, -5.5 / 1000.0, _FRAME_UGPS)
+    np.testing.assert_allclose(modified - _FRAME_UGPS, -5500.0)
+
+
+def test_apply_offset_time_on_dataframe_raises():
+    p = ParameterConfig(ptype=ParameterType.OFFSET_TIME, spec=dict(field="corrected_timestamp"))
+    with pytest.raises(TypeError, match="ndarray of uGPS frame times"):
+        apply_offset(p, 0.01, pd.DataFrame({"corrected_timestamp": _FRAME_UGPS}))
 
 
 def test_apply_offset_constant_kernel_passthrough():
@@ -145,7 +137,7 @@ def test_apply_offset_not_inplace():
         spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
     original = _TLM.copy()
-    apply_offset(p, 100.0, _TLM)
+    apply_offset(p, 1e-3, _TLM)
     pd.testing.assert_frame_equal(_TLM, original)
 
 
@@ -156,7 +148,7 @@ def test_apply_offset_preserves_columns():
         config_file=Path("cprs_az.json"),
         spec=dict(field="hps.az_ang_nonlin", units="arcseconds"),
     )
-    modified = apply_offset(p, 50.0, _TLM)
+    modified = apply_offset(p, 1e-3, _TLM)
     assert set(modified.columns) == set(_TLM.columns)
     assert modified["frame"].equals(_TLM["frame"])
     assert not modified["hps.az_ang_nonlin"].equals(_TLM["hps.az_ang_nonlin"])

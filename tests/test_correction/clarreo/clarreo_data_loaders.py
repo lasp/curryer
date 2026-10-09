@@ -91,7 +91,6 @@ def load_clarreo_science(data_dir: Path | str) -> pd.DataFrame:
     """Load CLARREO science frame timing CSV.
 
     Returns ``corrected_timestamp`` in GPS seconds (the raw instrument unit).
-    Set ``DataConfig.time_scale_factor = 1e6`` so the pipeline converts to uGPS.
 
     Parameters
     ----------

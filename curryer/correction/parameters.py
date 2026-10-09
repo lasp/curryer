@@ -69,6 +69,22 @@ def _val_to_seconds(value: float, units: str | None) -> float:
     return value
 
 
+def _rad_to_val(value: float, units: str | None) -> float:
+    """Inverse of :func:`_val_to_rad`."""
+    if units == "arcseconds":
+        return np.rad2deg(value) * 3600.0
+    return value
+
+
+def _seconds_to_val(value: float, units: str | None) -> float:
+    """Inverse of :func:`_val_to_seconds`."""
+    if units == "milliseconds":
+        return value * 1_000.0
+    if units == "microseconds":
+        return value * 1_000_000.0
+    return value
+
+
 def _bounds_to_seconds(bounds: list[float], units: str | None) -> list[float]:
     if units == "milliseconds":
         return [bounds[0] / 1_000.0, bounds[1] / 1_000.0]

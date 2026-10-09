@@ -16,8 +16,7 @@
       "performance_spec_percent": 39.0
     },
     "data_config": {
-      "file_format": "csv",
-      "time_scale_factor": 1.0
+      "file_format": "csv"
     },
     "spacecraft_position_name": "sc_position",
     "boresight_name": "boresight",

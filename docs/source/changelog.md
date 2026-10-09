@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+The correction loop runs on observation subimages, with SPICE geolocation and image matching on
+the observation's radiance.
+
+### Breaking changes
+
+- **`loop()` / `run_correction()` take an observation subimage as the science input** -- a
+  NetCDF file with `band_data` (frame, pixel) radiance, `ugps` (frame) integer frame times and
+  `detector_pixel` (pixel) LOS-table rows, cropped inside its GCP chip
+  (`curryer.correction.load_loop_observation`). Each parameter set re-geolocates those frames
+  and pixels with the LOS table (`compute_ellipsoid_intersection`), terrain-corrects them with
+  `GeolocationConfig.dem_data_dir`, takes the spacecraft position from SPICE, and matches the
+  radiance on that grid to the chip. The loop previously geolocated a whole granule and matched
+  an all-ones image, so its errors did not depend on the parameters.
+- **New `curryer.correction.match_observation`**, shared by `verify()` (observation files) and
+  the loop. `GeolocationSetup.observation_matching_func` replaces it in the loop;
+  `image_matching_func` now applies only to `verify(geolocated_data=...)`.
+- **Parameter sets are compared on the same GCP pairs** -- a pair is used when some parameter
+  set passes the match-quality gates on it, and a parameter set is selectable (`valid`) only
+  when it passes them on every used pair. The output NetCDF gains `accepted` and `valid`.
+- **`DataConfig.time_scale_factor` is removed** and `DataConfig` rejects unknown fields;
+  `file_format` applies to the telemetry file.
+- `OFFSET_TIME` shifts the observation's frame times (`apply_offset` takes a uGPS ndarray).
+- Missing `OFFSET_KERNEL` telemetry fields, unknown parameter variables and SPICE coverage gaps
+  raise instead of logging a warning; the 111 km/degree fallback statistics are removed.
+- `ParameterConfig` raises on `spec.units` its type does not convert (previously any unknown
+  string was treated as radians or seconds).
+- `loop(resume_from_checkpoint=True)` raises `NotImplementedError` when the checkpoint holds
+  completed pairs, whose image-matching results it cannot restore (CURRYER-100).
+- `dataio.validate_science_output` is removed.
+
+### Fixes
+
+- `OFFSET_KERNEL` offsets were converted from arcseconds twice and applied about 2e5 times too
+  small; they are applied in radians as `load_param_sets` returns them.
+- `CONSTANT_KERNEL` attitude kernels covered only their two sentinel epochs because the
+  template's gap threshold split them; gap chunking is disabled for them.
+- `OFFSET_KERNEL` and `OFFSET_TIME` values are stored in the output in their configured units
+  (they were stored in radians and seconds under arcsecond and millisecond labels).
+
 ## Version 0.5.3 (2026-10)
 
 Adds a per-pixel geolocation and surface-angle path for large focal planes.

@@ -26,9 +26,20 @@ DEFAULT_NETCDF_ATTRIBUTES = {
     "std_error_m": {"units": "meters", "long_name": "Standard deviation of geolocation error"},
     "n_measurements": {"units": "count", "long_name": "Number of measurement points"},
     # Aggregate performance metrics (per parameter set)
-    "mean_rms_all_pairs": {"units": "meters", "long_name": "Mean RMS error across all GCP pairs"},
-    "worst_pair_rms": {"units": "meters", "long_name": "Worst performing GCP pair RMS error"},
-    "best_pair_rms": {"units": "meters", "long_name": "Best performing GCP pair RMS error"},
+    "mean_rms_all_pairs": {
+        "units": "meters",
+        "long_name": "Mean RMS error across the usable GCP pairs (NaN for an invalid parameter set)",
+    },
+    "worst_pair_rms": {
+        "units": "meters",
+        "long_name": "Worst RMS error of the usable GCP pairs",
+    },
+    "best_pair_rms": {
+        "units": "meters",
+        "long_name": "Best RMS error of the usable GCP pairs",
+    },
+    "accepted": {"units": "1", "long_name": "GCP pair passes the match-quality gates under this parameter set"},
+    "valid": {"units": "1", "long_name": "Parameter set passes the match-quality gates on every usable GCP pair"},
     # Image matching metrics (per GCP pair)
     "im_lat_error_km": {"units": "kilometers", "long_name": "Image matching latitude error"},
     "im_lon_error_km": {"units": "kilometers", "long_name": "Image matching longitude error"},
@@ -115,9 +126,9 @@ class NetCDFConfig(BaseModel):
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
             units = "arcseconds"
         elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            units = "arcseconds"
+            units = "radians"
         elif param_config.ptype == ParameterType.OFFSET_TIME:
-            units = "milliseconds"
+            units = "seconds"
         else:
             units = "unknown"
 

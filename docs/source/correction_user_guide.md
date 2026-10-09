@@ -50,7 +50,7 @@ print("Passed:", result.passed)
 from curryer.correction import load_config_files, run_correction, CorrectionInput
 
 setup, sweep, output = load_config_files("mission.json")
-inputs = [CorrectionInput(telemetry_file="obs.nc", science_file="obs.nc", gcp_file="chip.nc")]
+inputs = [CorrectionInput(telemetry_file="telemetry.csv", science_file="granule__chip.nc", gcp_file="chip.nc")]
 
 result = run_correction(setup, sweep, inputs, work_dir="out", output=output)
 
@@ -137,12 +137,13 @@ JSON path (in parentheses) is where each one goes.
 
 1. **SPICE kernels** (`setup.geo.meta_kernel_file`, `generic_kernel_dir`,
    `dynamic_kernels`) — your mission's kernel files. `dynamic_kernels` are
-   regenerated from telemetry on each run.
+   regenerated from telemetry on each run. The correction loop also
+   terrain-corrects with the elevation data in `setup.geo.dem_data_dir`.
 2. **Instrument** (`setup.geo.instrument_name`) — the NAIF instrument name from
    your Instrument Kernel, e.g. `"CPRS_HYSICS"`.
-3. **Timestamps** (`setup.geo.time_field`) — the column holding uGPS times. If
-   your times need scaling (e.g. GPS seconds → uGPS), set
-   `setup.data_config.time_scale_factor` to `1e6`.
+3. **Timestamps** — the correction loop reads each observation's frame times
+   from its `ugps` variable (integer microseconds since the GPS epoch);
+   `setup.geo.time_field` names the telemetry column of uGPS times.
 4. **Accuracy requirement** (`setup.requirements.performance_threshold_m` and
    `performance_spec_percent`) — the per-point error limit in metres, and the
    minimum percentage of points that must fall within it.
@@ -213,13 +214,13 @@ from curryer.correction import (
 # Load setup + sweep (+ output) from one JSON file (recommended for production)
 setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
 
-# Each CorrectionInput maps one telemetry + science + GCP triplet.
+# Each CorrectionInput maps the telemetry, an observation subimage and the GCP chip it lies in.
 # Raw (str, str, str) tuples are also accepted.
 # S3 URIs ("s3://...") are accepted when boto3 is installed.
 inputs = [
     CorrectionInput(
-        telemetry_file=pathlib.Path("data/obs_20240317.nc"),
-        science_file=pathlib.Path("data/obs_20240317.nc"),
+        telemetry_file=pathlib.Path("data/telemetry_20240317.csv"),
+        science_file=pathlib.Path("data/obs_20240317__landsat_chip_001.nc"),
         gcp_file=pathlib.Path("data/gcp/landsat_chip_001.nc"),
     )
 ]
@@ -239,6 +240,31 @@ print(f"Best RMS: {best['rms_error_m']:.2f} m  (parameters: {best['parameters']}
 (To reuse one setup across many sweeps, see
 [Reuse the setup, try many adjustments](#reuse-the-setup-try-many-adjustments) above.)
 
+### What each parameter set does
+
+For every input the loop builds the dynamic kernels from the telemetry once.
+Then, for each parameter set, it:
+
+1. writes the parameter kernels (`CONSTANT_KERNEL`, `OFFSET_KERNEL`) and
+   shifts the observation's frame times by any `OFFSET_TIME`;
+2. re-geolocates the observation's frames and detector pixels with SPICE,
+   using the rows of the LOS table (`setup.calibration.los_vectors_file`) named
+   by the observation's `detector_pixel`, and terrain-corrects them;
+3. matches the observation's radiance on that grid to the GCP chip
+   (`match_observation`, or `setup.observation_matching_func`).
+
+The loop raises rather than skipping: a pixel the kernels cannot geolocate, a
+parameter set that moves the subimage so the correlation search leaves the
+chip, or an `OFFSET_KERNEL` field missing from the telemetry stops the run.
+
+Parameter sets are compared on the same GCP pairs. A pair is _usable_ when
+it passes the match-quality gates (`setup.geo.minimum_correlation`,
+`minimum_peak_margin`) under at least one parameter set; a parameter set is
+_valid_ when it passes them on every usable pair. The best set is the valid
+set with the lowest mean per-pair RMS error over the usable pairs. The output
+NetCDF records `accepted` (parameter set × pair) and `valid` (parameter set);
+an invalid set's `mean_rms_all_pairs` is NaN.
+
 ### Low-level alternative: `loop()`
 
 `loop()` returns the raw `(results, netcdf_data)` tuple and only accepts
@@ -248,7 +274,7 @@ order: `work_dir` comes **before** the inputs list.
 ```python
 from curryer.correction import loop
 
-inputs = [("data/obs.nc", "data/obs.nc", "data/gcp.nc")]
+inputs = [("data/telemetry.csv", "data/obs__gcp.nc", "data/gcp.nc")]
 results, netcdf_data = loop(setup, sweep, work_dir, inputs)
 ```
 
@@ -326,16 +352,17 @@ A generic annotated template: `examples/correction/example_config.json`
 
 The durable, mission-specific configuration (built once, reused across sweeps).
 
-| Field                        | Type                       | Notes                                                                |
-| ---------------------------- | -------------------------- | -------------------------------------------------------------------- |
-| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity             |
-| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                   |
-| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                 |
-| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)             |
-| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position     |
-| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight       |
-| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix |
-| `image_matching_func`        | `Callable \| None`         | Optional custom image-matching callable; excluded from JSON          |
+| Field                        | Type                       | Notes                                                                   |
+| ---------------------------- | -------------------------- | ----------------------------------------------------------------------- |
+| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity                |
+| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                      |
+| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                    |
+| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)                |
+| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position        |
+| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight          |
+| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix    |
+| `image_matching_func`        | `Callable \| None`         | Custom matching for `verify(geolocated_data=...)`; excluded from JSON   |
+| `observation_matching_func`  | `Callable \| None`         | Replaces `match_observation` in the correction loop; excluded from JSON |
 
 ### Sweep — `sweep`
 
@@ -374,7 +401,8 @@ The parameter-variation experiment, varied between runs. Use
 | `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                  |
 | `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                             |
 | `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                  |
-| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                            |
+| `time_field`          | `str`           | Telemetry column holding uGPS timestamps                                                                                                                                                                           |
+| `dem_data_dir`        | `Path \| None`  | Elevation data the correction loop terrain-corrects with; `None` uses curryer's standard location                                                                                                                  |
 | `minimum_correlation` | `float \| None` | Match-quality gate (0.0–1.0): measurements with a lower `correlation` are rejected (kept, flagged, left out of the statistics); `None` disables. When set, results must carry `correlation` or verification raises |
 | `minimum_peak_margin` | `float \| None` | Match-distinctness gate: rejects measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises  |
 
@@ -397,7 +425,7 @@ The parameter-variation experiment, varied between runs. Use
 | ----------------- | ------------------------------------------------------------------------------ |
 | `CONSTANT_KERNEL` | Fixed attitude rotation applied to an instrument frame (roll/pitch/yaw offset) |
 | `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel        |
-| `OFFSET_TIME`     | Timing offset applied to science frame timestamps                              |
+| `OFFSET_TIME`     | Timing offset applied to the observation's frame times                         |
 
 ### Search strategies — `search_strategy`
 
@@ -409,24 +437,23 @@ The parameter-variation experiment, varied between runs. Use
 
 ### Inputs — `inputs=`
 
-Each input is format-neutral: every field is just a path, and the reader is
-chosen by `setup.data_config.file_format`. The first-class real-data path is
-a **NetCDF image observation** (radiance as the science variable) that carries
-telemetry, metadata, and science times — enough for curryer/SPICE to compute
-the geometry — so the same file commonly serves as both the telemetry and
-science input. See [Inputs & Data Formats](#inputs--data-formats) below.
+| Field            | Description                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `telemetry_file` | Telemetry the dynamic kernels are built from, read with `setup.data_config.file_format` |
+| `science_file`   | Observation subimage (NetCDF) cropped inside the GCP chip; see `load_loop_observation`  |
+| `gcp_file`       | GCP reference-image file (NetCDF; `.mat` interim)                                       |
 
-| Field            | Description                                                    |
-| ---------------- | -------------------------------------------------------------- |
-| `telemetry_file` | Telemetry observation file (NetCDF first-class; CSV/HDF5 read) |
-| `science_file`   | Science/timing observation file (NetCDF first-class; CSV/HDF5) |
-| `gcp_file`       | GCP reference-image file (NetCDF; `.mat` interim)              |
+The observation subimage holds `band_data` (frame, pixel) finite radiance,
+`ugps` (frame) strictly increasing integer frame times in microseconds since
+the GPS epoch, and `detector_pixel` (pixel) the LOS-table row of each column
+(without it the columns must be the table's rows in order). The loop ignores
+any `lat`/`lon` it carries and re-geolocates from SPICE.
 
 ### Calibration — `setup.calibration`
 
-Direct calibration file paths. Both fields are optional
-and **interim** — real line-of-sight vectors and spacecraft geometry will be
-SPICE-derived from telemetry, so nothing in the pipeline requires these.
+Direct calibration file paths. The correction loop requires the LOS table
+(it re-geolocates each observation with it) and, for the built-in matching,
+the PSF; `verify()` takes them as `los_file=` / `psf_file=` instead.
 
 | Field              | Description                                          |
 | ------------------ | ---------------------------------------------------- |
@@ -435,38 +462,29 @@ SPICE-derived from telemetry, so nothing in the pipeline requires these.
 
 ### Data loading — `setup.data_config`
 
-| Field               | Description                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `file_format`       | `"csv"`, `"netcdf"`, or `"hdf5"` — drives the reader for telemetry/science             |
-| `time_scale_factor` | Multiply science timestamps by this factor to obtain uGPS (e.g. `1e6` for GPS seconds) |
-| `position_columns`  | Optional list of spacecraft-position column names in the telemetry DataFrame           |
+| Field              | Description                                                                  |
+| ------------------ | ---------------------------------------------------------------------------- |
+| `file_format`      | `"csv"`, `"netcdf"`, or `"hdf5"` — the reader for the telemetry file         |
+| `position_columns` | Optional list of spacecraft-position column names in the telemetry DataFrame |
 
 ---
 
 ## Inputs & Data Formats
 
-The config and API are **format-agnostic**: the internal contract is an
-`ImageGrid` / `xr.Dataset`, and `DataConfig.file_format` selects the reader.
-Two distinct input families exist, and it is worth being explicit about which
-is which:
+The internal contract is an `ImageGrid` / `xr.Dataset`;
+`DataConfig.file_format` selects the telemetry reader. Two input families
+exist:
 
-- **NetCDF image observations (first-class, intended real-data path).** A
-  NetCDF observation carries the radiance as its science variable plus the
-  telemetry, metadata, and science times needed for curryer/SPICE to compute
-  the line-of-sight and spacecraft geometry. This is the direction the package
-  is built toward, and the recommended format for new missions.
-- **`.mat` / file-based LOS & PSF (interim test scaffolding).** The code was
-  developed against interim `.mat` test fixtures — fake image arrays and
-  standalone `.mat` line-of-sight / PSF files supplied via
-  `CalibrationFiles.los_vectors_file` / `psf_file` (or `verify(..., los_file=,
-psf_file=)`). These are convenience inputs for testing without SPICE-derived
-  geometry; they are never required and will be superseded as LOS/spacecraft
-  geometry becomes SPICE-derived.
-
-Real-data NetCDF ingestion (deriving geometry from observation telemetry) is
-the intended direction, not a claim that it is fully implemented today. Frame
-new work around the NetCDF-observation path and treat `.mat`/file-based LOS/PSF
-as interim.
+- **NetCDF image observations (the real-data path).** The correction loop
+  takes observation subimages (radiance, frame times and detector pixels; see
+  [Inputs](#inputs--inputs)) and computes the geometry from SPICE kernels
+  built from the telemetry file. `verify()` takes observation files that also
+  carry their geolocation and spacecraft position.
+- **`.mat` files.** GCP chips, LOS tables and PSFs may be `.mat` files
+  (`CalibrationFiles.los_vectors_file` / `psf_file`, or
+  `verify(..., los_file=, psf_file=)`). The correction loop requires the LOS
+  table, since it re-geolocates each observation's pixels with it, and the
+  built-in matching requires the PSF.
 
 ---
 

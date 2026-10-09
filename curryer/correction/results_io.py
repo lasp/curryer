@@ -100,6 +100,11 @@ def _build_netcdf_structure(
         netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), np.nan)
         logger.debug(f"  Added image matching variable: {var_name}")
 
+    # Whether each pair passes the match-quality gates under each parameter set
+    netcdf_data["accepted"] = np.zeros((n_param_sets, n_gcp_pairs), dtype=bool)
+    # Whether each parameter set passes the gates on every usable pair (compared in the selection)
+    netcdf_data["valid"] = np.zeros(n_param_sets, dtype=bool)
+
     # Add overall performance metrics (1D: parameter_set_id)
     # Use dynamic threshold metric name
     threshold_metric = netcdf_config.threshold_metric_name

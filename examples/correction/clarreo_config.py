@@ -178,8 +178,8 @@ def create_clarreo_config(
         ),
         # ----------------------------------------------------------------
         # OFFSET_TIME parameter
-        # All science timestamps are shifted by a constant offset.
-        # No kernel file is needed — the pipeline modifies the data directly.
+        # Every observation frame time is shifted by a constant offset.
+        # No kernel file is needed — the loop shifts the frame times directly.
         # ----------------------------------------------------------------
         ParameterConfig(
             ptype=ParameterType.OFFSET_TIME,
