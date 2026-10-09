@@ -18,10 +18,11 @@ Public API (9 functions)
 :func:`load_named_image_grid`        — any image file → :class:`NamedImageGrid`
 :func:`load_observation_file`        — observation + spacecraft position
 :func:`load_los_vectors`             — LOS unit vectors from calibration file
+:func:`observation_los_vectors`      — LOS rows for an observation's detector columns
 :func:`load_optical_psf`             — PSF entries from calibration file
 :func:`load_gcp_chip_from_hdf`       — raw HDF chip (band + ECEF arrays)
 :func:`save_image_grid`              — write ImageGrid; format from extension
-:func:`infer_spacecraft_state`       — derive boresight/t_matrix from position
+:func:`infer_spacecraft_state`       — deprecated alias of ``psf.resolve_spacecraft_ecef``
 :func:`geolocated_to_image_grid`     — convert geolocated xr.Dataset → :class:`ImageGrid`
 """
 
@@ -816,9 +817,10 @@ def load_observation_file(
     """Load one observation file and return ``(ImageGrid, spacecraft_position_m)``.
 
     Supports ``.mat`` and NetCDF (``.nc``, ``.nc4``, ``.netcdf``) formats.
-    The spacecraft ECEF position is extracted when available in the file; when
-    absent, ``None`` is returned and callers should fall back to
-    :func:`infer_spacecraft_state`.
+    The spacecraft ECEF position is read from ``R_ISS_midframe`` (``.mat``) or
+    a root-group ``position`` variable (NetCDF) when present; when absent,
+    ``None`` is returned and :func:`~curryer.correction.psf.resolve_spacecraft_ecef`
+    raises if the caller needs the viewing geometry.
 
     Parameters
     ----------
@@ -834,8 +836,7 @@ def load_observation_file(
         Radiance data on a lat/lon grid.
     r_spacecraft_m : ndarray of shape (3,) or None
         Spacecraft ECEF position in meters at the mid-frame, extracted from the
-        file when available.  ``None`` when not present — caller should use
-        :func:`infer_spacecraft_state` to approximate.
+        file when available.  ``None`` when not present.
 
     Raises
     ------
@@ -860,13 +861,8 @@ def load_observation_file(
 
     if suffix in (".nc", ".netcdf", ".nc4"):
         grid = load_image_grid(local_filepath)
-        r_sc_m = None
-        try:
-            with xr.open_dataset(local_filepath) as ds:
-                if "position" in ds:
-                    r_sc_m = np.asarray(ds["position"].values).ravel()
-        except Exception:
-            logger.debug("Could not read spacecraft position from %s", local_filepath, exc_info=True)
+        with xr.open_dataset(local_filepath) as ds:
+            r_sc_m = np.asarray(ds["position"].values).ravel() if "position" in ds else None
         return grid, r_sc_m
 
     raise ValueError(
@@ -874,12 +870,76 @@ def load_observation_file(
     )
 
 
+def observation_los_vectors(filepath: str | Path, los_vectors: np.ndarray, n_columns: int) -> np.ndarray:
+    """Return the rows of *los_vectors* that belong to an observation's columns.
+
+    A NetCDF observation that is a column crop of the detector carries a
+    ``detector_pixel`` variable: the 0-based row of *los_vectors* for each of
+    its columns.  Without it (and for ``.mat`` files) the observation's columns
+    must be the table's rows in order.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Observation file (local path or ``s3://`` URI).
+    los_vectors : ndarray, shape (n_pixels, 3)
+        Detector line-of-sight table (:func:`load_los_vectors`).
+    n_columns : int
+        Number of columns in the observation's image.
+
+    Returns
+    -------
+    ndarray, shape (n_columns, 3)
+        Line-of-sight rows matching the observation's columns.
+
+    Raises
+    ------
+    ValueError
+        If ``detector_pixel`` is not 1-D integers of length *n_columns*,
+        strictly increasing and within the table; or, without it, if the table
+        does not have *n_columns* rows.
+    """
+    detector_pixel = None
+    if Path(str(filepath)).suffix.lower() in (".nc", ".netcdf", ".nc4"):
+        with xr.open_dataset(resolve_path(filepath)) as ds:
+            if "detector_pixel" in ds:
+                detector_pixel = np.asarray(ds["detector_pixel"].values)
+
+    if detector_pixel is None:
+        if len(los_vectors) != n_columns:
+            raise ValueError(
+                f"{Path(str(filepath)).name} has {n_columns} columns but the LOS table has {len(los_vectors)} rows; "
+                "a column crop must carry 'detector_pixel'."
+            )
+        return los_vectors
+
+    if (
+        detector_pixel.ndim != 1
+        or detector_pixel.dtype.kind not in "iu"
+        or len(detector_pixel) != n_columns
+        or np.any(np.diff(detector_pixel) <= 0)
+        or detector_pixel.min() < 0
+        or detector_pixel.max() >= len(los_vectors)
+    ):
+        raise ValueError(
+            f"'detector_pixel' in {Path(str(filepath)).name} must be {n_columns} strictly increasing integers in "
+            f"[0, {len(los_vectors)}); got {detector_pixel!r}."
+        )
+    return los_vectors[detector_pixel]
+
+
 def infer_spacecraft_state(
     grid: ImageGrid,
     r_spacecraft_m: np.ndarray | None,
     default_altitude_m: float = 400_000.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Deprecated — use ``resolve_spacecraft_ecef`` from ``curryer.correction.psf`` instead."""
+    """Deprecated — use ``resolve_spacecraft_ecef`` from ``curryer.correction.psf`` instead.
+
+    *default_altitude_m* is accepted for signature compatibility and ignored:
+    a missing *r_spacecraft_m* raises :class:`ValueError` instead of being
+    approximated as a nadir position.  The boresight targets the grid's
+    central pixel.
+    """
 
     warnings.warn(
         "infer_spacecraft_state is deprecated. Use curryer.correction.psf.resolve_spacecraft_ecef instead.",
@@ -887,7 +947,8 @@ def infer_spacecraft_state(
         stacklevel=2,
     )
 
-    return resolve_spacecraft_ecef(grid, r_spacecraft_m, default_altitude_m)
+    mid_i, mid_j = grid.mid_indices
+    return resolve_spacecraft_ecef(grid, r_spacecraft_m, float(grid.lat[mid_i, mid_j]), float(grid.lon[mid_i, mid_j]))
 
 
 def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:

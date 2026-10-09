@@ -82,7 +82,15 @@ class ErrorStatsConfig:
     minimum_correlation : float or None, optional
         Minimum correlation filter threshold (0.0–1.0).  Measurements whose
         correlation score falls below this value are excluded before
-        processing.  Default is ``None`` (no filtering).
+        processing.  When set, the input must carry a ``correlation`` (or
+        ``ccv`` / ``im_ccv``) variable or processing raises.  Default is
+        ``None`` (no filtering).
+    minimum_peak_margin : float or None, optional
+        Minimum amount by which a measurement's correlation must exceed
+        ``correlation_secondary`` (the strongest competing correlation away
+        from the peak).  Measurements below it are excluded before
+        processing; the input must then carry ``correlation_secondary`` and a
+        correlation variable or processing raises.  Default is ``None``.
     variable_names : dict of str to str or None, optional
         Mission-agnostic variable name mappings from semantic names to actual
         dataset variable names.  If ``None``, generic defaults are used.
@@ -99,6 +107,7 @@ class ErrorStatsConfig:
     """
 
     minimum_correlation: float | None = None
+    minimum_peak_margin: float | None = None
 
     # Mission-agnostic variable name mappings
     # Maps semantic names to actual variable names in the dataset
@@ -108,8 +117,8 @@ class ErrorStatsConfig:
     def from_setup(cls, setup) -> "ErrorStatsConfig":
         """Create an :class:`ErrorStatsConfig` from a :class:`GeolocationSetup`.
 
-        Extracts the science-Dataset variable names and ``minimum_correlation``
-        from the setup, the single source of truth for those settings.
+        Extracts the science-Dataset variable names, ``minimum_correlation`` and
+        ``minimum_peak_margin`` from the setup, the single source of truth for those settings.
 
         Parameters
         ----------
@@ -128,6 +137,7 @@ class ErrorStatsConfig:
 
         return cls(
             minimum_correlation=setup.geo.minimum_correlation,
+            minimum_peak_margin=setup.geo.minimum_peak_margin,
             variable_names=variable_names,
         )
 
@@ -185,15 +195,23 @@ class ErrorStatsProcessor:
 
     def _filter_by_correlation(self, data: xr.Dataset) -> xr.Dataset:
         """
-        Filter measurements by correlation coefficient threshold.
+        Filter measurements by correlation and peak-distinctness thresholds.
 
         Args:
-            data: Input dataset with optional 'correlation' or 'ccv' variable
+            data: Input dataset; must carry a 'correlation', 'ccv' or
+                'im_ccv' variable when ``minimum_correlation`` or
+                ``minimum_peak_margin`` is set, and 'correlation_secondary'
+                when ``minimum_peak_margin`` is set.
 
         Returns:
-            Filtered dataset with low-correlation measurements removed
+            Filtered dataset with low-correlation and non-distinct
+            measurements removed
+
+        Raises:
+            ValueError: If a threshold is set and *data* lacks the variable it
+                needs.
         """
-        if self.config.minimum_correlation is None:
+        if self.config.minimum_correlation is None and self.config.minimum_peak_margin is None:
             return data
 
         # Check for correlation variable (try multiple names)
@@ -204,17 +222,29 @@ class ErrorStatsProcessor:
                 break
 
         if corr_var is None:
-            logger.warning("No correlation variable found; skipping filtering")
-            return data
+            raise ValueError(
+                f"minimum_correlation={self.config.minimum_correlation} / minimum_peak_margin="
+                f"{self.config.minimum_peak_margin} is set but the input has no correlation variable "
+                "('correlation', 'ccv' or 'im_ccv'); the threshold cannot be applied."
+            )
 
-        # Apply filter
-        valid_mask = data[corr_var] >= self.config.minimum_correlation
+        valid_mask = xr.ones_like(data[corr_var], dtype=bool)
+        if self.config.minimum_correlation is not None:
+            valid_mask &= data[corr_var] >= self.config.minimum_correlation
+        if self.config.minimum_peak_margin is not None:
+            if "correlation_secondary" not in data.data_vars:
+                raise ValueError(
+                    f"minimum_peak_margin={self.config.minimum_peak_margin} is set but the input has no "
+                    "'correlation_secondary' variable; the threshold cannot be applied."
+                )
+            valid_mask &= (data[corr_var] - data["correlation_secondary"]) >= self.config.minimum_peak_margin
         n_before = len(data.measurement)
         filtered_data = data.where(valid_mask, drop=True)
         n_after = len(filtered_data.measurement)
 
         logger.info(
-            f"Correlation filtering: {n_before} → {n_after} measurements (threshold={self.config.minimum_correlation})"
+            f"Correlation filtering: {n_before} → {n_after} measurements (minimum_correlation="
+            f"{self.config.minimum_correlation}, minimum_peak_margin={self.config.minimum_peak_margin})"
         )
 
         return filtered_data
@@ -247,8 +277,9 @@ class ErrorStatsProcessor:
         Raises
         ------
         ValueError
-            If required variables are missing or all measurements are filtered
-            out by the correlation threshold.
+            If required variables are missing, ``minimum_correlation`` is set
+            but the input has no correlation variable, or all measurements are
+            filtered out by the correlation threshold.
         """
         self._validate_input_data(input_data)
         filtered_data = self._filter_by_correlation(input_data)
@@ -545,6 +576,8 @@ class ErrorStatsProcessor:
         if self.config.minimum_correlation is not None:
             output_ds.attrs["minimum_correlation_threshold"] = self.config.minimum_correlation
             output_ds.attrs["correlation_filtering_applied"] = True
+        if self.config.minimum_peak_margin is not None:
+            output_ds.attrs["minimum_peak_margin_threshold"] = self.config.minimum_peak_margin
 
         return output_ds
 

@@ -368,14 +368,15 @@ The parameter-variation experiment, varied between runs. Use
 
 ### Kernels & instrument — `setup.geo`
 
-| Field                 | Type            | Notes                                                             |
-| --------------------- | --------------- | ----------------------------------------------------------------- |
-| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                         |
-| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                 |
-| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration            |
-| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`) |
-| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps           |
-| `minimum_correlation` | `float \| None` | Image-matching quality filter (0.0–1.0); `None` disables          |
+| Field                 | Type            | Notes                                                                                                                                                                                                             |
+| --------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                         |
+| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                 |
+| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                            |
+| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                 |
+| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                           |
+| `minimum_correlation` | `float \| None` | Image-matching quality filter (0.0–1.0); `None` disables. When set, results must carry `correlation` or verification raises                                                                                       |
+| `minimum_peak_margin` | `float \| None` | Match-distinctness filter: drops measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises |
 
 ### Parameters — `sweep.parameters[]`
 

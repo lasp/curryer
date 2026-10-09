@@ -252,6 +252,14 @@ def convolve_psf_with_spacecraft_motion(
     -------
     PSFGrid
         PSF convolved with spacecraft motion blur.
+
+    Notes
+    -----
+    The motion step is the mean lat/lon difference along axis 1 of
+    *composite_img*, matching the MATLAB reference and the test cases simulated
+    with it. For a frames x detector subimage this is the cross-track pixel step;
+    the along-track (frame) step is along axis 0. On the one cloud-free CLARREO
+    flight chip tested, axis 0 raises the correlation from 0.940 to 0.951.
     """
 
     logger.debug("Convolve with SC - Init")
@@ -471,68 +479,151 @@ def normalize_psf(psf: PSFGrid) -> PSFGrid:
     return psf
 
 
+def validate_spacecraft_ecef_m(r_spacecraft_m: np.ndarray) -> np.ndarray:
+    """Check that a spacecraft position is an ECEF vector in meters above the Earth.
+
+    Catches the common unit and shape mistakes (kilometers instead of meters,
+    a column vector, NaN fill) at the point where the position enters image
+    matching or error statistics.  It cannot detect an inertial (e.g. J2000)
+    position passed as ECEF, since both have Earth-orbit magnitudes.
+
+    Parameters
+    ----------
+    r_spacecraft_m : ndarray of shape (3,)
+        Spacecraft ECEF position in meters.
+
+    Returns
+    -------
+    ndarray, shape (3,)
+        The position as a float64 array.
+
+    Raises
+    ------
+    ValueError
+        If the position is not shape ``(3,)``, not finite, inside the Earth
+        (shorter than the WGS-84 semi-minor axis), or not above the WGS-84
+        ellipsoid.
+    """
+    r = np.asarray(r_spacecraft_m, dtype=float)
+    if r.shape != (3,):
+        raise ValueError(f"Spacecraft position must have shape (3,), got {r.shape}.")
+    if not np.all(np.isfinite(r)):
+        raise ValueError(f"Spacecraft position must be finite, got {r}.")
+    if np.linalg.norm(r) < constants.WGS84_SEMI_MINOR_AXIS_KM * 1_000.0:
+        raise ValueError(
+            f"Spacecraft position {r} is {np.linalg.norm(r):.0f} m from the Earth's center, inside the Earth; "
+            "expected an ECEF position in meters."
+        )
+    altitude_m = ecef_to_geodetic(r, meters=True)[2]
+    if not altitude_m > 0.0:
+        raise ValueError(
+            f"Spacecraft position {r} m is {altitude_m:.0f} m relative to the WGS-84 ellipsoid; "
+            "expected an ECEF position in meters above the surface."
+        )
+    return r
+
+
+def _nearest_grid_pixel(grid: ImageGrid, lat_deg: float, lon_deg: float) -> tuple[int, int]:
+    """Return the ``(row, col)`` of the grid pixel nearest a geodetic point.
+
+    Raises
+    ------
+    ValueError
+        If the point is farther from its nearest pixel than that pixel is
+        from its farthest adjacent pixel, i.e. outside the grid.
+    """
+    coslat = np.cos(np.deg2rad(lat_deg))
+
+    def dist2(lat, lon, lat0, lon0):
+        return (lat - lat0) ** 2 + (((lon - lon0 + 180.0) % 360.0 - 180.0) * coslat) ** 2
+
+    d2 = dist2(grid.lat, grid.lon, lat_deg, lon_deg)
+    if not np.any(np.isfinite(d2)):
+        raise ValueError("Observation grid has no finite lat/lon.")
+    i, j = np.unravel_index(np.nanargmin(d2), d2.shape)
+    rows, cols = d2.shape
+    neighbours = [
+        (i + di, j + dj) for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)) if 0 <= i + di < rows and 0 <= j + dj < cols
+    ]
+    spacing2 = np.array([dist2(grid.lat[n], grid.lon[n], grid.lat[i, j], grid.lon[i, j]) for n in neighbours])
+    if not spacing2.size or not np.any(np.isfinite(spacing2)) or not d2[i, j] <= np.nanmax(spacing2):
+        raise ValueError(
+            f"Point (lat {lat_deg}, lon {lon_deg}) is outside the observation grid: its nearest pixel "
+            f"({i}, {j}) is farther away than that pixel's adjacent pixels."
+        )
+    return int(i), int(j)
+
+
 def resolve_spacecraft_ecef(
     grid: ImageGrid,
-    r_spacecraft_m: np.ndarray | None,
-    default_altitude_m: float = 400_000.0,
+    r_spacecraft_m: np.ndarray,
+    target_lat_deg: float,
+    target_lon_deg: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(r_spacecraft_m, boresight, t_matrix)`` for image-matching.
 
-    When *r_spacecraft_m* is provided it is used directly; the boresight is
-    the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
-    grid center lat/lon is used to build an approximate nadir position at
-    *default_altitude_m* above the WGS-84 ellipsoid surface.
+    The boresight is the unit line of sight from the spacecraft to the
+    observation pixel in the mid-frame row and in the column of the pixel
+    nearest the target (the GCP centre), using that pixel's lat/lon/height.
+    CPRS document 183262 rev B (eq. 3) requires the line of sight of the
+    pixel that viewed the GCP.  With one mid-frame spacecraft position, the
+    pixel in the GCP's cross-track column of the mid-frame row has the GCP's
+    off-nadir angle; aiming at the GCP itself from the mid-frame position
+    would not, when the GCP was imaged at a different frame.  The view-plane
+    azimuth still differs from the GCP's by the along-track change in
+    viewing direction between the mid-frame and the GCP's frame.
 
-    The rotation matrix is always the ``3×3`` identity — the boresight is
-    already expressed in the CTRS frame via the nadir-approximation, so no
-    additional rotation is needed.
+    The rotation matrix is the ``3×3`` identity because the boresight is
+    already expressed in the CTRS (ECEF) frame.
 
     Parameters
     ----------
     grid : ImageGrid
-        Observation grid, used for the center lat/lon when *r_spacecraft_m*
-        is ``None``.
-    r_spacecraft_m : ndarray of shape (3,) or None
-        Spacecraft ECEF position in meters.  Pass ``None`` to fall back to
-        the nadir approximation.
-    default_altitude_m : float, optional
-        Spacecraft altitude above the WGS-84 surface (meters) used when
-        *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
-        Override for other spacecraft (e.g. 505 000 m for CTIM).
+        Observation grid with rows = frames (along track) and columns =
+        cross-track pixels; its middle row is the frame of *r_spacecraft_m*.
+        ``grid.lat``/``grid.lon`` in degrees, ``grid.h`` in meters above the
+        WGS-84 ellipsoid (treated as 0 when ``None``).
+    r_spacecraft_m : ndarray of shape (3,)
+        Spacecraft ECEF position in meters at the observation mid-frame.
+    target_lat_deg, target_lon_deg : float
+        Geodetic latitude and longitude of the GCP centre, degrees.  Must lie
+        within *grid*.
 
     Returns
     -------
     r_spacecraft_m : ndarray, shape (3,)
-        ECEF spacecraft position in meters.
+        ECEF spacecraft position in meters (float copy of the input).
     boresight : ndarray, shape (3,)
-        Nadir unit vector from spacecraft toward Earth center.
+        Unit vector in ECEF from the spacecraft to the mid-frame pixel in the
+        target's column.
     t_matrix : ndarray, shape (3, 3)
         Identity rotation matrix.
-    """
-    if r_spacecraft_m is not None:
-        r = np.asarray(r_spacecraft_m, dtype=float).ravel()
-        boresight = -r / np.linalg.norm(r)
-        return r, boresight, np.eye(3)
 
-    # Approximate nadir from grid center lat/lon
-    mid_i, mid_j = grid.mid_indices
-    lat = float(grid.lat[mid_i, mid_j])
-    lon = float(grid.lon[mid_i, mid_j])
-    lat_r = np.deg2rad(lat)
-    lon_r = np.deg2rad(lon)
-    nadir_hat = np.array(
-        [
-            np.cos(lat_r) * np.cos(lon_r),
-            np.cos(lat_r) * np.sin(lon_r),
-            np.sin(lat_r),
-        ]
-    )
-    r_approx = (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
-    logger.debug(
-        "No spacecraft position in observation file — approximating nadir "
-        "from grid center (lat=%.2f, lon=%.2f, alt=%.0f m)",
-        lat,
-        lon,
-        default_altitude_m,
-    )
-    return r_approx, -nadir_hat, np.eye(3)
+    Raises
+    ------
+    ValueError
+        If *r_spacecraft_m* is ``None``, not shape ``(3,)``, not finite, or
+        not above the WGS-84 ellipsoid; if the target lat/lon is not finite or
+        lies outside *grid*; or if the lat/lon/height of the mid-frame pixel
+        in the target's column is not finite.
+    """
+    if r_spacecraft_m is None:
+        raise ValueError(
+            "Spacecraft ECEF position is required to resolve the viewing geometry; "
+            "supply it in the observation file ('position' for NetCDF, 'R_ISS_midframe' for .mat)."
+        )
+    r = validate_spacecraft_ecef_m(r_spacecraft_m)
+
+    if not (np.isfinite(target_lat_deg) and np.isfinite(target_lon_deg)):
+        raise ValueError(f"Target lat/lon must be finite, got ({target_lat_deg}, {target_lon_deg}).")
+    _, col = _nearest_grid_pixel(grid, target_lat_deg, target_lon_deg)
+    row = grid.mid_indices[0]
+    height_m = 0.0 if grid.h is None else float(grid.h[row, col])
+    lon_lat_h = np.array([grid.lon[row, col], grid.lat[row, col], height_m], dtype=float)
+    if not np.all(np.isfinite(lon_lat_h)):
+        raise ValueError(f"Mid-frame pixel ({row}, {col}) lon/lat/height must be finite, got {lon_lat_h}.")
+    p_view = geodetic_to_ecef(lon_lat_h, meters=True, degrees=True)
+
+    line_of_sight = p_view - r
+    boresight = line_of_sight / np.linalg.norm(line_of_sight)
+    return r, boresight, np.eye(3)
