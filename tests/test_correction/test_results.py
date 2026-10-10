@@ -112,6 +112,7 @@ def _make_netcdf_data(n_params: int = 3, n_pairs: int = 2, threshold_m: float = 
         "im_lon_error_km": np.zeros((n_params, n_pairs)),
         "im_ccv": np.ones((n_params, n_pairs)) * 0.9,
         "im_grid_step_m": np.ones((n_params, n_pairs)) * 30.0,
+        "accepted": np.ones((n_params, n_pairs), dtype=bool),
     }
 
 
@@ -398,6 +399,18 @@ class TestBuildCorrectionResult:
         result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert result.met_threshold is False
         assert "No parameter set met performance requirements" in result.recommendation
+
+    def test_met_threshold_ignores_pairs_failing_the_gates(self):
+        """A pair the best set fails the match-quality gates on does not count toward the requirement."""
+        setup, sweep, netcdf_config = _make_setup_sweep(performance_threshold_m=150.0, performance_spec_percent=60.0)
+        nc = _make_netcdf_data(n_params=2, n_pairs=2)
+        nc["rms_error_m"][:, 1] = 7000.0
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert result.met_threshold is False
+
+        nc["accepted"][:, 1] = False
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert result.met_threshold is True
 
     def test_all_nan_rms_does_not_crash(self):
         """Degenerate case: all RMS values are NaN — build should not raise."""

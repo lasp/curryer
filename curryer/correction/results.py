@@ -344,13 +344,14 @@ def build_correction_result(
 
     # Evaluate requirements using legacy performance_threshold_m / performance_spec_percent.
     # (The new-style Requirement.evaluate_all() path is tracked by TODO(#151).)
+    # Only the pairs the best set passes the match-quality gates on are compared (see loop()).
     met_threshold = False
     if n_gcp_pairs > 0 and math.isfinite(best_rms) and rms_grid.shape[0] > best_idx:
-        pair_errors = [float(rms_grid[best_idx, pi]) for pi in range(n_gcp_pairs)]
-        valid_errors = [e for e in pair_errors if math.isfinite(e)]
-        if valid_errors:
+        pair_errors = rms_grid[best_idx, netcdf_data["accepted"][best_idx]]
+        valid_errors = pair_errors[np.isfinite(pair_errors)]
+        if valid_errors.size:
             threshold_m = setup.requirements.performance_threshold_m
-            pct_below = sum(1 for e in valid_errors if e < threshold_m) / len(valid_errors) * 100
+            pct_below = float(np.mean(valid_errors < threshold_m)) * 100
             met_threshold = pct_below >= setup.requirements.performance_spec_percent
 
     # Human-readable recommendation

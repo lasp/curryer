@@ -53,6 +53,8 @@ the observation's radiance.
   directory for a file name and wrote every kernel to that one path.
 - `OFFSET_KERNEL` and `OFFSET_TIME` values are stored in the output in their configured units
   (they were stored in radians and seconds under arcsecond and millisecond labels).
+- `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
+  match-quality gates on; it counted the errors of rejected pairs too.
 
 ## Version 0.5.3 (2026-10)
 
