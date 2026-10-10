@@ -17,13 +17,16 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from curryer.correction.config import ParameterConfig, ParameterType
+from curryer.correction.config import _CONSTANT_KERNEL_AXES, ParameterConfig, ParameterType
 from curryer.kernels import create
 
 if TYPE_CHECKING:
     from curryer.correction.config import GeolocationSetup
 
 logger = logging.getLogger(__name__)
+
+# A CONSTANT_KERNEL CK holds its angles from the GPS epoch to this sentinel uGPS (2050).
+_UGPS_EPOCH_END = 2_209_075_218_000_000
 
 
 def apply_offset(config: ParameterConfig, param_data, input_data):
@@ -46,6 +49,8 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
         ValueError: If an OFFSET_KERNEL parameter names no ``field``.
         KeyError: If the OFFSET_KERNEL ``field`` is not a telemetry column.
         TypeError: If OFFSET_TIME *input_data* is not a numeric ndarray.
+        NotImplementedError: For CONSTANT_KERNEL, whose angles are written to a
+            kernel by :func:`_create_parameter_kernels`, not applied to data.
     """
     logger.info(f"Applying {config.ptype.name} offset to {config.spec.field or 'unknown field'}")
 
@@ -75,14 +80,6 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             raise TypeError(f"OFFSET_TIME applies to an ndarray of uGPS frame times, got {type(input_data).__name__}.")
         modified_data = input_data + param_data * 1e6
         logger.info(f"✓ Applying OFFSET_TIME: {param_data:.6f} s = {param_data * 1e6:.3f} µs to the frame times")
-
-    elif config.ptype == ParameterType.CONSTANT_KERNEL:
-        # For constant kernels, param_data should already be in the correct format
-        # (DataFrame with ugps, angle_x, angle_y, angle_z columns)
-        logger.info(
-            f"Using constant kernel data with {len(param_data) if hasattr(param_data, '__len__') else 1} entries"
-        )
-        modified_data = param_data
 
     else:
         raise NotImplementedError(f"Parameter type {config.ptype} not implemented")
@@ -154,6 +151,9 @@ def _create_parameter_kernels(
     This function applies parameter variations by creating modified kernels
     (CONSTANT_KERNEL, OFFSET_KERNEL) or modifying time tags (OFFSET_TIME).
     Each parameter set produces different kernels and/or time modifications.
+    The CONSTANT_KERNEL parameters sharing a ``config_file`` (one per axis,
+    see :class:`~curryer.correction.config.Sweep`) are written as one CK
+    holding their angles from the GPS epoch to 2050.
 
     Parameters
     ----------
@@ -184,39 +184,23 @@ def _create_parameter_kernels(
     """
     param_kernels = []
     frame_ugps_modified = frame_ugps
+    constant_angles: dict[Path, dict[str, float]] = {}
 
     # Apply each individual parameter change
     logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Log parameter details
         param_name = a_param.spec.field or "unknown"
-        if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-            logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
-        elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            units = a_param.spec.units or ""
-            logger.info(
-                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
-                f"(internal units; configured units: {units or 'unspecified'})"
-            )
-        elif a_param.ptype == ParameterType.OFFSET_TIME:
-            units = a_param.spec.units or ""
-            logger.info(
-                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
-                f"(internal units; configured units: {units or 'unspecified'})"
-            )
+        units = a_param.spec.units or ""
+        logger.info(
+            f"      {a_param.ptype.name}: {param_name} = {p_data:.9f} "
+            f"(internal units; configured units: {units or 'unspecified'})"
+        )
 
-        # Create static changing SPICE kernels
+        # Collect the frame's angles; its CK is written once all axes are known
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
             # Aka: BASE-CK, YOKE-CK, HYSICS-CK
-            # The two rows span the mission; gap chunking would split them into zero-length intervals.
-            param_kernels.append(
-                creator.write_from_json(
-                    a_param.config_file,
-                    output_kernel=work_dir,
-                    input_data=p_data,
-                    overrides={"input_gap_threshold": None},
-                )
-            )
+            constant_angles.setdefault(a_param.config_file, {})[a_param.spec.field] = p_data
 
         # Create dynamic changing SPICE kernels
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
@@ -236,6 +220,20 @@ def _create_parameter_kernels(
 
         else:
             raise NotImplementedError(a_param.ptype)
+
+    for config_file, angles in constant_angles.items():
+        ck_data = pd.DataFrame(
+            {"ugps": [0, _UGPS_EPOCH_END], **{axis: [angles[axis]] * 2 for axis in _CONSTANT_KERNEL_AXES}}
+        )
+        # The two rows span the mission; gap chunking would split them into zero-length intervals.
+        param_kernels.append(
+            creator.write_from_json(
+                config_file,
+                output_kernel=work_dir,
+                input_data=ck_data,
+                overrides={"input_gap_threshold": None},
+            )
+        )
 
     logger.info(f"    Created {len(param_kernels)} parameter-specific kernels")
     return param_kernels, frame_ugps_modified

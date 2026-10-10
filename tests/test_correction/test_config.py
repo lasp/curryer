@@ -49,13 +49,16 @@ def geo() -> GeolocationConfig:
     )
 
 
-@pytest.fixture
-def param_constant(geo) -> ParameterConfig:
+_AXES = ("angle_x", "angle_y", "angle_z")
+
+
+def _constant_kernel(axis: str, config_file: str = "tests/data/test_base.attitude.ck.json") -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.CONSTANT_KERNEL,
-        config_file=Path("tests/data/test_base.attitude.ck.json"),
+        config_file=Path(config_file),
         spec={
-            "current_value": [0.0, 0.0, 0.0],
+            "field": axis,
+            "current_value": 0.0,
             "bounds": [-300.0, 300.0],
             "sigma": 30.0,
             "units": "arcseconds",
@@ -64,6 +67,11 @@ def param_constant(geo) -> ParameterConfig:
             "coordinate_frames": ["FRAME_A", "FRAME_B"],
         },
     )
+
+
+@pytest.fixture
+def param_constant(geo) -> ParameterConfig:
+    return _constant_kernel("angle_x")
 
 
 @pytest.fixture
@@ -115,9 +123,9 @@ def minimal_setup(geo) -> GeolocationSetup:
 
 
 @pytest.fixture
-def minimal_sweep(param_constant) -> Sweep:
-    """Minimal Sweep with a single parameter."""
-    return Sweep(seed=42, n_iterations=5, parameters=[param_constant])
+def minimal_sweep() -> Sweep:
+    """Minimal Sweep: the three axes of one frame."""
+    return Sweep(seed=42, n_iterations=5, parameters=[_constant_kernel(axis) for axis in _AXES])
 
 
 # ===========================================================================
@@ -139,7 +147,7 @@ class TestParameterUnits:
     )
     def test_unknown_units_raise(self, ptype, units):
         with pytest.raises(ValidationError, match="units must be one of"):
-            ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="f", units=units))
+            ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="angle_x", units=units))
 
     @pytest.mark.parametrize(
         ("ptype", "units"),
@@ -151,7 +159,37 @@ class TestParameterUnits:
         ],
     )
     def test_known_units_accepted(self, ptype, units):
-        ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="f", units=units))
+        ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="angle_x", units=units))
+
+
+class TestConstantKernelAxes:
+    """A CONSTANT_KERNEL parameter sets one axis; a sweep sets all three axes of each frame."""
+
+    @pytest.mark.parametrize("field", [None, "roll", "angle_w"])
+    def test_parameter_needs_an_axis(self, field):
+        with pytest.raises(ValidationError, match="field must be one of"):
+            ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("k.json"), spec={"field": field})
+
+    def test_parameter_needs_a_kernel_file(self):
+        with pytest.raises(ValidationError, match="requires a config_file"):
+            ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, spec={"field": "angle_x"})
+
+    @pytest.mark.parametrize(
+        "axes",
+        [("angle_x", "angle_y"), ("angle_x", "angle_y", "angle_y"), ("angle_x", "angle_x", "angle_y", "angle_z")],
+    )
+    def test_sweep_needs_each_axis_once(self, axes):
+        with pytest.raises(ValidationError, match="needs one parameter for each of"):
+            Sweep(parameters=[_constant_kernel(axis) for axis in axes])
+
+    def test_sweep_checks_each_frame(self):
+        frame_a = [_constant_kernel(axis, "a.attitude.ck.json") for axis in _AXES]
+        with pytest.raises(ValidationError, match="b.attitude.ck.json"):
+            Sweep(parameters=[*frame_a, _constant_kernel("angle_z", "b.attitude.ck.json")])
+
+    def test_update_param_selector_matching_several_raises(self, minimal_sweep):
+        with pytest.raises(KeyError, match="matches 3 parameters"):
+            minimal_sweep.update_param("test_base.attitude.ck", sigma=1.0)
 
 
 class TestDataConfig:
@@ -207,7 +245,7 @@ class TestDataConfig:
 class TestParameterSpec:
     def test_construction_with_all_fields(self):
         pd = ParameterSpec(
-            current_value=[1.0, 2.0, 3.0],
+            current_value=1.5,
             bounds=[-100.0, 100.0],
             sigma=10.0,
             units="arcseconds",
@@ -216,7 +254,7 @@ class TestParameterSpec:
             transformation_type="dcm_rotation",
             coordinate_frames=["F1", "F2"],
         )
-        assert pd.current_value == [1.0, 2.0, 3.0]
+        assert pd.current_value == 1.5
         assert pd.sigma == 10.0
         assert pd.units == "arcseconds"
 
@@ -262,7 +300,7 @@ class TestParameterConfig:
     def test_none_data_becomes_empty_parameter_data(self):
         """spec=None (old API) must be accepted and become a default ParameterSpec."""
         pc = ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
+            ptype=ParameterType.OFFSET_KERNEL,
             config_file=Path("kernel.json"),
             spec=None,
         )
@@ -279,7 +317,7 @@ class TestParameterConfig:
 
     def test_all_parameter_types_accepted(self):
         for ptype in ParameterType:
-            pc = ParameterConfig(ptype=ptype)
+            pc = ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec={"field": "angle_x"})
             assert pc.ptype == ptype
 
 
@@ -379,10 +417,17 @@ class TestNetCDFConfig:
         assert nc.standard_attributes_dict == custom
 
     def test_auto_generate_metadata_constant_kernel(self, netcdf_cfg, param_constant):
-        meta = netcdf_cfg.get_parameter_netcdf_metadata(param_constant, angle_type="roll")
+        meta = netcdf_cfg.get_parameter_netcdf_metadata(param_constant)
         assert "roll" in meta.long_name
         assert meta.units == "arcseconds"
-        assert meta.variable_name.startswith("param_")
+        assert meta.variable_name == "param_test_base_attitude_ck_roll"
+
+    def test_auto_generate_metadata_constant_kernel_without_units_is_radians(self, netcdf_cfg):
+        param = ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("k.attitude.ck.json"), spec={"field": "angle_y"}
+        )
+        meta = netcdf_cfg.get_parameter_netcdf_metadata(param)
+        assert (meta.variable_name, meta.units) == ("param_k_attitude_ck_pitch", "radians")
 
     def test_auto_generate_metadata_offset_time(self, netcdf_cfg, param_offset_time):
         meta = netcdf_cfg.get_parameter_netcdf_metadata(param_offset_time)
@@ -499,12 +544,14 @@ class TestSetupSweepOutput:
                     ptype=ParameterType.CONSTANT_KERNEL,
                     config_file=Path("k.json"),
                     spec={
-                        "current_value": [0.0, 0.0, 0.0],
+                        "field": axis,
+                        "current_value": 0.0,
                         "bounds": [-300.0, 300.0],
                         "sigma": 30.0,
                         "units": "arcseconds",
                     },
                 )
+                for axis in _AXES
             ],
             search_strategy=SearchStrategy.RANDOM,
             n_iterations=5,
@@ -546,8 +593,7 @@ class TestSetupSweepOutput:
         assert sweep.n_iterations == 5
         assert sweep.grid_points_per_param == 10
         restored = Sweep.model_validate_json(sweep.model_dump_json())
-        assert len(restored.parameters) == 1
-        assert restored.seed == 42
+        assert restored == sweep
 
     def test_sweep_requires_at_least_one_parameter(self):
         with pytest.raises(ValidationError):
@@ -578,16 +624,20 @@ class TestSetupSweepOutput:
                 "search_strategy": "grid",
                 "grid_points_per_param": 7,
                 "parameters": [
-                    {
-                        "ptype": "CONSTANT_KERNEL",
-                        "config_file": "frame.attitude.ck.json",
-                        "spec": {
-                            "current_value": [0.0, 0.0, 0.0],
-                            "bounds": [-300.0, 300.0],
-                            "sigma": 30.0,
-                            "units": "arcseconds",
-                        },
-                    },
+                    *[
+                        {
+                            "ptype": "CONSTANT_KERNEL",
+                            "config_file": "frame.attitude.ck.json",
+                            "spec": {
+                                "field": axis,
+                                "current_value": 0.0,
+                                "bounds": [-300.0, 300.0],
+                                "sigma": 30.0,
+                                "units": "arcseconds",
+                            },
+                        }
+                        for axis in _AXES
+                    ],
                     {
                         "ptype": "OFFSET_TIME",
                         "config_file": None,
@@ -613,8 +663,8 @@ class TestSetupSweepOutput:
         assert setup.calibration.psf_file == Path("psf.mat")
         assert sweep.search_strategy is SearchStrategy.GRID_SEARCH
         assert sweep.grid_points_per_param == 7
-        assert len(sweep.parameters) == 2
-        assert sweep.parameters[1].ptype is ParameterType.OFFSET_TIME
+        assert [p.spec.field for p in sweep.parameters] == [*_AXES, "corrected_timestamp"]
+        assert sweep.parameters[3].ptype is ParameterType.OFFSET_TIME
         assert output.get_output_filename() == "results.nc"
 
     def test_load_setup_and_sweep_separately(self, tmp_path):

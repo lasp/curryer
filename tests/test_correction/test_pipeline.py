@@ -46,21 +46,26 @@ from curryer.correction.verification import _extract_spacecraft_position_midfram
 
 
 def test_extract_parameter_values():
-    """_extract_parameter_values returns roll/pitch/yaw keys."""
-    param_config = ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("test_kernel.json"), spec=None)
-    param_data = pd.DataFrame(
-        {
-            "angle_x": [np.radians(1.0 / 3600)],
-            "angle_y": [np.radians(2.0 / 3600)],
-            "angle_z": [np.radians(3.0 / 3600)],
-        }
+    """CONSTANT_KERNEL axes (radians internally) are stored per axis in their configured units."""
+    params = [
+        (
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=Path("test_kernel.json"),
+                spec=dict(field=axis, units=units),
+            ),
+            np.radians(arcsec / 3600),
+        )
+        for axis, units, arcsec in [
+            ("angle_x", "arcseconds", 1.0),
+            ("angle_y", "arcseconds", 2.0),
+            ("angle_z", None, 3.0),
+        ]
+    ]
+    result = _extract_parameter_values(params)
+    assert result == pytest.approx(
+        {"test_kernel_roll": 1.0, "test_kernel_pitch": 2.0, "test_kernel_yaw": np.radians(3.0 / 3600)}
     )
-    result = _extract_parameter_values([(param_config, param_data)])
-    assert isinstance(result, dict)
-    assert len(result) == 3
-    assert "test_kernel_roll" in result
-    assert "test_kernel_pitch" in result
-    assert "test_kernel_yaw" in result
 
 
 def test_extract_parameter_values_offsets_in_configured_units():
@@ -301,6 +306,19 @@ def test_loop_refuses_to_resume_completed_pairs(root_dir, tmp_path, monkeypatch)
         loop(setup, sweep, tmp_path, [("t.csv", "o.nc", "c.nc")] * 2, output=output, resume_from_checkpoint=True)
 
 
+def test_loop_creates_its_work_dir(root_dir, tmp_path, monkeypatch):
+    """A missing work_dir is created before any kernel is written (a writer would take it for a file name)."""
+    from clarreo_config import create_clarreo_setup_sweep
+
+    from curryer.correction import pipeline
+
+    setup, sweep, output = create_clarreo_setup_sweep(root_dir / "tests" / "data" / "clarreo" / "gcs", root_dir)
+    monkeypatch.setattr(pipeline, "_load_checkpoint", lambda _path: ({}, 1))
+    with pytest.raises(NotImplementedError):
+        loop(setup, sweep, tmp_path / "work", [("t.csv", "o.nc", "c.nc")], output=output, resume_from_checkpoint=True)
+    assert (tmp_path / "work").is_dir()
+
+
 def _reject_first_parameter_set(n_param_sets):
     """Built-in matching, with correlation 0 for parameter set 0 (calls arrive in parameter-set order per pair)."""
     from curryer.correction.verification import match_observation
@@ -354,14 +372,23 @@ def test_loop_does_not_compare_a_set_failing_the_gates(loop_run):
 
 @pytest.mark.extra
 def test_loop_every_parameter_moves_the_geolocation(loop_run):
-    """Each parameter's -/+ values move the re-geolocated subimage away from its nominal set (3k+1)."""
+    """Each parameter's -/+ values move the re-geolocated subimage away from its nominal set (3k+1).
+
+    HySICS yaw turns the 21 pixels about the boresight, a move of about 3 m for 20 arcsec; every other
+    parameter moves them more than 100 m.
+    """
     _, sweep, *_, results, _nc = loop_run
     for k, param in enumerate(sweep.parameters):
+        boresight_yaw = (
+            param.config_file is not None and "hysics" in param.config_file.name and param.spec.field == "angle_z"
+        )
         nominal = results[3 * k + 1]["geolocation"]
         for off in (3 * k, 3 * k + 2):
             moved = results[off]["geolocation"]
             shift_deg = np.hypot(moved.latitude - nominal.latitude, moved.longitude - nominal.longitude)
-            assert float(shift_deg.mean()) * 111e3 > 20.0, f"{param.ptype.name} {param.config_file} set {off}"
+            assert float(shift_deg.mean()) * 111e3 > (1.0 if boresight_yaw else 20.0), (
+                f"{param.config_file} {param.spec.field} set {off}"
+            )
 
 
 @pytest.mark.extra

@@ -137,13 +137,15 @@ def run_downstream_pipeline(
                 ptype=ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 spec={
-                    "current_value": [0.0, 0.0, 0.0],
+                    "field": axis,
+                    "current_value": 0.0,
                     "sigma": 0.0,
                     "units": "arcseconds",
                     "transformation_type": "dcm_rotation",
                     "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
                 },
             )
+            for axis in ("angle_x", "angle_y", "angle_z")
         ],
     )
     setup.data_config = DataConfig(file_format="csv")

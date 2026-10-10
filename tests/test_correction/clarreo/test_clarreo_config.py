@@ -82,7 +82,7 @@ class TestClarreoConfiguration:
 
     def test_parameter_count(self):
         _setup, sweep, _output = create_clarreo_setup_sweep(self.data_dir, self.generic_dir)
-        assert len(sweep.parameters) == 6
+        assert len(sweep.parameters) == 12
 
     def test_performance_thresholds(self):
         setup, _sweep, _output = create_clarreo_setup_sweep(self.data_dir, self.generic_dir)

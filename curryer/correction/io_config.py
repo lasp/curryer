@@ -99,10 +99,20 @@ class NetCDFConfig(BaseModel):
             return dict(self.standard_attributes)
         return DEFAULT_NETCDF_ATTRIBUTES.copy()
 
-    def get_parameter_netcdf_metadata(
-        self, param_config: "ParameterConfig", angle_type: str | None = None
-    ) -> "NetCDFParameterMetadata":
-        """Get NetCDF metadata for a parameter."""
+    def get_parameter_netcdf_metadata(self, param_config: "ParameterConfig") -> "NetCDFParameterMetadata":
+        """Get NetCDF metadata for a parameter.
+
+        A CONSTANT_KERNEL parameter's variable is named for its kernel file and
+        axis (``roll``, ``pitch`` or ``yaw`` for ``angle_x``, ``angle_y``,
+        ``angle_z``).
+        """
+        from curryer.correction.config import _CONSTANT_KERNEL_AXES, ParameterType
+
+        angle_type = (
+            _CONSTANT_KERNEL_AXES[param_config.spec.field]
+            if param_config.ptype == ParameterType.CONSTANT_KERNEL
+            else None
+        )
         if param_config.config_file:
             param_stem = param_config.config_file.stem
             lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
@@ -123,9 +133,7 @@ class NetCDFConfig(BaseModel):
         """Auto-generate NetCDF metadata from parameter configuration."""
         from curryer.correction.config import ParameterType
 
-        if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            units = "arcseconds"
-        elif param_config.ptype == ParameterType.OFFSET_KERNEL:
+        if param_config.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
             units = "radians"
         elif param_config.ptype == ParameterType.OFFSET_TIME:
             units = "seconds"

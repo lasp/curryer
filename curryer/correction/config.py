@@ -33,7 +33,7 @@ These three classes each capture a distinct, orthogonal concern:
     *How the value is applied to the pipeline.*  Each member maps to a different
     pipeline code path:
 
-    - ``CONSTANT_KERNEL`` — replace the kernel value with the sampled value
+    - ``CONSTANT_KERNEL`` — set one rotation angle of a fixed-attitude frame
     - ``OFFSET_KERNEL``   — shift the existing kernel value by the sampled offset
     - ``OFFSET_TIME``     — shift the input timestamps by the sampled offset
 
@@ -150,7 +150,7 @@ class ParameterType(str, Enum):
     Attributes
     ----------
     CONSTANT_KERNEL
-        Set a specific kernel value (e.g., fixed rotation angles).
+        Set one rotation angle of a fixed-attitude frame kernel.
     OFFSET_KERNEL
         Modify input kernel data by an offset.
     OFFSET_TIME
@@ -176,14 +176,15 @@ class SearchStrategy(str, Enum):
     GRID_SEARCH
         Deterministic cartesian-product sweep.  For every parameter,
         ``grid_points_per_param`` evenly-spaced values are generated across
-        the full ``bounds`` offset range and the cartesian product of all
-        per-parameter grids is enumerated.  ``n_iterations`` is ignored.
+        the full ``bounds`` offset range (one value, ``current_value``, for
+        zero-width bounds) and the cartesian product of all per-parameter
+        grids is enumerated.  ``n_iterations`` is ignored.
     SINGLE_OFFSET
-        Deterministic single-parameter sweep.  Each parameter is varied
-        independently across ``n_iterations`` evenly-spaced values (spanning
-        its ``bounds`` offset range) while all other parameters are held at
-        their nominal ``current_value``.  Total parameter sets produced:
-        ``len(parameters) × n_iterations``.
+        Deterministic single-parameter sweep.  Each parameter with
+        non-zero-width bounds is varied independently across ``n_iterations``
+        evenly-spaced values (spanning its ``bounds`` offset range) while all
+        other parameters are held at their nominal ``current_value``.  Total
+        parameter sets produced: ``n_swept × n_iterations``.
     """
 
     RANDOM = "random"
@@ -201,8 +202,8 @@ class ParameterSpec(BaseModel):
     Attributes
     ----------
     current_value
-        Baseline parameter value(s).  A scalar for OFFSET_KERNEL/OFFSET_TIME
-        and a 3-element list ``[roll, pitch, yaw]`` for CONSTANT_KERNEL.
+        Baseline parameter value.  For CONSTANT_KERNEL, the nominal angle of
+        the frame axis named by ``field``.
     bounds
         ``[min, max]`` offset limits (same units as ``sigma``).
     sigma
@@ -219,7 +220,9 @@ class ParameterSpec(BaseModel):
         the current implementation always uses a normal distribution.
     field
         Telemetry column an ``OFFSET_KERNEL`` parameter modifies (required for
-        it); for ``OFFSET_TIME`` it only names the output variable.
+        it); the rotation axis a ``CONSTANT_KERNEL`` parameter sets
+        (``"angle_x"``, ``"angle_y"`` or ``"angle_z"``, required for it); for
+        ``OFFSET_TIME`` it only names the output variable.
     transformation_type
         Optional hint consumed by kernel-creation routines (e.g.
         ``"dcm_rotation"`` or ``"angle_bias"``).
@@ -232,7 +235,7 @@ class ParameterSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    current_value: float | list[float] = 0.0
+    current_value: float = 0.0
     bounds: list[float] = Field(default_factory=lambda: [-1.0, 1.0])
     sigma: float | None = None
     units: str | None = None
@@ -242,6 +245,9 @@ class ParameterSpec(BaseModel):
     coordinate_frames: list[str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+
+# Rotation axes of a CONSTANT_KERNEL frame (its CK's input columns) and their output-variable names.
+_CONSTANT_KERNEL_AXES = {"angle_x": "roll", "angle_y": "pitch", "angle_z": "yaw"}
 
 # Units each parameter type converts (see ``curryer.correction.parameters``); None is the internal unit.
 _PARAMETER_UNITS = {
@@ -289,6 +295,19 @@ class ParameterConfig(BaseModel):
             raise ValueError(
                 f"{self.ptype.name} parameter units must be one of {sorted(allowed, key=str)}, got {self.spec.units!r}."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_constant_kernel_axis(self) -> "ParameterConfig":
+        """Raise if a CONSTANT_KERNEL parameter names no kernel file or no rotation axis."""
+        if self.ptype == ParameterType.CONSTANT_KERNEL:
+            if self.config_file is None:
+                raise ValueError("CONSTANT_KERNEL parameter requires a config_file.")
+            if self.spec.field not in _CONSTANT_KERNEL_AXES:
+                raise ValueError(
+                    f"CONSTANT_KERNEL parameter field must be one of {list(_CONSTANT_KERNEL_AXES)}, "
+                    f"got {self.spec.field!r} ({self.config_file.name})."
+                )
         return self
 
 
@@ -638,7 +657,10 @@ class Sweep(BaseModel):
     Attributes
     ----------
     parameters
-        The parameters to vary (at least one).
+        The parameters to vary (at least one).  Each CONSTANT_KERNEL kernel
+        file needs one parameter for each of its three axes; hold an axis with
+        ``sigma=None`` and ``bounds=[0.0, 0.0]`` (grid and single-offset sweeps
+        then give it one value).
     search_strategy
         How parameter sets are generated (RANDOM / GRID_SEARCH / SINGLE_OFFSET).
     n_iterations
@@ -669,6 +691,21 @@ class Sweep(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_constant_kernel_axes(self) -> "Sweep":
+        """Raise unless each CONSTANT_KERNEL kernel file has exactly one parameter per axis."""
+        axes_by_file: dict[Path, list[str]] = {}
+        for p in self.parameters:
+            if p.ptype == ParameterType.CONSTANT_KERNEL:
+                axes_by_file.setdefault(p.config_file, []).append(p.spec.field)
+        for config_file, axes in axes_by_file.items():
+            if sorted(axes) != sorted(_CONSTANT_KERNEL_AXES):
+                raise ValueError(
+                    f"CONSTANT_KERNEL {config_file.name} needs one parameter for each of "
+                    f"{list(_CONSTANT_KERNEL_AXES)}, got {axes}."
+                )
+        return self
+
     # ------------------------------------------------------------------
     # Ergonomics — cheap, re-validated copies for rapid experimentation
     # ------------------------------------------------------------------
@@ -696,7 +733,8 @@ class Sweep(BaseModel):
 
         *selector* is either an integer index into :attr:`parameters`, or a
         string matched against each parameter's ``spec.field`` or its
-        ``config_file`` stem.  The changed spec is re-validated against
+        ``config_file`` stem; a string matching more than one parameter
+        raises ``KeyError``.  The changed spec is re-validated against
         :class:`ParameterSpec` (which is ``extra="forbid"``), so out-of-spec
         values or unknown field names raise immediately rather than being
         silently swallowed.
@@ -720,14 +758,17 @@ class Sweep(BaseModel):
             if not -len(self.parameters) <= selector < len(self.parameters):
                 raise IndexError(f"Parameter index {selector} out of range (have {len(self.parameters)}).")
             return selector
-        for i, p in enumerate(self.parameters):
-            if p.spec.field == selector:
-                return i
-            if p.config_file is not None and p.config_file.stem == selector:
-                return i
-        raise KeyError(
-            f"No parameter matches selector {selector!r}. Use an index, a spec.field, or a config_file stem."
-        )
+        matches = [
+            i
+            for i, p in enumerate(self.parameters)
+            if p.spec.field == selector or (p.config_file is not None and p.config_file.stem == selector)
+        ]
+        if len(matches) != 1:
+            raise KeyError(
+                f"Selector {selector!r} matches {len(matches)} parameters; use an index, or a spec.field "
+                "or config_file stem that names exactly one."
+            )
+        return matches[0]
 
 
 class OutputConfig(BaseModel):
@@ -830,8 +871,9 @@ def load_config_files(config_path: Path) -> tuple[GeolocationSetup, Sweep, Outpu
     The file has three top-level sections — ``"setup"``, ``"sweep"``, and an
     optional ``"output"`` — each validated directly against its model.  The
     ``"sweep".parameters`` entries mirror :class:`ParameterConfig` (``ptype`` /
-    ``config_file`` / ``spec``); rotation frames are authored as a single
-    ``CONSTANT_KERNEL`` parameter with ``spec.current_value = [roll, pitch, yaw]``.
+    ``config_file`` / ``spec``); a rotation frame is authored as three
+    ``CONSTANT_KERNEL`` parameters sharing a ``config_file``, one per
+    ``spec.field`` axis (``angle_x``, ``angle_y``, ``angle_z``).
     """
     data = _read_config_json(config_path)
     for section in ("setup", "sweep"):

@@ -307,15 +307,10 @@ def build_correction_result(
         mean_rms = float("nan")
 
     # Extract parameter arrays using the same naming rules as results_io.
-    from curryer.correction.config import ParameterType  # local import to avoid cycles
 
     param_keys: list[str] = []
     for p in sweep.parameters:
-        if p.ptype == ParameterType.CONSTANT_KERNEL:
-            for angle in ("roll", "pitch", "yaw"):
-                param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p, angle).variable_name)
-        else:
-            param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
+        param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
 
     # Keep only keys that are present and are 1-D arrays in netcdf_data
     expected_keys = param_keys

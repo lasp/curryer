@@ -31,7 +31,34 @@
         "ptype": "CONSTANT_KERNEL",
         "config_file": "path/to/frame_a.attitude.ck.json",
         "spec": {
-          "current_value": [0.0, 0.0, 0.0],
+          "field": "angle_x",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["FRAME_A_FROM", "FRAME_A_TO"]
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_y",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds",
+          "transformation_type": "dcm_rotation",
+          "coordinate_frames": ["FRAME_A_FROM", "FRAME_A_TO"]
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_z",
+          "current_value": 0.0,
           "bounds": [-300.0, 300.0],
           "sigma": 50.0,
           "units": "arcseconds",

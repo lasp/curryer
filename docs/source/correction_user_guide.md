@@ -96,9 +96,32 @@ sections. You edit values — you don't write code.
         "ptype": "CONSTANT_KERNEL",
         "config_file": "path/to/frame_a.attitude.ck.json",
         "spec": {
-          "current_value": [0.0, 0.0, 0.0],
+          "field": "angle_x",
+          "current_value": 0.0,
           "bounds": [-300.0, 300.0],
           "sigma": 50.0,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_y",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_z",
+          "current_value": 0.0,
+          "bounds": [0.0, 0.0],
+          "sigma": null,
           "units": "arcseconds"
         }
       }
@@ -324,9 +347,32 @@ the [Quickstart](#quickstart) template leaves out:
         "ptype": "CONSTANT_KERNEL",
         "config_file": "path/to/frame_a.attitude.ck.json",
         "spec": {
-          "current_value": [0.0, 0.0, 0.0],
+          "field": "angle_x",
+          "current_value": 0.0,
           "bounds": [-300.0, 300.0],
           "sigma": 50.0,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_y",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_z",
+          "current_value": 0.0,
+          "bounds": [0.0, 0.0],
+          "sigma": null,
           "units": "arcseconds"
         }
       }
@@ -338,8 +384,12 @@ the [Quickstart](#quickstart) template leaves out:
 }
 ```
 
-A frame rotation is authored as a single `CONSTANT_KERNEL` parameter whose
-`spec.current_value` is the `[roll, pitch, yaw]` triplet.
+A frame rotation is authored as three `CONSTANT_KERNEL` parameters sharing a
+`config_file`, one per `spec.field` axis: `angle_x` (roll), `angle_y` (pitch) and
+`angle_z` (yaw). The loop writes the frame's CK from the three angles. Hold an
+axis at its `current_value` with `sigma: null` and `bounds: [0.0, 0.0]` (grid and
+single-offset sweeps do not vary it); a sweep missing an axis, or naming one twice,
+raises.
 
 A fully populated mission example: `examples/correction/clarreo_config.json`
 A generic annotated template: `examples/correction/example_config.json`
@@ -408,32 +458,32 @@ The parameter-variation experiment, varied between runs. Use
 
 ### Parameters — `sweep.parameters[]`
 
-| Field                | Type                   | Notes                                                               |
-| -------------------- | ---------------------- | ------------------------------------------------------------------- |
-| `ptype`              | `ParameterType`        | `CONSTANT_KERNEL`, `OFFSET_KERNEL`, or `OFFSET_TIME`                |
-| `config_file`        | `Path \| None`         | Path to the SPICE kernel JSON template; required for kernel types   |
-| `spec`               | `ParameterSpec`        | Sampling specification (see below)                                  |
-| `spec.current_value` | `float \| list[float]` | Baseline value(s). For `CONSTANT_KERNEL`: `[roll, pitch, yaw]`      |
-| `spec.bounds`        | `[min, max]`           | Offset limits in the same units as `sigma`                          |
-| `spec.sigma`         | `float \| None`        | Sampling standard deviation for the `RANDOM` strategy               |
-| `spec.units`         | `str \| None`          | Physical units string, e.g. `"arcseconds"` or `"milliseconds"`      |
-| `spec.field`         | `str \| None`          | Telemetry column name; required for `OFFSET_KERNEL` / `OFFSET_TIME` |
+| Field                | Type            | Notes                                                                                                                                      |
+| -------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ptype`              | `ParameterType` | `CONSTANT_KERNEL`, `OFFSET_KERNEL`, or `OFFSET_TIME`                                                                                       |
+| `config_file`        | `Path \| None`  | Path to the SPICE kernel JSON template; required for kernel types                                                                          |
+| `spec`               | `ParameterSpec` | Sampling specification (see below)                                                                                                         |
+| `spec.current_value` | `float`         | Baseline value. For `CONSTANT_KERNEL`: the nominal angle of `field`                                                                        |
+| `spec.bounds`        | `[min, max]`    | Offset limits in the same units as `sigma`                                                                                                 |
+| `spec.sigma`         | `float \| None` | Sampling standard deviation for the `RANDOM` strategy                                                                                      |
+| `spec.units`         | `str \| None`   | Physical units string, e.g. `"arcseconds"` or `"milliseconds"`                                                                             |
+| `spec.field`         | `str \| None`   | Telemetry column for `OFFSET_KERNEL`; rotation axis (`angle_x`, `angle_y`, `angle_z`) for `CONSTANT_KERNEL`; output name for `OFFSET_TIME` |
 
 ### Parameter types — `ptype`
 
-| Value             | Description                                                                    |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `CONSTANT_KERNEL` | Fixed attitude rotation applied to an instrument frame (roll/pitch/yaw offset) |
-| `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel        |
-| `OFFSET_TIME`     | Timing offset applied to the observation's frame times                         |
+| Value             | Description                                                             |
+| ----------------- | ----------------------------------------------------------------------- |
+| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK  |
+| `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel |
+| `OFFSET_TIME`     | Timing offset applied to the observation's frame times                  |
 
 ### Search strategies — `search_strategy`
 
-| Value           | Description                                                                  |
-| --------------- | ---------------------------------------------------------------------------- |
-| `RANDOM`        | Monte Carlo: draws from a normal distribution at each iteration (default)    |
-| `GRID_SEARCH`   | Cartesian product of evenly spaced grid points across all parameter bounds   |
-| `SINGLE_OFFSET` | Each parameter swept independently while all others remain at nominal values |
+| Value           | Description                                                                                                                  |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `RANDOM`        | Monte Carlo: draws from a normal distribution at each iteration (default)                                                    |
+| `GRID_SEARCH`   | Cartesian product of evenly spaced grid points across all parameter bounds; a parameter with zero-width bounds has one point |
+| `SINGLE_OFFSET` | Each parameter with non-zero-width bounds swept independently while all others remain at nominal values                      |
 
 ### Inputs — `inputs=`
 

@@ -6,7 +6,7 @@ Covers:
 - ``SearchStrategy.SINGLE_OFFSET`` – one-parameter-at-a-time sweep (others held at nominal)
 
 For every strategy the three parameter types are exercised:
-  - ``CONSTANT_KERNEL``  – 3-axis rotation (returns a pandas DataFrame)
+  - ``CONSTANT_KERNEL``  – one rotation angle of a frame (float, radians)
   - ``OFFSET_KERNEL``    – single angle bias (float, radians)
   - ``OFFSET_TIME``      – timing correction (float, seconds)
 
@@ -17,10 +17,10 @@ Config validation:
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 from pydantic import ValidationError
 
@@ -52,34 +52,35 @@ def geo() -> GeolocationConfig:
     )
 
 
-@pytest.fixture
-def param_constant() -> ParameterConfig:
-    """CONSTANT_KERNEL: roll/pitch/yaw in arcseconds."""
-    return ParameterConfig(
-        ptype=ParameterType.CONSTANT_KERNEL,
-        config_file=Path("tests/data/test_base.attitude.ck.json"),
-        spec={
-            "current_value": [10.0, 20.0, 30.0],
-            "bounds": [-60.0, 60.0],
-            "sigma": 6.0,
-            "units": "arcseconds",
-        },
-    )
+_AXES = ("angle_x", "angle_y", "angle_z")
+
+
+def _frame(current_values, bounds, sigma) -> list[ParameterConfig]:
+    """One CONSTANT_KERNEL parameter per axis of a test frame kernel, in arcseconds."""
+    return [
+        ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL,
+            config_file=Path("tests/data/test_base.attitude.ck.json"),
+            spec={"field": axis, "current_value": value, "bounds": bounds, "sigma": sigma, "units": "arcseconds"},
+        )
+        for axis, value in zip(_AXES, current_values)
+    ]
 
 
 @pytest.fixture
-def param_constant_zero() -> ParameterConfig:
-    """CONSTANT_KERNEL: all axes at zero with no sigma → always returns [0, 0, 0]."""
-    return ParameterConfig(
-        ptype=ParameterType.CONSTANT_KERNEL,
-        config_file=Path("tests/data/test_base.attitude.ck.json"),
-        spec={
-            "current_value": [0.0, 0.0, 0.0],
-            "bounds": [-10.0, 10.0],
-            "sigma": None,
-            "units": "arcseconds",
-        },
-    )
+def frame_constant() -> list[ParameterConfig]:
+    """CONSTANT_KERNEL frame: roll/pitch/yaw 10/20/30 arcseconds, sampled."""
+    return _frame([10.0, 20.0, 30.0], [-60.0, 60.0], 6.0)
+
+
+@pytest.fixture
+def frame_constant_zero() -> list[ParameterConfig]:
+    """CONSTANT_KERNEL frame: all axes at zero with no sigma."""
+    return _frame([0.0, 0.0, 0.0], [-10.0, 10.0], None)
+
+
+def _arcsec(value):
+    return np.deg2rad(np.asarray(value) / 3600.0)
 
 
 @pytest.fixture
@@ -139,25 +140,10 @@ def _make_config(
 
 
 class TestGetNominalValue:
-    def test_constant_kernel_list(self, param_constant):
-        """Nominal CONSTANT_KERNEL returns DataFrame with converted arcsecond values."""
-        df = _get_nominal_value(param_constant)
-        assert isinstance(df, pd.DataFrame)
-        assert set(df.columns) >= {"ugps", "angle_x", "angle_y", "angle_z"}
-        # current_value = [10, 20, 30] arcsec → radians
-        expected_x = np.deg2rad(10.0 / 3600.0)
-        expected_y = np.deg2rad(20.0 / 3600.0)
-        expected_z = np.deg2rad(30.0 / 3600.0)
-        np.testing.assert_allclose(df["angle_x"].iloc[0], expected_x, rtol=1e-10)
-        np.testing.assert_allclose(df["angle_y"].iloc[0], expected_y, rtol=1e-10)
-        np.testing.assert_allclose(df["angle_z"].iloc[0], expected_z, rtol=1e-10)
-
-    def test_constant_kernel_zero(self, param_constant_zero):
-        """Nominal CONSTANT_KERNEL with zeros returns zero-angle DataFrame."""
-        df = _get_nominal_value(param_constant_zero)
-        assert df["angle_x"].iloc[0] == 0.0
-        assert df["angle_y"].iloc[0] == 0.0
-        assert df["angle_z"].iloc[0] == 0.0
+    def test_constant_kernel_axis_in_radians(self, frame_constant):
+        """Each CONSTANT_KERNEL axis's nominal value is its own current_value in radians."""
+        for param, expected in zip(frame_constant, [10.0, 20.0, 30.0]):
+            assert _get_nominal_value(param) == pytest.approx(_arcsec(expected), rel=1e-12)
 
     def test_offset_kernel(self, param_offset_kernel):
         """Nominal OFFSET_KERNEL: current_value=0 arcsec → 0.0 rad."""
@@ -212,32 +198,10 @@ class TestGetGridValues:
         assert vals[0] == pytest.approx(low_rad)
         assert vals[-1] == pytest.approx(high_rad)
 
-    def test_constant_kernel_returns_dataframes(self, param_constant):
-        """CONSTANT_KERNEL grid returns a list of DataFrames."""
-        vals = _get_grid_values(param_constant, 4)
-        assert len(vals) == 4
-        for df in vals:
-            assert isinstance(df, pd.DataFrame)
-            assert "angle_x" in df.columns
-
-    def test_constant_kernel_offset_applied_uniformly(self, param_constant_zero):
-        """Uniform offset applied to all 3 axes for CONSTANT_KERNEL."""
-        # param_constant_zero: current=[0,0,0], bounds=[-10,10] arcsec
-        vals = _get_grid_values(param_constant_zero, 3)
-        for df in vals:
-            x = df["angle_x"].iloc[0]
-            y = df["angle_y"].iloc[0]
-            z = df["angle_z"].iloc[0]
-            assert x == pytest.approx(y), "All 3 axes should share the same offset for zero current_value"
-            assert y == pytest.approx(z), "All 3 axes should share the same offset for zero current_value"
-
-    def test_constant_kernel_endpoint_magnitudes(self, param_constant_zero):
-        """First and last grid DataFrames have angles matching the converted bounds."""
-        vals = _get_grid_values(param_constant_zero, 2)
-        low_rad = np.deg2rad(-10.0 / 3600.0)
-        high_rad = np.deg2rad(10.0 / 3600.0)
-        assert vals[0]["angle_x"].iloc[0] == pytest.approx(low_rad)
-        assert vals[-1]["angle_x"].iloc[0] == pytest.approx(high_rad)
+    def test_constant_kernel_spans_bounds_around_its_axis(self, frame_constant):
+        """A CONSTANT_KERNEL axis's grid is its current_value plus the bounds, in radians."""
+        vals = _get_grid_values(frame_constant[1], 3)
+        np.testing.assert_allclose(vals, _arcsec([20.0 - 60.0, 20.0, 20.0 + 60.0]), rtol=1e-12)
 
     def test_offset_time_microseconds(self):
         """Microsecond units are converted correctly."""
@@ -286,15 +250,12 @@ class TestRandomStrategy:
             _, val = param_set[0]
             assert low_s <= val <= high_s
 
-    def test_constant_kernel_returns_dataframe(self, geo, param_constant):
-        config = _make_config(geo, [param_constant], strategy=SearchStrategy.RANDOM, n_iterations=2)
-        sets = load_param_sets(config)
-        for param_set in sets:
-            _, df = param_set[0]
-            assert isinstance(df, pd.DataFrame)
-            assert "angle_x" in df.columns
-            assert "angle_y" in df.columns
-            assert "angle_z" in df.columns
+    def test_constant_kernel_axes_drawn_independently(self, geo, frame_constant):
+        config = _make_config(geo, frame_constant, strategy=SearchStrategy.RANDOM, n_iterations=4)
+        offsets = np.array([[val for _, val in param_set] for param_set in load_param_sets(config)])
+        offsets -= _arcsec([10.0, 20.0, 30.0])
+        assert np.all(np.abs(offsets) <= _arcsec(60.0))
+        assert len(np.unique(np.round(offsets / _arcsec(1e-6)))) == offsets.size
 
     def test_offset_kernel_returns_float(self, geo, param_offset_kernel):
         config = _make_config(geo, [param_offset_kernel], strategy=SearchStrategy.RANDOM, n_iterations=3)
@@ -303,14 +264,11 @@ class TestRandomStrategy:
             _, val = param_set[0]
             assert isinstance(val, (float, np.floating))
 
-    def test_no_sigma_returns_fixed_value(self, geo, param_constant_zero):
-        """Parameter with sigma=None stays fixed at nominal across all iterations."""
-        config = _make_config(geo, [param_constant_zero], strategy=SearchStrategy.RANDOM, n_iterations=10, seed=0)
-        sets = load_param_sets(config)
-        first_x = sets[0][0][1]["angle_x"].iloc[0]
-        for param_set in sets:
-            _, df = param_set[0]
-            assert df["angle_x"].iloc[0] == pytest.approx(first_x)
+    def test_no_sigma_returns_fixed_value(self, geo, frame_constant_zero):
+        """Parameters with sigma=None stay fixed at nominal across all iterations."""
+        config = _make_config(geo, frame_constant_zero, strategy=SearchStrategy.RANDOM, n_iterations=10, seed=0)
+        for param_set in load_param_sets(config):
+            assert [val for _, val in param_set] == [0.0, 0.0, 0.0]
 
 
 # ===========================================================================
@@ -336,16 +294,16 @@ class TestGridSearchStrategy:
         sets = load_param_sets(config)
         assert len(sets) == 16
 
-    def test_three_params_cartesian_product(self, geo, param_constant, param_offset_kernel, param_offset_time):
-        """3 parameters × 3 grid points → 3³ = 27 parameter sets."""
+    def test_five_params_cartesian_product(self, geo, frame_constant, param_offset_kernel, param_offset_time):
+        """A frame's 3 axes + 2 parameters × 2 grid points → 2⁵ = 32 parameter sets."""
         config = _make_config(
             geo,
-            [param_constant, param_offset_kernel, param_offset_time],
+            [*frame_constant, param_offset_kernel, param_offset_time],
             strategy=SearchStrategy.GRID_SEARCH,
-            grid_points_per_param=3,
+            grid_points_per_param=2,
         )
         sets = load_param_sets(config)
-        assert len(sets) == 27
+        assert len(sets) == 32
 
     def test_inner_set_length(self, geo, param_offset_kernel, param_offset_time):
         config = _make_config(
@@ -387,14 +345,11 @@ class TestGridSearchStrategy:
             for (_, a), (_, b) in zip(param_set_a, param_set_b):
                 assert a == pytest.approx(b)
 
-    def test_constant_kernel_in_grid(self, geo, param_constant_zero):
-        """GRID_SEARCH on CONSTANT_KERNEL yields DataFrames with monotone angles."""
-        config = _make_config(geo, [param_constant_zero], strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=4)
-        sets = load_param_sets(config)
-        assert len(sets) == 4
-        angle_xs = [s[0][1]["angle_x"].iloc[0] for s in sets]
-        # Values should be monotonically increasing (linspace low→high)
-        assert all(angle_xs[i] <= angle_xs[i + 1] for i in range(len(angle_xs) - 1))
+    def test_constant_kernel_axes_are_separate_grid_dimensions(self, geo, frame_constant_zero):
+        """Each axis of a frame is its own grid dimension."""
+        config = _make_config(geo, frame_constant_zero, strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=2)
+        combos = {tuple(round(val / _arcsec(10.0)) for _, val in s) for s in load_param_sets(config)}
+        assert combos == set(itertools.product([-1, 1], repeat=3))
 
     def test_n_iterations_ignored(self, geo, param_offset_time):
         """n_iterations has no effect on GRID_SEARCH output count."""
@@ -516,13 +471,45 @@ class TestSingleOffsetStrategy:
             for (_, a), (_, b) in zip(param_set_a, param_set_b):
                 assert a == pytest.approx(b)
 
-    def test_constant_kernel_sweep(self, geo, param_constant_zero):
-        """SINGLE_OFFSET on CONSTANT_KERNEL sweeps angle magnitudes monotonically."""
-        config = _make_config(geo, [param_constant_zero], strategy=SearchStrategy.SINGLE_OFFSET, n_iterations=5)
+    def test_constant_kernel_sweeps_one_axis_at_a_time(self, geo, frame_constant_zero):
+        """SINGLE_OFFSET moves one axis of a frame while the other two stay at nominal."""
+        config = _make_config(geo, frame_constant_zero, strategy=SearchStrategy.SINGLE_OFFSET, n_iterations=3)
+        sets = np.array([[val for _, val in s] for s in load_param_sets(config)]) / _arcsec(10.0)
+        expected = np.zeros((9, 3))
+        for axis in range(3):
+            expected[3 * axis : 3 * axis + 3, axis] = [-1.0, 0.0, 1.0]
+        np.testing.assert_allclose(sets, expected, atol=1e-12)
+
+
+class TestHeldParameters:
+    """A parameter with zero-width bounds is held at current_value by the deterministic strategies."""
+
+    def _frame_with_yaw_held(self):
+        frame = _frame([0.0, 0.0, 30.0], [-10.0, 10.0], None)
+        frame[2] = frame[2].model_copy(update={"spec": frame[2].spec.model_copy(update={"bounds": [0.0, 0.0]})})
+        return frame
+
+    def test_grid_gives_a_held_axis_one_point(self, geo):
+        config = _make_config(
+            geo, self._frame_with_yaw_held(), strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=2
+        )
         sets = load_param_sets(config)
-        assert len(sets) == 5
-        angle_xs = [s[0][1]["angle_x"].iloc[0] for s in sets]
-        assert all(angle_xs[i] <= angle_xs[i + 1] for i in range(len(angle_xs) - 1))
+        assert len(sets) == 4
+        np.testing.assert_allclose([s[2][1] for s in sets], _arcsec(30.0))
+
+    def test_single_offset_does_not_sweep_a_held_axis(self, geo):
+        config = _make_config(geo, self._frame_with_yaw_held(), strategy=SearchStrategy.SINGLE_OFFSET, n_iterations=3)
+        sets = np.array([[val for _, val in s] for s in load_param_sets(config)])
+        assert sets.shape == (6, 3)
+        np.testing.assert_allclose(sets[:, 2], _arcsec(30.0))
+
+    def test_single_offset_with_every_parameter_held_raises(self, geo):
+        frame = [
+            p.model_copy(update={"spec": p.spec.model_copy(update={"bounds": [0.0, 0.0]})})
+            for p in _frame([0.0] * 3, [-1.0, 1.0], None)
+        ]
+        with pytest.raises(ValueError, match="non-zero-width bounds"):
+            load_param_sets(_make_config(geo, frame, strategy=SearchStrategy.SINGLE_OFFSET))
 
 
 # ===========================================================================
@@ -598,13 +585,11 @@ class TestOutputTypeConsistency:
         "strategy",
         [SearchStrategy.RANDOM, SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET],
     )
-    def test_constant_kernel_always_dataframe(self, strategy, geo, param_constant_zero):
-        config = _make_config(geo, [param_constant_zero], strategy=strategy, n_iterations=3, grid_points_per_param=3)
-        sets = load_param_sets(config)
-        for param_set in sets:
-            _, val = param_set[0]
-            assert isinstance(val, pd.DataFrame), f"Expected DataFrame for {strategy}, got {type(val)}"
-            assert {"ugps", "angle_x", "angle_y", "angle_z"}.issubset(val.columns)
+    def test_constant_kernel_always_float(self, strategy, geo, frame_constant_zero):
+        config = _make_config(geo, frame_constant_zero, strategy=strategy, n_iterations=3, grid_points_per_param=3)
+        for param_set in load_param_sets(config):
+            for _, val in param_set:
+                assert isinstance(val, (float, np.floating)), f"Expected float for {strategy}, got {type(val)}"
 
     @pytest.mark.parametrize(
         "strategy",

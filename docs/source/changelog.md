@@ -31,6 +31,17 @@ the observation's radiance.
 - `loop(resume_from_checkpoint=True)` raises `NotImplementedError` when the checkpoint holds
   completed pairs, whose image-matching results it cannot restore (CURRYER-100).
 - `dataio.validate_science_output` is removed.
+- **A `CONSTANT_KERNEL` parameter is one rotation axis** -- `spec.field` names it (`angle_x`,
+  `angle_y` or `angle_z`) and `spec.current_value` is a float; a frame takes three parameters
+  sharing its `config_file`, joined into one CK. `GRID_SEARCH` and `SINGLE_OFFSET` previously
+  added one offset to all three axes at once, so pitch and roll could not be swept separately.
+  The output variables keep their `<kernel>_roll` / `_pitch` / `_yaw` names and are stored in
+  the configured units (radians when `units` is `None`). `Sweep.update_param` raises on a
+  selector matching more than one parameter, and `NetCDFConfig.get_parameter_netcdf_metadata`
+  no longer takes `angle_type`.
+- `GRID_SEARCH` and `SINGLE_OFFSET` hold a parameter with zero-width `bounds` at its
+  `current_value` (one grid point; not swept) instead of repeating it; `SINGLE_OFFSET` raises
+  when no parameter has non-zero-width bounds.
 
 ### Fixes
 
@@ -38,6 +49,8 @@ the observation's radiance.
   small; they are applied in radians as `load_param_sets` returns them.
 - `CONSTANT_KERNEL` attitude kernels covered only their two sentinel epochs because the
   template's gap threshold split them; gap chunking is disabled for them.
+- `loop()` creates `work_dir` when it is missing; the kernel writers took the missing
+  directory for a file name and wrote every kernel to that one path.
 - `OFFSET_KERNEL` and `OFFSET_TIME` values are stored in the output in their configured units
   (they were stored in radians and seconds under arcsecond and millisecond labels).
 

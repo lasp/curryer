@@ -40,6 +40,7 @@ from curryer import spicierpy as sp
 from curryer.compute import elevation, spatial
 from curryer.compute.constants import SpatialQualityFlags as SQF
 from curryer.correction.config import (
+    _CONSTANT_KERNEL_AXES,
     CalibrationData,
     CorrectionInput,
     GeolocationSetup,
@@ -520,7 +521,7 @@ def loop(
         The parameter-variation experiment: ``parameters``, ``search_strategy``,
         ``n_iterations``, ``seed``, and grid settings.
     work_dir : Path
-        Working directory for temporary files.
+        Working directory for the kernels and output; created if missing.
     tlm_sci_gcp_sets : list of (str, str, str)
         List of (`telemetry_key`, `science_key`, `gcp_key`) tuples: the
         telemetry the dynamic kernels are built from, an observation subimage
@@ -602,6 +603,10 @@ def loop(
     # Build NetCDF data structure
     n_param_sets = len(params_set)
     n_gcp_pairs = len(tlm_sci_gcp_sets)
+
+    # Kernel writers take a missing directory for a file name, so create it.
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     # Try to load checkpoint if resuming
     output_file = work_dir / output.get_output_filename()
@@ -870,12 +875,9 @@ def _extract_parameter_values(params):
             )
 
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            # Extract roll, pitch, yaw from DataFrame
-            if isinstance(param_data, pd.DataFrame) and "angle_x" in param_data.columns:
-                # Convert back to arcseconds for storage
-                param_values[f"{param_name}_roll"] = np.degrees(param_data["angle_x"].iloc[0]) * 3600
-                param_values[f"{param_name}_pitch"] = np.degrees(param_data["angle_y"].iloc[0]) * 3600
-                param_values[f"{param_name}_yaw"] = np.degrees(param_data["angle_z"].iloc[0]) * 3600
+            # Back from radians to the configured units, one variable per axis
+            axis_name = _CONSTANT_KERNEL_AXES[param_config.spec.field]
+            param_values[f"{param_name}_{axis_name}"] = _rad_to_val(param_data, param_config.spec.units)
 
         elif param_config.ptype == ParameterType.OFFSET_KERNEL:
             # Back from radians to the configured units

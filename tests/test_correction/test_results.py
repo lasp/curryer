@@ -78,8 +78,10 @@ def _make_setup_sweep(
         parameters=[
             ParameterConfig(
                 ptype=ParameterType.CONSTANT_KERNEL,
-                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
+                config_file=Path("test_kernel.json"),
+                spec={"field": axis, "bounds": [-300.0, 300.0]},
             )
+            for axis in ("angle_x", "angle_y", "angle_z")
         ],
     )
     netcdf_config = NetCDFConfig(performance_threshold_m=performance_threshold_m)
