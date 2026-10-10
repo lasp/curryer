@@ -78,11 +78,14 @@ class CorrectionResult(BaseModel):
     n_parameter_sets : int
         Number of parameter sets tested in the sweep.
     n_gcp_pairs : int
-        Number of GCP pairs used.
+        Number of GCP pairs the loop ran, including pairs that never pass the
+        match-quality gates.
     all_parameter_sets : list[ParameterSetResult]
         All tested parameter sets sorted by mean RMS (ascending).
     met_threshold : bool
-        Whether the best parameter set met the mission performance requirements.
+        Whether the best parameter set met the mission performance requirements,
+        evaluated on the pairs it passes the match-quality gates on (the usable
+        pairs every compared set is judged on).
     recommendation : str
         Human-readable next-step guidance for the instrument engineer.
     summary_table : str
