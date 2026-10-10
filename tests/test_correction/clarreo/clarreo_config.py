@@ -64,47 +64,59 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
     parameters = [
         # ===== CONSTANT_KERNEL Parameters (9 total) =====
         # BASE frame corrections (roll, pitch, yaw)
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_base_v01.attitude.ck.json",
-            spec=dict(
-                current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values in arcseconds
-                bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
-                sigma=30.0,  # Standard deviation for offset sampling (arcseconds)
-                units="arcseconds",
-                distribution="normal",
-                transformation_type="dcm_rotation",
-                coordinate_frames=["BASE_AZIMUTH", "BASE_CUBE"],
-            ),
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_base_v01.attitude.ck.json",
+                spec=dict(
+                    field=axis,
+                    current_value=0.0,
+                    bounds=[-300.0, 300.0],  # Offset limits in arcseconds
+                    sigma=30.0,  # Standard deviation for offset sampling (arcseconds)
+                    units="arcseconds",
+                    distribution="normal",
+                    transformation_type="dcm_rotation",
+                    coordinate_frames=["BASE_AZIMUTH", "BASE_CUBE"],
+                ),
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # YOKE frame corrections (roll, pitch, yaw)
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
-            spec=dict(
-                current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
-                bounds=[-200.0, 200.0],  # Smaller offset range for yoke
-                sigma=20.0,
-                units="arcseconds",
-                distribution="normal",
-                transformation_type="dcm_rotation",
-                coordinate_frames=["YOKE_ELEVATION", "YOKE_AZIMUTH"],
-            ),
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
+                spec=dict(
+                    field=axis,
+                    current_value=0.0,
+                    bounds=[-200.0, 200.0],  # Smaller offset range for yoke
+                    sigma=20.0,
+                    units="arcseconds",
+                    distribution="normal",
+                    transformation_type="dcm_rotation",
+                    coordinate_frames=["YOKE_ELEVATION", "YOKE_AZIMUTH"],
+                ),
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # HYSICS frame corrections (roll, pitch, yaw)
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
-            spec=dict(
-                current_value=[0.0, 0.0, 0.0],  # [roll, pitch, yaw] baseline values
-                bounds=[-300.0, 300.0],  # Offset range for HySICS instrument
-                sigma=30.0,
-                units="arcseconds",
-                distribution="normal",
-                transformation_type="dcm_rotation",
-                coordinate_frames=["HYSICS_SLIT", "CRADLE_ELEVATION"],
-            ),
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
+                spec=dict(
+                    field=axis,
+                    current_value=0.0,
+                    bounds=[-300.0, 300.0],  # Offset range for HySICS instrument
+                    sigma=30.0,
+                    units="arcseconds",
+                    distribution="normal",
+                    transformation_type="dcm_rotation",
+                    coordinate_frames=["HYSICS_SLIT", "CRADLE_ELEVATION"],
+                ),
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # ===== OFFSET_KERNEL Parameters (2 total) =====
         # Azimuth angle bias correction
         ParameterConfig(
@@ -113,7 +125,7 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
             spec=dict(
                 field="hps.az_ang_nonlin",  # Telemetry field to modify
                 current_value=0.0,  # Baseline azimuth bias (arcseconds)
-                bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
+                bounds=[-300.0, 300.0],  # Offset limits in arcseconds
                 sigma=30.0,  # Standard deviation for offset sampling
                 units="arcseconds",
                 distribution="normal",
@@ -128,7 +140,7 @@ def create_clarreo_setup_sweep(data_dir, generic_dir):
             spec=dict(
                 field="hps.el_ang_nonlin",  # Telemetry field to modify
                 current_value=0.0,  # Baseline elevation bias (arcseconds)
-                bounds=[-300.0, 300.0],  # Offset limits in arcseconds (around 0)
+                bounds=[-300.0, 300.0],  # Offset limits in arcseconds
                 sigma=30.0,
                 units="arcseconds",
                 distribution="normal",

@@ -11,8 +11,8 @@ for a correction analysis run, including:
 - ``GeolocationSetup`` – durable, mission-specific setup (built once, reused across sweeps)
 - ``Sweep`` – the lightweight, frequently-varied parameter experiment
 - ``OutputConfig`` – output settings (NetCDF metadata + filename)
-- ``KernelContext``, ``CalibrationData``, ``ImageMatchingContext`` – lightweight NamedTuples
-  used to pass state between pipeline helper functions
+- ``CalibrationData`` – lightweight NamedTuple used to pass state between pipeline helper
+  functions
 - ``load_setup_from_json`` / ``load_sweep_from_json`` / ``load_config_files`` – build the
   ``setup`` / ``sweep`` / ``output`` models from a JSON file
 
@@ -33,7 +33,7 @@ These three classes each capture a distinct, orthogonal concern:
     *How the value is applied to the pipeline.*  Each member maps to a different
     pipeline code path:
 
-    - ``CONSTANT_KERNEL`` — replace the kernel value with the sampled value
+    - ``CONSTANT_KERNEL`` — set one rotation angle of a fixed-attitude frame
     - ``OFFSET_KERNEL``   — shift the existing kernel value by the sampled offset
     - ``OFFSET_TIME``     — shift the input timestamps by the sampled offset
 
@@ -77,15 +77,12 @@ from collections.abc import Callable  # noqa: E402  (kept adjacent to other stdl
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-if TYPE_CHECKING:
-    from curryer import meta
-
-from curryer.correction.io_config import (  # noqa: E402, F401
+from curryer.correction.io_config import (  # noqa: F401
     DEFAULT_NETCDF_ATTRIBUTES,
     NetCDFConfig,
     NetCDFParameterMetadata,
@@ -98,28 +95,11 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 
-class KernelContext(NamedTuple):
-    """Context for SPICE kernel loading during geolocation."""
-
-    mkrn: "meta.MetaKernel"
-    dynamic_kernels: list[Path]
-    param_kernels: list[Path]
-
-
 class CalibrationData(NamedTuple):
     """Pre-loaded calibration data for image matching."""
 
     los_vectors: np.ndarray | None
     optical_psfs: list | None
-
-
-class ImageMatchingContext(NamedTuple):
-    """Context data needed for image matching operations."""
-
-    gcp_pairs: list[tuple]
-    params: list[tuple]
-    pair_idx: int
-    sci_key: str
 
 
 # ============================================================================
@@ -131,30 +111,25 @@ class DataConfig(BaseModel):
     """Configuration for config-driven internal data loading.
 
     Replaces mission-specific loader callables with a declarative specification
-    of how files should be read.  The pipeline reads telemetry and science data
-    directly from the provided file paths using pandas/xarray, applying the
-    ``time_scale_factor`` to convert the science time column to uGPS.
+    of how files should be read.  The correction loop reads the telemetry file
+    directly from its path using pandas/xarray; observation files are NetCDF
+    (:func:`~curryer.correction.pipeline.loop`).
 
     Attributes
     ----------
     file_format
-        File format for both telemetry and science data files.
+        File format of the telemetry file.
         ``"csv"`` uses :func:`pandas.read_csv`; ``"netcdf"`` converts via
         :func:`xarray.open_dataset`; ``"hdf5"`` uses :func:`pandas.read_hdf`.
-    time_scale_factor
-        Multiply science timestamps by this factor to obtain uGPS
-        (microseconds since GPS epoch).  For example, ``1e6`` converts GPS
-        seconds to uGPS; ``1.0`` means the file already contains uGPS.
-        The time column name is taken from :attr:`GeolocationConfig.time_field`
-        (single source of truth).
     position_columns
         Explicit column name mappings for telemetry spacecraft-position data,
         e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  ``None`` means use
         mission defaults from the geolocation configuration.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
-    time_scale_factor: float = 1.0
     # Explicit column name mappings for telemetry spacecraft-position data.
     # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"]. None means use mission defaults from the geolocation configuration.
     position_columns: list[str] | None = None
@@ -175,7 +150,7 @@ class ParameterType(str, Enum):
     Attributes
     ----------
     CONSTANT_KERNEL
-        Set a specific kernel value (e.g., fixed rotation angles).
+        Set one rotation angle of a fixed-attitude frame kernel.
     OFFSET_KERNEL
         Modify input kernel data by an offset.
     OFFSET_TIME
@@ -201,14 +176,15 @@ class SearchStrategy(str, Enum):
     GRID_SEARCH
         Deterministic cartesian-product sweep.  For every parameter,
         ``grid_points_per_param`` evenly-spaced values are generated across
-        the full ``bounds`` offset range and the cartesian product of all
-        per-parameter grids is enumerated.  ``n_iterations`` is ignored.
+        the full ``bounds`` offset range (one value, ``current_value``, for
+        zero-width bounds) and the cartesian product of all per-parameter
+        grids is enumerated.  ``n_iterations`` is ignored.
     SINGLE_OFFSET
-        Deterministic single-parameter sweep.  Each parameter is varied
-        independently across ``n_iterations`` evenly-spaced values (spanning
-        its ``bounds`` offset range) while all other parameters are held at
-        their nominal ``current_value``.  Total parameter sets produced:
-        ``len(parameters) × n_iterations``.
+        Deterministic single-parameter sweep.  Each parameter with
+        non-zero-width bounds is varied independently across ``n_iterations``
+        evenly-spaced values (spanning its ``bounds`` offset range) while all
+        other parameters are held at their nominal ``current_value``.  Total
+        parameter sets produced: ``n_swept × n_iterations``.
     """
 
     RANDOM = "random"
@@ -226,21 +202,27 @@ class ParameterSpec(BaseModel):
     Attributes
     ----------
     current_value
-        Baseline parameter value(s).  A scalar for OFFSET_KERNEL/OFFSET_TIME
-        and a 3-element list ``[roll, pitch, yaw]`` for CONSTANT_KERNEL.
+        Baseline parameter value.  For CONSTANT_KERNEL, the nominal angle of
+        the frame axis named by ``field``.
     bounds
         ``[min, max]`` offset limits (same units as ``sigma``).
     sigma
         Standard deviation for normal-distribution sampling.  ``None`` means
         the parameter is held fixed at ``current_value``.
     units
-        Physical units string, e.g. ``"arcseconds"`` or ``"milliseconds"``.
+        Units of ``current_value``, ``bounds`` and ``sigma``: ``None`` or
+        ``"arcseconds"`` for CONSTANT_KERNEL (``None`` = radians); ``None``,
+        ``"radians"`` or ``"arcseconds"`` for OFFSET_KERNEL; ``None``,
+        ``"seconds"``, ``"milliseconds"`` or ``"microseconds"`` for OFFSET_TIME
+        (``None`` = seconds).  :class:`ParameterConfig` raises on any other.
     distribution
         Sampling distribution name.  Stored for documentation purposes;
         the current implementation always uses a normal distribution.
     field
-        Telemetry / science DataFrame column that this parameter modifies
-        (required for ``OFFSET_KERNEL`` and ``OFFSET_TIME``).
+        Telemetry column an ``OFFSET_KERNEL`` parameter modifies (required for
+        it); the rotation axis a ``CONSTANT_KERNEL`` parameter sets
+        (``"angle_x"``, ``"angle_y"`` or ``"angle_z"``, required for it); for
+        ``OFFSET_TIME`` it only names the output variable.
     transformation_type
         Optional hint consumed by kernel-creation routines (e.g.
         ``"dcm_rotation"`` or ``"angle_bias"``).
@@ -253,7 +235,7 @@ class ParameterSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    current_value: float | list[float] = 0.0
+    current_value: float = 0.0
     bounds: list[float] = Field(default_factory=lambda: [-1.0, 1.0])
     sigma: float | None = None
     units: str | None = None
@@ -262,6 +244,17 @@ class ParameterSpec(BaseModel):
     transformation_type: str | None = None
     coordinate_frames: list[str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# Rotation axes of a CONSTANT_KERNEL frame (its CK's input columns) and their output-variable names.
+_CONSTANT_KERNEL_AXES = {"angle_x": "roll", "angle_y": "pitch", "angle_z": "yaw"}
+
+# Units each parameter type converts (see ``curryer.correction.parameters``); None is the internal unit.
+_PARAMETER_UNITS = {
+    ParameterType.CONSTANT_KERNEL: {None, "arcseconds"},
+    ParameterType.OFFSET_KERNEL: {None, "radians", "arcseconds"},
+    ParameterType.OFFSET_TIME: {None, "seconds", "milliseconds", "microseconds"},
+}
 
 
 class ParameterConfig(BaseModel):
@@ -294,6 +287,29 @@ class ParameterConfig(BaseModel):
             values["spec"] = {}
         return values
 
+    @model_validator(mode="after")
+    def _check_units(self) -> "ParameterConfig":
+        """Raise if ``spec.units`` is not one this parameter type converts."""
+        allowed = _PARAMETER_UNITS[self.ptype]
+        if self.spec.units not in allowed:
+            raise ValueError(
+                f"{self.ptype.name} parameter units must be one of {sorted(allowed, key=str)}, got {self.spec.units!r}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_constant_kernel_axis(self) -> "ParameterConfig":
+        """Raise if a CONSTANT_KERNEL parameter names no kernel file or no rotation axis."""
+        if self.ptype == ParameterType.CONSTANT_KERNEL:
+            if self.config_file is None:
+                raise ValueError("CONSTANT_KERNEL parameter requires a config_file.")
+            if self.spec.field not in _CONSTANT_KERNEL_AXES:
+                raise ValueError(
+                    f"CONSTANT_KERNEL parameter field must be one of {list(_CONSTANT_KERNEL_AXES)}, "
+                    f"got {self.spec.field!r} ({self.config_file.name})."
+                )
+        return self
+
 
 # ============================================================================
 # Geolocation Configuration
@@ -315,7 +331,13 @@ class GeolocationConfig(BaseModel):
     instrument_name
         SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
     time_field
-        Column name in the science DataFrame that holds uGPS timestamps.
+        Telemetry column holding uGPS timestamps; read by
+        :func:`~curryer.correction.verification.image_matching` when the
+        geolocated data has no ``frame`` coordinate.
+    dem_data_dir
+        Directory of the elevation (DEM) data the correction loop uses to
+        terrain-correct each parameter set's re-geolocated subimage.  ``None``
+        uses curryer's standard location (:class:`~curryer.compute.elevation.Elevation`).
     minimum_correlation
         Optional image-matching quality threshold (0.0–1.0).  When set,
         :func:`~curryer.correction.verification.verify` and the correction
@@ -337,6 +359,7 @@ class GeolocationConfig(BaseModel):
     dynamic_kernels: list[Path] = Field(default_factory=list)
     instrument_name: str
     time_field: str
+    dem_data_dir: Path | None = None
     minimum_correlation: float | None = None
     minimum_peak_margin: float | None = None
 
@@ -577,11 +600,11 @@ class GeolocationSetup(BaseModel):
     Attributes
     ----------
     geo
-        SPICE kernels, instrument name, and science time field.
+        SPICE kernels, instrument name, and telemetry time field.
     requirements
         Pass/fail thresholds used by verification and the correction verdict.
     data_config
-        How telemetry/science files are read.  ``None`` uses CSV defaults.
+        How the telemetry file is read.  ``None`` uses CSV defaults.
     calibration
         Optional direct calibration file paths.  ``None`` when geometry is
         supplied another way (e.g. SPICE-derived).
@@ -595,9 +618,16 @@ class GeolocationSetup(BaseModel):
         Correlation search grid used by the built-in image matching.
         Defaults to :class:`SearchConfig` (44 points, first grid 11 km wide).
     image_matching_func
-        Optional custom image-matching callable.  ``None`` uses the built-in
-        :func:`~curryer.correction.verification.image_matching`.  Excluded from
-        JSON serialisation because callables are not serialisable.
+        Optional custom image-matching callable for
+        :func:`~curryer.correction.verification.verify` with ``geolocated_data``:
+        called with the geolocated dataset, returns one image-matching dataset or
+        a list of them.  ``None`` pairs and matches the GCP chips with the
+        built-in matching.  Excluded from JSON serialisation.
+    observation_matching_func
+        Optional replacement for the image matching in the correction loop
+        (:func:`~curryer.correction.pipeline.loop`), with the signature and
+        return of :func:`~curryer.correction.verification.match_observation`.
+        ``None`` uses that function.  Excluded from JSON serialisation.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -615,6 +645,7 @@ class GeolocationSetup(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
 
     image_matching_func: Callable | None = Field(default=None, exclude=True)
+    observation_matching_func: Callable | None = Field(default=None, exclude=True)
 
 
 class Sweep(BaseModel):
@@ -626,7 +657,10 @@ class Sweep(BaseModel):
     Attributes
     ----------
     parameters
-        The parameters to vary (at least one).
+        The parameters to vary (at least one).  Each CONSTANT_KERNEL kernel
+        file needs one parameter for each of its three axes; hold an axis with
+        ``sigma=None`` and ``bounds=[0.0, 0.0]`` (grid and single-offset sweeps
+        then give it one value).
     search_strategy
         How parameter sets are generated (RANDOM / GRID_SEARCH / SINGLE_OFFSET).
     n_iterations
@@ -657,6 +691,21 @@ class Sweep(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_constant_kernel_axes(self) -> "Sweep":
+        """Raise unless each CONSTANT_KERNEL kernel file has exactly one parameter per axis."""
+        axes_by_file: dict[Path, list[str]] = {}
+        for p in self.parameters:
+            if p.ptype == ParameterType.CONSTANT_KERNEL:
+                axes_by_file.setdefault(p.config_file, []).append(p.spec.field)
+        for config_file, axes in axes_by_file.items():
+            if sorted(axes) != sorted(_CONSTANT_KERNEL_AXES):
+                raise ValueError(
+                    f"CONSTANT_KERNEL {config_file.name} needs one parameter for each of "
+                    f"{list(_CONSTANT_KERNEL_AXES)}, got {axes}."
+                )
+        return self
+
     # ------------------------------------------------------------------
     # Ergonomics — cheap, re-validated copies for rapid experimentation
     # ------------------------------------------------------------------
@@ -684,7 +733,8 @@ class Sweep(BaseModel):
 
         *selector* is either an integer index into :attr:`parameters`, or a
         string matched against each parameter's ``spec.field`` or its
-        ``config_file`` stem.  The changed spec is re-validated against
+        ``config_file`` stem; a string matching more than one parameter
+        raises ``KeyError``.  The changed spec is re-validated against
         :class:`ParameterSpec` (which is ``extra="forbid"``), so out-of-spec
         values or unknown field names raise immediately rather than being
         silently swallowed.
@@ -708,14 +758,17 @@ class Sweep(BaseModel):
             if not -len(self.parameters) <= selector < len(self.parameters):
                 raise IndexError(f"Parameter index {selector} out of range (have {len(self.parameters)}).")
             return selector
-        for i, p in enumerate(self.parameters):
-            if p.spec.field == selector:
-                return i
-            if p.config_file is not None and p.config_file.stem == selector:
-                return i
-        raise KeyError(
-            f"No parameter matches selector {selector!r}. Use an index, a spec.field, or a config_file stem."
-        )
+        matches = [
+            i
+            for i, p in enumerate(self.parameters)
+            if p.spec.field == selector or (p.config_file is not None and p.config_file.stem == selector)
+        ]
+        if len(matches) != 1:
+            raise KeyError(
+                f"Selector {selector!r} matches {len(matches)} parameters; use an index, or a spec.field "
+                "or config_file stem that names exactly one."
+            )
+        return matches[0]
 
 
 class OutputConfig(BaseModel):
@@ -751,17 +804,14 @@ class CorrectionInput(BaseModel):
     Replaces the positional tuple ``(telemetry_path, science_path, gcp_path)``
     with named fields for clarity and IDE autocomplete.
 
-    The reader for each file is chosen by :attr:`DataConfig.file_format`, so the
-    inputs are format-agnostic.  The first-class real-data path is a NetCDF
-    image observation (radiance as the science variable) carrying telemetry,
-    metadata, and science times; ``.mat`` files are interim test scaffolding.
-
     Parameters
     ----------
     telemetry_file : Path
-        Telemetry observation file (NetCDF for real data; CSV/HDF5 also read).
+        Telemetry the dynamic kernels are built from, read with
+        :attr:`DataConfig.file_format`.
     science_file : Path
-        Science/timing observation file (NetCDF for real data; CSV/HDF5 also read).
+        Observation subimage (NetCDF) cropped inside the GCP chip, in the form
+        :func:`~curryer.correction.pipeline.load_loop_observation` reads.
     gcp_file : Path
         GCP reference-image file (NetCDF or ``.mat``).
 
@@ -770,8 +820,8 @@ class CorrectionInput(BaseModel):
     >>> from curryer.correction import CorrectionInput
     >>> inputs = [
     ...     CorrectionInput(
-    ...         telemetry_file="data/obs_20240317.nc",
-    ...         science_file="data/obs_20240317.nc",
+    ...         telemetry_file="data/telemetry_20240317.csv",
+    ...         science_file="data/obs_20240317__chip_001.nc",
     ...         gcp_file="gcps/landsat_chip_001.nc",
     ...     )
     ... ]
@@ -821,8 +871,9 @@ def load_config_files(config_path: Path) -> tuple[GeolocationSetup, Sweep, Outpu
     The file has three top-level sections — ``"setup"``, ``"sweep"``, and an
     optional ``"output"`` — each validated directly against its model.  The
     ``"sweep".parameters`` entries mirror :class:`ParameterConfig` (``ptype`` /
-    ``config_file`` / ``spec``); rotation frames are authored as a single
-    ``CONSTANT_KERNEL`` parameter with ``spec.current_value = [roll, pitch, yaw]``.
+    ``config_file`` / ``spec``); a rotation frame is authored as three
+    ``CONSTANT_KERNEL`` parameters sharing a ``config_file``, one per
+    ``spec.field`` axis (``angle_x``, ``angle_y``, ``angle_z``).
     """
     data = _read_config_json(config_path)
     for section in ("setup", "sweep"):

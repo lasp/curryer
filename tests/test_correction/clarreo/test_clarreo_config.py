@@ -76,13 +76,13 @@ class TestClarreoConfiguration:
 
     def test_config_validates(self):
         setup, sweep, _output = create_clarreo_setup_sweep(self.data_dir, self.generic_dir)
-        setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+        setup.data_config = DataConfig(file_format="csv")
         assert setup.geo.instrument_name == "CPRS_HYSICS"
         assert sweep.seed == 42
 
     def test_parameter_count(self):
         _setup, sweep, _output = create_clarreo_setup_sweep(self.data_dir, self.generic_dir)
-        assert len(sweep.parameters) == 6
+        assert len(sweep.parameters) == 12
 
     def test_performance_thresholds(self):
         setup, _sweep, _output = create_clarreo_setup_sweep(self.data_dir, self.generic_dir)

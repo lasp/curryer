@@ -20,8 +20,8 @@ for correction analysis.  Three search strategies are supported:
     parameters are held at their nominal ``current_value``.
 
 Supported parameter types:
-- ``CONSTANT_KERNEL`` – 3-D attitude corrections (roll, pitch, yaw) stored as
-  a ``pandas.DataFrame`` with ``ugps``, ``angle_x``, ``angle_y``, ``angle_z``.
+- ``CONSTANT_KERNEL`` – one rotation angle of a fixed-attitude frame (float,
+  in radians).
 - ``OFFSET_KERNEL`` – single-axis angle bias (float, in radians).
 - ``OFFSET_TIME`` – timing correction (float, in seconds).
 """
@@ -31,7 +31,6 @@ import logging
 import typing
 
 import numpy as np
-import pandas as pd
 
 from curryer.correction.config import ParameterConfig, ParameterType, SearchStrategy, Sweep
 
@@ -40,8 +39,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Unit-conversion helpers
 # ============================================================================
-
-_UGPS_EPOCH_END = 2_209_075_218_000_000  # sentinel end-of-mission ugps for CK DataFrames
 
 
 def _arcsec_to_rad(value: float) -> float:
@@ -69,6 +66,22 @@ def _val_to_seconds(value: float, units: str | None) -> float:
     return value
 
 
+def _rad_to_val(value: float, units: str | None) -> float:
+    """Inverse of :func:`_val_to_rad`."""
+    if units == "arcseconds":
+        return np.rad2deg(value) * 3600.0
+    return value
+
+
+def _seconds_to_val(value: float, units: str | None) -> float:
+    """Inverse of :func:`_val_to_seconds`."""
+    if units == "milliseconds":
+        return value * 1_000.0
+    if units == "microseconds":
+        return value * 1_000_000.0
+    return value
+
+
 def _bounds_to_seconds(bounds: list[float], units: str | None) -> list[float]:
     if units == "milliseconds":
         return [bounds[0] / 1_000.0, bounds[1] / 1_000.0]
@@ -78,24 +91,7 @@ def _bounds_to_seconds(bounds: list[float], units: str | None) -> list[float]:
 
 
 # ============================================================================
-# DataFrame builder for CONSTANT_KERNEL
-# ============================================================================
-
-
-def _make_ck_dataframe(angle_vals: list[float]) -> pd.DataFrame:
-    """Wrap ``[angle_x, angle_y, angle_z]`` (radians) into the pipeline DataFrame format."""
-    return pd.DataFrame(
-        {
-            "ugps": [0, _UGPS_EPOCH_END],
-            "angle_x": [angle_vals[0], angle_vals[0]],
-            "angle_y": [angle_vals[1], angle_vals[1]],
-            "angle_z": [angle_vals[2], angle_vals[2]],
-        }
-    )
-
-
-# ============================================================================
-# Scalar current-value extraction (handles list vs scalar current_value)
+# Scalar current-value extraction
 # ============================================================================
 
 
@@ -128,22 +124,12 @@ def _scalar_current_value(param: ParameterConfig) -> float:
 def _get_nominal_value(param: ParameterConfig) -> typing.Any:
     """Return the un-perturbed, unit-converted value for *param*.
 
-    For ``CONSTANT_KERNEL``, returns a :class:`~pandas.DataFrame` with angles
-    equal to the ``current_value`` in radians.  For ``OFFSET_KERNEL`` /
-    ``OFFSET_TIME``, returns a float in radians / seconds respectively.
+    A float: radians for ``CONSTANT_KERNEL`` / ``OFFSET_KERNEL``, seconds for
+    ``OFFSET_TIME``.
     """
     units = param.spec.units
-    current_value = param.spec.current_value
 
-    if param.ptype == ParameterType.CONSTANT_KERNEL:
-        if isinstance(current_value, list) and len(current_value) == 3:
-            angle_vals = [_val_to_rad(v, units) for v in current_value]
-        else:
-            cv_rad = _val_to_rad(_scalar_current_value(param), units)
-            angle_vals = [cv_rad, cv_rad, cv_rad]
-        return _make_ck_dataframe(angle_vals)
-
-    if param.ptype == ParameterType.OFFSET_KERNEL:
+    if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
         return _val_to_rad(_scalar_current_value(param), units)
 
     if param.ptype == ParameterType.OFFSET_TIME:
@@ -166,10 +152,8 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
 
     Offsets are linearly spaced over ``[bounds[0], bounds[1]]`` (in the
     parameter's native units before conversion) and added to the converted
-    ``current_value``.
-
-    For ``CONSTANT_KERNEL`` the scalar offset is applied uniformly to all
-    three rotation axes.
+    ``current_value``.  A parameter with zero-width bounds is held: it has one
+    value, ``current_value``.
 
     Parameters
     ----------
@@ -180,27 +164,15 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
 
     Returns
     -------
-    list
-        List of *n_points* values; each element matches what the pipeline
-        expects for that parameter type (DataFrame or float).
+    list[float]
+        *n_points* values (one when held) in the internal units (radians or seconds).
     """
     units = param.spec.units
     bounds = param.spec.bounds
-    current_value = param.spec.current_value
+    if bounds[0] == bounds[1]:
+        n_points = 1
 
-    if param.ptype == ParameterType.CONSTANT_KERNEL:
-        bounds_rad = _bounds_to_rad(bounds, units)
-        offsets = np.linspace(bounds_rad[0], bounds_rad[1], n_points)
-
-        if isinstance(current_value, list) and len(current_value) == 3:
-            base_vals = [_val_to_rad(v, units) for v in current_value]
-        else:
-            cv_rad = _val_to_rad(_scalar_current_value(param), units)
-            base_vals = [cv_rad, cv_rad, cv_rad]
-
-        return [_make_ck_dataframe([bv + offset for bv in base_vals]) for offset in offsets]
-
-    if param.ptype == ParameterType.OFFSET_KERNEL:
+    if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
         cv_rad = _val_to_rad(_scalar_current_value(param), units)
         bounds_rad = _bounds_to_rad(bounds, units)
         offsets = np.linspace(bounds_rad[0], bounds_rad[1], n_points)
@@ -236,71 +208,7 @@ def _generate_random(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.An
             current_value = param.spec.current_value
             bounds = param.spec.bounds
 
-            if param.ptype == ParameterType.CONSTANT_KERNEL:
-                if isinstance(current_value, list) and len(current_value) == 3:
-                    param_vals = []
-                    for i, current_val in enumerate(current_value):
-                        if param.spec.sigma is not None and param.spec.sigma > 0:
-                            if param.spec.units == "arcseconds":
-                                sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
-                                current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
-                                bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
-                            else:
-                                sigma_rad = param.spec.sigma
-                                current_val_rad = current_val
-                                bounds_rad = bounds
-                            offset = np.random.normal(0, sigma_rad)
-                            offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
-                            param_vals.append(current_val_rad + offset)
-                        else:
-                            if param.spec.sigma is None:
-                                logger.debug(
-                                    f"  Parameter {param_idx} axis {i}: No sigma specified, using fixed current_value"
-                                )
-                            elif param.spec.sigma == 0:
-                                logger.debug(f"  Parameter {param_idx} axis {i}: sigma=0, using fixed current_value")
-                            if param.spec.units == "arcseconds":
-                                current_val_rad = np.deg2rad(current_val / 3600.0) if current_val != 0 else current_val
-                            else:
-                                current_val_rad = current_val
-                            param_vals.append(current_val_rad)
-                else:
-                    param_vals = [0.0, 0.0, 0.0]
-                    if param.spec.sigma is not None and param.spec.sigma > 0:
-                        if param.spec.units == "arcseconds":
-                            sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
-                            bounds_rad = [np.deg2rad(bounds[0] / 3600.0), np.deg2rad(bounds[1] / 3600.0)]
-                            current_val_rad = (
-                                np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
-                            )
-                        else:
-                            sigma_rad = param.spec.sigma
-                            bounds_rad = bounds
-                            current_val_rad = current_value
-                        for i in range(3):
-                            offset = np.random.normal(0, sigma_rad)
-                            offset = np.clip(offset, bounds_rad[0], bounds_rad[1])
-                            param_vals[i] = current_val_rad + offset
-                    else:
-                        if param.spec.sigma is None:
-                            logger.debug(f"  Parameter {param_idx}: No sigma specified, using fixed current_value")
-                        elif param.spec.sigma == 0:
-                            logger.debug(f"  Parameter {param_idx}: sigma=0, using fixed current_value")
-                        if param.spec.units == "arcseconds":
-                            current_val_rad = (
-                                np.deg2rad(current_value / 3600.0) if current_value != 0 else current_value
-                            )
-                        else:
-                            current_val_rad = current_value
-                        param_vals = [current_val_rad, current_val_rad, current_val_rad]
-
-                param_vals = _make_ck_dataframe(param_vals)
-                logger.debug(
-                    f"  CONSTANT_KERNEL {param_idx}: angles=[{param_vals['angle_x'].iloc[0]:.6e}, "
-                    f"{param_vals['angle_y'].iloc[0]:.6e}, {param_vals['angle_z'].iloc[0]:.6e}] rad"
-                )
-
-            elif param.ptype == ParameterType.OFFSET_KERNEL:
+            if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
                 if param.spec.sigma is not None and param.spec.sigma > 0:
                     if param.spec.units == "arcseconds":
                         sigma_rad = np.deg2rad(param.spec.sigma / 3600.0)
@@ -323,7 +231,7 @@ def _generate_random(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.An
                     else:
                         current_val_rad = current_value
                     param_vals = current_val_rad
-                logger.debug(f"  OFFSET_KERNEL {param_idx}: {param_vals:.6e} rad")
+                logger.debug(f"  {param.ptype.name} {param_idx}: {param_vals:.6e} rad")
 
             elif param.ptype == ParameterType.OFFSET_TIME:
                 if param.spec.sigma is not None and param.spec.sigma > 0:
@@ -369,8 +277,9 @@ def _generate_random(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.An
 def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate parameter sets via deterministic cartesian-product grid sweep.
 
-    Produces ``grid_points_per_param ^ len(parameters)`` parameter sets.
-    ``n_iterations`` is not used for this strategy.
+    Produces ``grid_points_per_param ^ n_swept`` parameter sets, where ``n_swept``
+    counts the parameters with non-zero-width bounds (the others are held at
+    ``current_value``).  ``n_iterations`` is not used for this strategy.
 
     Raises
     ------
@@ -381,21 +290,20 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
     """
     n = sweep.grid_points_per_param
     n_params = len(sweep.parameters)
-    total = n**n_params
-    logger.info(f"GRID_SEARCH: {n} points × {n_params} parameter(s) = {total} total parameter sets")
+    per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
+    total = int(np.prod([len(values) for values in per_param_values]))
+    logger.info(f"GRID_SEARCH: {n} points per swept parameter, {n_params} parameter(s) = {total} total parameter sets")
 
     if total > sweep.max_grid_sets:
         raise ValueError(
             f"GRID_SEARCH would produce {total:,} parameter sets "
-            f"({n} points ^ {n_params} parameters), which exceeds the safety limit of "
+            f"({n} points per swept parameter, {n_params} parameters), which exceeds the safety limit of "
             f"{sweep.max_grid_sets:,}. "
             f"To proceed, either:\n"
             f"  • reduce grid_points_per_param (currently {n}) or the number of parameters,\n"
             f"  • increase max_grid_sets on the Sweep (set deliberately), or\n"
             f"  • use SearchStrategy.SINGLE_OFFSET for high-dimensional sweeps."
         )
-
-    per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
 
     output = []
     for combo in itertools.product(*per_param_values):
@@ -409,21 +317,30 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
 def _generate_single_offset(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any]]]:
     """Generate parameter sets by sweeping one parameter at a time.
 
-    For each parameter in ``sweep.parameters``:
+    For each parameter in ``sweep.parameters`` with non-zero-width ``bounds``:
     - ``n_iterations`` evenly-spaced values are generated spanning the
       parameter's full ``bounds`` offset range.
     - All other parameters are held at their nominal ``current_value``.
 
-    Total parameter sets produced: ``len(parameters) × n_iterations``.
+    Parameters with zero-width bounds are held throughout.  Total parameter sets
+    produced: ``n_swept × n_iterations``.
+
+    Raises
+    ------
+    ValueError
+        If every parameter has zero-width bounds.
     """
     n = sweep.n_iterations
-    n_params = len(sweep.parameters)
-    logger.info(f"SINGLE_OFFSET: {n_params} parameter(s) × {n} values each = {n_params * n} total parameter sets")
+    swept = [i for i, param in enumerate(sweep.parameters) if param.spec.bounds[0] != param.spec.bounds[1]]
+    if not swept:
+        raise ValueError("SINGLE_OFFSET needs at least one parameter with non-zero-width bounds.")
+    logger.info(f"SINGLE_OFFSET: {len(swept)} swept parameter(s) × {n} values each = {len(swept) * n} parameter sets")
 
     nominals = [_get_nominal_value(param) for param in sweep.parameters]
 
     output = []
-    for sweep_idx, sweep_param in enumerate(sweep.parameters):
+    for sweep_idx in swept:
+        sweep_param = sweep.parameters[sweep_idx]
         sweep_values = _get_grid_values(sweep_param, n)
         param_name = sweep_param.config_file.name if sweep_param.config_file else f"param_{sweep_idx}"
         logger.debug(f"  SINGLE_OFFSET: sweeping parameter {sweep_idx} ({param_name}) with {len(sweep_values)} values")
@@ -465,20 +382,7 @@ def _log_param_set_summary(output: list[list[tuple[ParameterConfig, typing.Any]]
             field_name = param.spec.field or "unknown"
             ptype_name = param.ptype.name
 
-            if param.ptype == ParameterType.CONSTANT_KERNEL:
-                if isinstance(param_vals, pd.DataFrame) and "angle_x" in param_vals.columns:
-                    angles = [
-                        param_vals["angle_x"].iloc[0],
-                        param_vals["angle_y"].iloc[0],
-                        param_vals["angle_z"].iloc[0],
-                    ]
-                    logger.debug(
-                        f"    {ptype_name:16s} {field_name:25s}: "
-                        f"[{angles[0]:+.6e}, {angles[1]:+.6e}, {angles[2]:+.6e}] rad"
-                    )
-                else:
-                    logger.debug(f"    {ptype_name:16s} {field_name:25s}: (constant kernel data)")
-            elif param.ptype == ParameterType.OFFSET_KERNEL:
+            if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
                 units = param.spec.units or ""
                 if units == "arcseconds":
                     param_arcsec = np.rad2deg(param_vals) * 3600.0
@@ -525,9 +429,8 @@ def load_param_sets(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.Any
     list[list[tuple[ParameterConfig, Any]]]
         Outer list: one element per parameter set (iteration).
         Inner list: one ``(ParameterConfig, sampled_value)`` pair per parameter.
-        ``sampled_value`` is a :class:`~pandas.DataFrame` for
-        ``CONSTANT_KERNEL`` and a ``float`` for ``OFFSET_KERNEL`` /
-        ``OFFSET_TIME``.
+        ``sampled_value`` is a ``float``: radians for ``CONSTANT_KERNEL`` /
+        ``OFFSET_KERNEL``, seconds for ``OFFSET_TIME``.
     """
     strategy = sweep.search_strategy
 

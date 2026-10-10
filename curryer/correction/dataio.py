@@ -54,37 +54,6 @@ def validate_telemetry_output(df: pd.DataFrame, config) -> None:
         raise ValueError("Telemetry loader returned empty DataFrame")
 
 
-def validate_science_output(df: pd.DataFrame, config) -> None:
-    """
-    Validate that science loader output has expected structure.
-
-    Args:
-        df: DataFrame returned by science loader
-        config: GeolocationSetup object
-
-    Raises:
-        TypeError: If not a DataFrame
-        ValueError: If DataFrame is empty or missing required time field
-
-    Example:
-        >>> sci_df = pd.read_csv("science.csv")
-        >>> validate_science_output(sci_df, config)
-    """
-    import pandas as pd
-
-    if not isinstance(df, pd.DataFrame):
-        raise TypeError(f"Science loader must return pd.DataFrame, got {type(df)}")
-
-    if df.empty:
-        raise ValueError("Science loader returned empty DataFrame")
-
-    time_field = config.geo.time_field
-    if time_field not in df.columns:
-        raise ValueError(
-            f"Science loader must include time field '{time_field}'. Available columns: {list(df.columns)}"
-        )
-
-
 # ============================================================================
 # S3 Data Access Utilities
 # ============================================================================

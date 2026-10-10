@@ -49,13 +49,16 @@ def geo() -> GeolocationConfig:
     )
 
 
-@pytest.fixture
-def param_constant(geo) -> ParameterConfig:
+_AXES = ("angle_x", "angle_y", "angle_z")
+
+
+def _constant_kernel(axis: str, config_file: str = "tests/data/test_base.attitude.ck.json") -> ParameterConfig:
     return ParameterConfig(
         ptype=ParameterType.CONSTANT_KERNEL,
-        config_file=Path("tests/data/test_base.attitude.ck.json"),
+        config_file=Path(config_file),
         spec={
-            "current_value": [0.0, 0.0, 0.0],
+            "field": axis,
+            "current_value": 0.0,
             "bounds": [-300.0, 300.0],
             "sigma": 30.0,
             "units": "arcseconds",
@@ -64,6 +67,11 @@ def param_constant(geo) -> ParameterConfig:
             "coordinate_frames": ["FRAME_A", "FRAME_B"],
         },
     )
+
+
+@pytest.fixture
+def param_constant(geo) -> ParameterConfig:
+    return _constant_kernel("angle_x")
 
 
 @pytest.fixture
@@ -115,9 +123,9 @@ def minimal_setup(geo) -> GeolocationSetup:
 
 
 @pytest.fixture
-def minimal_sweep(param_constant) -> Sweep:
-    """Minimal Sweep with a single parameter."""
-    return Sweep(seed=42, n_iterations=5, parameters=[param_constant])
+def minimal_sweep() -> Sweep:
+    """Minimal Sweep: the three axes of one frame."""
+    return Sweep(seed=42, n_iterations=5, parameters=[_constant_kernel(axis) for axis in _AXES])
 
 
 # ===========================================================================
@@ -125,39 +133,100 @@ def minimal_sweep(param_constant) -> Sweep:
 # ===========================================================================
 
 
+class TestParameterUnits:
+    """ParameterConfig accepts only the units its type converts."""
+
+    @pytest.mark.parametrize(
+        ("ptype", "units"),
+        [
+            (ParameterType.CONSTANT_KERNEL, "degrees"),
+            (ParameterType.CONSTANT_KERNEL, "radians"),
+            (ParameterType.OFFSET_KERNEL, "degrees"),
+            (ParameterType.OFFSET_TIME, "ms"),
+        ],
+    )
+    def test_unknown_units_raise(self, ptype, units):
+        with pytest.raises(ValidationError, match="units must be one of"):
+            ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="angle_x", units=units))
+
+    @pytest.mark.parametrize(
+        ("ptype", "units"),
+        [
+            (ParameterType.CONSTANT_KERNEL, "arcseconds"),
+            (ParameterType.OFFSET_KERNEL, "radians"),
+            (ParameterType.OFFSET_TIME, "microseconds"),
+            (ParameterType.OFFSET_TIME, None),
+        ],
+    )
+    def test_known_units_accepted(self, ptype, units):
+        ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec=dict(field="angle_x", units=units))
+
+
+class TestConstantKernelAxes:
+    """A CONSTANT_KERNEL parameter sets one axis; a sweep sets all three axes of each frame."""
+
+    @pytest.mark.parametrize("field", [None, "roll", "angle_w"])
+    def test_parameter_needs_an_axis(self, field):
+        with pytest.raises(ValidationError, match="field must be one of"):
+            ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("k.json"), spec={"field": field})
+
+    def test_parameter_needs_a_kernel_file(self):
+        with pytest.raises(ValidationError, match="requires a config_file"):
+            ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, spec={"field": "angle_x"})
+
+    @pytest.mark.parametrize(
+        "axes",
+        [("angle_x", "angle_y"), ("angle_x", "angle_y", "angle_y"), ("angle_x", "angle_x", "angle_y", "angle_z")],
+    )
+    def test_sweep_needs_each_axis_once(self, axes):
+        with pytest.raises(ValidationError, match="needs one parameter for each of"):
+            Sweep(parameters=[_constant_kernel(axis) for axis in axes])
+
+    def test_sweep_checks_each_frame(self):
+        frame_a = [_constant_kernel(axis, "a.attitude.ck.json") for axis in _AXES]
+        with pytest.raises(ValidationError, match="b.attitude.ck.json"):
+            Sweep(parameters=[*frame_a, _constant_kernel("angle_z", "b.attitude.ck.json")])
+
+    def test_update_param_selector_matching_several_raises(self, minimal_sweep):
+        with pytest.raises(KeyError, match="matches 3 parameters"):
+            minimal_sweep.update_param("test_base.attitude.ck", sigma=1.0)
+
+
 class TestDataConfig:
     def test_defaults(self):
         dc = DataConfig()
         assert dc.file_format == "csv"
-        assert dc.time_scale_factor == 1.0
+        assert dc.position_columns is None
 
     def test_custom_values(self):
-        dc = DataConfig(file_format="netcdf", time_scale_factor=1e6)
+        dc = DataConfig(file_format="netcdf")
         assert dc.file_format == "netcdf"
-        assert dc.time_scale_factor == 1e6
+
+    def test_unknown_field_raises(self):
+        """Removed fields (e.g. the former science time_scale_factor) are rejected, not ignored."""
+        with pytest.raises(ValidationError, match="time_scale_factor"):
+            DataConfig(file_format="netcdf", time_scale_factor=1e6)
 
     def test_invalid_file_format(self):
         with pytest.raises(ValidationError):
             DataConfig(file_format="xml")
 
     def test_json_round_trip(self):
-        dc = DataConfig(file_format="hdf5", time_scale_factor=1.0)
+        dc = DataConfig(file_format="hdf5")
         restored = DataConfig.model_validate_json(dc.model_dump_json())
         assert restored.file_format == "hdf5"
-        assert restored.time_scale_factor == 1.0
 
     def test_embedded_in_setup(self, geo):
         """DataConfig round-trips through GeolocationSetup serialisation."""
         setup = GeolocationSetup(
             geo=geo,
             requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
-            data_config=DataConfig(file_format="csv", time_scale_factor=1e6),
+            data_config=DataConfig(file_format="csv"),
         )
         json_str = setup.model_dump_json()
         restored = GeolocationSetup.model_validate_json(json_str)
         assert restored.data_config is not None
         assert restored.data_config.file_format == "csv"
-        assert restored.data_config.time_scale_factor == 1e6
 
     def test_none_data_field_is_valid(self, geo):
         """GeolocationSetup.data_config defaults to None."""
@@ -176,7 +245,7 @@ class TestDataConfig:
 class TestParameterSpec:
     def test_construction_with_all_fields(self):
         pd = ParameterSpec(
-            current_value=[1.0, 2.0, 3.0],
+            current_value=1.5,
             bounds=[-100.0, 100.0],
             sigma=10.0,
             units="arcseconds",
@@ -185,7 +254,7 @@ class TestParameterSpec:
             transformation_type="dcm_rotation",
             coordinate_frames=["F1", "F2"],
         )
-        assert pd.current_value == [1.0, 2.0, 3.0]
+        assert pd.current_value == 1.5
         assert pd.sigma == 10.0
         assert pd.units == "arcseconds"
 
@@ -231,7 +300,7 @@ class TestParameterConfig:
     def test_none_data_becomes_empty_parameter_data(self):
         """spec=None (old API) must be accepted and become a default ParameterSpec."""
         pc = ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
+            ptype=ParameterType.OFFSET_KERNEL,
             config_file=Path("kernel.json"),
             spec=None,
         )
@@ -248,7 +317,7 @@ class TestParameterConfig:
 
     def test_all_parameter_types_accepted(self):
         for ptype in ParameterType:
-            pc = ParameterConfig(ptype=ptype)
+            pc = ParameterConfig(ptype=ptype, config_file=Path("k.json"), spec={"field": "angle_x"})
             assert pc.ptype == ptype
 
 
@@ -348,10 +417,17 @@ class TestNetCDFConfig:
         assert nc.standard_attributes_dict == custom
 
     def test_auto_generate_metadata_constant_kernel(self, netcdf_cfg, param_constant):
-        meta = netcdf_cfg.get_parameter_netcdf_metadata(param_constant, angle_type="roll")
+        meta = netcdf_cfg.get_parameter_netcdf_metadata(param_constant)
         assert "roll" in meta.long_name
         assert meta.units == "arcseconds"
-        assert meta.variable_name.startswith("param_")
+        assert meta.variable_name == "param_test_base_attitude_ck_roll"
+
+    def test_auto_generate_metadata_constant_kernel_without_units_is_radians(self, netcdf_cfg):
+        param = ParameterConfig(
+            ptype=ParameterType.CONSTANT_KERNEL, config_file=Path("k.attitude.ck.json"), spec={"field": "angle_y"}
+        )
+        meta = netcdf_cfg.get_parameter_netcdf_metadata(param)
+        assert (meta.variable_name, meta.units) == ("param_k_attitude_ck_pitch", "radians")
 
     def test_auto_generate_metadata_offset_time(self, netcdf_cfg, param_offset_time):
         meta = netcdf_cfg.get_parameter_netcdf_metadata(param_offset_time)
@@ -454,7 +530,7 @@ class TestSetupSweepOutput:
         return GeolocationSetup(
             geo=self._geo(),
             requirements=RequirementsConfig(performance_threshold_m=250.0, performance_spec_percent=39.0),
-            data_config=DataConfig(file_format="netcdf", time_scale_factor=1.0),
+            data_config=DataConfig(file_format="netcdf"),
             calibration=CalibrationFiles(psf_file=Path("psf.mat"), los_vectors_file=Path("los.mat")),
             spacecraft_position_name="riss_ctrs",
             boresight_name="bhat_hs",
@@ -468,12 +544,14 @@ class TestSetupSweepOutput:
                     ptype=ParameterType.CONSTANT_KERNEL,
                     config_file=Path("k.json"),
                     spec={
-                        "current_value": [0.0, 0.0, 0.0],
+                        "field": axis,
+                        "current_value": 0.0,
                         "bounds": [-300.0, 300.0],
                         "sigma": 30.0,
                         "units": "arcseconds",
                     },
                 )
+                for axis in _AXES
             ],
             search_strategy=SearchStrategy.RANDOM,
             n_iterations=5,
@@ -490,6 +568,7 @@ class TestSetupSweepOutput:
         assert setup.transformation_matrix_name == "t_inst2ref"
         assert setup.calibration is None
         assert setup.image_matching_func is None
+        assert setup.observation_matching_func is None
 
     def test_setup_requires_geo_and_requirements(self):
         with pytest.raises(ValidationError):
@@ -498,8 +577,10 @@ class TestSetupSweepOutput:
     def test_setup_json_round_trip_excludes_callable(self):
         setup = self._setup()
         setup.image_matching_func = lambda *a, **k: None  # callable hook
+        setup.observation_matching_func = lambda *a, **k: None
         json_str = setup.model_dump_json()
         assert "image_matching_func" not in json_str
+        assert "observation_matching_func" not in json_str
         restored = GeolocationSetup.model_validate_json(json_str)
         assert restored.geo.instrument_name == "CPRS_HYSICS"
         assert restored.requirements.performance_threshold_m == 250.0
@@ -512,8 +593,7 @@ class TestSetupSweepOutput:
         assert sweep.n_iterations == 5
         assert sweep.grid_points_per_param == 10
         restored = Sweep.model_validate_json(sweep.model_dump_json())
-        assert len(restored.parameters) == 1
-        assert restored.seed == 42
+        assert restored == sweep
 
     def test_sweep_requires_at_least_one_parameter(self):
         with pytest.raises(ValidationError):
@@ -536,7 +616,7 @@ class TestSetupSweepOutput:
                     "time_field": "corrected_timestamp",
                 },
                 "requirements": {"performance_threshold_m": 250.0, "performance_spec_percent": 39.0},
-                "data_config": {"file_format": "netcdf", "time_scale_factor": 1.0},
+                "data_config": {"file_format": "netcdf"},
                 "calibration": {"psf_file": "psf.mat", "los_vectors_file": "los.mat"},
                 "spacecraft_position_name": "riss_ctrs",
             },
@@ -544,16 +624,20 @@ class TestSetupSweepOutput:
                 "search_strategy": "grid",
                 "grid_points_per_param": 7,
                 "parameters": [
-                    {
-                        "ptype": "CONSTANT_KERNEL",
-                        "config_file": "frame.attitude.ck.json",
-                        "spec": {
-                            "current_value": [0.0, 0.0, 0.0],
-                            "bounds": [-300.0, 300.0],
-                            "sigma": 30.0,
-                            "units": "arcseconds",
-                        },
-                    },
+                    *[
+                        {
+                            "ptype": "CONSTANT_KERNEL",
+                            "config_file": "frame.attitude.ck.json",
+                            "spec": {
+                                "field": axis,
+                                "current_value": 0.0,
+                                "bounds": [-300.0, 300.0],
+                                "sigma": 30.0,
+                                "units": "arcseconds",
+                            },
+                        }
+                        for axis in _AXES
+                    ],
                     {
                         "ptype": "OFFSET_TIME",
                         "config_file": None,
@@ -579,8 +663,8 @@ class TestSetupSweepOutput:
         assert setup.calibration.psf_file == Path("psf.mat")
         assert sweep.search_strategy is SearchStrategy.GRID_SEARCH
         assert sweep.grid_points_per_param == 7
-        assert len(sweep.parameters) == 2
-        assert sweep.parameters[1].ptype is ParameterType.OFFSET_TIME
+        assert [p.spec.field for p in sweep.parameters] == [*_AXES, "corrected_timestamp"]
+        assert sweep.parameters[3].ptype is ParameterType.OFFSET_TIME
         assert output.get_output_filename() == "results.nc"
 
     def test_load_setup_and_sweep_separately(self, tmp_path):
