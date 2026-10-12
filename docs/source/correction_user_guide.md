@@ -402,17 +402,19 @@ A generic annotated template: `examples/correction/example_config.json`
 
 The durable, mission-specific configuration (built once, reused across sweeps).
 
-| Field                        | Type                       | Notes                                                                   |
-| ---------------------------- | -------------------------- | ----------------------------------------------------------------------- |
-| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity                |
-| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                      |
-| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                    |
-| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)                |
-| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position        |
-| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight          |
-| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix    |
-| `image_matching_func`        | `Callable \| None`         | Custom matching for `verify(geolocated_data=...)`; excluded from JSON   |
-| `observation_matching_func`  | `Callable \| None`         | Replaces `match_observation` in the correction loop; excluded from JSON |
+| Field                        | Type                       | Notes                                                                                    |
+| ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------------- |
+| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity                                 |
+| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                                       |
+| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                                     |
+| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)                                 |
+| `psf_sampling`               | `PSFSamplingConfig`        | PSF sample spacing for image matching; defaults suit 30 m Landsat chips (see below)      |
+| `search`                     | `SearchConfig`             | Correlation search grid for image matching; defaults suit 30 m Landsat chips (see below) |
+| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position                         |
+| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight                           |
+| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix                     |
+| `image_matching_func`        | `Callable \| None`         | Custom matching for `verify(geolocated_data=...)`; excluded from JSON                    |
+| `observation_matching_func`  | `Callable \| None`         | Replaces `match_observation` in the correction loop; excluded from JSON                  |
 
 ### Sweep — `sweep`
 
@@ -455,6 +457,28 @@ The parameter-variation experiment, varied between runs. Use
 | `dem_data_dir`        | `Path \| None`  | Elevation data the correction loop terrain-corrects with; `None` uses curryer's standard location                                                                                                                  |
 | `minimum_correlation` | `float \| None` | Match-quality gate (0.0–1.0): measurements with a lower `correlation` are rejected (kept, flagged, left out of the statistics); `None` disables. When set, results must carry `correlation` or verification raises |
 | `minimum_peak_margin` | `float \| None` | Match-distinctness gate: rejects measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises  |
+
+### Image matching — `setup.search` and `setup.psf_sampling`
+
+Set these for the instrument's ground sampling; the defaults are tuned for 30 m
+Landsat chips. Invalid values raise when the setup is built.
+
+| Field                                  | Default    | Notes                                                                                                      |
+| -------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
+| `search.grid_size`                     | `44`       | Grid points per axis (integer >= 2)                                                                        |
+| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                           |
+| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                  |
+| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`           |
+| `search.peak_exclusion_km`             | `2.0`      | `correlation_secondary` is the strongest first-grid correlation farther than this from the first-grid peak |
+| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                    |
+| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                   |
+
+`search.max_shift_km()` bounds how far the search can move a subimage. An
+observation must lie at least that far inside its GCP chip on every side: a
+shift that samples outside the chip raises instead of correlating against zero
+fill. The peak margin that `setup.geo.minimum_peak_margin` tests is
+`correlation - correlation_secondary`, the refined final peak minus a
+first-grid value.
 
 ### Parameters — `sweep.parameters[]`
 
@@ -536,6 +560,15 @@ exist:
   table, since it re-geolocates each observation's pixels with it, and the
   built-in matching requires the PSF.
 
+**Observation files for `verify(gcp_pairs=...)` and `verify(observation_paths=...)`.**
+Rows are frames and columns are cross-track detector pixels; the middle row is
+the mid-frame. The file carries `position` (spacecraft ECEF position at the
+mid-frame, metres). A file that is a column crop of the detector carries
+`detector_pixel` (one 0-based LOS-table row per column, strictly increasing);
+without it the LOS table must have one row per column. The boresight used for
+the nadir-equivalent error is the line of sight of the pixel in the GCP's
+column in the mid-frame row.
+
 ---
 
 ## Image-Matching Dataset Format
@@ -544,16 +577,18 @@ The `image_matching_results` passed to `verify()` must be a list of
 `xr.Dataset` objects with a `measurement` dimension. Spacecraft-state
 variable names are configured on `GeolocationSetup`.
 
-| Variable                       | Dimension(s)                      | Description                                              |
-| ------------------------------ | --------------------------------- | -------------------------------------------------------- |
-| `lat_error_deg`                | `[measurement]`                   | Latitude error (degrees, positive = northward)           |
-| `lon_error_deg`                | `[measurement]`                   | Longitude error (degrees, positive = eastward)           |
-| `gcp_lat_deg`                  | `[measurement]`                   | GCP centre latitude (degrees)                            |
-| `gcp_lon_deg`                  | `[measurement]`                   | GCP centre longitude (degrees)                           |
-| `gcp_alt`                      | `[measurement]`                   | GCP altitude (metres; typically `0.0`)                   |
-| `<spacecraft_position_name>`   | `[measurement, xyz]`              | Spacecraft position in CTRS/ITRF93 frame, metres         |
-| `<boresight_name>`             | `[measurement, xyz]`              | Instrument boresight unit vector in the instrument frame |
-| `<transformation_matrix_name>` | `[measurement, xyz_from, xyz_to]` | Rotation matrix from instrument frame to CTRS            |
+| Variable                       | Dimension(s)                      | Description                                                                                                                         |
+| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `lat_error_deg`                | `[measurement]`                   | Latitude error (degrees, positive = northward)                                                                                      |
+| `lon_error_deg`                | `[measurement]`                   | Longitude error (degrees, positive = eastward)                                                                                      |
+| `gcp_lat_deg`                  | `[measurement]`                   | GCP centre latitude (degrees)                                                                                                       |
+| `gcp_lon_deg`                  | `[measurement]`                   | GCP centre longitude (degrees)                                                                                                      |
+| `gcp_alt`                      | `[measurement]`                   | GCP altitude (metres; typically `0.0`)                                                                                              |
+| `<spacecraft_position_name>`   | `[measurement, xyz]`              | Spacecraft position in CTRS/ITRF93 frame, metres                                                                                    |
+| `<boresight_name>`             | `[measurement, xyz]`              | Instrument boresight unit vector in the instrument frame                                                                            |
+| `<transformation_matrix_name>` | `[measurement, xyz_from, xyz_to]` | Rotation matrix from instrument frame to CTRS                                                                                       |
+| `correlation`                  | `[measurement]`                   | Final correlation coefficient (also read as `ccv` or `im_ccv`); required when `minimum_correlation` or `minimum_peak_margin` is set |
+| `correlation_secondary`        | `[measurement]`                   | Strongest first-grid correlation away from the peak; required when `minimum_peak_margin` is set                                     |
 
 `<spacecraft_position_name>` corresponds to `GeolocationSetup.spacecraft_position_name`
 (and similarly for the other two). For CLARREO these are `"riss_ctrs"`,
@@ -601,12 +636,17 @@ Rejected GCPs keep their computed errors so they can be reviewed, but only accep
 enter `percent_within_threshold` and the statistics in `aggregate_stats.attrs`
 (`total_measurements` counts accepted GCPs; `n_matched`, `n_accepted` and `n_rejected`
 give the split). When every GCP is rejected, `verify()` still returns the result, with
-`passed` False and no statistics.
+`passed` False, `percent_within_threshold` `None` (nothing was measured) and no
+statistics.
 
 `along_track_error_m` / `cross_track_error_m` resolve the error along the ground-track
-direction (the direction of increasing observation row, i.e. frame time, at the GCP) and
-90° clockwise from it. A timing error shows up along track; a roll error across track.
-They are `None` when the matching path did not record `track_azimuth_deg`.
+direction (the direction of increasing observation row, i.e. frame time, at the GCP in
+the file-pair modes and at the geolocated grid's centre in the `geolocated_data` mode) and
+90° clockwise from it. Like the latitude and longitude errors they are geolocated minus
+true: a positive along-track error means the geolocated position lies ahead of the GCP
+along the track, a positive cross-track error that it lies to the right. A timing error
+shows up along track; a roll error across track. They are `None` when the matching path
+did not record `track_azimuth_deg`.
 
 ### Quality weighting
 
@@ -761,6 +801,31 @@ The `geolocated_data` path needs a way to match. Either attach a callable to
 `setup.image_matching_func`, or pass `gcp_directory=`, `los_file=`, and
 `psf_file=` to use the built-in pairing + matching. (Or skip this path and pass
 pre-computed `image_matching_results=` instead.)
+
+**`ValueError: Spacecraft position ...`**
+File-pair verification needs the observation's `position` (ECEF, metres). A
+missing value, a value in kilometres (it lands inside the Earth) or a non-finite
+value raises; nothing falls back to a nadir geometry.
+
+**`ValueError: Point (lat ..., lon ...) is outside the observation grid`**
+The GCP chip's centre must lie inside the observation it is paired with: its
+column sets the line of sight used for the error.
+
+**`ValueError: 'detector_pixel' in ... must be ...` or `... columns but the LOS table has ... rows`**
+A column-cropped observation needs `detector_pixel` with one strictly increasing
+LOS-table row per column; an uncropped one needs a LOS table with one row per
+column.
+
+**`ValueError: Search shift ... samples the subimage outside the GCP chip`**
+The observation is too large for the chip at the configured search reach. Crop
+it at least `setup.search.max_shift_km()` inside the chip on every side, or
+reduce `search.grid_span_km` / `search.reduction_factor`. The
+`verify(geolocated_data=...)` mode matches the whole geolocated dataset, so it
+must already be cropped.
+
+**`ValueError: Subimage has ... non-finite value(s)`**
+The correlation is undefined over missing data. Crop or mask the observation
+before matching.
 
 **NaN values in `nadir_equiv_total_error_m`**
 The nadir-equivalent conversion requires valid spacecraft geometry. A

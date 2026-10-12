@@ -410,12 +410,23 @@ class PSFSamplingConfig:
     psf_lon_sample_dist_deg : float, optional
         PSF sample distance in the longitude direction in degrees.
         Default approximately 2.7 m at the equator (Landsat calibration).
+
+    Raises
+    ------
+    ValueError
+        If a sample distance is not finite and positive.
     """
 
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
 
     __pydantic_config__ = ConfigDict(extra="forbid")
+
+    def __post_init__(self) -> None:
+        for name in ("psf_lat_sample_dist_deg", "psf_lon_sample_dist_deg"):
+            value = getattr(self, name)
+            if not (np.isfinite(value) and value > 0):
+                raise ValueError(f"PSFSamplingConfig.{name} must be finite and positive, got {value!r}.")
 
 
 @dataclass
@@ -443,6 +454,14 @@ class SearchConfig:
         Distance from the first-pass correlation peak beyond which the
         strongest competing correlation is reported (``ccv_secondary``), used
         to judge whether a match is distinct. Default 2.0.
+
+    Raises
+    ------
+    ValueError
+        If ``grid_size`` is not an integer of at least 2; if ``grid_span_km``,
+        ``spacing_limit_m`` or ``peak_exclusion_km`` is not finite and positive;
+        if ``reduction_factor`` is not in (0, 1); or if ``spacing_limit_m`` is not
+        smaller than the first grid's step (the search would not run).
     """
 
     grid_size: int = 44
@@ -452,6 +471,22 @@ class SearchConfig:
     peak_exclusion_km: float = 2.0
 
     __pydantic_config__ = ConfigDict(extra="forbid")
+
+    def __post_init__(self) -> None:
+        if isinstance(self.grid_size, bool) or not isinstance(self.grid_size, int) or self.grid_size < 2:
+            raise ValueError(f"SearchConfig.grid_size must be an integer >= 2, got {self.grid_size!r}.")
+        for name in ("grid_span_km", "spacing_limit_m", "peak_exclusion_km"):
+            value = getattr(self, name)
+            if not (np.isfinite(value) and value > 0):
+                raise ValueError(f"SearchConfig.{name} must be finite and positive, got {value!r}.")
+        if not 0 < self.reduction_factor < 1:
+            raise ValueError(f"SearchConfig.reduction_factor must be in (0, 1), got {self.reduction_factor!r}.")
+        first_step_m = 1000.0 * self.grid_span_km / (self.grid_size - 1)
+        if self.spacing_limit_m >= first_step_m:
+            raise ValueError(
+                f"SearchConfig.spacing_limit_m ({self.spacing_limit_m} m) must be smaller than the first grid step "
+                f"({first_step_m:.3f} m = grid_span_km / (grid_size - 1)), or the search does not run."
+            )
 
     def max_shift_km(self) -> float:
         """Upper bound (km) on how far the iterative search can move the subimage along each axis.

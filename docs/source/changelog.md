@@ -2,11 +2,51 @@
 
 ## Unreleased
 
-The correction loop runs on observation subimages, with SPICE geolocation and image matching on
-the observation's radiance.
+`verify()` gives correct nadir-equivalent statistics on real flight data: pairing fails loudly,
+the error uses the viewing geometry of the pixel that saw the GCP, matching is configurable per
+mission, and the correlation gates apply. Every matched GCP is reported with a status, and the
+results can be saved, reviewed by a person and re-scored without re-matching. The correction
+loop runs on observation subimages, with SPICE geolocation and image matching on the
+observation's radiance.
 
 ### Breaking changes
 
+- **Viewing geometry from the observing pixel** -- `resolve_spacecraft_ecef(grid, r_spacecraft_m,
+target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in the GCP's column
+  and raises when the GCP is outside the grid; a spacecraft position is required and validated
+  (`psf.validate_spacecraft_ecef_m`: shape, finite, metres, above the ellipsoid). Nothing falls
+  back to a nadir geometry: `default_altitude_m` is removed from `verify()`,
+  `_run_image_matching_for_pairs` and `resolve_spacecraft_ecef`, and the deprecated
+  `infer_spacecraft_state` raises on a missing position. `image_matching` raises on a SPICE
+  failure or a missing mid-frame time, and the per-pair loops no longer skip failed pairs.
+- **Pairing raises** -- `pair_files` and `pair_geolocated_dataset_with_gcp_files` raise
+  `ValueError` naming a file that fails to load (previously skipped, which misaligned every
+  later pair).
+- **`im_search` returns seven values** -- `(lat_err_km, lon_err_km, ccv_max, ccv_secondary, row,
+col, step_m)`, and `IntegratedImageMatchResult` gains `ccv_secondary` before its index fields.
+  `im_search` raises when a shifted subimage samples outside the GCP chip (it correlated against
+  zero fill), when the subimage has non-finite values, and when no shift in a grid has a finite
+  correlation.
+- **Correlation gates apply** -- `minimum_correlation` filters on the `correlation` variable
+  (also read as `ccv` / `im_ccv`); `_filter_by_correlation` and `process_from_netcdf` raise when a
+  threshold is set and no correlation variable exists (they warned and skipped). New
+  `GeolocationConfig.minimum_peak_margin` drops matches whose `correlation -
+correlation_secondary` is below it. Neither gate applies to per-pair errors inside the
+  correction loop.
+- **Matching configuration on the setup** -- `GeolocationSetup.psf_sampling` and `.search`
+  (defaults equal the previous hardcoded Landsat values); `SearchConfig` and `PSFSamplingConfig`
+  reject invalid values. `PSFSamplingConfig.gcp_step_m` and `motion_convolution_step_m`, never
+  read, are removed, which changes its positional field order.
+- **Rejected matches are kept** -- `ErrorStatsProcessor.compute_nadir_equivalent_errors`,
+  `process_geolocation_errors` and `process_from_netcdf` return every measurement with
+  `accepted` and `rejection_reason`; statistics cover the accepted ones. A caller averaging
+  `nadir_equiv_total_error_m` must mask by `accepted`. `verify()` no longer raises when the gates
+  reject everything: `percent_within_threshold` is `None` (nothing was measured), `passed` is
+  `False`, and the warning says the run was inconclusive.
+- `GCPError.status` (`pass` / `fail` / `rejected`) is required and must agree with `passed`.
+- Error-stats NetCDF attributes are strings or numbers: `processing_timestamp` is an ISO string
+  and `correlation_filtering_applied` is `1`.
+- An accepted measurement with a non-finite correlation raises (its quality weight is undefined).
 - **`loop()` / `run_correction()` take an observation subimage as the science input** -- a
   NetCDF file with `band_data` (frame, pixel) radiance, `ugps` (frame) integer frame times and
   `detector_pixel` (pixel) LOS-table rows, cropped inside its GCP chip
@@ -43,8 +83,35 @@ the observation's radiance.
   `current_value` (one grid point; not swept) instead of repeating it; `SINGLE_OFFSET` raises
   when no parameter has non-zero-width bounds.
 
+### New
+
+- `SearchConfig.peak_exclusion_km` and `SearchConfig.max_shift_km()` (the search's reach, for
+  cropping observations inside their chips).
+- `image_io.observation_los_vectors`: a column-cropped NetCDF observation carries
+  `detector_pixel`, its LOS-table row per column; without it the LOS table must have one row per
+  column. `image_matching()` checks the same for the geolocated grid.
+- Per-GCP `along_track_error_m` / `cross_track_error_m` (geolocated minus true; from
+  `track_azimuth_deg`, `psf.ground_track_azimuth_deg`), `off_nadir_angle_deg` and
+  `correlation_secondary`.
+- `verify(..., keep_images=True)` keeps each match's observed, reference and emulated images
+  (`image_match.chip_image_dataset`); file-pair modes only.
+- `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
+  `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
+  `review` column of `summary.csv`.
+- Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
+  `weighted_statistics`, `weighted_percent_below` and
+  `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted
+  statistics and never deciding `passed`. `error_stats.STATISTIC_ATTRS` and `without_statistics`
+  name and clear the statistic attributes.
+
 ### Fixes
 
+- Matched errors were converted to degrees with 111.0 km/degree and back with the WGS-84 radius,
+  a 0.29% north-south error; both now use `WGS84_SEMI_MAJOR_AXIS_KM`.
+- Per-GCP attribution in `verify()` follows the measurements that survive filtering.
+- File-pair verification downloads an `s3://` observation once per pair (it was read twice).
+- The verification summary table's rows lined up with its borders only when the footer was not
+  the widest line.
 - `OFFSET_KERNEL` offsets were converted from arcseconds twice and applied about 2e5 times too
   small; they are applied in radians as `load_param_sets` returns them.
 - `CONSTANT_KERNEL` attitude kernels covered only their two sentinel epochs because the

@@ -76,6 +76,17 @@ def compute_percent_below(errors: np.ndarray, threshold_m: float) -> float:
 
 QUALITY_WEIGHT_MAX_CORRELATION: float = 0.99
 _STANDARD_THRESHOLDS_M = (100.0, 250.0, 500.0, 750.0, 1000.0)
+# Attributes ErrorStatsProcessor.add_statistics sets: the unweighted and the weighted statistics.
+STATISTIC_ATTRS = (
+    *(f"{name}_error_m" for name in ("mean", "median", "rms", "std", "min", "max")),
+    *(f"p{q}_error_m" for q in (25, 75, 90, 95, 99)),
+    "total_measurements",
+    *(f"percent_below_{t:.0f}m" for t in _STANDARD_THRESHOLDS_M),
+    "weighted_mean_error_m",
+    "weighted_rms_error_m",
+    "effective_measurements",
+    *(f"weighted_percent_below_{t:.0f}m" for t in _STANDARD_THRESHOLDS_M),
+)
 
 
 def match_snr_weight(correlation: np.ndarray, max_correlation: float = QUALITY_WEIGHT_MAX_CORRELATION) -> np.ndarray:
@@ -266,15 +277,7 @@ def weighted_statistics(errors_m: np.ndarray, weights: np.ndarray) -> dict[str, 
         If the lengths differ, a weight is negative or not finite, or the
         weights sum to 0.
     """
-    errors_m = np.asarray(errors_m, dtype=float)
-    weights = np.asarray(weights, dtype=float)
-    if errors_m.shape != weights.shape:
-        raise ValueError(f"errors_m {errors_m.shape} and weights {weights.shape} must have the same shape.")
-    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
-        raise ValueError("Weights must be finite and non-negative.")
-    total = weights.sum()
-    if total == 0:
-        raise ValueError("Weights sum to 0; weighted statistics are undefined.")
+    errors_m, weights, total = _checked_weights(errors_m, weights)
     stats = {
         "weighted_mean_error_m": float(np.sum(weights * errors_m) / total),
         "weighted_rms_error_m": float(np.sqrt(np.sum(weights * errors_m**2) / total)),
@@ -291,12 +294,32 @@ def weighted_percent_below(errors_m: np.ndarray, weights: np.ndarray, threshold_
     Raises
     ------
     ValueError
-        If the weights sum to 0.
+        As :func:`weighted_statistics`.
     """
-    total = float(np.sum(weights))
+    errors_m, weights, total = _checked_weights(errors_m, weights)
+    return float(np.sum(weights * (errors_m < threshold_m)) / total * 100.0)
+
+
+def _checked_weights(errors_m: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return *errors_m* and *weights* as float arrays and the weight sum, raising if the weights are invalid."""
+    errors_m = np.asarray(errors_m, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if errors_m.shape != weights.shape:
+        raise ValueError(f"errors_m {errors_m.shape} and weights {weights.shape} must have the same shape.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0):
+        raise ValueError("Weights must be finite and non-negative.")
+    total = float(weights.sum())
     if total == 0:
-        raise ValueError("Weights sum to 0; the weighted percentage is undefined.")
-    return float(np.sum(weights * (np.asarray(errors_m) < threshold_m)) / total * 100.0)
+        raise ValueError("Weights sum to 0; weighted statistics are undefined.")
+    return errors_m, weights, total
+
+
+def without_statistics(per_measurement: xr.Dataset) -> xr.Dataset:
+    """Return a copy of *per_measurement* without the :data:`STATISTIC_ATTRS` attributes."""
+    output = per_measurement.copy()
+    for key in STATISTIC_ATTRS:
+        output.attrs.pop(key, None)
+    return output
 
 
 class ErrorStatsProcessor:
@@ -406,7 +429,8 @@ class ErrorStatsProcessor:
             when accepted), and, when the input carries ``track_azimuth_deg``,
             ``along_track_error_m`` (positive along the azimuth) and
             ``cross_track_error_m`` (positive 90° clockwise from it), in meters,
-            from the same north/east error as the view-plane components.
+            from the same north/east error as the view-plane components and,
+            like it, geolocated minus true.
             With a correlation variable in the input, ``quality_weight``:
             :func:`match_snr_weight` for accepted measurements, 0 for
             rejected ones.  Attributes ``n_matched``, ``n_accepted`` and
@@ -415,8 +439,12 @@ class ErrorStatsProcessor:
         Raises
         ------
         ValueError
-            If required variables are missing, or a match-quality gate is set
-            but the input lacks the variable it needs.
+            If required variables are missing; if ``minimum_correlation`` or
+            ``minimum_peak_margin`` is set but the input has no correlation
+            variable; if ``minimum_peak_margin`` is set but the input has no
+            ``correlation_secondary``; or if an accepted measurement's
+            correlation is not finite (a match with no defined correlation is
+            invalid, and its ``quality_weight`` undefined).
         """
         self._validate_input_data(input_data)
         reasons = self.rejection_reasons(input_data)
@@ -486,7 +514,8 @@ class ErrorStatsProcessor:
             ``total_measurements`` counts accepted measurements only.  With a
             ``quality_weight`` variable whose accepted weights sum above 0,
             also the weighted statistics of :func:`weighted_statistics`
-            (``weighted_*`` and ``effective_measurements``).
+            (``weighted_*`` and ``effective_measurements``).  Statistics
+            already on *per_measurement* are replaced or removed.
 
         Raises
         ------
@@ -498,7 +527,7 @@ class ErrorStatsProcessor:
             raise ValueError(
                 f"No measurements remaining after correlation filtering: all {accepted.size} were rejected."
             )
-        output = per_measurement.copy()
+        output = without_statistics(per_measurement)
         errors = output["nadir_equiv_total_error_m"].values[accepted]
         output.attrs.update(self._calculate_statistics(errors))
         weights = output["quality_weight"].values[accepted] if "quality_weight" in output.data_vars else np.zeros(1)
