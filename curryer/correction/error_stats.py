@@ -277,9 +277,11 @@ class ErrorStatsProcessor:
         Raises
         ------
         ValueError
-            If required variables are missing, ``minimum_correlation`` is set
-            but the input has no correlation variable, or all measurements are
-            filtered out by the correlation threshold.
+            If required variables are missing; if ``minimum_correlation`` or
+            ``minimum_peak_margin`` is set but the input has no correlation
+            variable; if ``minimum_peak_margin`` is set but the input has no
+            ``correlation_secondary``; or if the gates filter out every
+            measurement.
         """
         self._validate_input_data(input_data)
         filtered_data = self._filter_by_correlation(input_data)

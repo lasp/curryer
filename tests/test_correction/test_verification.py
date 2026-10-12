@@ -904,7 +904,12 @@ class TestViewingGeometryFailures:
         return grid, geolocated
 
     def _call_image_matching(
-        self, tmp_path, with_frame: bool, spice_side_effect=None, r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6)
+        self,
+        tmp_path,
+        with_frame: bool,
+        spice_side_effect=None,
+        r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6),
+        los_rows: int = 3,
     ):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -935,7 +940,7 @@ class TestViewingGeometryFailures:
                     geolocated_data=geolocated,
                     gcp_reference_file=tmp_path / "gcp.nc",
                     setup=_make_setup(),
-                    los_vectors_cached=np.array([[0.0, 0.0, 1.0]]),
+                    los_vectors_cached=np.tile([0.0, 0.0, 1.0], (los_rows, 1)),
                     optical_psfs_cached=[],
                     r_iss_midframe=np.array(r_iss_midframe),
                 )
@@ -953,6 +958,11 @@ class TestViewingGeometryFailures:
         SpiceyError = sp.utils.exceptions.SpiceyError
         with pytest.raises(SpiceyError, match="no attitude coverage"):
             self._call_image_matching(tmp_path, with_frame=True, spice_side_effect=SpiceyError("no attitude coverage"))
+        assert self.image_match_calls == 0
+
+    def test_image_matching_needs_one_los_row_per_column(self, tmp_path):
+        with pytest.raises(ValueError, match="3 columns but the LOS table has 1 rows"):
+            self._call_image_matching(tmp_path, with_frame=True, los_rows=1)
         assert self.image_match_calls == 0
 
     def test_image_matching_rejects_position_in_kilometers(self, tmp_path):
@@ -1156,7 +1166,7 @@ class TestMatchingConfigAndCorrelation:
                 geolocated_data=geolocated,
                 gcp_reference_file=tmp_path / "gcp.nc",
                 setup=setup,
-                los_vectors_cached=np.array([[0.0, 0.0, 1.0]]),
+                los_vectors_cached=np.tile([0.0, 0.0, 1.0], (grid.data.shape[1], 1)),
                 optical_psfs_cached=[],
                 r_iss_midframe=np.array([-1.5e6, -5.9e6, 3.0e6]),
             )

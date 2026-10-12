@@ -61,3 +61,70 @@ def test_search_leaving_the_chip_raises():
     config = SearchConfig(grid_size=11, grid_span_km=4.0, reduction_factor=0.5, spacing_limit_m=50.0)
     with pytest.raises(ValueError, match="outside the GCP chip"):
         im_search(chip, _subimage(chip, 25), config)  # 0.5 km inside, first grid reaches 2 km
+
+
+def _small_config(**changes) -> SearchConfig:
+    return SearchConfig(
+        **{"grid_size": 11, "grid_span_km": 2.0, "reduction_factor": 0.5, "spacing_limit_m": 50.0, **changes}
+    )
+
+
+def test_non_finite_subimage_raises():
+    chip = _chip(np.random.default_rng(3).normal(size=(121, 121)))
+    sub = _subimage(chip, 30)
+    sub.data[5, 7] = np.nan
+    with pytest.raises(ValueError, match="1 non-finite value"):
+        im_search(chip, sub, _small_config())
+
+
+def test_search_with_no_finite_correlation_raises():
+    chip = _chip(np.full((121, 121), np.nan))
+    sub = _subimage(_chip(np.random.default_rng(4).normal(size=(121, 121))), 30)
+    with pytest.raises(ValueError, match="No shift in the search grid has a finite correlation"):
+        im_search(chip, sub, _small_config())
+
+
+def test_secondary_ignores_shifts_over_missing_chip_data():
+    rng = np.random.default_rng(5)
+    texture = rng.normal(size=(121, 121))
+    texture[:12, :] = np.nan  # reached only by the northernmost shifts of the first grid
+    chip = _chip(texture)
+    _, _, ccv, ccv_secondary, *_ = im_search(chip, _subimage(chip, 30), _small_config(peak_exclusion_km=0.5))
+    assert np.isfinite(ccv)
+    assert np.isfinite(ccv_secondary)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"grid_size": 1}, "grid_size must be an integer >= 2"),
+        ({"grid_size": 11.0}, "grid_size must be an integer >= 2"),
+        ({"grid_span_km": 0.0}, "grid_span_km must be finite and positive"),
+        ({"spacing_limit_m": float("nan")}, "spacing_limit_m must be finite and positive"),
+        ({"peak_exclusion_km": -1.0}, "peak_exclusion_km must be finite and positive"),
+        ({"reduction_factor": 1.0}, r"reduction_factor must be in \(0, 1\)"),
+        ({"reduction_factor": 0.0}, r"reduction_factor must be in \(0, 1\)"),
+        ({"spacing_limit_m": 200.0}, "must be smaller than the first grid step"),
+    ],
+    ids=[
+        "one-point",
+        "float-size",
+        "zero-span",
+        "nan-limit",
+        "negative-exclusion",
+        "no-reduction",
+        "zero-reduction",
+        "search-never-runs",
+    ],
+)
+def test_invalid_search_config_raises(changes, message):
+    with pytest.raises(ValueError, match=message):
+        _small_config(**changes)
+
+
+@pytest.mark.parametrize("value", [0.0, -1e-5, float("inf")])
+def test_invalid_psf_sampling_raises(value):
+    from curryer.correction.config import PSFSamplingConfig
+
+    with pytest.raises(ValueError, match="psf_lon_sample_dist_deg must be finite and positive"):
+        PSFSamplingConfig(psf_lon_sample_dist_deg=value)
