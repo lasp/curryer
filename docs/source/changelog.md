@@ -135,6 +135,12 @@ correlation_secondary` is below it. Neither gate applies to per-pair errors insi
 - `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
   match-quality gates on; it counted the errors of rejected pairs too.
 
+### Documentation
+
+- The correction user guide is reorganized around concepts (pairs, matching, gates, errors,
+  weighting, the correction loop), the input contracts and what raises, and the result objects.
+  It links the GCP regridding guide, now in the docs index, instead of repeating it.
+
 ## Version 0.5.3 (2026-10)
 
 Adds a per-pixel geolocation and surface-angle path for large focal planes.
