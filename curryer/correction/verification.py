@@ -180,7 +180,7 @@ class VerificationResult(BaseModel):
     Attributes
     ----------
     passed : bool
-        ``True`` when :attr:`percent_within_threshold` ≥
+        ``True`` when :attr:`percent_within_threshold` exceeds
         :attr:`requirements.performance_spec_percent`.
     per_gcp_errors : list[GCPError]
         One entry per measurement in the aggregated dataset.
@@ -350,7 +350,7 @@ def _check_threshold(
         return False, None
     count_below = int(np.sum(nadir_errors < requirements.performance_threshold_m))
     percent_below = float(count_below / len(nadir_errors) * 100.0)
-    passed = percent_below >= requirements.performance_spec_percent
+    passed = percent_below > requirements.performance_spec_percent
     return passed, percent_below
 
 
@@ -550,7 +550,7 @@ def _format_summary_table(
         │    1 │    0.00567 │   0.00234  │   312.8  │   FAIL   │
         │    2 │    0.01020 │   0.00810  │  1240.6  │ REJECTED │
         ├──────┴────────────┴────────────┴──────────┴──────────┤
-        │ Result: FAILED — 50.0% within 250.0m (req: 60.0%)    │
+        │ Result: FAILED — 50.0% within 250.0m (req: > 60.0%)  │
         │ 2 accepted, 1 rejected                               │
         └──────────────────────────────────────────────────────┘
 
@@ -590,7 +590,7 @@ def _format_summary_table(
         footer_text = (
             f" Result: {verdict} — {percent_within:.1f}% within "
             f"{requirements.performance_threshold_m}m "
-            f"(req: {requirements.performance_spec_percent}%)"
+            f"(req: > {requirements.performance_spec_percent}%)"
         )
 
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)

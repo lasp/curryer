@@ -35,6 +35,11 @@ correlation_secondary` is below it. Neither gate applies to per-pair errors insi
   (defaults equal the previous hardcoded Landsat values); `SearchConfig` and `PSFSamplingConfig`
   reject invalid values. `PSFSamplingConfig.gcp_step_m` and `motion_convolution_step_m`, never
   read, are removed, which changes its positional field order.
+- **The requirement is strict** -- a run passes when the percentage of accepted measurements
+  within `performance_threshold_m` exceeds `performance_spec_percent`, as the CLARREO
+  requirement is written (more than 39 %); a run exactly at the spec used to pass. This applies to
+  `VerificationResult.passed` and `CorrectionResult.met_threshold`. `RequirementsConfig` rejects
+  a spec of 100, which no run could exceed. The summary table reads `(req: > 39.0%)`.
 - **Rejected matches are kept** -- `ErrorStatsProcessor.compute_nadir_equivalent_errors`,
   `process_geolocation_errors` and `process_from_netcdf` return every measurement with
   `accepted` and `rejection_reason`; statistics cover the accepted ones. A caller averaging

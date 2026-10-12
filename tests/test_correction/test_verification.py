@@ -317,14 +317,20 @@ class TestCheckThreshold:
         assert passed is False
         assert pct == pytest.approx(0.0)
 
-    def test_exactly_at_spec_percent_passes(self):
-        """When exactly spec_percent of measurements pass the threshold."""
-        # 39 out of 100 below 250m → 39 % → should pass (>= 39 %)
+    def test_exactly_at_spec_percent_fails(self):
+        """The requirement is more than spec_percent: exactly 39 % of 100 fails."""
         errors = [100.0] * 39 + [300.0] * 61
         stats = _make_aggregate_stats_dataset(errors)
         passed, pct = _check_threshold(stats, self._req(spec_pct=39.0))
-        assert passed is True
+        assert passed is False
         assert pct == pytest.approx(39.0)
+
+    def test_one_above_spec_percent_passes(self):
+        errors = [100.0] * 40 + [300.0] * 60
+        stats = _make_aggregate_stats_dataset(errors)
+        passed, pct = _check_threshold(stats, self._req(spec_pct=39.0))
+        assert passed is True
+        assert pct == pytest.approx(40.0)
 
     def test_one_below_spec_percent_fails(self):
         """One fewer passing measurement → should fail."""
@@ -346,13 +352,16 @@ class TestCheckThreshold:
         assert _check_threshold(stats, self._req()) == (False, None)
 
     def test_exactly_at_threshold_does_not_pass(self):
-        """Value at threshold fails per-measurement check, but overall spec=0 % passes."""
+        """A value at the threshold is not below it, so 0 % pass and even a 0 % spec fails."""
         stats = _make_aggregate_stats_dataset([_THRESHOLD_M])
         passed, pct = _check_threshold(stats, self._req(spec_pct=0.0))
-        # Per-measurement: value is not < threshold → 0 % of measurements pass.
-        # Overall: 0 % >= spec_pct (0 %) → overall verification passes.
         assert pct == pytest.approx(0.0)
-        assert passed is True
+        assert passed is False
+
+    def test_spec_of_100_percent_raises(self):
+        """No percentage exceeds 100, so a 100 % spec could never pass."""
+        with pytest.raises(ValidationError, match="performance_spec_percent"):
+            self._req(spec_pct=100.0)
 
 
 # ===========================================================================
@@ -648,11 +657,11 @@ class TestVerify:
             assert result.warnings == []
 
     def test_warnings_non_empty_when_failed(self, setup, tmp_path):
-        """Force a FAILED result by using a very tight spec (100 %)."""
-        strict_setup = _make_setup(performance_spec_percent=100.0)
+        """Force a FAILED result by using a very tight spec (99.9 %)."""
+        strict_setup = _make_setup(performance_spec_percent=99.9)
         ds = _make_full_image_matching_dataset(n=13, seed=0)
         result = verify(strict_setup, image_matching_results=[ds], work_dir=tmp_path)
-        # With 100 % required, any imperfect measurement causes failure
+        # With more than 99.9 % required, any imperfect measurement causes failure
         if not result.passed:
             assert len(result.warnings) >= 1
             assert "VERIFICATION FAILED" in result.warnings[0]

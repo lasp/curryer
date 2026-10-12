@@ -397,6 +397,15 @@ class TestBuildCorrectionResult:
         assert result.met_threshold is False
         assert "No parameter set met performance requirements" in result.recommendation
 
+    def test_met_threshold_needs_more_than_the_spec(self):
+        """Exactly the spec percentage of pairs within the threshold does not meet it."""
+        setup, sweep, netcdf_config = _make_setup_sweep(performance_threshold_m=150.0, performance_spec_percent=50.0)
+        nc = _make_netcdf_data(n_params=2, n_pairs=2)
+        nc["rms_error_m"][:, 0] = 100.0
+        nc["rms_error_m"][:, 1] = 7000.0
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert result.met_threshold is False
+
     def test_all_nan_rms_does_not_crash(self):
         """Degenerate case: all RMS values are NaN — build should not raise."""
         setup, sweep, netcdf_config = _make_setup_sweep()
