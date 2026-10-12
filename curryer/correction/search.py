@@ -62,7 +62,8 @@ def im_search(
     """Perform the iterative grid search used by the MATLAB implementation.
 
     Every shifted subimage must lie within the GCP chip: the correlation is only
-    defined where the chip has data.
+    defined where the chip has data.  A shift whose emulated image includes a
+    non-finite chip value has no correlation and cannot be the match.
 
     Returns
     -------
@@ -71,10 +72,12 @@ def im_search(
     ccv_max : float
         Correlation coefficient at the final match.
     ccv_secondary : float
-        Strongest correlation in the first (coarsest) search grid farther than
-        ``config.peak_exclusion_km`` from that grid's best point; ``-inf`` when the
-        grid has no such point.  A value close to *ccv_max* means the match is not
-        distinct (e.g. cloud or featureless terrain).
+        Strongest finite correlation in the first (coarsest) search grid farther
+        than ``config.peak_exclusion_km`` from that grid's best point; ``-inf`` when
+        the grid has no such point.  ``ccv_max - ccv_secondary`` (the peak margin)
+        compares the refined final peak with this first-grid value, so it includes
+        the refinement's gain over the first grid's peak.  A small margin means the
+        match is not distinct (e.g. cloud or featureless terrain).
     final_index_row, final_index_col : int
         Best grid indices of the last iteration.
     final_grid_step_m : float
@@ -83,11 +86,17 @@ def im_search(
     Raises
     ------
     ValueError
-        If a search shift samples the subimage outside the GCP chip's lat/lon
-        extent; crop the subimage further inside the chip or reduce
-        ``grid_span_km`` / ``reduction_factor``.
+        If the subimage data are not all finite; if a search shift samples the
+        subimage outside the GCP chip's lat/lon extent (crop the subimage further
+        inside the chip or reduce ``grid_span_km`` / ``reduction_factor``); or if
+        no shift in a search grid has a finite correlation.
     """
 
+    if not np.all(np.isfinite(subimage.data)):
+        raise ValueError(
+            f"Subimage has {int(np.sum(~np.isfinite(subimage.data)))} non-finite value(s); the correlation is "
+            "undefined. Crop or mask them before matching."
+        )
     nframes, nrows = subimage.data.shape
     midframe = nframes // 2
     midrow = nrows // 2
@@ -139,13 +148,18 @@ def im_search(
                     ccv_max = ccv_value
                     best_grid = (k, kk)
 
+        if not np.isfinite(ccv_max):
+            raise ValueError(
+                "No shift in the search grid has a finite correlation: the GCP chip is non-finite under every "
+                "shifted subimage."
+            )
         if first_pass:
             rows, cols = np.indices(ccv_grid.shape)
             dist_km = np.hypot(
                 (rows - best_grid[0]) * lat_spacing * km_per_deg,
                 (cols - best_grid[1]) * lat_spacing * km_per_deg * cos_lat,
             )
-            far = dist_km > config.peak_exclusion_km
+            far = (dist_km > config.peak_exclusion_km) & np.isfinite(ccv_grid)
             if far.any():
                 ccv_secondary = float(ccv_grid[far].max())
             first_pass = False

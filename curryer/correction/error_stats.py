@@ -415,8 +415,10 @@ class ErrorStatsProcessor:
         Raises
         ------
         ValueError
-            If required variables are missing, or a match-quality gate is set
-            but the input lacks the variable it needs.
+            If required variables are missing; if ``minimum_correlation`` or
+            ``minimum_peak_margin`` is set but the input has no correlation
+            variable; or if ``minimum_peak_margin`` is set but the input has no
+            ``correlation_secondary``.
         """
         self._validate_input_data(input_data)
         reasons = self.rejection_reasons(input_data)

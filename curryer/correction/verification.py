@@ -74,6 +74,7 @@ from curryer.correction.image_io import (
     load_optical_psf,
 )
 from curryer.correction.image_match import integrated_image_match
+from curryer.correction.io import resolve_path
 from curryer.correction.psf import ground_track_azimuth_deg, validate_spacecraft_ecef_m
 
 logger = logging.getLogger(__name__)
@@ -829,10 +830,15 @@ def image_matching(
         :func:`~curryer.correction.psf.validate_spacecraft_ecef_m`; if
         calibration files are missing; if the mid-frame time cannot be
         determined (no ``frame`` coordinate and no ``setup.geo.time_field``
-        telemetry column); or if ``setup.geo.instrument_name`` is not set.
-        All of these are checked before the image match runs.  After it, if
-        the GCP centre lies outside the geolocated grid (no ground-track
-        azimuth).
+        telemetry column); if ``setup.geo.instrument_name`` is not set; or if
+        the LOS table does not have one row per geolocated column.  All of
+        these are checked before the image match runs.  The match itself
+        raises if a search shift samples the geolocated grid outside the GCP
+        chip (:func:`~curryer.correction.search.im_search`): the whole
+        geolocated dataset is matched, so it must lie at least
+        ``setup.search.max_shift_km()`` inside the chip on every side.  After
+        the match, if the GCP centre lies outside the geolocated grid (no
+        ground-track azimuth).
     spiceypy.utils.exceptions.SpiceyError
         If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
         not furnished or no coverage at the mid-frame time).
@@ -877,6 +883,11 @@ def image_matching(
         if calibration.psf_file is None:
             raise ValueError("No PSF source configured. Set setup.calibration.psf_file.")
         optical_psfs = load_optical_psf(Path(calibration.psf_file))
+    if len(los_vectors) != subimage.data.shape[1]:
+        raise ValueError(
+            f"The geolocated grid has {subimage.data.shape[1]} columns but the LOS table has {len(los_vectors)} "
+            "rows; image_matching() needs one row per column."
+        )
 
     # Spacecraft position
     if r_iss_midframe is None:
@@ -1243,8 +1254,9 @@ def _run_image_matching_for_pairs(
     datasets: list[xr.Dataset] = []
     chip_images: list[xr.Dataset] = []
     for obs_path, gcp_path in pairs:
-        obs_grid, r_sc_file = load_observation_file(obs_path)
-        obs_los = observation_los_vectors(obs_path, los_vectors, obs_grid.data.shape[1])
+        obs_local = resolve_path(obs_path)
+        obs_grid, r_sc_file = load_observation_file(obs_local)
+        obs_los = observation_los_vectors(obs_local, los_vectors, obs_grid.data.shape[1])
         gcp_grid = load_image_grid(gcp_path, mat_key="GCP")
 
         mid_i, mid_j = gcp_grid.mid_indices
@@ -1424,7 +1436,10 @@ def verify(
         pairing (including a missing file; the original exception is chained
         as ``__cause__``); when an observation file carries no valid
         spacecraft position; when a GCP chip centre lies outside its
-        observation grid; when image matching produces no results; or when
+        observation grid; when a search shift samples an observation outside
+        its GCP chip (crop observations at least ``setup.search.max_shift_km()``
+        inside their chips; the *geolocated_data* mode matches the whole
+        dataset); when image matching produces no results; or when
         *keep_images* is set with *image_matching_results* or
         *geolocated_data*.
     FileNotFoundError
