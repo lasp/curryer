@@ -19,6 +19,9 @@ for correction analysis.  Three search strategies are supported:
     independently across ``n_iterations`` evenly-spaced values while all other
     parameters are held at their nominal ``current_value``.
 
+In every strategy a parameter with zero-width ``bounds`` (``[b, b]``) is
+held at ``current_value + b``.
+
 Supported parameter types:
 - ``CONSTANT_KERNEL`` – one rotation angle of a fixed-attitude frame (float,
   in radians).
@@ -152,8 +155,8 @@ def _get_grid_values(param: ParameterConfig, n_points: int) -> list[typing.Any]:
 
     Offsets are linearly spaced over ``[bounds[0], bounds[1]]`` (in the
     parameter's native units before conversion) and added to the converted
-    ``current_value``.  A parameter with zero-width bounds is held: it has one
-    value, ``current_value``.
+    ``current_value``.  A parameter with zero-width bounds ``[b, b]`` is held:
+    it has one value, ``current_value + b``.
 
     Parameters
     ----------
@@ -207,6 +210,9 @@ def _generate_random(sweep: Sweep) -> list[list[tuple[ParameterConfig, typing.An
         for param_idx, param in enumerate(sweep.parameters):
             current_value = param.spec.current_value
             bounds = param.spec.bounds
+            if bounds[0] == bounds[1]:
+                out_set.append((param, _get_grid_values(param, 1)[0]))
+                continue
 
             if param.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
                 if param.spec.sigma is not None and param.spec.sigma > 0:
@@ -278,8 +284,8 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
     """Generate parameter sets via deterministic cartesian-product grid sweep.
 
     Produces ``grid_points_per_param ^ n_swept`` parameter sets, where ``n_swept``
-    counts the parameters with non-zero-width bounds (the others are held at
-    ``current_value``).  ``n_iterations`` is not used for this strategy.
+    counts the parameters with non-zero-width bounds (the others are held at ``current_value + bounds[0]``).
+    ``n_iterations`` is not used for this strategy.
 
     Raises
     ------
@@ -320,10 +326,10 @@ def _generate_single_offset(sweep: Sweep) -> list[list[tuple[ParameterConfig, ty
     For each parameter in ``sweep.parameters`` with non-zero-width ``bounds``:
     - ``n_iterations`` evenly-spaced values are generated spanning the
       parameter's full ``bounds`` offset range.
-    - All other parameters are held at their nominal ``current_value``.
+    - All other swept parameters are held at their nominal ``current_value``.
 
-    Parameters with zero-width bounds are held throughout.  Total parameter sets
-    produced: ``n_swept × n_iterations``.
+    Parameters with zero-width bounds are held at ``current_value + bounds[0]`` throughout.  Total
+    parameter sets produced: ``n_swept × n_iterations``.
 
     Raises
     ------
@@ -336,7 +342,10 @@ def _generate_single_offset(sweep: Sweep) -> list[list[tuple[ParameterConfig, ty
         raise ValueError("SINGLE_OFFSET needs at least one parameter with non-zero-width bounds.")
     logger.info(f"SINGLE_OFFSET: {len(swept)} swept parameter(s) × {n} values each = {len(swept) * n} parameter sets")
 
-    nominals = [_get_nominal_value(param) for param in sweep.parameters]
+    nominals = [
+        _get_grid_values(param, 1)[0] if param.spec.bounds[0] == param.spec.bounds[1] else _get_nominal_value(param)
+        for param in sweep.parameters
+    ]
 
     output = []
     for sweep_idx in swept:

@@ -482,7 +482,7 @@ class TestSingleOffsetStrategy:
 
 
 class TestHeldParameters:
-    """A parameter with zero-width bounds is held at current_value by the deterministic strategies."""
+    """A parameter with zero-width bounds [b, b] is held at current_value + b by every strategy."""
 
     def _frame_with_yaw_held(self):
         frame = _frame([0.0, 0.0, 30.0], [-10.0, 10.0], None)
@@ -502,6 +502,15 @@ class TestHeldParameters:
         sets = np.array([[val for _, val in s] for s in load_param_sets(config)])
         assert sets.shape == (6, 3)
         np.testing.assert_allclose(sets[:, 2], _arcsec(30.0))
+
+    @pytest.mark.parametrize(
+        "strategy", [SearchStrategy.GRID_SEARCH, SearchStrategy.SINGLE_OFFSET, SearchStrategy.RANDOM]
+    )
+    def test_every_strategy_holds_an_axis_at_its_offset(self, geo, strategy):
+        frame = _frame([0.0, 0.0, 30.0], [-10.0, 10.0], 5.0)
+        frame[2] = frame[2].model_copy(update={"spec": frame[2].spec.model_copy(update={"bounds": [-4.0, -4.0]})})
+        sets = load_param_sets(_make_config(geo, frame, strategy=strategy, n_iterations=3, grid_points_per_param=2))
+        np.testing.assert_allclose([s[2][1] for s in sets], _arcsec(26.0))
 
     def test_single_offset_with_every_parameter_held_raises(self, geo):
         frame = [

@@ -176,15 +176,17 @@ class SearchStrategy(str, Enum):
     GRID_SEARCH
         Deterministic cartesian-product sweep.  For every parameter,
         ``grid_points_per_param`` evenly-spaced values are generated across
-        the full ``bounds`` offset range (one value, ``current_value``, for
-        zero-width bounds) and the cartesian product of all per-parameter
-        grids is enumerated.  ``n_iterations`` is ignored.
+        the full ``bounds`` offset range and the cartesian product of all
+        per-parameter grids is enumerated.  ``n_iterations`` is ignored.
     SINGLE_OFFSET
         Deterministic single-parameter sweep.  Each parameter with
         non-zero-width bounds is varied independently across ``n_iterations``
         evenly-spaced values (spanning its ``bounds`` offset range) while all
         other parameters are held at their nominal ``current_value``.  Total
         parameter sets produced: ``n_swept × n_iterations``.
+
+    In every strategy a parameter with zero-width ``bounds`` (``[b, b]``) is
+    held at ``current_value + b``.
     """
 
     RANDOM = "random"
@@ -205,14 +207,16 @@ class ParameterSpec(BaseModel):
         Baseline parameter value.  For CONSTANT_KERNEL, the nominal angle of
         the frame axis named by ``field``.
     bounds
-        ``[min, max]`` offset limits (same units as ``sigma``).
+        ``[min, max]`` offset limits (same units as ``sigma``).  Zero width
+        (``[b, b]``) holds the parameter at ``current_value + b`` in every
+        strategy.
     sigma
-        Standard deviation for normal-distribution sampling.  ``None`` means
-        the parameter is held fixed at ``current_value``.
+        Standard deviation for normal-distribution sampling.  ``None`` holds
+        the parameter at ``current_value`` in a ``RANDOM`` sweep.
     units
-        Units of ``current_value``, ``bounds`` and ``sigma``: ``None`` or
-        ``"arcseconds"`` for CONSTANT_KERNEL (``None`` = radians); ``None``,
-        ``"radians"`` or ``"arcseconds"`` for OFFSET_KERNEL; ``None``,
+        Units of ``current_value``, ``bounds`` and ``sigma``: ``None``,
+        ``"radians"`` or ``"arcseconds"`` for CONSTANT_KERNEL and OFFSET_KERNEL
+        (``None`` = radians); ``None``,
         ``"seconds"``, ``"milliseconds"`` or ``"microseconds"`` for OFFSET_TIME
         (``None`` = seconds).  :class:`ParameterConfig` raises on any other.
     distribution
@@ -251,7 +255,7 @@ _CONSTANT_KERNEL_AXES = {"angle_x": "roll", "angle_y": "pitch", "angle_z": "yaw"
 
 # Units each parameter type converts (see ``curryer.correction.parameters``); None is the internal unit.
 _PARAMETER_UNITS = {
-    ParameterType.CONSTANT_KERNEL: {None, "arcseconds"},
+    ParameterType.CONSTANT_KERNEL: {None, "radians", "arcseconds"},
     ParameterType.OFFSET_KERNEL: {None, "radians", "arcseconds"},
     ParameterType.OFFSET_TIME: {None, "seconds", "milliseconds", "microseconds"},
 }
@@ -694,8 +698,7 @@ class Sweep(BaseModel):
     parameters
         The parameters to vary (at least one).  Each CONSTANT_KERNEL kernel
         file needs one parameter for each of its three axes; hold an axis with
-        ``sigma=None`` and ``bounds=[0.0, 0.0]`` (grid and single-offset sweeps
-        then give it one value).
+        ``bounds=[0.0, 0.0]`` (or at an offset ``b`` with ``[b, b]``).
     search_strategy
         How parameter sets are generated (RANDOM / GRID_SEARCH / SINGLE_OFFSET).
     n_iterations

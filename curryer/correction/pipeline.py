@@ -46,6 +46,7 @@ from curryer.correction.config import (
     GeolocationSetup,
     NetCDFConfig,
     OutputConfig,
+    ParameterConfig,
     ParameterType,
     Sweep,
 )
@@ -171,43 +172,29 @@ def _load_file(file_path: str | Path, file_format: str = "csv") -> pd.DataFrame:
 
 
 def _load_calibration_data(setup: "GeolocationSetup") -> CalibrationData:
-    """Load LOS vectors and optical PSF when ``setup.calibration`` is configured.
+    """Load the LOS table and optical PSF named by ``setup.calibration``.
 
-    This function centralizes calibration data loading, which is now called once
-    per GCP pair in the optimized implementation (previously called once per parameter set).
+    :func:`loop` calls this once; the calibration is static.
 
     Parameters
     ----------
     setup : GeolocationSetup
-        Setup carrying optional :class:`~curryer.correction.config.CalibrationFiles`
-        with direct ``los_vectors_file`` / ``psf_file`` paths.
+        Setup carrying :class:`~curryer.correction.config.CalibrationFiles`
+        with ``los_vectors_file`` / ``psf_file`` paths.
 
     Returns
     -------
     CalibrationData
-        NamedTuple containing (los_vectors, optical_psfs), or (None, None) when
-        no calibration files are configured.
+        NamedTuple ``(los_vectors, optical_psfs)``; ``(None, None)`` when
+        ``setup.calibration`` names neither file, which
+        :func:`_require_image_matching_inputs` then rejects.
 
     Raises
     ------
     FileNotFoundError
         If a calibration file is configured but does not exist.
     ValueError
-        If a calibration file exists but fails to load properly.
-
-    Note
-    ----
-    Calibration files are optional and interim: real LOS/spacecraft geometry will
-    be SPICE-derived.  When ``setup.calibration`` is ``None`` (or both file fields
-    are ``None``), returns ``CalibrationData(None, None)`` so that missions without
-    calibration files still work.
-
-    Examples
-    --------
-    >>> calib_data = _load_calibration_data(setup)
-    >>> if calib_data.los_vectors is not None:
-    ...     # Use calibration data in image matching
-    ...     pass
+        If only one of the two files is configured, or a file fails to load.
     """
     calibration = setup.calibration
     if calibration is None or (calibration.los_vectors_file is None and calibration.psf_file is None):
@@ -280,34 +267,6 @@ def _require_image_matching_inputs(setup: "GeolocationSetup", calibration_data: 
             "No setup.observation_matching_func override is set, so the built-in matching is used, but no "
             "optical PSF is configured. Set setup.calibration.psf_file."
         )
-
-
-def _load_telemetry(tlm_key: str, setup: "GeolocationSetup") -> pd.DataFrame:
-    """Load the telemetry file the dynamic kernels are built from.
-
-    Parameters
-    ----------
-    tlm_key : str
-        Path to the telemetry file, read with ``setup.data_config.file_format``
-        (CSV when ``setup.data_config`` is ``None``).
-    setup : GeolocationSetup
-        Setup supplying the file format.
-
-    Returns
-    -------
-    pd.DataFrame
-
-    Raises
-    ------
-    FileNotFoundError
-        If the file does not exist.
-    ValueError
-        If the telemetry is empty.
-    """
-    file_format = setup.data_config.file_format if setup.data_config is not None else "csv"
-    tlm_dataset = _load_file(tlm_key, file_format)
-    validate_telemetry_output(tlm_dataset, setup)
-    return tlm_dataset
 
 
 class LoopObservation(NamedTuple):
@@ -610,26 +569,15 @@ def loop(
 
     # Try to load checkpoint if resuming
     output_file = work_dir / output.get_output_filename()
-    start_pair_idx = 0
-    # Currently, checkpoint is bugged, since the nadir equivalent stats are not calculated until the end.
-    # TODO [CURRYER-100]: Fix checkpoint resume for Monte Carlo GCS
     if resume_from_checkpoint:
-        checkpoint_data, completed_pairs = _load_checkpoint(output_file)
-        if checkpoint_data is not None and completed_pairs > 0:
+        _, completed_pairs = _load_checkpoint(output_file)
+        if completed_pairs > 0:
             # TODO [CURRYER-100]: the results of the completed pairs are not in the checkpoint.
             raise NotImplementedError(
                 f"{output_file} holds {completed_pairs} completed GCP pair(s), but resuming cannot restore their "
                 "image-matching results for the aggregate statistics (CURRYER-100); remove it to start again."
             )
-        if checkpoint_data is not None:
-            netcdf_data = checkpoint_data
-            start_pair_idx = completed_pairs
-            logger.info(f"Resuming from checkpoint: starting at GCP pair {start_pair_idx + 1}/{n_gcp_pairs}")
-        else:
-            netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_param_sets, n_gcp_pairs)
-            logger.info("No valid checkpoint found, starting from beginning")
-    else:
-        netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_param_sets, n_gcp_pairs)
+    netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_param_sets, n_gcp_pairs)
 
     # Initialize results dict with (param_idx, pair_idx) keys
     # This avoids nested search complexity when aggregating statistics
@@ -654,20 +602,17 @@ def loop(
 
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
-        param_values = _extract_parameter_values(params)
-        _store_parameter_values(netcdf_data, param_idx, param_values)
+        _store_parameter_values(netcdf_data, param_idx, params, netcdf_config)
+
+    telemetry_format = setup.data_config.file_format if setup.data_config is not None else "csv"
 
     # OUTER LOOP: Iterate through GCP pairs
     for pair_idx, (tlm_key, sci_key, gcp_key) in enumerate(tlm_sci_gcp_sets):
-        # Skip already-completed pairs if resuming
-        if pair_idx < start_pair_idx:
-            logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} === (SKIPPED - already completed)")
-            continue
-
         logger.info(f"=== GCP Pair {pair_idx + 1}/{n_gcp_pairs}: {sci_key} ===")
 
         # Load the pair's inputs once
-        tlm_dataset = _load_telemetry(tlm_key, setup)
+        tlm_dataset = _load_file(tlm_key, telemetry_format)
+        validate_telemetry_output(tlm_dataset, setup)
         observation = load_loop_observation(sci_key, calibration_data.los_vectors)
         gcp = load_image_grid(gcp_key, mat_key="GCP")
         logger.info(f"  GCP file: {gcp_key}, observation {observation.radiance.shape}")
@@ -772,7 +717,12 @@ def loop(
         if resume_from_checkpoint:
             _save_netcdf_checkpoint(netcdf_data, output_file, setup, sweep, netcdf_config, pair_idx)
 
-    usable_pairs, valid_sets = _usable_pairs_and_valid_sets(netcdf_data["accepted"])
+    try:
+        usable_pairs, valid_sets = _usable_pairs_and_valid_sets(netcdf_data["accepted"])
+    except ValueError:
+        _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
+        logger.error(f"Parameter-set selection failed; the per-pair results are in {output_file}.")
+        raise
     netcdf_data["valid"][:] = valid_sets
     logger.info(
         f"=== Comparing {int(valid_sets.sum())} of {n_param_sets} parameter sets on {len(usable_pairs)} of "
@@ -860,8 +810,17 @@ def _usable_pairs_and_valid_sets(accepted: np.ndarray) -> tuple[np.ndarray, np.n
     return np.flatnonzero(usable), valid_sets
 
 
+def _value_in_units(param_config: ParameterConfig, value: float) -> float:
+    """Return a sampled parameter value (radians or seconds) in the parameter's configured units."""
+    if param_config.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
+        return _rad_to_val(value, param_config.spec.units)
+    if param_config.ptype == ParameterType.OFFSET_TIME:
+        return _seconds_to_val(value, param_config.spec.units)
+    raise ValueError(f"Unsupported parameter type {param_config.ptype!r}.")
+
+
 def _extract_parameter_values(params):
-    """Extract parameter values from a parameter set into a dictionary."""
+    """Extract parameter values from a parameter set into a dictionary, in their configured units."""
     param_values = {}
 
     for param_config, param_data in params:
@@ -873,44 +832,32 @@ def _extract_parameter_values(params):
             param_name = (
                 param_config.spec.metadata.get("name") or param_config.spec.field or param_config.ptype.name.lower()
             )
-
         if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            # Back from radians to the configured units, one variable per axis
-            axis_name = _CONSTANT_KERNEL_AXES[param_config.spec.field]
-            param_values[f"{param_name}_{axis_name}"] = _rad_to_val(param_data, param_config.spec.units)
-
-        elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            # Back from radians to the configured units
-            param_values[param_name] = _rad_to_val(param_data, param_config.spec.units)
-
-        elif param_config.ptype == ParameterType.OFFSET_TIME:
-            # Back from seconds to the configured units
-            param_values[param_name] = _seconds_to_val(param_data, param_config.spec.units)
+            # One variable per axis
+            param_name = f"{param_name}_{_CONSTANT_KERNEL_AXES[param_config.spec.field]}"
+        param_values[param_name] = _value_in_units(param_config, param_data)
 
     return param_values
 
 
-def _store_parameter_values(netcdf_data, param_idx, param_values):
-    """Store parameter values in the NetCDF data structure.
+def _store_parameter_values(netcdf_data, param_idx, params, netcdf_config: NetCDFConfig):
+    """Store a parameter set's values, in their configured units, under their NetCDF variable names.
 
-    This function maps parameter names to NetCDF variable names for storage.
-    It handles the naming convention used by _build_netcdf_structure.
+    Raises
+    ------
+    KeyError
+        If a parameter's variable (``netcdf_config.get_parameter_netcdf_metadata``)
+        is not in *netcdf_data*.
     """
-
-    for param_name, value in param_values.items():
-        # Generate NetCDF variable name using same logic as _build_netcdf_structure
-        # Replace dots and dashes with underscores, ensure param_ prefix
-        netcdf_var = param_name.replace(".", "_").replace("-", "_")
-        if not netcdf_var.startswith("param_"):
-            netcdf_var = f"param_{netcdf_var}"
-
+    for param_config, param_data in params:
+        netcdf_var = netcdf_config.get_parameter_netcdf_metadata(param_config).variable_name
         if netcdf_var not in netcdf_data:
             raise KeyError(
                 f"Parameter variable '{netcdf_var}' not found in netcdf_data. Available keys: "
                 f"{[k for k in netcdf_data.keys() if k.startswith('param_')]}"
             )
-        netcdf_data[netcdf_var][param_idx] = value
-        logger.debug(f"  Stored {netcdf_var}[{param_idx}] = {value}")
+        netcdf_data[netcdf_var][param_idx] = _value_in_units(param_config, param_data)
+        logger.debug(f"  Stored {netcdf_var}[{param_idx}] = {netcdf_data[netcdf_var][param_idx]}")
 
 
 def _extract_error_metrics(stats_dataset):

@@ -495,19 +495,22 @@ first-grid value.
 
 ### Parameter types — `ptype`
 
-| Value             | Description                                                             |
-| ----------------- | ----------------------------------------------------------------------- |
-| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK  |
-| `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel |
-| `OFFSET_TIME`     | Timing offset applied to the observation's frame times                  |
+| Value             | Description                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK                     |
+| `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel                    |
+| `OFFSET_TIME`     | Seconds added to the observation's frame times: true frame time = recorded `ugps` + offset |
 
 ### Search strategies — `search_strategy`
 
-| Value           | Description                                                                                                                  |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `RANDOM`        | Monte Carlo: draws from a normal distribution at each iteration (default)                                                    |
-| `GRID_SEARCH`   | Cartesian product of evenly spaced grid points across all parameter bounds; a parameter with zero-width bounds has one point |
-| `SINGLE_OFFSET` | Each parameter with non-zero-width bounds swept independently while all others remain at nominal values                      |
+| Value           | Description                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------- |
+| `RANDOM`        | Monte Carlo: draws from a normal distribution at each iteration (default)                               |
+| `GRID_SEARCH`   | Cartesian product of evenly spaced grid points across all parameter bounds                              |
+| `SINGLE_OFFSET` | Each parameter with non-zero-width bounds swept independently while all others remain at nominal values |
+
+In every strategy a parameter with zero-width `bounds` `[b, b]` is held at
+`current_value + b`.
 
 ### Inputs — `inputs=`
 

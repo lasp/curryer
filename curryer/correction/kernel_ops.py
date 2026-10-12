@@ -40,7 +40,9 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
             for OFFSET_KERNEL, seconds for OFFSET_TIME
         input_data: The input to modify: the telemetry DataFrame for
             OFFSET_KERNEL, the observation's per-frame uGPS times (ndarray) for
-            OFFSET_TIME
+            OFFSET_TIME.  An OFFSET_TIME offset is added, so a positive offset
+            geolocates each frame later than its recorded time (true frame time
+            = recorded ``ugps`` + offset).
 
     Returns:
         Modified copy of input_data with parameter offsets applied

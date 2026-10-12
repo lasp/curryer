@@ -140,7 +140,6 @@ class TestParameterUnits:
         ("ptype", "units"),
         [
             (ParameterType.CONSTANT_KERNEL, "degrees"),
-            (ParameterType.CONSTANT_KERNEL, "radians"),
             (ParameterType.OFFSET_KERNEL, "degrees"),
             (ParameterType.OFFSET_TIME, "ms"),
         ],
@@ -153,6 +152,7 @@ class TestParameterUnits:
         ("ptype", "units"),
         [
             (ParameterType.CONSTANT_KERNEL, "arcseconds"),
+            (ParameterType.CONSTANT_KERNEL, "radians"),
             (ParameterType.OFFSET_KERNEL, "radians"),
             (ParameterType.OFFSET_TIME, "microseconds"),
             (ParameterType.OFFSET_TIME, None),

@@ -79,9 +79,17 @@ correlation_secondary` is below it. Neither gate applies to per-pair errors insi
   the configured units (radians when `units` is `None`). `Sweep.update_param` raises on a
   selector matching more than one parameter, and `NetCDFConfig.get_parameter_netcdf_metadata`
   no longer takes `angle_type`.
-- `GRID_SEARCH` and `SINGLE_OFFSET` hold a parameter with zero-width `bounds` at its
-  `current_value` (one grid point; not swept) instead of repeating it; `SINGLE_OFFSET` raises
-  when no parameter has non-zero-width bounds.
+- **A parameter with zero-width `bounds` `[b, b]` is held at `current_value + b`** in every
+  strategy (one grid point in `GRID_SEARCH`, not swept by `SINGLE_OFFSET`, not drawn by
+  `RANDOM`); `SINGLE_OFFSET` raises when no parameter has non-zero-width bounds. A held
+  `CONSTANT_KERNEL` axis no longer needs `sigma=None`.
+- `CONSTANT_KERNEL` accepts `units="radians"`, as `OFFSET_KERNEL` does; with `units=None` its
+  NetCDF `units` attribute is `radians` (it said `arcseconds`).
+- `KernelContext` and `ImageMatchingContext` are removed from `curryer.correction.config`.
+- The `results` dicts `loop()` returns carry the subimage's (frame, pixel) `geolocation`; a set
+  that is not compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- `CorrectionResult` gains `n_usable_pairs` and `n_valid_sets`, and its recommendation and
+  summary table state the pairs and sets the verdict rests on.
 
 ### New
 
@@ -120,6 +128,10 @@ correlation_secondary` is below it. Neither gate applies to per-pair errors insi
   directory for a file name and wrote every kernel to that one path.
 - `OFFSET_KERNEL` and `OFFSET_TIME` values are stored in the output in their configured units
   (they were stored in radians and seconds under arcsecond and millisecond labels).
+- A failed parameter-set selection (no usable pair, or no set passing the gates on every usable
+  pair) writes the per-pair results NetCDF before raising.
+- Parameter values are stored under `NetCDFConfig.get_parameter_netcdf_metadata(...).variable_name`,
+  so a custom `variable_name` in `parameter_metadata` works (it raised `KeyError`).
 - `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
   match-quality gates on; it counted the errors of rejected pairs too.
 
