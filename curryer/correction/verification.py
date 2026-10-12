@@ -129,7 +129,7 @@ class VerificationResult(BaseModel):
     Attributes
     ----------
     passed : bool
-        ``True`` when :attr:`percent_within_threshold` ≥
+        ``True`` when :attr:`percent_within_threshold` exceeds
         :attr:`requirements.performance_spec_percent`.
     per_gcp_errors : list[GCPError]
         One entry per measurement in the aggregated dataset.
@@ -269,7 +269,7 @@ def _check_threshold(
         return False, 0.0
     count_below = int(np.sum(nadir_errors < requirements.performance_threshold_m))
     percent_below = float(count_below / len(nadir_errors) * 100.0)
-    passed = percent_below >= requirements.performance_spec_percent
+    passed = percent_below > requirements.performance_spec_percent
     return passed, percent_below
 
 
@@ -435,7 +435,7 @@ def _format_summary_table(
         │    0 │    0.00123 │  -0.00045  │   145.2  │    ✓    │
         │    1 │    0.00567 │   0.00234  │   312.8  │    ✗    │
         ├──────┴────────────┴────────────┴──────────┴──────────┤
-        │ Result: PASSED — 60.0% within 250.0m (req: 39.0%)   │
+        │ Result: PASSED — 60.0% within 250.0m (req: > 39.0%) │
         └──────────────────────────────────────────────────────┘
 
     Parameters
@@ -467,7 +467,7 @@ def _format_summary_table(
     footer_text = (
         f" Result: {verdict} — {percent_within:.1f}% within "
         f"{requirements.performance_threshold_m}m "
-        f"(req: {requirements.performance_spec_percent}%)"
+        f"(req: > {requirements.performance_spec_percent}%)"
     )
 
     # inner_width must accommodate columns, title, AND footer

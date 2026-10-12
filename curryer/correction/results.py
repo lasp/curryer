@@ -356,7 +356,7 @@ def build_correction_result(
         if valid_errors:
             threshold_m = setup.requirements.performance_threshold_m
             pct_below = sum(1 for e in valid_errors if e < threshold_m) / len(valid_errors) * 100
-            met_threshold = pct_below >= setup.requirements.performance_spec_percent
+            met_threshold = pct_below > setup.requirements.performance_spec_percent
 
     # Human-readable recommendation
     if met_threshold:
