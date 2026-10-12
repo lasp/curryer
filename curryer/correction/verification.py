@@ -65,7 +65,7 @@ from curryer.correction.error_stats import (
     ErrorStatsProcessor,
     quality_weights,
     weighted_percent_below,
-    weighted_statistics,
+    without_statistics,
 )
 from curryer.correction.image_io import (
     geolocated_to_image_grid,
@@ -124,8 +124,9 @@ class GCPError(BaseModel):
         Off-nadir viewing angle of the measurement, degrees.
     along_track_error_m, cross_track_error_m : float or None
         Ground error along the ground-track direction and 90° clockwise from
-        it, meters, or ``None`` when the matching path did not record the
-        ground-track azimuth.
+        it, meters, geolocated minus true (positive along-track: the geolocated
+        position lies ahead of the GCP), or ``None`` when the matching path did
+        not record the ground-track azimuth.
     review : {"accept", "reject"} or None
         A reviewer's decision applied with :func:`apply_review`, which sets
         :attr:`status` accordingly; ``None`` when not reviewed.
@@ -190,9 +191,11 @@ class VerificationResult(BaseModel):
         The thresholds used for this verification run.
     summary_table : str
         Human-readable ASCII table suitable for logging or reports.
-    percent_within_threshold : float
+    percent_within_threshold : float or None
         Percentage of accepted measurements with nadir-equivalent error below
         :attr:`requirements.performance_threshold_m`; decides :attr:`passed`.
+        ``None`` when the match-quality gates rejected every measurement:
+        nothing was measured, and :attr:`passed` is ``False``.
     weighted_percent_within_threshold : float or None
         The same percentage with each accepted measurement weighted by its
         ``quality_weight``, reported alongside, never deciding :attr:`passed`;
@@ -226,7 +229,7 @@ class VerificationResult(BaseModel):
     aggregate_stats: xr.Dataset
     requirements: RequirementsConfig
     summary_table: str
-    percent_within_threshold: float
+    percent_within_threshold: float | None
     warnings: list[str]
     timestamp: datetime
 
@@ -322,12 +325,12 @@ def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset
 def _check_threshold(
     aggregate_stats: xr.Dataset,
     requirements: RequirementsConfig,
-) -> tuple[bool, float]:
+) -> tuple[bool, float | None]:
     """Evaluate whether performance meets the threshold requirement.
 
     Uses ``nadir_equiv_total_error_m`` of the accepted measurements in the
     :class:`~curryer.correction.error_stats.ErrorStatsProcessor` output; with
-    none accepted the check fails at 0 %.
+    none accepted nothing was measured, and the check fails with no percentage.
 
     Parameters
     ----------
@@ -338,12 +341,13 @@ def _check_threshold(
 
     Returns
     -------
-    tuple[bool, float]
-        ``(passed, percent_within_threshold)``
+    tuple[bool, float or None]
+        ``(passed, percent_within_threshold)``; ``(False, None)`` with no
+        accepted measurement.
     """
     nadir_errors = aggregate_stats["nadir_equiv_total_error_m"].values[aggregate_stats["accepted"].values]
     if len(nadir_errors) == 0:
-        return False, 0.0
+        return False, None
     count_below = int(np.sum(nadir_errors < requirements.performance_threshold_m))
     percent_below = float(count_below / len(nadir_errors) * 100.0)
     passed = percent_below >= requirements.performance_spec_percent
@@ -367,7 +371,7 @@ def _weighted_percent_within(aggregate_stats: xr.Dataset, requirements: Requirem
 
 def _generate_warnings(
     passed: bool,
-    percent_below: float,
+    percent_below: float | None,
     requirements: RequirementsConfig,
 ) -> list[str]:
     """Generate user-facing warning messages when verification fails.
@@ -376,8 +380,9 @@ def _generate_warnings(
     ----------
     passed : bool
         Overall pass/fail result.
-    percent_below : float
-        Percentage of measurements within the threshold.
+    percent_below : float or None
+        Percentage of measurements within the threshold; ``None`` when no
+        measurement was accepted.
     requirements : RequirementsConfig
         Performance limits used for the check.
 
@@ -386,6 +391,11 @@ def _generate_warnings(
     list[str]
         Empty list when *passed* is ``True``; otherwise one warning string.
     """
+    if percent_below is None:
+        return [
+            "VERIFICATION INCONCLUSIVE: the match-quality gates rejected every GCP match, so nothing was "
+            "measured. Review the rejected matches (e.g. cloud) or verify with other GCP scenes."
+        ]
     if not passed:
         return [
             f"⚠️  VERIFICATION FAILED: Only {percent_below:.1f}% of observations "
@@ -523,7 +533,7 @@ def _build_source_mapping(
 def _format_summary_table(
     per_gcp_errors: list[GCPError],
     requirements: RequirementsConfig,
-    percent_within: float,
+    percent_within: float | None,
     passed: bool,
     weighted_percent: float | None = None,
 ) -> str:
@@ -550,8 +560,9 @@ def _format_summary_table(
         Per-measurement detail.
     requirements : RequirementsConfig
         Thresholds used for evaluation.
-    percent_within : float
-        Percentage of measurements within the threshold.
+    percent_within : float or None
+        Percentage of measurements within the threshold; ``None`` when no
+        measurement was accepted.
     passed : bool
         Overall pass/fail result.
     weighted_percent : float or None, optional
@@ -573,11 +584,14 @@ def _format_summary_table(
 
     title = " Verification Summary"
     verdict = "PASSED" if passed else "FAILED"
-    footer_text = (
-        f" Result: {verdict} — {percent_within:.1f}% within "
-        f"{requirements.performance_threshold_m}m "
-        f"(req: {requirements.performance_spec_percent}%)"
-    )
+    if percent_within is None:
+        footer_text = f" Result: {verdict} — no accepted measurement"
+    else:
+        footer_text = (
+            f" Result: {verdict} — {percent_within:.1f}% within "
+            f"{requirements.performance_threshold_m}m "
+            f"(req: {requirements.performance_spec_percent}%)"
+        )
 
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
     counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected"
@@ -819,8 +833,9 @@ def image_matching(
         Error measurements: ``lat_error_deg``, ``lon_error_deg``, ``correlation``
         (final normalized cross-correlation coefficient, dimensionless, at most
         1), ``correlation_secondary``, ``track_azimuth_deg`` (ground-track
-        azimuth at the GCP centre, :func:`~curryer.correction.psf.ground_track_azimuth_deg`),
-        geometry, and metadata.
+        azimuth at the subimage centre, where the search measures the error;
+        :func:`~curryer.correction.psf.ground_track_azimuth_deg`), geometry,
+        and metadata.
 
     Raises
     ------
@@ -830,15 +845,15 @@ def image_matching(
         :func:`~curryer.correction.psf.validate_spacecraft_ecef_m`; if
         calibration files are missing; if the mid-frame time cannot be
         determined (no ``frame`` coordinate and no ``setup.geo.time_field``
-        telemetry column); if ``setup.geo.instrument_name`` is not set; or if
-        the LOS table does not have one row per geolocated column.  All of
-        these are checked before the image match runs.  The match itself
+        telemetry column); if ``setup.geo.instrument_name`` is not set; if
+        the LOS table does not have one row per geolocated column; or if the
+        ground-track azimuth at the grid centre is undefined (fewer than two
+        rows, or non-finite pixels there).  All of these are checked before the
+        image match runs.  The match itself
         raises if a search shift samples the geolocated grid outside the GCP
         chip (:func:`~curryer.correction.search.im_search`): the whole
         geolocated dataset is matched, so it must lie at least
-        ``setup.search.max_shift_km()`` inside the chip on every side.  After
-        the match, if the GCP centre lies outside the geolocated grid (no
-        ground-track azimuth).
+        ``setup.search.max_shift_km()`` inside the chip on every side.
     spiceypy.utils.exceptions.SpiceyError
         If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
         not furnished or no coverage at the mid-frame time).
@@ -926,6 +941,11 @@ def image_matching(
     boresight, t_matrix = _get_spice_boresight_and_rotation(instrument_name, et_midframe)
     logger.info("  Boresight from SPICE IK (HS frame): %s", boresight)
 
+    mid_i, mid_j = subimage.mid_indices
+    track_azimuth = ground_track_azimuth_deg(
+        subimage, float(subimage.lat[mid_i, mid_j]), float(subimage.lon[mid_i, mid_j])
+    )
+
     # Run image matching
     result = integrated_image_match(
         subimage=subimage,
@@ -968,10 +988,7 @@ def image_matching(
             "gcp_alt": (["measurement"], [0.0]),
             "correlation": (["measurement"], [result.ccv_final]),
             "correlation_secondary": (["measurement"], [result.ccv_secondary]),
-            "track_azimuth_deg": (
-                ["measurement"],
-                [ground_track_azimuth_deg(subimage, gcp_center_lat, gcp_center_lon)],
-            ),
+            "track_azimuth_deg": (["measurement"], [track_azimuth]),
         },
         coords={"measurement": [0], "xyz": ["x", "y", "z"], "xyz_from": ["x", "y", "z"], "xyz_to": ["x", "y", "z"]},
     )
@@ -1663,9 +1680,9 @@ def verify(
             logger.warning(w)
 
     logger.info(
-        "Verification %s — %.1f%% within %.1fm threshold (requirement: %.1f%%)",
+        "Verification %s — %s within %.1fm threshold (requirement: %.1f%%)",
         "PASSED" if passed else "FAILED",
-        percent_within,
+        "no accepted measurement" if percent_within is None else f"{percent_within:.1f}%",
         requirements.performance_threshold_m,
         requirements.performance_spec_percent,
     )
@@ -1741,11 +1758,10 @@ def compare_results(before: VerificationResult, after: VerificationResult) -> st
         lines.append(f"{key:<30} {b_str:>12} {a_str:>12}")
 
     lines.append("-" * 55)
-    lines.append(
-        f"{'percent_within_threshold':<30} "
-        f"{before.percent_within_threshold:>11.1f}% "
-        f"{after.percent_within_threshold:>11.1f}%"
+    b_pct, a_pct = (
+        "N/A" if r.percent_within_threshold is None else f"{r.percent_within_threshold:.1f}%" for r in (before, after)
     )
+    lines.append(f"{'percent_within_threshold':<30} {b_pct:>12} {a_pct:>12}")
     lines.append("-" * 55)
     b_verdict = "PASS" if before.passed else "FAIL"
     a_verdict = "PASS" if after.passed else "FAIL"
@@ -1792,8 +1808,11 @@ def save_verification(result: VerificationResult, out_dir: Path) -> None:
       ``correlation``, ``correlation_secondary``, ``off_nadir_angle_deg``,
       ``quality_weight``; empty cells for ``None``).  A reviewer fills ``review`` with ``accept``
       or ``reject``; see :func:`read_review_decisions`.
-    - ``chips/gcp_<index>.nc``: one file per entry of
+    - ``chips/gcp_<index>.nc``: one zlib-compressed file per entry of
       :attr:`VerificationResult.chip_images`, when present.
+
+    ``result.json`` is written last, so a directory without it holds an
+    incomplete save; saving there replaces its files.
 
     Parameters
     ----------
@@ -1812,14 +1831,20 @@ def save_verification(result: VerificationResult, out_dir: Path) -> None:
         raise FileExistsError(f"{out_dir} already holds a saved verification result.")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / "result.json").write_text(result.model_dump_json(indent=2, exclude={"aggregate_stats"}))
     result.aggregate_stats.to_netcdf(out_dir / "aggregate_stats.nc")
     rows = [err.model_dump(include=set(_SUMMARY_COLUMNS)) for err in result.per_gcp_errors]
     pd.DataFrame(rows, columns=list(_SUMMARY_COLUMNS)).to_csv(out_dir / "summary.csv", index=False)
+    chip_dir = out_dir / "chips"
+    for stale in chip_dir.glob("gcp_*.nc"):
+        stale.unlink()
     if result.chip_images is not None:
-        (out_dir / "chips").mkdir()
+        chip_dir.mkdir(exist_ok=True)
         for chip in result.chip_images:
-            chip.to_netcdf(out_dir / "chips" / f"gcp_{chip.attrs['gcp_index']:04d}.nc")
+            chip.to_netcdf(
+                chip_dir / f"gcp_{chip.attrs['gcp_index']:04d}.nc",
+                encoding={name: {"zlib": True, "complevel": 4} for name in chip.data_vars},
+            )
+    (out_dir / "result.json").write_text(result.model_dump_json(indent=2, exclude={"aggregate_stats"}))
 
 
 def load_verification(out_dir: Path) -> VerificationResult:
@@ -1869,13 +1894,16 @@ def read_review_decisions(summary_csv: Path) -> dict[int, Literal["accept", "rej
     Raises
     ------
     ValueError
-        If the CSV lacks either column, or a ``review`` cell holds anything
-        but ``accept``, ``reject`` or nothing.
+        If the CSV lacks either column, a ``gcp_index`` appears twice, or a
+        ``review`` cell holds anything but ``accept``, ``reject`` or nothing.
     """
     table = pd.read_csv(summary_csv, dtype={"review": str}, keep_default_na=False)
     missing = {"gcp_index", "review"} - set(table.columns)
     if missing:
         raise ValueError(f"{summary_csv} has no {sorted(missing)} column(s).")
+    duplicated = sorted(set(table["gcp_index"][table["gcp_index"].duplicated()]))
+    if duplicated:
+        raise ValueError(f"{summary_csv}: gcp_index {duplicated} appear more than once.")
     decisions: dict[int, Literal["accept", "reject"]] = {}
     for index, decision in zip(table["gcp_index"], table["review"].str.strip(), strict=True):
         if decision == "":
@@ -1948,8 +1976,7 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
         stats["quality_weight"] = quality_weights(stats[corr_name].values, accepted)
 
     processor = ErrorStatsProcessor(config=ErrorStatsConfig())
-    for key in [*processor._calculate_statistics(np.zeros(1)), *weighted_statistics(np.zeros(1), np.ones(1))]:
-        stats.attrs.pop(key, None)
+    stats = without_statistics(stats)
     stats.attrs.update(n_accepted=int(accepted.sum()), n_rejected=int((~accepted).sum()))
     stats = _with_statistics(processor, stats)
 

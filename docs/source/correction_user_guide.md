@@ -568,12 +568,17 @@ Rejected GCPs keep their computed errors so they can be reviewed, but only accep
 enter `percent_within_threshold` and the statistics in `aggregate_stats.attrs`
 (`total_measurements` counts accepted GCPs; `n_matched`, `n_accepted` and `n_rejected`
 give the split). When every GCP is rejected, `verify()` still returns the result, with
-`passed` False and no statistics.
+`passed` False, `percent_within_threshold` `None` (nothing was measured) and no
+statistics.
 
 `along_track_error_m` / `cross_track_error_m` resolve the error along the ground-track
-direction (the direction of increasing observation row, i.e. frame time, at the GCP) and
-90° clockwise from it. A timing error shows up along track; a roll error across track.
-They are `None` when the matching path did not record `track_azimuth_deg`.
+direction (the direction of increasing observation row, i.e. frame time, at the GCP in
+the file-pair modes and at the geolocated grid's centre in the `geolocated_data` mode) and
+90° clockwise from it. Like the latitude and longitude errors they are geolocated minus
+true: a positive along-track error means the geolocated position lies ahead of the GCP
+along the track, a positive cross-track error that it lies to the right. A timing error
+shows up along track; a roll error across track. They are `None` when the matching path
+did not record `track_azimuth_deg`.
 
 ### Quality weighting
 

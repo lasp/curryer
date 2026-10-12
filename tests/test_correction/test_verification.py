@@ -39,6 +39,7 @@ from curryer.correction.verification import (
     _check_threshold,
     _format_summary_table,
     _generate_warnings,
+    compare_results,
     verify,
 )
 
@@ -305,9 +306,9 @@ class TestCheckThreshold:
         assert pct == pytest.approx(100.0)
         assert passed
 
-    def test_all_rejected_fails_at_zero(self):
+    def test_all_rejected_fails_with_nothing_measured(self):
         stats = _make_aggregate_stats_dataset([100.0, 200.0], rejected=(0, 1))
-        assert _check_threshold(stats, self._req()) == (False, 0.0)
+        assert _check_threshold(stats, self._req()) == (False, None)
 
     def test_zero_percent_within_threshold_fails(self):
         """All errors above threshold → 0 % pass → FAILED."""
@@ -340,12 +341,9 @@ class TestCheckThreshold:
         assert passed is True
         assert pct == pytest.approx(100.0)
 
-    def test_empty_dataset_fails(self):
-        """Empty measurement array → 0 % → FAILED."""
+    def test_empty_dataset_fails_with_nothing_measured(self):
         stats = _make_aggregate_stats_dataset([])
-        passed, pct = _check_threshold(stats, self._req())
-        assert passed is False
-        assert pct == pytest.approx(0.0)
+        assert _check_threshold(stats, self._req()) == (False, None)
 
     def test_exactly_at_threshold_does_not_pass(self):
         """Value at threshold fails per-measurement check, but overall spec=0 % passes."""
@@ -997,6 +995,7 @@ class TestViewingGeometryFailures:
         spice_side_effect=None,
         r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6),
         los_rows: int = 3,
+        gcp_grid=None,
     ):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -1015,11 +1014,14 @@ class TestViewingGeometryFailures:
         )
         with (
             patch("curryer.correction.verification.geolocated_to_image_grid", return_value=grid),
-            patch("curryer.correction.verification.load_image_grid", return_value=grid),
+            patch(
+                "curryer.correction.verification.load_image_grid", return_value=grid if gcp_grid is None else gcp_grid
+            ),
             patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
             patch(
                 "curryer.correction.verification._get_spice_boresight_and_rotation",
                 side_effect=spice_side_effect,
+                return_value=(np.array([0.0, 0.0, 1.0]), np.eye(3)),
             ),
         ):
             try:
@@ -1046,6 +1048,16 @@ class TestViewingGeometryFailures:
         with pytest.raises(SpiceyError, match="no attitude coverage"):
             self._call_image_matching(tmp_path, with_frame=True, spice_side_effect=SpiceyError("no attitude coverage"))
         assert self.image_match_calls == 0
+
+    def test_image_matching_takes_the_track_azimuth_at_the_subimage_centre(self, tmp_path):
+        from curryer.correction.grid_types import ImageGrid
+
+        grid, _ = self._image_matching_inputs(with_frame=True)
+        # A chip centred 50 km east of the geolocated grid: off the grid, which needs no azimuth there.
+        far_chip = ImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon + 0.5)
+        ds = self._call_image_matching(tmp_path, with_frame=True, gcp_grid=far_chip)
+        assert self.image_match_calls == 1
+        assert float(ds["track_azimuth_deg"].values[0]) == pytest.approx(180.0, abs=0.01)  # rows advance south
 
     def test_image_matching_needs_one_los_row_per_column(self, tmp_path):
         with pytest.raises(ValueError, match="3 columns but the LOS table has 1 rows"):
@@ -1229,10 +1241,16 @@ class TestMatchingConfigAndCorrelation:
         result = verify(setup, image_matching_results=results, work_dir=tmp_path)
 
         assert result.passed is False
-        assert result.percent_within_threshold == 0.0
+        assert result.percent_within_threshold is None
         assert [e.status for e in result.per_gcp_errors] == ["rejected", "rejected"]
         assert "total_measurements" not in result.aggregate_stats.attrs
         assert "0 accepted, 2 rejected" in result.summary_table
+        assert "no accepted measurement" in result.summary_table
+        assert result.warnings == [
+            "VERIFICATION INCONCLUSIVE: the match-quality gates rejected every GCP match, so nothing was "
+            "measured. Review the rejected matches (e.g. cloud) or verify with other GCP scenes."
+        ]
+        assert "N/A" in compare_results(result, result)
 
     def test_setup_configs_round_trip_through_json(self):
         import json
@@ -1409,6 +1427,53 @@ class TestChipImagesSaveAndReview:
         assert [int(c.attrs["gcp_index"]) for c in loaded.chip_images] == [0, 1, 2]
         np.testing.assert_array_equal(loaded.chip_images[2]["observed"], 2.0)
 
+    def test_saved_review_cycle(self, tmp_path):
+        import pandas as pd
+
+        from curryer.correction import apply_review, load_verification, read_review_decisions, save_verification
+
+        result = self._result(tmp_path)
+        save_verification(result, tmp_path / "saved")
+        summary = pd.read_csv(tmp_path / "saved" / "summary.csv", keep_default_na=False)
+        summary["review"] = ["", "accept", "reject"]
+        summary.to_csv(tmp_path / "saved" / "summary.csv", index=False)
+
+        loaded = load_verification(tmp_path / "saved")
+        reviewed = apply_review(loaded, read_review_decisions(tmp_path / "saved" / "summary.csv"))
+        save_verification(reviewed, tmp_path / "reviewed")
+        reloaded = load_verification(tmp_path / "reviewed")
+
+        assert reloaded.per_gcp_errors == apply_review(result, {1: "accept", 2: "reject"}).per_gcp_errors
+        assert [e.review for e in reloaded.per_gcp_errors] == [None, "accept", "reject"]
+        assert reloaded.aggregate_stats.attrs["total_measurements"] == 2
+        assert reloaded.percent_within_threshold == reviewed.percent_within_threshold
+
+    def test_load_without_saved_files_raises(self, tmp_path):
+        from curryer.correction import load_verification
+
+        with pytest.raises(FileNotFoundError):
+            load_verification(tmp_path)
+
+    def test_save_replaces_an_incomplete_save(self, tmp_path):
+        from curryer.correction import load_verification, save_verification
+
+        (tmp_path / "saved" / "chips").mkdir(parents=True)
+        (tmp_path / "saved" / "chips" / "gcp_0007.nc").write_text("left from an interrupted save")
+        save_verification(self._result(tmp_path).model_copy(update={"chip_images": self._chips(2)}), tmp_path / "saved")
+        assert sorted(p.name for p in (tmp_path / "saved" / "chips").iterdir()) == ["gcp_0000.nc", "gcp_0001.nc"]
+        assert len(load_verification(tmp_path / "saved").chip_images) == 2
+
+    def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
+        import pandas as pd
+
+        from curryer.correction import read_review_decisions
+
+        pd.DataFrame({"gcp_index": [0, 1, 0], "review": ["accept", "", "reject"]}).to_csv(
+            tmp_path / "summary.csv", index=False
+        )
+        with pytest.raises(ValueError, match=r"gcp_index \[0\] appear more than once"):
+            read_review_decisions(tmp_path / "summary.csv")
+
     def test_save_refuses_to_overwrite(self, tmp_path):
         from curryer.correction import save_verification
 
@@ -1495,7 +1560,7 @@ class TestChipImagesSaveAndReview:
 
         reviewed = apply_review(self._result(tmp_path), {0: "reject", 2: "reject"})
         assert reviewed.passed is False
-        assert reviewed.percent_within_threshold == 0.0
+        assert reviewed.percent_within_threshold is None
         assert "total_measurements" not in reviewed.aggregate_stats.attrs
         assert "0 accepted, 3 rejected" in reviewed.summary_table
         assert reviewed.weighted_percent_within_threshold is None

@@ -1663,3 +1663,42 @@ class TestQualityWeights:
         npt.assert_array_equal(out.quality_weight.values, [0.0, 0.0])
         assert "weighted_mean_error_m" not in out.attrs
         assert out.attrs["total_measurements"] == 2
+
+    @pytest.mark.parametrize(
+        ("weights", "match"),
+        [([1.0], "same shape"), ([1.0, -1.0], "non-negative"), ([1.0, np.nan], "finite"), ([0.0, 0.0], "sum to 0")],
+    )
+    def test_weighted_percent_below_bad_weights_raise(self, weights, match):
+        from curryer.correction.error_stats import weighted_percent_below
+
+        with pytest.raises(ValueError, match=match):
+            weighted_percent_below(np.array([100.0, 200.0]), np.array(weights), 250.0)
+
+    def test_accepted_measurement_with_non_finite_correlation_raises(self):
+        data = _sample_from_validated_test_cases(2, seed=1)
+        data["correlation"] = (["measurement"], [0.9, -np.inf])
+        with pytest.raises(ValueError, match="Correlation must be finite"):
+            ErrorStatsProcessor(config=_create_test_config()).compute_nadir_equivalent_errors(data)
+
+    def test_statistic_attrs_name_every_statistic(self):
+        from curryer.correction.error_stats import STATISTIC_ATTRS, weighted_statistics
+
+        processor = ErrorStatsProcessor(config=_create_test_config())
+        computed = {
+            *processor._calculate_statistics(np.array([1.0, 2.0])),
+            *weighted_statistics(np.ones(2), np.ones(2)),
+        }
+        assert set(STATISTIC_ATTRS) == computed
+
+    def test_add_statistics_removes_stale_weighted_statistics(self):
+        data = _sample_from_validated_test_cases(2, seed=1)
+        data["correlation"] = (["measurement"], [0.9, 0.95])
+        processor = ErrorStatsProcessor(config=_create_test_config())
+        weighted = processor.process_geolocation_errors(data)
+        assert "weighted_mean_error_m" in weighted.attrs
+
+        weighted["quality_weight"] = (["measurement"], [0.0, 0.0])
+        restated = processor.add_statistics(weighted)
+        assert "weighted_mean_error_m" not in restated.attrs
+        assert "effective_measurements" not in restated.attrs
+        assert restated.attrs["total_measurements"] == 2
