@@ -202,3 +202,35 @@ def test_ground_track_azimuth_non_finite_neighbour_raises():
 def test_ground_track_azimuth_non_finite_target_raises(target, match):
     with pytest.raises(ValueError, match=match):
         ground_track_azimuth_deg(_track_grid(191.0), *target)
+
+
+@pytest.mark.parametrize("kernel_shape", [(5, 8), (4, 7), (1, 1)])
+def test_crop_to_full_psf_overlap_keeps_the_valid_convolution(kernel_shape):
+    from scipy.signal import fftconvolve
+
+    from curryer.correction.grid_types import PSFGrid
+    from curryer.correction.psf import convolve_gcp_with_psf, crop_to_full_psf_overlap
+
+    rng = np.random.default_rng(0)
+    lon, lat = np.meshgrid(np.arange(50) * 1e-3, 30.0 - np.arange(40) * 1e-3)
+    chip = ImageGrid(data=rng.normal(size=(40, 50)), lat=lat, lon=lon)
+    psf = PSFGrid(data=rng.random(kernel_shape), lat=np.arange(kernel_shape[0]), lon=np.arange(kernel_shape[1]))
+
+    cropped = crop_to_full_psf_overlap(convolve_gcp_with_psf(chip, psf), psf)
+
+    valid = fftconvolve(chip.data, np.flipud(psf.data), mode="valid")
+    np.testing.assert_allclose(cropped.data, valid, atol=1e-10)
+    rows, cols = kernel_shape[0] // 2, kernel_shape[1] // 2
+    np.testing.assert_array_equal(cropped.lat, lat[rows : rows + valid.shape[0], cols : cols + valid.shape[1]])
+    np.testing.assert_array_equal(cropped.lon, lon[rows : rows + valid.shape[0], cols : cols + valid.shape[1]])
+
+
+def test_crop_with_psf_not_smaller_than_chip_raises():
+    from curryer.correction.grid_types import PSFGrid
+    from curryer.correction.psf import crop_to_full_psf_overlap
+
+    lon, lat = np.meshgrid(np.arange(6) * 1e-3, np.arange(4) * 1e-3)
+    chip = ImageGrid(data=np.ones((4, 6)), lat=lat, lon=lon)
+    psf = PSFGrid(data=np.ones((4, 3)), lat=np.arange(4), lon=np.arange(3))
+    with pytest.raises(ValueError, match="not smaller than the GCP chip"):
+        crop_to_full_psf_overlap(chip, psf)

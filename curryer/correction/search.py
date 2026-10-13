@@ -86,7 +86,8 @@ def im_search(
     Raises
     ------
     ValueError
-        If the subimage data are not all finite; if a search shift samples the
+        If the subimage data are not all finite, or are uniform (the correlation
+        is undefined for every shift); if a search shift samples the
         subimage outside the GCP chip's lat/lon extent (crop the subimage further
         inside the chip or reduce ``grid_span_km`` / ``reduction_factor``); or if
         no shift in a search grid has a finite correlation.
@@ -96,6 +97,11 @@ def im_search(
         raise ValueError(
             f"Subimage has {int(np.sum(~np.isfinite(subimage.data)))} non-finite value(s); the correlation is "
             "undefined. Crop or mask them before matching."
+        )
+    if np.ptp(subimage.data) == 0:
+        raise ValueError(
+            "Subimage data are uniform; the correlation is undefined for every shift. Uniform scenes (saturated "
+            "cloud, constant fill) cannot be matched."
         )
     nframes, nrows = subimage.data.shape
     midframe = nframes // 2
@@ -173,6 +179,12 @@ def im_search(
         logger.debug("Best point in grid = %s", best_grid)
         logger.debug("CCVmax= %s", ccv_max)
         logger.debug("Set dgrid to [m]= %s", lat_spacing * np.pi / 180 * (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1000.0))
+
+    if first_pass:
+        raise ValueError(
+            f"The search ran no iteration: spacing_limit_m ({config.spacing_limit_m} m) is not below the first grid "
+            "step."
+        )
 
     lat_error_km = (
         (subimage.lat[midframe, midrow] - new_image_lat[midframe, midrow])

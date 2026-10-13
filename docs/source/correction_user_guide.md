@@ -385,20 +385,25 @@ The parameter-variation experiment, varied between runs. Use
 Set these for the instrument's ground sampling; the defaults are tuned for 30 m
 Landsat chips. Invalid values raise when the setup is built.
 
-| Field                                  | Default    | Notes                                                                                                      |
-| -------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
-| `search.grid_size`                     | `44`       | Grid points per axis (integer >= 2)                                                                        |
-| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                           |
-| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                  |
-| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`           |
-| `search.peak_exclusion_km`             | `2.0`      | `correlation_secondary` is the strongest first-grid correlation farther than this from the first-grid peak |
-| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                    |
-| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                   |
+| Field                                  | Default    | Notes                                                                                                                                |
+| -------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `search.grid_size`                     | `44`       | Grid points per axis (integer >= 2)                                                                                                  |
+| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                                                     |
+| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                                            |
+| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`                                     |
+| `search.peak_exclusion_km`             | `2.0`      | `correlation_secondary` is the strongest first-grid correlation farther than this from the first-grid peak; below `grid_span_km / 2` |
+| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                                              |
+| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                                             |
 
-`search.max_shift_km()` bounds how far the search can move a subimage. An
-observation must lie at least that far inside its GCP chip on every side: a
-shift that samples outside the chip raises instead of correlating against zero
-fill. The peak margin that `setup.geo.minimum_peak_margin` tests is
+The search samples only the part of the PSF-convolved chip where the PSF lies
+wholly inside the chip, so half a PSF kernel at each edge is not searchable. A
+shift that samples outside that part raises instead of correlating against zero
+fill. Every search reaches the first grid's half-width, `grid_size // 2` steps
+of `grid_span_km / (grid_size - 1)` (5.6 km with the defaults), beyond the
+subimage, so an observation needs that margin plus its expected error.
+`search.max_shift_km()` is the worst case, the best point on the grid's edge in
+every iteration (28.1 km with the defaults); that margin always suffices but is
+rarely needed. The peak margin that `setup.geo.minimum_peak_margin` tests is
 `correlation - correlation_secondary`, the refined final peak minus a
 first-grid value.
 
@@ -750,8 +755,9 @@ column.
 
 **`ValueError: Search shift ... samples the subimage outside the GCP chip`**
 The observation is too large for the chip at the configured search reach. Crop
-it at least `setup.search.max_shift_km()` inside the chip on every side, or
-reduce `search.grid_span_km` / `search.reduction_factor`. The
+it further inside the chip (the first grid's half-width plus the expected error,
+or `setup.search.max_shift_km()` to be sure), or reduce `search.grid_span_km` /
+`search.reduction_factor`. The
 `verify(geolocated_data=...)` mode matches the whole geolocated dataset, so it
 must already be cropped.
 

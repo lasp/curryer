@@ -23,17 +23,21 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
 - **`im_search` returns seven values** -- `(lat_err_km, lon_err_km, ccv_max, ccv_secondary, row,
 col, step_m)`, and `IntegratedImageMatchResult` gains `ccv_secondary` before its index fields.
   `im_search` raises when a shifted subimage samples outside the GCP chip (it correlated against
-  zero fill), when the subimage has non-finite values, and when no shift in a grid has a finite
-  correlation.
+  zero fill), when the subimage has non-finite or uniform values, and when no shift in a grid has
+  a finite correlation. `integrated_image_match` searches only the part of the convolved chip
+  where the PSF lies wholly inside it (`psf.crop_to_full_psf_overlap`), so a subimage within half
+  a PSF kernel of the chip edge raises instead of matching the convolution's zero padding.
 - **Correlation gates apply** -- `minimum_correlation` filters on the `correlation` variable
   (also read as `ccv` / `im_ccv`); `_filter_by_correlation` and `process_from_netcdf` raise when a
   threshold is set and no correlation variable exists (they warned and skipped). New
   `GeolocationConfig.minimum_peak_margin` drops matches whose `correlation -
-correlation_secondary` is below it. Neither gate applies to per-pair errors inside the
-  correction loop.
+correlation_secondary` is below it, and raises where `correlation_secondary` is non-finite.
+  `minimum_correlation` must be in [0, 1] and `minimum_peak_margin` positive. Neither gate
+  applies to per-pair errors inside the correction loop.
 - **Matching configuration on the setup** -- `GeolocationSetup.psf_sampling` and `.search`
   (defaults equal the previous hardcoded Landsat values); `SearchConfig` and `PSFSamplingConfig`
-  reject invalid values. `PSFSamplingConfig.gcp_step_m` and `motion_convolution_step_m`, never
+  are frozen and reject invalid values, including a `peak_exclusion_km` not below
+  `grid_span_km / 2`. `PSFSamplingConfig.gcp_step_m` and `motion_convolution_step_m`, never
   read, are removed, which changes its positional field order.
 - **The requirement is strict** -- a run passes when the percentage of accepted measurements
   within `performance_threshold_m` exceeds `performance_spec_percent`, as the CLARREO
@@ -53,8 +57,8 @@ correlation_secondary` is below it. Neither gate applies to per-pair errors insi
 
 ### New
 
-- `SearchConfig.peak_exclusion_km` and `SearchConfig.max_shift_km()` (the search's reach, for
-  cropping observations inside their chips).
+- `SearchConfig.peak_exclusion_km` and `SearchConfig.max_shift_km()` (the search's worst-case
+  reach, a crop margin that always suffices).
 - `image_io.observation_los_vectors`: a column-cropped NetCDF observation carries
   `detector_pixel`, its LOS-table row per column; without it the LOS table must have one row per
   column. `image_matching()` checks the same for the geolocated grid.
