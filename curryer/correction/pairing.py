@@ -1,8 +1,10 @@
 """Utilities for pairing L1A images with nearby GCP chips.
 
 Each L1A footprint is the polygon traced around its geolocated pixels
-(:func:`curryer.compute.footprint.footprint_polygon`), half a pixel outside the
-edge pixel centres, so it follows curved swaths. A GCP chip pairs with an L1A
+(:func:`curryer.compute.footprint.footprint_polygon`), so it follows curved
+swaths. Its edge lies half a pixel plus the footprint tolerance outside the edge
+pixel centres (one pixel at the default tolerance), moved by up to the tolerance
+either way by simplification. A GCP chip pairs with an L1A
 image by the signed great-circle distance from the chip's center pixel to that
 polygon's edge (:func:`curryer.compute.footprint.footprint_margin_m`). The core
 entry point is :func:`find_l1a_gcp_pairs`, which returns a many-to-many mapping
@@ -143,7 +145,10 @@ class L1AMetadata(ImageMetadata):
     Extends :class:`ImageMetadata` with the traced footprint polygon that
     pairing tests GCP centers against: (longitude, latitude) degrees, shape
     (N + 1, 2), closed, as returned by
-    :func:`curryer.compute.footprint.footprint_polygon`.
+    :func:`curryer.compute.footprint.footprint_polygon`. ``footprint`` is the
+    image's extent; ``corners``, ``center`` and ``bbox`` are raw pixel values,
+    NaN where those pixels are fill, and ``bbox`` does not account for the
+    antimeridian.
     """
 
     footprint: np.ndarray
@@ -296,35 +301,42 @@ def find_l1a_gcp_pairs(
     max_distance_m: float,
     footprint_tolerance_km: float | None = None,
 ) -> PairingResult:
-    """Find all L1A/GCP pairs within a distance threshold.
+    """Find all L1A/GCP pairs whose signed footprint margin meets a threshold.
 
     Parameters
     ----------
     l1a_images
         Iterable of :class:`NamedImageGrid` instances representing L1A imagery.
         Latitude and longitude are 2-D (rows, columns) in degrees, NaN for fill.
-        Each footprint is the polygon traced around the pixels, half a pixel
-        outside the edge pixel centres. Where the edge cannot be traced (folded
-        or single-row grids, for example), it is the buffered convex hull of
-        the pixels, logged as a warning naming the image; the hull reaches past
-        a concave swath, so it can pair chips just outside the pixels.
+        Each footprint is the polygon traced around the pixels, its edge half a
+        pixel plus ``footprint_tolerance_km`` outside the edge pixel centres
+        (one pixel at the default), moved by up to ``footprint_tolerance_km``
+        either way by simplification. Where the edge cannot be traced (folded
+        or overlapping grids), it is the buffered convex hull of the pixels,
+        logged as a warning naming the image; the hull reaches past a concave
+        swath, so it can pair chips just outside the pixels.
     gcp_images
         Iterable of :class:`NamedImageGrid` instances representing GCP chips.
         The center pixel's latitude and longitude are the chip's position.
     max_distance_m
-        Minimum margin (meters) required between the GCP center and the
-        nearest edge of the L1A footprint polygon.  Only pairs with
-        ``margin >= max_distance_m`` are returned.
+        Minimum signed margin (meters, finite) of the GCP center from the
+        L1A footprint edge, positive inside.  Only pairs with
+        ``margin >= max_distance_m`` are returned: ``0`` pairs centers inside
+        or on the edge, a positive value requires them at least that far
+        inside, a negative value allows them up to ``abs(max_distance_m)``
+        outside.
     footprint_tolerance_km
-        Simplification tolerance of each L1A footprint polygon, km; ``None``
-        uses half the image's smaller median pixel spacing
+        Tolerance of each L1A footprint polygon, km: the edge's offset beyond
+        the half-pixel line and how far simplification may move it, so a
+        larger value also widens the footprint. ``None`` uses half the image's
+        smaller median pixel spacing
         (:func:`curryer.compute.footprint.footprint_polygon`).
 
     Returns
     -------
     PairingResult
-        Metadata for the supplied images together with any pairs that fall
-        within ``max_distance_m``.
+        Metadata for the supplied images together with the pairs whose signed
+        margin is at least ``max_distance_m``.
 
     Raises
     ------
@@ -333,14 +345,22 @@ def find_l1a_gcp_pairs(
         is not 2-D floating, holds infinite or out-of-range values (a fill value
         other than NaN, such as -9999, is out of range), has no valid pixels or
         no two adjacent valid pixels, extends more than 60 degrees from its
-        center, or encloses a pole; an invalid ``footprint_tolerance_km``; or,
-        with ``footprint_tolerance_km=None``, a zero median pixel spacing (as
-        with repeated frames). Naming the chip, if a GCP chip's center pixel
+        center, or encloses a pole; a grid axis with no two adjacent valid
+        pixels (a single row, say), along which the pixel size is unknown; an
+        invalid ``footprint_tolerance_km``; or, with
+        ``footprint_tolerance_km=None``, a zero median pixel spacing (as with
+        repeated frames). If ``max_distance_m`` is not a finite number. Naming the chip, if a GCP chip's center pixel
         has a non-finite or out-of-range latitude or longitude.
     FootprintGeometryError
         Only if a convex-hull footprint fails its own verification, which
         indicates a defect in :mod:`curryer.compute.footprint`.
     """
+    if (
+        isinstance(max_distance_m, bool)
+        or not isinstance(max_distance_m, (int, float))
+        or not np.isfinite(max_distance_m)
+    ):
+        raise ValueError(f"max_distance_m must be a finite number, got {max_distance_m!r}")
     l1a_meta: list[L1AMetadata] = []
     gcp_meta: list[GCPMetadata] = []
     for idx, image in enumerate(l1a_images):
@@ -417,19 +437,20 @@ def pair_files(
         l1a_files: List of L1A (or observation) file paths to pair.
             Supports ``.mat`` and ``.nc`` files.
         gcp_directory: Directory containing GCP reference files.
-        max_distance_m: Minimum margin for valid pairing (default: 0.0)
-            - 0.0: Requires GCP center inside L1A footprint (strict)
-            - >0: Allows GCP center up to this distance inside footprint
-            - <0: Allows GCP center outside footprint (loose)
+        max_distance_m: Minimum signed margin of the GCP center from the
+            footprint edge, meters, positive inside (default: 0.0)
+            - 0.0: GCP center inside the L1A footprint or on its edge
+            - >0: GCP center at least this far inside the footprint
+            - <0: GCP center may lie up to abs(max_distance_m) outside
         l1a_key: MATLAB struct key for L1A data (default: "subimage").
             Ignored for NetCDF files.
         gcp_key: MATLAB struct key for GCP data (default: "GCP").
             Ignored for NetCDF files.
         gcp_pattern: File pattern for GCP discovery
             (default: "*_resampled.mat"; use "*_regridded.nc" for NetCDF chips).
-        footprint_tolerance_km: Simplification tolerance of each L1A footprint
-            polygon, km; None (default) uses half the image's smaller median
-            pixel spacing. See :func:`find_l1a_gcp_pairs`.
+        footprint_tolerance_km: Tolerance of each L1A footprint polygon, km
+            (its offset and simplification; see :func:`find_l1a_gcp_pairs`);
+            None (default) uses half the image's smaller median pixel spacing.
 
     Returns:
         List of (l1a_file, gcp_file) tuples for all valid spatial pairs.
@@ -533,15 +554,16 @@ def pair_geolocated_dataset_with_gcp_files(
     max_distance_m : float, optional
         Minimum signed margin (meters) required between the GCP chip center
         and the nearest observation footprint edge.  ``0.0`` (default) means
-        the GCP center must fall strictly inside the footprint;
+        the GCP center must fall inside the footprint or on its edge;
         negative values allow the center to lie *outside* the footprint by up
         to ``abs(max_distance_m)`` meters.
     gcp_key : str, optional
         MATLAB struct key used when loading ``.mat`` GCP chips.  Defaults to
         ``"GCP"``.  Ignored for NetCDF files.
     footprint_tolerance_km : float or None, optional
-        Simplification tolerance of the observation's footprint polygon, km;
-        ``None`` (default) uses half its smaller median pixel spacing.
+        Tolerance of the observation's footprint polygon, km (its offset and
+        simplification; see :func:`find_l1a_gcp_pairs`); ``None`` (default)
+        uses half its smaller median pixel spacing.
 
     Returns
     -------

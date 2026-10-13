@@ -254,7 +254,7 @@ def test_curved_swath_pairs_by_its_traced_edge():
     # The swath bows about 11 km over its 1380 km, as a ground track does over a several-minute granule.
     # The polygon through the four corner pixels gets both sides wrong: it cuts inside the swath on the
     # concave side and reaches past it on the convex side.
-    corners = np.array([[lon[i, j], lat[i, j]] for i, j in ((0, 0), (0, -1), (-1, -1), (-1, 0), (0, 0))])
+    corners = np.array([[lon[i, j], lat[i, j]] for i, j in ((0, 0), (-1, 0), (-1, -1), (0, -1), (0, 0))])
     corner_margin = footprint_margin_m(corners, np.array([p[0] for p in points]), np.array([p[1] for p in points]))
     assert (corner_margin[:2] < 0).sum() == 1
     assert (corner_margin[2:] >= 0).sum() == 1
@@ -312,13 +312,58 @@ def test_invalid_footprint_tolerance_raises_naming_the_image():
 
 
 def test_untraceable_footprint_falls_back_with_a_warning_naming_the_image(caplog):
-    row = _rect("one_row", -1.0, 1.0, -1.0, 1.0)
-    row = NamedImageGrid(data=row.data[:1], lat=row.lat[:1].copy(), lon=row.lon[:1].copy(), name="one_row")
+    folded = _rect("folded", -1.0, 1.0, -1.0, 1.0)
+    folded.lon[-50:] = folded.lon[-50:, ::-1].copy()
     with caplog.at_level("WARNING", logger="curryer.correction.pairing"):
-        result = find_l1a_gcp_pairs([row], [_point("GCP", 0.0, 1.0)], max_distance_m=0.0)
-    assert "'one_row'" in caplog.text
+        result = find_l1a_gcp_pairs([folded], [_point("GCP", 0.0, 0.0)], max_distance_m=0.0)
+    assert "'folded'" in caplog.text
     assert "convex hull" in caplog.text
     assert len(result.matches) == 1
+
+
+def test_single_row_l1a_raises_naming_the_image():
+    row = _rect("one_row", -1.0, 1.0, -1.0, 1.0)
+    row = NamedImageGrid(data=row.data[:1], lat=row.lat[:1].copy(), lon=row.lon[:1].copy(), name="one_row")
+    with pytest.raises(ValueError, match="Footprint of L1A image 'one_row': no two adjacent valid pixels along grid"):
+        find_l1a_gcp_pairs([row], [_point("GCP", 0.0, 1.0)], max_distance_m=0.0)
+
+
+@pytest.mark.parametrize("max_distance_m", [float("nan"), float("inf"), True, "0"])
+def test_invalid_max_distance_raises(max_distance_m):
+    with pytest.raises(ValueError, match="max_distance_m must be a finite number"):
+        find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m)
+
+
+@pytest.mark.parametrize(
+    ("max_distance_m", "paired"),
+    [(0.0, ["inside"]), (-6_000.0, ["inside", "outside"]), (5_000.0, ["inside"]), (8_000.0, [])],
+)
+def test_max_distance_is_a_signed_margin(max_distance_m, paired):
+    # Pixels every 0.01 deg (1.11 km); the edge lies about one pixel beyond the edge pixel centres at lon +-1.
+    # "inside" is 5.56 km inside the east pixels (margin about +6.7 km), "outside" 5.56 km beyond them (about -4.4 km).
+    gcps = [_point("inside", 0.95, 0.0), _point("outside", 1.05, 0.0)]
+    result = find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], gcps, max_distance_m=max_distance_m)
+    assert [result.gcp_images[m.gcp_index].name for m in result.matches] == paired
+
+
+def test_footprint_edge_is_about_one_pixel_beyond_the_edge_pixels():
+    result = find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("edge", 1.0, 0.0)], max_distance_m=0.0)
+    pixel_m = np.radians(0.01) * EARTH_MEAN_RADIUS_KM * 1e3
+    assert 0.5 * pixel_m < result.matches[0].distance_m < 1.5 * pixel_m
+
+
+def test_pairing_across_the_antimeridian():
+    lat, lon = np.meshgrid(np.linspace(1.0, -1.0, 201), np.linspace(179.0, 181.0, 201), indexing="ij")
+    lon = (lon + 180.0) % 360.0 - 180.0
+    l1a = NamedImageGrid(data=np.zeros_like(lat), lat=lat, lon=lon, name="L1A")
+    gcps = [
+        _point("180", 180.0, 0.0),
+        _point("-180", -180.0, 0.0),
+        _point("-179.5", -179.5, 0.5),
+        _point("178.5", 178.5, 0.0),
+    ]
+    result = find_l1a_gcp_pairs([l1a], gcps, max_distance_m=0.0)
+    assert [result.gcp_images[m.gcp_index].name for m in result.matches] == ["180", "-180", "-179.5"]
 
 
 @pytest.mark.parametrize(("lat", "lon"), [(np.nan, 0.0), (0.0, np.nan), (0.0, 200.0)])
