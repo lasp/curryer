@@ -493,6 +493,17 @@ def min_edge_distance_km(vertices, lat, lon):
     return min(distances) * EARTH_MEAN_RADIUS_KM
 
 
+def assert_same_ring(actual, desired, atol=1e-8):
+    """Closed rings with the same vertices in the same order, whatever vertex each starts at.
+
+    The convex hull's first vertex comes from qhull and can change with round-off between platforms.
+    """
+    a, d = actual[:-1], desired[:-1]
+    assert len(a) == len(d)
+    start = int(np.argmin(np.linalg.norm(a - d[0], axis=1)))
+    np.testing.assert_allclose(np.roll(a, -start, axis=0), d, atol=atol)
+
+
 class TestConvexFootprint:
     def check(self, lat, lon):
         vertices = convex_footprint(lat, lon, tolerance_km=TOL_KM)
@@ -561,7 +572,7 @@ class TestConvexFootprint:
         lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=200, along_km=0.3, cross_km=0.5)
         vertices = convex_footprint(lat, lon)
         assert outside_count(vertices, lat, lon) == 0
-        np.testing.assert_allclose(vertices, convex_footprint(lat, lon, tolerance_km=0.15), atol=1e-8)
+        assert_same_ring(vertices, convex_footprint(lat, lon, tolerance_km=0.15))
 
     def test_default_tolerance_with_zero_pixel_spacing_raises(self):
         lat = np.full((3, 3), 40.0)
