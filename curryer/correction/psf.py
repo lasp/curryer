@@ -600,8 +600,8 @@ def resolve_spacecraft_ecef(
     The boresight is the unit line of sight from the spacecraft to the
     observation pixel in the mid-frame row and in the column of the pixel
     nearest the target (the GCP centre), using that pixel's lat/lon/height.
-    CPRS document 183262 rev B (eq. 3) requires the line of sight of the
-    pixel that viewed the GCP.  With one mid-frame spacecraft position, the
+    The nadir-equivalent error is defined on the line of sight of the pixel
+    that viewed the GCP.  With one mid-frame spacecraft position, the
     pixel in the GCP's cross-track column of the mid-frame row has the GCP's
     off-nadir angle; aiming at the GCP itself from the mid-frame position
     would not, when the GCP was imaged at a different frame.  The view-plane

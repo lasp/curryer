@@ -932,7 +932,7 @@ def _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics):
     netcdf_data["n_measurements"][param_idx, pair_idx] = error_metrics["n_measurements"]
 
 
-def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=250.0):
+def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m):
     """
     Compute overall performance metrics for a parameter set.
 

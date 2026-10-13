@@ -400,7 +400,7 @@ def discover_gcp_files(gcp_directory: Path, pattern: str = "*_resampled.mat") ->
         Sorted list of Path objects for GCP files
 
     Example:
-        >>> gcp_files = discover_gcp_files(Path("tests/data/clarreo/image_match"))
+        >>> gcp_files = discover_gcp_files(Path("gcp_chips"))
         >>> print(f"Found {len(gcp_files)} GCP files")
     """
     gcp_dir = Path(gcp_directory)
