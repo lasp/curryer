@@ -27,7 +27,7 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
   the L1A's geolocated pixels (`curryer.compute.footprint.footprint_polygon`), about one pixel
   outside the edge pixel centres at the default tolerance, instead of the polygon through its four corner pixels in a flat ENU
   plane. On a curved swath the corner polygon paired chips outside the swath and missed chips
-  inside it (by up to about 18 km on 6-9 minute CLARREO granules). Margins are great-circle
+  inside it (by up to about 18 km on 6-9 minute granules). Margins are great-circle
   distances on the mean-radius sphere. `PairingResult.l1a_images` holds `L1AMetadata`, which adds
   the `footprint`; an optional `footprint_tolerance_km` sets its tolerance (the edge's offset and
   simplification). An untraceable footprint (folded or overlapping grids) falls back to the
