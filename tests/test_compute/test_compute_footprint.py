@@ -490,6 +490,21 @@ class TestSelfIntersects:
         ring = np.array([[0, 0], [1, 1], [1, 0], [0, 1]], dtype=float)
         assert footprint._self_intersects(ring)
 
+    @pytest.mark.parametrize("max_pairs", [1, 7, 1 << 22])
+    def test_self_intersection_is_the_same_in_any_block_size(self, max_pairs):
+        theta = np.linspace(0, 2 * np.pi, 200, endpoint=False)
+        circle = np.column_stack([np.cos(theta), np.sin(theta)])
+        figure_eight = np.column_stack([np.sin(theta), np.sin(theta) * np.cos(theta)])
+        assert not footprint._self_intersects(circle, max_pairs=max_pairs)
+        assert footprint._self_intersects(figure_eight, max_pairs=max_pairs)
+
+
+def test_center_of_cancelling_points_raises():
+    # Vectors summing exactly to zero: normalizing their mean would give a NaN center.
+    points = np.array([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+    with pytest.raises(ValueError, match="no well-defined center"):
+        footprint._center(points)
+
 
 class TestSimplify:
     def test_distance_is_to_the_arc_not_the_great_circle(self):
