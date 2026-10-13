@@ -174,7 +174,8 @@ result = verify(setup, image_matching_results=results)  # no SPICE kernels neede
 
 print(result.summary_table)                 # per-point pass/fail table
 print("Passed:", result.passed)
-print(f"Within threshold: {result.percent_within_threshold:.1f}%")
+within = result.percent_within_threshold  # None when every GCP is rejected
+print(f"Within threshold: {'N/A' if within is None else f'{within:.1f}%'}")
 ```
 
 ### Input modes
@@ -548,7 +549,8 @@ result = verify(setup, image_matching_results=datasets)
 
 print(result.summary_table)         # ASCII table: per-GCP status
 print("Passed:", result.passed)
-print(f"Within threshold: {result.percent_within_threshold:.1f}%")
+within = result.percent_within_threshold  # None when every GCP is rejected
+print(f"Within threshold: {'N/A' if within is None else f'{within:.1f}%'}")
 
 for err in result.per_gcp_errors:
     print(
@@ -643,7 +645,7 @@ it recomputes the statistics without re-running image matching:
 
 ```python
 saved = load_verification(Path("verification/2026-08-05"))
-reviewed = apply_review(saved, read_review_decisions(Path("verification/2026-08-05/summary.csv")))
+reviewed = apply_review(saved, read_review_decisions(Path("verification/2026-08-05/summary.csv"), saved))
 print(reviewed.summary_table)
 save_verification(reviewed, Path("verification/2026-08-05-reviewed"))
 ```

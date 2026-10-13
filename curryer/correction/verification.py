@@ -1432,9 +1432,9 @@ def verify(
         Keep the images behind each match in
         :attr:`VerificationResult.chip_images` (observed, emulated and
         reference images; see
-        :func:`~curryer.correction.image_match.chip_image_dataset`).  Only
-        for the *gcp_pairs* and *observation_paths* modes, which load the
-        images.  A GCP chip can be tens of MB.
+        :func:`~curryer.correction.image_match.chip_image_dataset`).
+        Implemented only for the *gcp_pairs* and *observation_paths* modes.
+        A GCP chip can be tens of MB.
 
     Returns
     -------
@@ -1492,10 +1492,7 @@ def verify(
     source_mapping: list[tuple[str, str]] = []
     chip_images: list[xr.Dataset] | None = None
     if keep_images and (image_matching_results is not None or geolocated_data is not None):
-        raise ValueError(
-            "keep_images requires the gcp_pairs or observation_paths mode; "
-            "image_matching_results and geolocated_data do not carry the matched images."
-        )
+        raise ValueError("keep_images is implemented only for the gcp_pairs and observation_paths modes.")
 
     if image_matching_results is not None:
         if not image_matching_results:
@@ -1880,14 +1877,20 @@ def load_verification(out_dir: Path) -> VerificationResult:
     return VerificationResult.model_validate(data)
 
 
-def read_review_decisions(summary_csv: Path) -> dict[int, Literal["accept", "reject"]]:
+def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict[int, Literal["accept", "reject"]]:
     """Read the reviewer's decisions from a ``summary.csv`` written by :func:`save_verification`.
+
+    Every row must name a GCP of *result* by ``gcp_index`` with the same
+    ``science_key`` and ``gcp_key``, so a CSV from another run, whose GCPs are
+    also numbered from 0, is refused rather than applied to the wrong GCPs.
 
     Parameters
     ----------
     summary_csv : Path
-        CSV with ``gcp_index`` and ``review`` columns.  An empty ``review``
-        cell means no decision.
+        CSV with ``gcp_index``, ``science_key``, ``gcp_key`` and ``review``
+        columns.  An empty ``review`` cell means no decision.
+    result : VerificationResult
+        The result the CSV was saved from.
 
     Returns
     -------
@@ -1897,16 +1900,29 @@ def read_review_decisions(summary_csv: Path) -> dict[int, Literal["accept", "rej
     Raises
     ------
     ValueError
-        If the CSV lacks either column, a ``gcp_index`` appears twice, or a
-        ``review`` cell holds anything but ``accept``, ``reject`` or nothing.
+        If the CSV lacks a column, a ``gcp_index`` appears twice or is not in
+        *result*, a row's ``science_key`` / ``gcp_key`` differ from *result*'s
+        for its ``gcp_index``, or a ``review`` cell holds anything but
+        ``accept``, ``reject`` or nothing.
     """
-    table = pd.read_csv(summary_csv, dtype={"review": str}, keep_default_na=False)
-    missing = {"gcp_index", "review"} - set(table.columns)
+    table = pd.read_csv(summary_csv, dtype={"review": str, "science_key": str, "gcp_key": str}, keep_default_na=False)
+    missing = {"gcp_index", "science_key", "gcp_key", "review"} - set(table.columns)
     if missing:
         raise ValueError(f"{summary_csv} has no {sorted(missing)} column(s).")
     duplicated = sorted(set(table["gcp_index"][table["gcp_index"].duplicated()]))
     if duplicated:
         raise ValueError(f"{summary_csv}: gcp_index {duplicated} appear more than once.")
+    keys = {err.gcp_index: (err.science_key, err.gcp_key) for err in result.per_gcp_errors}
+    mismatched = [
+        int(index)
+        for index, science_key, gcp_key in zip(table["gcp_index"], table["science_key"], table["gcp_key"], strict=True)
+        if keys.get(int(index)) != (science_key, gcp_key)
+    ]
+    if mismatched:
+        raise ValueError(
+            f"{summary_csv}: gcp_index {mismatched} are not in the result or name a different science_key / "
+            "gcp_key; the CSV was not saved from this result."
+        )
     decisions: dict[int, Literal["accept", "reject"]] = {}
     for index, decision in zip(table["gcp_index"], table["review"].str.strip(), strict=True):
         if decision == "":
@@ -1949,7 +1965,8 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     ------
     ValueError
         If a decision names a ``gcp_index`` not in *result*, or is not
-        ``"accept"`` or ``"reject"``.
+        ``"accept"`` or ``"reject"``; or if a GCP accepted in review has a
+        non-finite correlation, whose quality weight is undefined.
     """
     stats = result.aggregate_stats.copy(deep=True)
     labels = [int(label) for label in stats["measurement"].values]

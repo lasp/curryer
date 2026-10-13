@@ -69,7 +69,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   (`image_match.chip_image_dataset`); file-pair modes only.
 - `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
   `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
-  `review` column of `summary.csv`.
+  `review` column of `summary.csv`. `read_review_decisions(summary_csv, result)` refuses a CSV
+  whose GCP indices and keys do not match `result`.
 - Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
   `weighted_statistics`, `weighted_percent_below` and
   `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted
