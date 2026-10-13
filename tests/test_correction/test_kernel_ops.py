@@ -97,7 +97,8 @@ def test_apply_offset_time_shifts_frame_times():
     """OFFSET_TIME: seconds added to the uGPS frame times."""
     p = ParameterConfig(ptype=ParameterType.OFFSET_TIME, spec=dict(field="corrected_timestamp", units="milliseconds"))
     modified = apply_offset(p, 10.0 / 1000.0, _FRAME_UGPS)
-    np.testing.assert_allclose(modified - _FRAME_UGPS, 10_000.0)
+    assert modified.dtype == np.int64
+    np.testing.assert_array_equal(modified - _FRAME_UGPS, 10_000)
 
 
 def test_apply_offset_time_negative():
@@ -243,3 +244,33 @@ def test_create_dynamic_kernels(root_dir, clarreo_cfg, tmp_path):
     with sp.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels]):
         dynamic_kernels = _create_dynamic_kernels(setup, work, tlm, creator)
     assert isinstance(dynamic_kernels, list)
+
+
+@pytest.mark.parametrize(
+    ("properties", "match"), [({"input_angle_units": "DEGREES"}, "reads angles in DEGREES"), ({}, "in DEGREES")]
+)
+@pytest.mark.parametrize("ptype", [ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL])
+def test_kernel_template_not_in_radians_raises(tmp_path, ptype, properties, match):
+    import json
+
+    from curryer.correction.kernel_ops import _require_radian_kernel_templates
+
+    template = tmp_path / "frame.attitude.ck.json"
+    template.write_text(json.dumps({"kernel": {"class_path": "x", "properties": properties}}))
+    param = ParameterConfig(ptype=ptype, config_file=template, spec=dict(field="angle_x"))
+    with pytest.raises(ValueError, match=match):
+        _require_radian_kernel_templates([param])
+
+
+def test_radian_kernel_templates_pass(tmp_path):
+    import json
+
+    from curryer.correction.kernel_ops import _require_radian_kernel_templates
+
+    template = tmp_path / "frame.attitude.ck.json"
+    template.write_text(json.dumps({"kernel": {"class_path": "x", "properties": {"input_angle_units": "RADIANS"}}}))
+    params = [
+        ParameterConfig(ptype=ParameterType.CONSTANT_KERNEL, config_file=template, spec=dict(field="angle_x")),
+        ParameterConfig(ptype=ParameterType.OFFSET_TIME, spec=dict(field="corrected_timestamp")),
+    ]
+    _require_radian_kernel_templates(params)

@@ -72,7 +72,11 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   when it passes them on every used pair. The output NetCDF gains `accepted` and `valid`.
 - **`DataConfig.time_scale_factor` is removed** and `DataConfig` rejects unknown fields;
   `file_format` applies to the telemetry file.
-- `OFFSET_TIME` shifts the observation's frame times (`apply_offset` takes a uGPS ndarray).
+- `OFFSET_TIME` shifts the observation's frame times (`apply_offset` takes a uGPS ndarray and
+  returns int64 uGPS).
+- `loop()` raises before the first pair when a `CONSTANT_KERNEL` or `OFFSET_KERNEL` template
+  does not set `input_angle_units` to `RADIANS`; the loop applies radians, and a template
+  reading degrees made every correction 57.3 times too small.
 - Missing `OFFSET_KERNEL` telemetry fields, unknown parameter variables and SPICE coverage gaps
   raise instead of logging a warning; the 111 km/degree fallback statistics are removed.
 - `ParameterConfig` raises on `spec.units` its type does not convert (previously any unknown
@@ -127,7 +131,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - Matched errors were converted to degrees with 111.0 km/degree and back with the WGS-84 radius,
   a 0.29% north-south error; both now use `WGS84_SEMI_MAJOR_AXIS_KM`.
 - Per-GCP attribution in `verify()` follows the measurements that survive filtering.
-- File-pair verification downloads an `s3://` observation once per pair (it was read twice).
+- File-pair verification downloads an `s3://` observation once per pair (it was read twice), and
+  so does the correction loop.
 - The verification summary table's rows lined up with its borders only when the footer was not
   the widest line.
 - `OFFSET_KERNEL` offsets were converted from arcseconds twice and applied about 2e5 times too

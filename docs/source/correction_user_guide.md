@@ -144,6 +144,10 @@ to its chip. Candidates are compared on the same GCP pairs:
 - The **best** candidate is the valid one with the lowest mean, over usable pairs, of each pair's
   RMS error.
 
+One candidate that passes a hard pair, even on a spurious peak, makes that pair usable and so
+invalidates every candidate that fails it; `n_valid_sets` shows when this has narrowed the
+comparison to a few candidates.
+
 The loop raises if no pair is usable or no candidate is valid. The best candidate is one of the
 candidates tried; the loop does not interpolate between them, so its precision is the grid step
 or the spread of the random draws.
@@ -157,7 +161,8 @@ Three consequences to plan a sweep around:
   proportion to slant range, a time offset does not.
 - **Bounds limit the subimage.** The search-reach rule applies under every candidate, so a
   subimage must lie inside its chip by the search reach plus the largest shift the sweep can
-  cause there. Wider bounds mean smaller subimages, and a pair with no room is left out.
+  cause there. Wider bounds mean smaller subimages; a pair with no room must be dropped from
+  the inputs, or the loop raises.
 - **Fail loud.** A pixel the kernels cannot geolocate, a candidate that moves a subimage off its
   chip, or an `OFFSET_KERNEL` field missing from the telemetry stops the run; nothing is skipped
   silently.
@@ -628,11 +633,16 @@ Set these for the instrument's ground sampling. Invalid values raise when the se
 
 ### Parameter types — `ptype`
 
-| Value             | Adjusts                                                                      |
-| ----------------- | ---------------------------------------------------------------------------- |
-| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK       |
-| `OFFSET_KERNEL`   | A bias added to a telemetry angle field before its CK is built               |
-| `OFFSET_TIME`     | Seconds added to the frame times: true frame time = recorded `ugps` + offset |
+| Value             | Adjusts                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK |
+| `OFFSET_KERNEL`   | A bias added to a telemetry angle field before its CK is built         |
+
+Kernel parameters are applied in radians, so each `CONSTANT_KERNEL` and `OFFSET_KERNEL` template
+must set `"input_angle_units": "RADIANS"` (the attitude writer reads degrees without it), and an
+`OFFSET_KERNEL` telemetry field must be in radians. The loop raises before the first pair
+otherwise.
+| `OFFSET_TIME` | Seconds added to the frame times: true frame time = recorded `ugps` + offset |
 
 ### Output — `output`
 

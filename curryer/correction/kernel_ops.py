@@ -10,6 +10,7 @@ This module creates and applies parameter-specific SPICE kernels:
   and applies time offsets for each iteration.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ import pandas as pd
 
 from curryer.correction.config import _CONSTANT_KERNEL_AXES, ParameterConfig, ParameterType
 from curryer.kernels import create
+from curryer.kernels.attitude import AttitudeEulerProperties
 
 if TYPE_CHECKING:
     from curryer.correction.config import GeolocationSetup
@@ -80,13 +82,45 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
         # Shift the observation frame times; param_data is seconds, the times uGPS.
         if not isinstance(input_data, np.ndarray) or input_data.dtype.kind not in "iuf":
             raise TypeError(f"OFFSET_TIME applies to an ndarray of uGPS frame times, got {type(input_data).__name__}.")
-        modified_data = input_data + param_data * 1e6
+        modified_data = input_data + np.int64(np.rint(param_data * 1e6))
         logger.info(f"✓ Applying OFFSET_TIME: {param_data:.6f} s = {param_data * 1e6:.3f} µs to the frame times")
 
     else:
         raise NotImplementedError(f"Parameter type {config.ptype} not implemented")
 
     return modified_data
+
+
+def _require_radian_kernel_templates(parameters: list[ParameterConfig]) -> None:
+    """Check that every kernel parameter's template reads its angles in radians.
+
+    The loop writes CONSTANT_KERNEL angles, and adds OFFSET_KERNEL offsets to the telemetry, in
+    radians. A template that reads degrees (the attitude writer's default when
+    ``input_angle_units`` is absent) would make each correction 57.3 times too small.
+
+    Parameters
+    ----------
+    parameters : list[ParameterConfig]
+        The sweep's parameters; those without a kernel are ignored.
+
+    Raises
+    ------
+    ValueError
+        If a CONSTANT_KERNEL or OFFSET_KERNEL template's ``input_angle_units`` is not ``"RADIANS"``.
+    FileNotFoundError
+        If a template file does not exist.
+    """
+    for param in parameters:
+        if param.ptype not in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
+            continue
+        properties = json.loads(Path(param.config_file).read_text())["kernel"]["properties"]
+        units = properties.get("input_angle_units", AttitudeEulerProperties.input_angle_units)
+        if units != "RADIANS":
+            raise ValueError(
+                f"{param.ptype.name} template {param.config_file} reads angles in {units}; the correction loop "
+                "writes radians, so set its input_angle_units to RADIANS (and, for OFFSET_KERNEL, its telemetry "
+                "field must be in radians)."
+            )
 
 
 def _create_dynamic_kernels(
