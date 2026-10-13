@@ -1,5 +1,23 @@
 # Changelog
 
+## Version 0.5.4 (unreleased)
+
+Adds footprint polygons for 2-D geolocation grids.
+
+### Highlights
+
+- **New `curryer.compute.footprint`** -- `footprint_polygon(latitude, longitude, tolerance_km=None)`
+  traces the outer edge of a grid of geolocated pixels into a closed, counter-clockwise polygon of
+  great-circle arcs, half a pixel outside the edge pixel centres, so it follows curved and
+  antimeridian-crossing swaths. Where the edge cannot be traced (folded, overlapping or single-row
+  grids) it logs a warning and returns a buffered spherical convex hull that still contains every
+  pixel. `swath_footprint` and `convex_footprint` are the two methods on their own.
+  `tolerance_km` bounds how far simplification moves the edge; `None` uses half the smaller median
+  pixel spacing of the two grid axes. Invalid geolocation raises `ValueError`; an untraceable edge
+  raises `FootprintGeometryError` (a `ValueError`) from `swath_footprint`.
+- **New `curryer.compute.footprint.footprint_margin_m`** -- signed great-circle distance, in
+  metres, from points to a footprint's edge: positive inside, negative outside.
+
 ## Version 0.5.3 (2026-10)
 
 Adds a per-pixel geolocation and surface-angle path for large focal planes.
