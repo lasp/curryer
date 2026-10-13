@@ -231,6 +231,42 @@ def convolve_gcp_with_psf(gcp: ImageGrid, psf: PSFGrid) -> ImageGrid:
     return ImageGrid(data=convolved, lat=gcp.lat, lon=gcp.lon, h=gcp.h)
 
 
+def crop_to_full_psf_overlap(convolved: ImageGrid, psf: PSFGrid) -> ImageGrid:
+    """
+    Crop a GCP convolved by :func:`convolve_gcp_with_psf` to where the PSF lies wholly inside the chip.
+
+    The convolution pads the chip with zeros, so within half a kernel of its edge the convolved
+    chip fades toward zero. The cropped grid holds only pixels computed from chip data alone, the
+    ``mode="valid"`` region of the convolution.
+
+    Parameters
+    ----------
+    convolved : ImageGrid
+        Output of :func:`convolve_gcp_with_psf`.
+    psf : PSFGrid
+        The PSF it was convolved with.
+
+    Returns
+    -------
+    ImageGrid
+        ``convolved`` with ``psf.data.shape[i] - 1`` rows and columns removed in total, split
+        between the two edges as ``fftconvolve(mode="same")`` centres the kernel.
+
+    Raises
+    ------
+    ValueError
+        If the PSF kernel is not smaller than the chip along both axes.
+    """
+
+    (n_rows, n_cols), (k_rows, k_cols) = convolved.data.shape, psf.data.shape
+    if k_rows >= n_rows or k_cols >= n_cols:
+        raise ValueError(f"PSF kernel {psf.data.shape} is not smaller than the GCP chip {convolved.data.shape}.")
+    rows = slice(k_rows // 2, n_rows - (k_rows - 1) // 2)
+    cols = slice(k_cols // 2, n_cols - (k_cols - 1) // 2)
+    h = None if convolved.h is None else convolved.h[rows, cols]
+    return ImageGrid(data=convolved.data[rows, cols], lat=convolved.lat[rows, cols], lon=convolved.lon[rows, cols], h=h)
+
+
 def convolve_psf_with_spacecraft_motion(
     psf: ProjectedPSF,
     composite_img: ImageGrid,

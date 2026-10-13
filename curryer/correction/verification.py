@@ -298,7 +298,7 @@ def _generate_warnings(
         return [
             f"⚠️  VERIFICATION FAILED: Only {percent_below:.1f}% of observations "
             f"meet the {requirements.performance_threshold_m}m nadir-equivalent error threshold "
-            f"(required: {requirements.performance_spec_percent}%). "
+            f"(required: > {requirements.performance_spec_percent}%). "
             f"Recommend running the correction module to optimise calibration parameters."
         ]
     return []
@@ -713,10 +713,12 @@ def image_matching(
         telemetry column); if ``setup.geo.instrument_name`` is not set; or if
         the LOS table does not have one row per geolocated column.  All of
         these are checked before the image match runs.  The match itself
-        raises if a search shift samples the geolocated grid outside the GCP
-        chip (:func:`~curryer.correction.search.im_search`): the whole
-        geolocated dataset is matched, so it must lie at least
-        ``setup.search.max_shift_km()`` inside the chip on every side.
+        raises if a search shift samples the geolocated grid outside the
+        searchable part of the GCP chip, the chip less half a PSF kernel at
+        each edge (:func:`~curryer.correction.search.im_search`): the whole
+        geolocated dataset is matched, so it must be cropped inside the chip
+        by the first search grid's half-width plus the expected error
+        (``setup.search.max_shift_km()`` is a margin that always suffices).
     spiceypy.utils.exceptions.SpiceyError
         If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
         not furnished or no coverage at the mid-frame time).
@@ -1277,9 +1279,11 @@ def verify(
         as ``__cause__``); when an observation file carries no valid
         spacecraft position; when a GCP chip centre lies outside its
         observation grid; when a search shift samples an observation outside
-        its GCP chip (crop observations at least ``setup.search.max_shift_km()``
-        inside their chips; the *geolocated_data* mode matches the whole
-        dataset); or when image matching produces no results.
+        the searchable part of its GCP chip (crop observations inside their
+        chips by the first search grid's half-width plus the expected error;
+        ``setup.search.max_shift_km()`` always suffices; the *geolocated_data*
+        mode matches the whole dataset); or when image matching produces no
+        results.
     FileNotFoundError
         If *los_file* or *psf_file* does not exist, if *gcp_directory* does
         not exist in *observation_paths* mode, or if a file listed in

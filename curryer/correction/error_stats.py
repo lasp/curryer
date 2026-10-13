@@ -209,7 +209,9 @@ class ErrorStatsProcessor:
 
         Raises:
             ValueError: If a threshold is set and *data* lacks the variable it
-                needs.
+                needs, or if ``minimum_peak_margin`` is set and a measurement
+                with a finite correlation has a non-finite
+                ``correlation_secondary``.
         """
         if self.config.minimum_correlation is None and self.config.minimum_peak_margin is None:
             return data
@@ -237,7 +239,15 @@ class ErrorStatsProcessor:
                     f"minimum_peak_margin={self.config.minimum_peak_margin} is set but the input has no "
                     "'correlation_secondary' variable; the threshold cannot be applied."
                 )
-            valid_mask &= (data[corr_var] - data["correlation_secondary"]) >= self.config.minimum_peak_margin
+            secondary = data["correlation_secondary"]
+            undefined = np.isfinite(data[corr_var]) & ~np.isfinite(secondary)
+            if undefined.any():
+                raise ValueError(
+                    f"minimum_peak_margin={self.config.minimum_peak_margin} is set but {int(undefined.sum())} "
+                    "measurement(s) with a finite correlation have a non-finite correlation_secondary; the peak "
+                    "margin is undefined (no first-grid point beyond peak_exclusion_km)."
+                )
+            valid_mask &= (data[corr_var] - secondary) >= self.config.minimum_peak_margin
         n_before = len(data.measurement)
         filtered_data = data.where(valid_mask, drop=True)
         n_after = len(filtered_data.measurement)

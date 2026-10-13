@@ -337,8 +337,8 @@ class GeolocationConfig(BaseModel):
     dynamic_kernels: list[Path] = Field(default_factory=list)
     instrument_name: str
     time_field: str
-    minimum_correlation: float | None = None
-    minimum_peak_margin: float | None = None
+    minimum_correlation: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    minimum_peak_margin: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 # ============================================================================
@@ -372,7 +372,7 @@ class RequirementsConfig(BaseModel):
 # ============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class PSFSamplingConfig:
     """Configuration for PSF sampling during image matching.
 
@@ -406,7 +406,7 @@ class PSFSamplingConfig:
                 raise ValueError(f"PSFSamplingConfig.{name} must be finite and positive, got {value!r}.")
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchConfig:
     """Configuration for the image-matching correlation search grid.
 
@@ -430,15 +430,20 @@ class SearchConfig:
     peak_exclusion_km : float, optional
         Distance from the first-pass correlation peak beyond which the
         strongest competing correlation is reported (``ccv_secondary``), used
-        to judge whether a match is distinct. Default 2.0.
+        to judge whether a match is distinct. Must be less than
+        ``grid_span_km / 2``, so that some first-grid point always lies beyond
+        it. Default 2.0.
 
     Raises
     ------
     ValueError
         If ``grid_size`` is not an integer of at least 2; if ``grid_span_km``,
         ``spacing_limit_m`` or ``peak_exclusion_km`` is not finite and positive;
-        if ``reduction_factor`` is not in (0, 1); or if ``spacing_limit_m`` is not
-        smaller than the first grid's step (the search would not run).
+        if ``reduction_factor`` is not in (0, 1); if ``spacing_limit_m`` is not
+        smaller than the first grid's step (the search would not run); or if
+        ``peak_exclusion_km`` is not less than ``grid_span_km / 2``.
+
+    The instance is frozen, so these checks hold for its lifetime.
     """
 
     grid_size: int = 44
@@ -464,14 +469,25 @@ class SearchConfig:
                 f"SearchConfig.spacing_limit_m ({self.spacing_limit_m} m) must be smaller than the first grid step "
                 f"({first_step_m:.3f} m = grid_span_km / (grid_size - 1)), or the search does not run."
             )
+        if self.peak_exclusion_km >= self.grid_span_km / 2:
+            raise ValueError(
+                f"SearchConfig.peak_exclusion_km ({self.peak_exclusion_km} km) must be less than grid_span_km / 2 "
+                f"({self.grid_span_km / 2} km), or no first-grid point may lie beyond it and the peak margin is "
+                "undefined."
+            )
 
     def max_shift_km(self) -> float:
         """Upper bound (km) on how far the iterative search can move the subimage along each axis.
 
         Each iteration re-centres a grid of ``grid_size // 2`` steps each way, and
         the step shrinks by ``reduction_factor``; the sum of the geometric series
-        bounds the total shift.  A subimage that lies at least this far inside the
-        GCP chip on every side never samples outside it.
+        bounds the total shift.  It is the worst case, the best point on the
+        grid's edge in every iteration, so it is a sufficient margin rather than a
+        required one: a subimage at least this far inside the searchable part of
+        the GCP chip on every side never samples outside it.  Every search
+        reaches the first grid's half-width, ``grid_size // 2`` steps of
+        ``grid_span_km / (grid_size - 1)``, beyond the subimage, so the margin
+        needed in practice is that half-width plus the distance to the match.
         """
         first_step_km = self.grid_span_km / (self.grid_size - 1)
         return (self.grid_size // 2) * first_step_km / (1.0 - self.reduction_factor)

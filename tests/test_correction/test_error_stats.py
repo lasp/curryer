@@ -1238,7 +1238,6 @@ class TestCorrelationFiltering(unittest.TestCase):
         """A match whose competing correlation is too close to its peak is dropped."""
         test_data = self._create_test_data_with_correlation(n_measurements=10)
         secondary = test_data["correlation"].values - np.array([0.01, 0.2] * 5)
-        secondary[-1] = -np.inf  # no competing grid point: always distinct
         test_data["correlation_secondary"] = (["measurement"], secondary)
 
         processor = ErrorStatsProcessor(config=_create_test_config(minimum_peak_margin=0.05))
@@ -1246,6 +1245,16 @@ class TestCorrelationFiltering(unittest.TestCase):
 
         self.assertEqual(len(results.measurement), 5)
         self.assertEqual(results.attrs["minimum_peak_margin_threshold"], 0.05)
+
+    def test_peak_margin_with_no_competing_point_raises(self):
+        """A -inf secondary (no first-grid point beyond the exclusion) leaves the margin undefined."""
+        test_data = self._create_test_data_with_correlation(n_measurements=10)
+        secondary = test_data["correlation"].values - 0.2
+        secondary[-1] = -np.inf
+        test_data["correlation_secondary"] = (["measurement"], secondary)
+        processor = ErrorStatsProcessor(config=_create_test_config(minimum_peak_margin=0.05))
+        with self.assertRaisesRegex(ValueError, "1 measurement\\(s\\) with a finite correlation have a non-finite"):
+            processor.process_geolocation_errors(test_data)
 
     def test_peak_margin_without_secondary_raises(self):
         test_data = self._create_test_data_with_correlation(n_measurements=10)

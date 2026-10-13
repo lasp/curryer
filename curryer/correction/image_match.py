@@ -17,6 +17,7 @@ from .grid_types import (
 from .psf import (
     convolve_gcp_with_psf,
     convolve_psf_with_spacecraft_motion,
+    crop_to_full_psf_overlap,
     normalize_psf,
     project_psf,
     resample_psf_to_gcp_resolution,
@@ -172,7 +173,7 @@ def integrated_image_match(
         final_idx_row,
         final_idx_col,
         final_grid_step_m,
-    ) = im_search(gcp_convolved, subimage, search_cfg)
+    ) = im_search(crop_to_full_psf_overlap(gcp_convolved, dynamic_psf), subimage, search_cfg)
 
     return IntegratedImageMatchResult(
         lat_error_km=lat_error_est,
