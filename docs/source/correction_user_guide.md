@@ -22,9 +22,8 @@ match each observation to its chip        match each observation to its chip
 error statistics -> verdict           compare candidates -> best adjustment + verdict
 ```
 
-This guide is generic. A mission supplies its own data access and command lines on top of it;
-CLARREO Pathfinder's live in the CSDS repository
-(`src/scripts/geolocation/USER_GUIDE.md`).
+This guide is generic. A mission supplies its own data access and command lines on top of it,
+in its own repository.
 
 ## Contents
 
@@ -103,8 +102,8 @@ Every error is **geolocated minus true**. It is reported three ways:
   so GCPs viewed off nadir count fairly against one requirement. The error is split into its
   components in the view plane (containing the line of sight and nadir) and across it. Each is
   divided by a scale factor that grows with the off-nadir angle of the line of sight of the pixel
-  that viewed the GCP. This follows the CLARREO Pathfinder definition (document 183262 rev B)
-  and matches its MATLAB reference implementation to within 2 mm.
+  that viewed the GCP. The test suite checks it against a MATLAB reference implementation, to
+  within 2 mm.
 
 The **requirement** is more than `performance_spec_percent` of accepted GCPs within
 `performance_threshold_m`, nadir-equivalent. A run passes when the percentage of accepted GCPs

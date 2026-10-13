@@ -55,8 +55,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   `grid_span_km / 2`. `PSFSamplingConfig.gcp_step_m` and `motion_convolution_step_m`, never
   read, are removed, which changes its positional field order.
 - **The requirement is strict** -- a run passes when the percentage of accepted measurements
-  within `performance_threshold_m` exceeds `performance_spec_percent`, as the CLARREO
-  requirement is written (more than 39 %); a run exactly at the spec used to pass. This applies to
+  within `performance_threshold_m` exceeds `performance_spec_percent`, as a "more than N %"
+  requirement is written; a run exactly at the spec used to pass. This applies to
   `VerificationResult.passed` and `CorrectionResult.met_threshold`. `RequirementsConfig` rejects
   a spec of 100, which no run could exceed. The summary table reads `(req: > 39.0%)`.
 - **Rejected matches are kept** -- `ErrorStatsProcessor.compute_nadir_equivalent_errors`,
