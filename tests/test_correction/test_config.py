@@ -372,6 +372,27 @@ class TestGeolocationConfig:
         )
         assert geo_with_corr.minimum_correlation == 0.7
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("minimum_correlation", float("nan")),
+            ("minimum_correlation", 1.1),
+            ("minimum_correlation", -0.1),
+            ("minimum_peak_margin", 0.0),
+            ("minimum_peak_margin", -5.0),
+            ("minimum_peak_margin", float("inf")),
+        ],
+    )
+    def test_invalid_gate_threshold_raises(self, field, value):
+        with pytest.raises(ValidationError, match=field):
+            GeolocationConfig(
+                meta_kernel_file=Path("x.json"),
+                generic_kernel_dir=Path("d"),
+                instrument_name="I",
+                time_field="t",
+                **{field: value},
+            )
+
 
 # ===========================================================================
 # NetCDFParameterMetadata

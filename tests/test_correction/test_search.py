@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -28,7 +30,9 @@ def _subimage(chip: ImageGrid, half: int) -> ImageGrid:
 
 
 def test_max_shift_km_bounds_the_search():
-    config = SearchConfig(grid_size=11, grid_span_km=2.0, reduction_factor=0.5, spacing_limit_m=50.0)
+    config = SearchConfig(
+        grid_size=11, grid_span_km=2.0, reduction_factor=0.5, spacing_limit_m=50.0, peak_exclusion_km=0.5
+    )
     assert config.max_shift_km() == pytest.approx(5 * 0.2 / 0.5)
 
 
@@ -58,14 +62,23 @@ def test_featureless_scene_gives_secondary_close_to_peak():
 
 def test_search_leaving_the_chip_raises():
     chip = _chip(np.random.default_rng(2).normal(size=(61, 61)))
-    config = SearchConfig(grid_size=11, grid_span_km=4.0, reduction_factor=0.5, spacing_limit_m=50.0)
+    config = SearchConfig(
+        grid_size=11, grid_span_km=4.0, reduction_factor=0.5, spacing_limit_m=50.0, peak_exclusion_km=0.5
+    )
     with pytest.raises(ValueError, match="outside the GCP chip"):
         im_search(chip, _subimage(chip, 25), config)  # 0.5 km inside, first grid reaches 2 km
 
 
 def _small_config(**changes) -> SearchConfig:
     return SearchConfig(
-        **{"grid_size": 11, "grid_span_km": 2.0, "reduction_factor": 0.5, "spacing_limit_m": 50.0, **changes}
+        **{
+            "grid_size": 11,
+            "grid_span_km": 2.0,
+            "reduction_factor": 0.5,
+            "spacing_limit_m": 50.0,
+            "peak_exclusion_km": 0.5,
+            **changes,
+        }
     )
 
 
@@ -75,6 +88,20 @@ def test_non_finite_subimage_raises():
     sub.data[5, 7] = np.nan
     with pytest.raises(ValueError, match="1 non-finite value"):
         im_search(chip, sub, _small_config())
+
+
+def test_uniform_subimage_raises():
+    chip = _chip(np.random.default_rng(3).normal(size=(121, 121)))
+    sub = _subimage(chip, 30)
+    sub.data[:] = 7.0
+    with pytest.raises(ValueError, match="Subimage data are uniform"):
+        im_search(chip, sub, _small_config())
+
+
+def test_search_config_is_frozen():
+    config = _small_config()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.spacing_limit_m = 500.0
 
 
 def test_search_with_no_finite_correlation_raises():
@@ -105,6 +132,7 @@ def test_secondary_ignores_shifts_over_missing_chip_data():
         ({"reduction_factor": 1.0}, r"reduction_factor must be in \(0, 1\)"),
         ({"reduction_factor": 0.0}, r"reduction_factor must be in \(0, 1\)"),
         ({"spacing_limit_m": 200.0}, "must be smaller than the first grid step"),
+        ({"peak_exclusion_km": 1.0}, r"peak_exclusion_km \(1.0 km\) must be less than grid_span_km / 2"),
     ],
     ids=[
         "one-point",
@@ -115,6 +143,7 @@ def test_secondary_ignores_shifts_over_missing_chip_data():
         "no-reduction",
         "zero-reduction",
         "search-never-runs",
+        "exclusion-beyond-grid",
     ],
 )
 def test_invalid_search_config_raises(changes, message):

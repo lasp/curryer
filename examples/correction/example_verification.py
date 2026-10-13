@@ -374,9 +374,10 @@ def main() -> int:
     print("\n" + result.summary_table)
 
     print(f"\nOverall result : {'PASSED ✓' if result.passed else 'FAILED ✗'}")
+    within = result.percent_within_threshold  # None when every GCP is rejected
     print(
-        f"Within {setup.requirements.performance_threshold_m:.0f} m : {result.percent_within_threshold:.1f}%"
-        f" (required: ≥ {setup.requirements.performance_spec_percent:.0f}%)"
+        f"Within {setup.requirements.performance_threshold_m:.0f} m : {'N/A' if within is None else f'{within:.1f}%'}"
+        f" (required: > {setup.requirements.performance_spec_percent:.0f}%)"
     )
     print(f"Elapsed        : {result.elapsed_time_s:.2f} s" if result.elapsed_time_s else "")
 
@@ -411,7 +412,7 @@ def main() -> int:
         table.to_csv(summary, index=False)
         print(f"  Reviewer marks GCP {table.loc[0, 'gcp_index']} ({table.loc[0, 'status']}) as {decision!r}")
 
-        reviewed = apply_review(result, read_review_decisions(summary))
+        reviewed = apply_review(result, read_review_decisions(summary, result))
     print("\n" + reviewed.summary_table)
 
     # Demonstrate compare_results() with a "before" baseline

@@ -62,9 +62,13 @@ The result is:
 - `correlation_secondary`: the best first-grid correlation farther than
   `search.peak_exclusion_km` from the peak. The **peak margin** is `correlation` minus this.
 
-`search.max_shift_km()` is how far the search can move the subimage. A subimage must lie at least
-that far inside its chip on every side: a shift that would sample outside the chip raises rather
-than correlate against zero fill.
+The search samples only the part of the PSF-convolved chip where the PSF lies wholly inside the
+chip, so half a PSF kernel at each edge is not searchable. A shift that would sample outside that
+part raises rather than correlate against zero fill. Every search reaches the first grid's
+half-width, `grid_size // 2` steps of `grid_span_km / (grid_size - 1)` (5.6 km with the defaults),
+beyond the subimage, so a subimage needs that margin plus its expected error inside the chip.
+`search.max_shift_km()` is the worst case, the best point on the grid's edge in every iteration
+(28.1 km with the defaults); that margin always suffices but is rarely needed.
 
 ### Match-quality gates and statuses
 
@@ -448,7 +452,7 @@ status. Applying the decisions recomputes the statistics without re-matching:
 
 ```python
 saved = load_verification(Path("verification/run1"))
-reviewed = apply_review(saved, read_review_decisions(Path("verification/run1/summary.csv")))
+reviewed = apply_review(saved, read_review_decisions(Path("verification/run1/summary.csv"), saved))
 save_verification(reviewed, Path("verification/run1_reviewed"))
 ```
 
@@ -575,15 +579,15 @@ bounds around the best candidate.
 
 Set these for the instrument's ground sampling. Invalid values raise when the setup is built.
 
-| Field                                  | Default    | Notes                                                                                            |
-| -------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| `search.grid_size`                     | `44`       | Grid points per axis, integer ≥ 2                                                                |
-| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                 |
-| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                        |
-| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)` |
-| `search.peak_exclusion_km`             | `2.0`      | Distance from the first-grid peak beyond which `correlation_secondary` is taken                  |
-| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                          |
-| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                         |
+| Field                                  | Default    | Notes                                                                                                     |
+| -------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `search.grid_size`                     | `44`       | Grid points per axis, integer ≥ 2                                                                         |
+| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                          |
+| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                 |
+| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`          |
+| `search.peak_exclusion_km`             | `2.0`      | Distance from the first-grid peak beyond which `correlation_secondary` is taken; below `grid_span_km / 2` |
+| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                   |
+| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                  |
 
 ### Calibration — `setup.calibration`
 
@@ -685,20 +689,20 @@ Credentials come from the standard AWS sources (environment, profile or role).
 
 ## Troubleshooting
 
-| Error                                                                             | Cause and fix                                                                                                                                               |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `KeyError: Missing required 'sweep' section`                                      | `load_config_files()` needs `setup` and `sweep`                                                                                                             |
-| `ValidationError` loading the configuration                                       | The message names the field: a wrong type, a missing required field, or an unknown key                                                                      |
-| `SPICE(PATHTOOLONG)`                                                              | SPICE's 80-character path limit. curryer works around it with a short temporary directory; set `CURRYER_TEMP_DIR` if `/tmp` is unavailable                  |
-| `ValueError` with `geolocated_data=`                                              | Attach `setup.image_matching_func`, or pass `gcp_directory=`, `los_file=` and `psf_file=`                                                                   |
-| `ValueError: Spacecraft position ...`                                             | File-pair verification needs the observation's ECEF `position` in metres; a value in kilometres lands inside the Earth                                      |
-| `ValueError: Point (lat ..., lon ...) is outside the observation grid`            | The chip's centre must lie inside the observation it is paired with                                                                                         |
-| `'detector_pixel' ... must be ...` / `... columns but the LOS table has ... rows` | A column crop needs strictly increasing `detector_pixel`; an uncropped observation needs one LOS row per column                                             |
-| `Search shift ... samples the subimage outside the GCP chip`                      | Crop the observation at least `setup.search.max_shift_km()` inside the chip (plus the sweep's largest shift, for correction), or narrow the search          |
-| `Subimage has ... non-finite value(s)`                                            | The correlation is undefined over missing data; crop or mask before matching                                                                                |
-| `No GCP pair passes the match-quality gates ... under any parameter set.`         | Every pair failed the gates under every candidate: cloud, or bounds that never reach the true offset                                                        |
-| `No parameter set passes the match-quality gates on every usable GCP pair; ...`   | The usable pairs pass under different candidates. The message counts the passing candidates per pair: narrow the sweep, or drop the pair that rarely passes |
-| NaN in `nadir_equiv_total_error_m` (`Suspicious geometry: discriminant < 0`)      | The off-nadir angle exceeds the Earth-limb limit: check the spacecraft-state variable names, and that the position is in metres, Earth-fixed                |
+| Error                                                                             | Cause and fix                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KeyError: Missing required 'sweep' section`                                      | `load_config_files()` needs `setup` and `sweep`                                                                                                                                                                      |
+| `ValidationError` loading the configuration                                       | The message names the field: a wrong type, a missing required field, or an unknown key                                                                                                                               |
+| `SPICE(PATHTOOLONG)`                                                              | SPICE's 80-character path limit. curryer works around it with a short temporary directory; set `CURRYER_TEMP_DIR` if `/tmp` is unavailable                                                                           |
+| `ValueError` with `geolocated_data=`                                              | Attach `setup.image_matching_func`, or pass `gcp_directory=`, `los_file=` and `psf_file=`                                                                                                                            |
+| `ValueError: Spacecraft position ...`                                             | File-pair verification needs the observation's ECEF `position` in metres; a value in kilometres lands inside the Earth                                                                                               |
+| `ValueError: Point (lat ..., lon ...) is outside the observation grid`            | The chip's centre must lie inside the observation it is paired with                                                                                                                                                  |
+| `'detector_pixel' ... must be ...` / `... columns but the LOS table has ... rows` | A column crop needs strictly increasing `detector_pixel`; an uncropped observation needs one LOS row per column                                                                                                      |
+| `Search shift ... samples the subimage outside the GCP chip`                      | Crop the observation further inside the chip: the first grid's half-width plus the expected error (and the sweep's largest shift, for correction), or `setup.search.max_shift_km()` to be sure; or narrow the search |
+| `Subimage has ... non-finite value(s)`                                            | The correlation is undefined over missing data; crop or mask before matching                                                                                                                                         |
+| `No GCP pair passes the match-quality gates ... under any parameter set.`         | Every pair failed the gates under every candidate: cloud, or bounds that never reach the true offset                                                                                                                 |
+| `No parameter set passes the match-quality gates on every usable GCP pair; ...`   | The usable pairs pass under different candidates. The message counts the passing candidates per pair: narrow the sweep, or drop the pair that rarely passes                                                          |
+| NaN in `nadir_equiv_total_error_m` (`Suspicious geometry: discriminant < 0`)      | The off-nadir angle exceeds the Earth-limb limit: check the spacecraft-state variable names, and that the position is in metres, Earth-fixed                                                                         |
 
 ---
 

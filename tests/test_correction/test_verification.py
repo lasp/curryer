@@ -1373,6 +1373,20 @@ class TestChipImagesSaveAndReview:
         return verify(setup, image_matching_results=results, work_dir=tmp_path / "work")
 
     @staticmethod
+    def _summary(result):
+        import pandas as pd
+
+        errors = sorted(result.per_gcp_errors, key=lambda e: e.gcp_index)
+        return pd.DataFrame(
+            {
+                "gcp_index": [e.gcp_index for e in errors],
+                "science_key": [e.science_key for e in errors],
+                "gcp_key": [e.gcp_key for e in errors],
+                "review": "",
+            }
+        )
+
+    @staticmethod
     def _chips(n):
         return [
             xr.Dataset({"observed": (("row", "col"), np.full((2, 3), float(i)))}, attrs={"gcp_index": i})
@@ -1418,7 +1432,7 @@ class TestChipImagesSaveAndReview:
         assert chip.attrs["correlation"] == pytest.approx(0.83)
 
     def test_keep_images_with_precomputed_results_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="keep_images requires"):
+        with pytest.raises(ValueError, match="keep_images is implemented only"):
             verify(
                 _make_setup(),
                 image_matching_results=[_make_full_image_matching_dataset(n=1)],
@@ -1461,7 +1475,7 @@ class TestChipImagesSaveAndReview:
         summary.to_csv(tmp_path / "saved" / "summary.csv", index=False)
 
         loaded = load_verification(tmp_path / "saved")
-        reviewed = apply_review(loaded, read_review_decisions(tmp_path / "saved" / "summary.csv"))
+        reviewed = apply_review(loaded, read_review_decisions(tmp_path / "saved" / "summary.csv", loaded))
         save_verification(reviewed, tmp_path / "reviewed")
         reloaded = load_verification(tmp_path / "reviewed")
 
@@ -1486,15 +1500,27 @@ class TestChipImagesSaveAndReview:
         assert len(load_verification(tmp_path / "saved").chip_images) == 2
 
     def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
-        import pandas as pd
 
         from curryer.correction import read_review_decisions
 
-        pd.DataFrame({"gcp_index": [0, 1, 0], "review": ["accept", "", "reject"]}).to_csv(
-            tmp_path / "summary.csv", index=False
-        )
+        result = self._result(tmp_path)
+        table = self._summary(result).iloc[[0, 1, 0]]
+        table.assign(review=["accept", "", "reject"]).to_csv(tmp_path / "summary.csv", index=False)
         with pytest.raises(ValueError, match=r"gcp_index \[0\] appear more than once"):
-            read_review_decisions(tmp_path / "summary.csv")
+            read_review_decisions(tmp_path / "summary.csv", result)
+
+    @pytest.mark.parametrize(
+        ("column", "value"), [("gcp_key", "other_chip.nc"), ("science_key", "other_obs.nc"), ("gcp_index", 7)]
+    )
+    def test_read_review_decisions_rejects_a_csv_from_another_result(self, tmp_path, column, value):
+        from curryer.correction import read_review_decisions
+
+        result = self._result(tmp_path)
+        table = self._summary(result)
+        table.loc[1, column] = value
+        table.to_csv(tmp_path / "summary.csv", index=False)
+        with pytest.raises(ValueError, match="was not saved from this result"):
+            read_review_decisions(tmp_path / "summary.csv", result)
 
     def test_save_refuses_to_overwrite(self, tmp_path):
         from curryer.correction import save_verification
@@ -1514,28 +1540,29 @@ class TestChipImagesSaveAndReview:
         assert list(summary["status"])[1] == "rejected"
         assert summary["rejection_reason"][1] == "correlation 0.1000 < 0.5"
         assert list(summary["review"]) == ["", "", ""]
-        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {}
+        result = self._result(tmp_path)
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv", result) == {}
 
         summary["review"] = ["reject", "accept", ""]
         summary.to_csv(tmp_path / "saved" / "summary.csv", index=False)
-        assert read_review_decisions(tmp_path / "saved" / "summary.csv") == {0: "reject", 1: "accept"}
+        assert read_review_decisions(tmp_path / "saved" / "summary.csv", result) == {0: "reject", 1: "accept"}
 
     @pytest.mark.parametrize(
         ("column", "value", "match"), [("review", "maybe", "expected 'accept'"), (None, None, "column")]
     )
     def test_read_review_decisions_rejects_bad_input(self, tmp_path, column, value, match):
-        import pandas as pd
 
         from curryer.correction import read_review_decisions
 
-        table = pd.DataFrame({"gcp_index": [0], "review": ["accept"]})
+        result = self._result(tmp_path)
+        table = self._summary(result).assign(review="accept")
         if column is None:
             table = table.drop(columns="review")
         else:
             table[column] = value
         table.to_csv(tmp_path / "summary.csv", index=False)
         with pytest.raises(ValueError, match=match):
-            read_review_decisions(tmp_path / "summary.csv")
+            read_review_decisions(tmp_path / "summary.csv", result)
 
     def test_apply_review_moves_gcps_in_and_out_of_the_statistics(self, tmp_path):
         from curryer.correction import apply_review
@@ -1587,6 +1614,13 @@ class TestChipImagesSaveAndReview:
         assert "0 accepted, 3 rejected" in reviewed.summary_table
         assert reviewed.weighted_percent_within_threshold is None
         assert "weighted_mean_error_m" not in reviewed.aggregate_stats.attrs
+
+    def test_apply_review_accepting_a_non_finite_correlation_raises(self, tmp_path):
+        from curryer.correction import apply_review
+
+        result = self._result(tmp_path, correlations=(0.9, np.nan, 0.8))
+        with pytest.raises(ValueError, match="Correlation must be finite"):
+            apply_review(result, {1: "accept"})
 
     @pytest.mark.parametrize(("decisions", "match"), [({7: "accept"}, "not in the result"), ({0: "ok"}, "must be")])
     def test_apply_review_bad_decisions_raise(self, tmp_path, decisions, match):
