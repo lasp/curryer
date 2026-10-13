@@ -409,24 +409,22 @@ def _points_in_ring(points: np.ndarray, ring: np.ndarray) -> np.ndarray:
     return inside
 
 
-def _self_intersects(ring: np.ndarray) -> bool:
-    """True if any two non-adjacent edges of the open ring ``ring`` intersect."""
+def _self_intersects(ring: np.ndarray, max_pairs: int = 1 << 20) -> bool:
+    """True if any two non-adjacent edges of the open ring ``ring`` intersect.
+
+    Edge pairs whose bounding boxes overlap are tested exactly. The boxes are compared in blocks of
+    about ``max_pairs`` pairs, so memory stays bounded for rings of many vertices.
+    """
     a = ring
     b = np.roll(ring, -1, axis=0)
     n = len(ring)
+    lo = np.minimum(a, b)
+    hi = np.maximum(a, b)
 
     def orient(p, q, r):
         return np.sign(
             (q[..., 0] - p[..., 0]) * (r[..., 1] - p[..., 1]) - (q[..., 1] - p[..., 1]) * (r[..., 0] - p[..., 0])
         )
-
-    i, j = np.triu_indices(n, k=2)
-    nonadjacent = ~((i == 0) & (j == n - 1))
-    i, j = i[nonadjacent], j[nonadjacent]
-    o1 = orient(a[i], b[i], a[j])
-    o2 = orient(a[i], b[i], b[j])
-    o3 = orient(a[j], b[j], a[i])
-    o4 = orient(a[j], b[j], b[i])
 
     def on_segment(p, q, r):
         """For collinear p, q, r: True if r lies within the bounding box of segment p-q."""
@@ -437,23 +435,43 @@ def _self_intersects(ring: np.ndarray) -> bool:
             & (r[..., 1] <= np.maximum(p[..., 1], q[..., 1]))
         )
 
-    general = (o1 != o2) & (o3 != o4)
-    collinear = (
-        ((o1 == 0) & on_segment(a[i], b[i], a[j]))
-        | ((o2 == 0) & on_segment(a[i], b[i], b[j]))
-        | ((o3 == 0) & on_segment(a[j], b[j], a[i]))
-        | ((o4 == 0) & on_segment(a[j], b[j], b[i]))
-    )
-    return bool(np.any(general | collinear))
+    rows = max(1, max_pairs // max(n, 1))
+    for start in range(0, n, rows):
+        block = np.arange(start, min(start + rows, n))
+        overlap = (
+            (lo[block, None, 0] <= hi[None, :, 0])
+            & (lo[None, :, 0] <= hi[block, None, 0])
+            & (lo[block, None, 1] <= hi[None, :, 1])
+            & (lo[None, :, 1] <= hi[block, None, 1])
+            & (np.arange(n)[None, :] >= block[:, None] + 2)
+        )
+        i, j = np.nonzero(overlap)
+        i = block[i]
+        nonadjacent = ~((i == 0) & (j == n - 1))
+        i, j = i[nonadjacent], j[nonadjacent]
+        o1 = orient(a[i], b[i], a[j])
+        o2 = orient(a[i], b[i], b[j])
+        o3 = orient(a[j], b[j], a[i])
+        o4 = orient(a[j], b[j], b[i])
+        general = (o1 != o2) & (o3 != o4)
+        collinear = (
+            ((o1 == 0) & on_segment(a[i], b[i], a[j]))
+            | ((o2 == 0) & on_segment(a[i], b[i], b[j]))
+            | ((o3 == 0) & on_segment(a[j], b[j], a[i]))
+            | ((o4 == 0) & on_segment(a[j], b[j], b[i]))
+        )
+        if np.any(general | collinear):
+            return True
+    return False
 
 
-def _center(pixels: np.ndarray) -> np.ndarray:
-    """Unit vector at the mean of the pixels, checking that they fit the gnomonic projection around it."""
-    center = pixels.mean(axis=0)
+def _center(points: np.ndarray) -> np.ndarray:
+    """Unit vector at the mean of the points, checking that they fit the gnomonic projection around it."""
+    center = points.mean(axis=0)
     if np.linalg.norm(center) < 1e-6:
-        raise ValueError("swath pixels have no well-defined center")
+        raise ValueError("points have no well-defined center")
     center = _normalize(center)
-    _check_extent(pixels, center)
+    _check_extent(points, center)
     return center
 
 
@@ -576,8 +594,9 @@ def footprint_margin_m(footprint: np.ndarray, latitude: np.ndarray, longitude: n
     ------
     ValueError
         If ``footprint`` is not a closed (N + 1, 2) floating array of finite, in-range coordinates
-        with at least 3 distinct vertices, extends more than ``MAX_ANGULAR_RADIUS_DEG`` from its
-        center, crosses itself, or is clockwise; or if ``latitude`` and ``longitude`` are not floating arrays of one shape holding
+        with at least 3 distinct vertices, has no well-defined center (its vertex vectors cancel),
+        extends more than ``MAX_ANGULAR_RADIUS_DEG`` from its center, crosses itself, or is
+        clockwise; or if ``latitude`` and ``longitude`` are not floating arrays of one shape holding
         finite, in-range values.
     """
     if not isinstance(footprint, np.ndarray) or footprint.ndim != 2 or footprint.shape[1] != 2:
@@ -603,8 +622,7 @@ def footprint_margin_m(footprint: np.ndarray, latitude: np.ndarray, longitude: n
     vertices = _join([_to_unit_vectors(footprint[:-1, 1], footprint[:-1, 0])])
     if len(vertices) < 3:
         raise ValueError("footprint has fewer than 3 distinct vertices")
-    center = _normalize(vertices.mean(axis=0))
-    _check_extent(vertices, center)
+    center = _center(vertices)
 
     east, north = _gnomonic_basis(center)
     ring = _project(vertices, center, east, north)
