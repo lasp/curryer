@@ -235,12 +235,10 @@ def _create_parameter_kernels(
 
         # Collect the frame's angles; its CK is written once all axes are known
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-            # Aka: BASE-CK, YOKE-CK, HYSICS-CK
             constant_angles.setdefault(a_param.config_file, {})[a_param.spec.field] = p_data
 
         # Create dynamic changing SPICE kernels
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            # Aka: AZ-CK, EL-CK
             tlm_dataset_alt = apply_offset(a_param, p_data, tlm_dataset)
             param_kernels.append(
                 creator.write_from_json(

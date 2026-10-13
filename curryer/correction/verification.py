@@ -6,7 +6,7 @@ requirements — without running the iterative correction loop.
 
 Typical use-cases
 -----------------
-Weekly automated check (CLARREO)
+Weekly automated check
     Pass pre-computed ``image_matching_results`` (the most common path):
 
     >>> result = verify(setup, image_matching_results=weekly_datasets, work_dir=work_dir)
@@ -697,7 +697,7 @@ def _get_spice_boresight_and_rotation(
     Parameters
     ----------
     instrument_name : str
-        SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
+        SPICE instrument name, as the instrument kernel defines it.
     et_midframe : float
         Ephemeris time (ET seconds past J2000) at the mid-frame epoch.
     ref_frame : str, optional
