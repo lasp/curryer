@@ -66,6 +66,7 @@ from curryer.correction.io import resolve_path
 from curryer.correction.kernel_ops import (
     _create_dynamic_kernels,
     _create_parameter_kernels,
+    _require_radian_kernel_templates,
 )
 from curryer.correction.parameters import _rad_to_val, _seconds_to_val, load_param_sets
 from curryer.correction.results_io import (
@@ -314,7 +315,8 @@ def load_loop_observation(path: str | Path, los_vectors: np.ndarray) -> LoopObse
         not map onto the LOS table.
     """
     name = Path(str(path)).name
-    with xr.open_dataset(resolve_path(path)) as ds:
+    local_path = resolve_path(path)
+    with xr.open_dataset(local_path) as ds:
         if "band_data" not in ds or "ugps" not in ds:
             raise ValueError(f"{name} must carry 'band_data' and 'ugps'; it has {list(ds.data_vars)}.")
         radiance = np.asarray(ds["band_data"].values, dtype=float)
@@ -334,7 +336,7 @@ def load_loop_observation(path: str | Path, los_vectors: np.ndarray) -> LoopObse
             f"'ugps' in {name} must be {radiance.shape[0]} strictly increasing integers (one per frame); "
             f"got dtype {frame_ugps.dtype}, shape {frame_ugps.shape}."
         )
-    columns_los = observation_los_vectors(path, los_vectors, radiance.shape[1])
+    columns_los = observation_los_vectors(local_path, los_vectors, radiance.shape[1])
     return LoopObservation(radiance=radiance, frame_ugps=frame_ugps.astype(np.int64), los_vectors=columns_los)
 
 
@@ -508,9 +510,14 @@ def loop(
         an observation fails :func:`load_loop_observation`, a subimage pixel
         cannot be geolocated (:func:`_geolocate_observation`), a parameter set
         moves the subimage so the correlation search samples outside the chip,
-        or no parameter set can be compared (:func:`_usable_pairs_and_valid_sets`).
+        no parameter set can be compared (:func:`_usable_pairs_and_valid_sets`),
+        or a kernel parameter's template does not read radians
+        (:func:`~curryer.correction.kernel_ops._require_radian_kernel_templates`).
     KeyError
         If an OFFSET_KERNEL field is not a telemetry column.
+    NotImplementedError
+        If *resume_from_checkpoint* finds completed pairs, whose image-matching
+        results the checkpoint does not hold (CURRYER-100).
 
     Notes
     -----
@@ -554,6 +561,8 @@ def loop(
     logger.info(f"  GCP pairs: {len(tlm_sci_gcp_sets)} (outer loop - load data once)")
 
     matching_func = setup.observation_matching_func or match_observation
+
+    _require_radian_kernel_templates(sweep.parameters)
 
     # Initialize parameter sets
     params_set = load_param_sets(sweep)
