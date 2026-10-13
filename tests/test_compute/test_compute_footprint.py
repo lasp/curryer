@@ -174,12 +174,11 @@ class TestSwathFootprint:
         lat, lon = make_swath(40.0, -100.0, 60.0)
         lat[100:120, 0] = np.nan
         lon[100:120, 0] = np.nan
-        lat[0, -1] = np.nan
-        lon[-1, 30] = np.nan
+        lat[0, -1] = lon[0, -1] = np.nan
+        lat[-1, 30] = lon[-1, 30] = np.nan
 
         vertices = swath_footprint(lat, lon, tolerance_km=TOL_KM)
 
-        lat[np.isnan(lon)] = np.nan
         assert outside_count(vertices, lat, lon) == 0
 
     @pytest.mark.parametrize(("fill_index"), [(1, 0), (0, 1), (1, -1), (-2, -1), (-1, -2), (1, 30), (30, 1)])
@@ -212,7 +211,7 @@ class TestSwathFootprint:
 
     def test_inputs_are_not_modified(self):
         lat, lon = make_swath(40.0, -100.0, 60.0)
-        lat[5, 0] = np.nan
+        lat[5, 0] = lon[5, 0] = np.nan
         lat_copy, lon_copy = lat.copy(), lon.copy()
 
         swath_footprint(lat, lon, tolerance_km=TOL_KM)
@@ -231,6 +230,7 @@ class TestSwathFootprint:
             (np.zeros((4, 4)), np.full((4, 4), 181.0), r"within \[-180, 180\]"),
             (np.full((4, 4), np.inf), np.zeros((4, 4)), "infinite"),
             (np.full((4, 4), np.nan), np.full((4, 4), np.nan), "no valid pixels"),
+            (np.where(np.eye(4) > 0, np.nan, 0.0), np.zeros((4, 4)), "NaN fill at the same pixels"),
         ],
     )
     def test_invalid_arrays_raise(self, latitude, longitude, match):
@@ -542,21 +542,17 @@ class TestConvexFootprint:
         assert (vertices[:, 0] > 179).any()
         assert (vertices[:, 0] < -178).any()
 
-    def test_single_row(self):
-        lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=5)
-        lat, lon = lat[:1], lon[:1]
-        vertices = self.check(lat, lon)
-        assert min_edge_distance_km(vertices, lat, lon) >= 0.5 * np.hypot(PIXEL_KM, PIXEL_KM)
-
     def test_curved_swath(self):
         lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=2000, drift_deg_per_frame=0.002)
         vertices = self.check(lat, lon)
         assert min_edge_distance_km(vertices, lat, lon) >= 0.5 * np.hypot(PIXEL_KM, PIXEL_KM)
 
-    def test_two_pixels(self):
-        lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=2, n_pixels=1)
-        vertices = self.check(lat, lon)
-        assert min_edge_distance_km(vertices, lat, lon) >= 0.5 * np.hypot(PIXEL_KM, PIXEL_KM)
+    @pytest.mark.parametrize(("n_frames", "n_pixels", "axis"), [(1, 60, 0), (2, 1, 1)])
+    def test_pixel_size_unknown_along_an_axis_raises(self, n_frames, n_pixels, axis):
+        lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=n_frames, n_pixels=n_pixels)
+        with pytest.raises(ValueError, match=f"no two adjacent valid pixels along grid axis {axis}") as err:
+            convex_footprint(lat, lon, tolerance_km=TOL_KM)
+        assert not isinstance(err.value, FootprintGeometryError)
 
     def test_invalid_geolocation_raises(self):
         with pytest.raises(ValueError, match="no valid pixels") as err:
@@ -566,7 +562,8 @@ class TestConvexFootprint:
     def test_no_adjacent_valid_pixels_raises(self):
         lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=4, n_pixels=4)
         lat[[0, 0, 1, 1, 2, 2, 3, 3], [1, 3, 0, 2, 1, 3, 0, 2]] = np.nan
-        with pytest.raises(ValueError, match="no two adjacent valid pixels along either grid axis") as err:
+        lon[np.isnan(lat)] = np.nan
+        with pytest.raises(ValueError, match="no two adjacent valid pixels along grid axis 0") as err:
             convex_footprint(lat, lon, tolerance_km=TOL_KM)
         assert not isinstance(err.value, FootprintGeometryError)
 
@@ -614,7 +611,7 @@ class TestFootprintPolygon:
     def test_single_valid_pixel_raises_value_error(self):
         lat = np.array([[40.0, np.nan], [np.nan, np.nan]])
         lon = np.array([[-100.0, np.nan], [np.nan, np.nan]])
-        with pytest.raises(ValueError, match="no two adjacent valid pixels along either grid axis") as err:
+        with pytest.raises(ValueError, match="no two adjacent valid pixels along grid axis 0") as err:
             footprint_polygon(lat, lon)
         assert not isinstance(err.value, FootprintGeometryError)
 
@@ -695,6 +692,7 @@ class TestFootprintMargin:
             (np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 0.0]]), "fewer than 3 distinct"),
             (np.array([[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]), "crosses itself"),
             (np.array([[-80.0, 0.0], [0.0, 80.0], [80.0, 0.0], [0.0, -80.0], [-80.0, 0.0]]), "more than 60.0 degrees"),
+            (np.array([[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]), "counter-clockwise"),
         ],
     )
     def test_invalid_footprint_raises(self, polygon, match):

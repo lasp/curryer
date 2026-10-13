@@ -35,8 +35,8 @@ def footprint_polygon(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_
     """Return the footprint of a swath: its traced edge, or its buffered convex hull.
 
     Calls :func:`swath_footprint`. Where the edge cannot be traced (:class:`FootprintGeometryError`:
-    folded, overlapping or single-row grids), logs a warning and returns :func:`convex_footprint`
-    instead, which contains every valid pixel center but overreaches the swath where it is concave.
+    folded or overlapping grids), logs a warning and returns :func:`convex_footprint` instead, which
+    contains every valid pixel center but overreaches the swath where it is concave.
 
     Parameters and returns are as for :func:`swath_footprint`.
 
@@ -44,9 +44,9 @@ def footprint_polygon(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_
     ------
     ValueError
         For invalid geolocation or ``tolerance_km``, as for :func:`swath_footprint`. Also where the
-        fallback raises it: no two adjacent valid pixels along either grid axis (such as a single
-        valid pixel), which :func:`swath_footprint` reports as :class:`FootprintGeometryError`; or,
-        with ``tolerance_km=None``, a zero median pixel spacing.
+        fallback raises it: a grid axis with no two adjacent valid pixels (such as a single row or a
+        single valid pixel), which :func:`swath_footprint` reports as
+        :class:`FootprintGeometryError`; or, with ``tolerance_km=None``, a zero median pixel spacing.
     FootprintGeometryError
         Only if the convex hull fails verification, which indicates a defect in this module.
     """
@@ -99,7 +99,8 @@ def swath_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_km
     ------
     ValueError
         If the geolocation is invalid: the inputs are not 2-D floating arrays of the same shape,
-        contain infinite or out-of-range values, or have no valid pixels; the valid pixels extend
+        contain infinite or out-of-range values, have NaN fill at different pixels, or have no valid
+        pixels; the valid pixels extend
         more than ``MAX_ANGULAR_RADIUS_DEG`` from their center, have no well-defined center, or the
         footprint contains a pole. Also if ``tolerance_km`` is neither None nor a positive finite
         number, or is None and the median pixel spacing along a grid axis is zero (more than half of
@@ -111,7 +112,7 @@ def swath_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_km
         two sides meeting at a corner without an angle between them; or a resulting polygon with
         fewer than 3 distinct vertices, that crosses itself, or that does not contain every valid
         pixel center and every point of the half-pixel edge ring. ``convex_footprint`` handles
-        these swaths.
+        these swaths where both grid axes have two adjacent valid pixels.
     """
     lat, lon = _validate(latitude, longitude, tolerance_km)
     if lat.shape[0] < 2 or lat.shape[1] < 2:
@@ -152,7 +153,9 @@ def _validate(latitude: np.ndarray, longitude: np.ndarray, tolerance_km: float |
     if np.isinf(lat).any() or np.isinf(lon).any():
         raise ValueError("latitude and longitude must not contain infinite values")
 
-    fill = np.isnan(lat) | np.isnan(lon)
+    fill = np.isnan(lat)
+    if not np.array_equal(fill, np.isnan(lon)):
+        raise ValueError("latitude and longitude must have NaN fill at the same pixels")
     if (np.abs(lat[~fill]) > 90).any():
         raise ValueError("latitude values must be within [-90, 90]")
     if (np.abs(lon[~fill]) > 180).any():
@@ -163,10 +166,7 @@ def _validate(latitude: np.ndarray, longitude: np.ndarray, tolerance_km: float |
     if rows.size == 0:
         raise ValueError("latitude and longitude contain no valid pixels")
     crop = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
-    lat, lon, fill = lat[crop], lon[crop], fill[crop]
-    lat[fill] = np.nan
-    lon[fill] = np.nan
-    return lat, lon
+    return lat[crop], lon[crop]
 
 
 def _default_tolerance(spacings: list[float]) -> float:
@@ -492,8 +492,8 @@ def _verify(vertices: np.ndarray, pixels: np.ndarray, edge_ring: np.ndarray) -> 
 def convex_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_km: float | None = None) -> np.ndarray:
     """Return the buffered spherical convex hull of a swath of geolocated pixels.
 
-    For swaths whose edge ``swath_footprint`` cannot trace, such as folded, overlapping or
-    single-row grids. The hull of the valid pixel centers is taken in a gnomonic projection, where
+    For swaths whose edge ``swath_footprint`` cannot trace, such as folded or overlapping grids. The
+    hull of the valid pixel centers is taken in a gnomonic projection, where
     great circles are straight lines, so it is the spherical convex hull and its edges are the arcs
     CMR draws. Each hull vertex is then surrounded by an octagon whose edges lie at least ``r``
     from it, with ``r`` half the pixel diagonal plus ``tolerance_km``, and the hull is taken again.
@@ -503,8 +503,6 @@ def convex_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_k
     concave, such as the inner side of a curved swath or around a fold.
 
     The pixel diagonal comes from the median spacing of adjacent valid pixels along each grid axis.
-    If one axis has no adjacent valid pixels, as in a single row, the other axis's spacing is used
-    for both.
 
     Parameters and returns are as for ``swath_footprint``. With ``tolerance_km=None``, the
     tolerance is half the smaller pixel spacing, as there.
@@ -512,9 +510,9 @@ def convex_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_k
     Raises
     ------
     ValueError
-        For invalid geolocation, as for ``swath_footprint``. Also if no two adjacent valid pixels
-        exist along either grid axis, such as a single valid pixel: the geolocation is valid, but
-        the pixel size, and so the margin, is unknown. With ``tolerance_km=None``, also if a median
+        For invalid geolocation, as for ``swath_footprint``. Also if a grid axis has no two adjacent
+        valid pixels, such as a single row or a single valid pixel: the geolocation is valid, but the
+        pixel size along that axis, and so the margin, is unknown. With ``tolerance_km=None``, also if a median
         pixel spacing is zero, as for ``swath_footprint``.
     FootprintGeometryError
         If the hull fails verification, which indicates a defect in this function.
@@ -526,21 +524,18 @@ def convex_footprint(latitude: np.ndarray, longitude: np.ndarray, *, tolerance_k
 
     spacings = []
     for axis in (0, 1):
-        if lat.shape[axis] > 1 and (np.moveaxis(valid, axis, 0)[1:] & np.moveaxis(valid, axis, 0)[:-1]).any():
-            spacings.append(_median_spacing(xyz, valid, axis))
-    if not spacings:
-        raise ValueError("no two adjacent valid pixels along either grid axis")
-    row_spacing, col_spacing = spacings * 2 if len(spacings) == 1 else spacings
+        along = np.moveaxis(valid, axis, 0)
+        if not (along[1:] & along[:-1]).any():
+            raise ValueError(f"no two adjacent valid pixels along grid axis {axis}; the pixel size along it is unknown")
+        spacings.append(_median_spacing(xyz, valid, axis))
+    row_spacing, col_spacing = spacings
     tol = _default_tolerance(spacings) if tolerance_km is None else tolerance_km / EARTH_MEAN_RADIUS_KM
     radius = 0.5 * np.hypot(row_spacing, col_spacing) + tol
 
     center = _center(pixels)
     east, north = _gnomonic_basis(center)
     # Joggling keeps qhull working when the centers are collinear; the octagons give the second hull area.
-    if len(pixels) < 3:
-        corners = pixels
-    else:
-        corners = pixels[ConvexHull(_project(pixels, center, east, north), qhull_options="QJ").vertices]
+    corners = pixels[ConvexHull(_project(pixels, center, east, north), qhull_options="QJ").vertices]
     buffered = _octagons(corners, radius / np.cos(np.pi / 8), east)
     _check_extent(buffered, center)
     hull = buffered[ConvexHull(_project(buffered, center, east, north)).vertices]
@@ -565,8 +560,8 @@ def footprint_margin_m(footprint: np.ndarray, latitude: np.ndarray, longitude: n
     ----------
     footprint : np.ndarray
         Polygon as returned by :func:`footprint_polygon`: (longitude, latitude) in degrees, shape
-        (N + 1, 2), floating dtype, closed by repeating the first vertex, at least 3 distinct
-        vertices, within ``MAX_ANGULAR_RADIUS_DEG`` of the mean of its vertices, not crossing itself.
+        (N + 1, 2), floating dtype, counter-clockwise seen from above, closed by repeating the first
+        vertex, at least 3 distinct vertices, within ``MAX_ANGULAR_RADIUS_DEG`` of the mean of its vertices, not crossing itself.
     latitude : np.ndarray
         Geodetic latitude of the points, degrees in [-90, 90], floating dtype, any shape.
     longitude : np.ndarray
@@ -582,7 +577,7 @@ def footprint_margin_m(footprint: np.ndarray, latitude: np.ndarray, longitude: n
     ValueError
         If ``footprint`` is not a closed (N + 1, 2) floating array of finite, in-range coordinates
         with at least 3 distinct vertices, extends more than ``MAX_ANGULAR_RADIUS_DEG`` from its
-        center, or crosses itself; or if ``latitude`` and ``longitude`` are not floating arrays of one shape holding
+        center, crosses itself, or is clockwise; or if ``latitude`` and ``longitude`` are not floating arrays of one shape holding
         finite, in-range values.
     """
     if not isinstance(footprint, np.ndarray) or footprint.ndim != 2 or footprint.shape[1] != 2:
@@ -615,6 +610,8 @@ def footprint_margin_m(footprint: np.ndarray, latitude: np.ndarray, longitude: n
     ring = _project(vertices, center, east, north)
     if _self_intersects(ring):
         raise ValueError("footprint polygon crosses itself")
+    if _signed_area(ring) <= 0:
+        raise ValueError("footprint must be counter-clockwise seen from above")
 
     points = _to_unit_vectors(latitude.astype(np.float64).ravel(), longitude.astype(np.float64).ravel())
     # A point more than 90 degrees from the center cannot be inside a polygon within 60 degrees of it,
