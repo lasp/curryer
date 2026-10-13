@@ -9,6 +9,7 @@ import pytest
 import xarray as xr
 from scipy.io import loadmat
 
+from curryer.compute.footprint import EARTH_MEAN_RADIUS_KM, footprint_margin_m
 from curryer.correction.grid_types import NamedImageGrid
 from curryer.correction.pairing import find_l1a_gcp_pairs, pair_files, pair_geolocated_dataset_with_gcp_files
 
@@ -71,10 +72,43 @@ def _load(path: Path, key: str, name: str) -> NamedImageGrid:
     )
 
 
-def _rect(name, lon_min, lon_max, lat_min, lat_max) -> NamedImageGrid:
-    lat = np.array([[lat_max, lat_max], [lat_min, lat_min]], dtype=float)
-    lon = np.array([[lon_min, lon_max], [lon_min, lon_max]], dtype=float)
+def _rect(name, lon_min, lon_max, lat_min, lat_max, n=201) -> NamedImageGrid:
+    """Dense grid of pixel centers filling the box, so its footprint is the box to within a pixel."""
+    lat, lon = np.meshgrid(np.linspace(lat_max, lat_min, n), np.linspace(lon_min, lon_max, n), indexing="ij")
     return NamedImageGrid(data=np.zeros_like(lat), lat=lat, lon=lon, name=name)
+
+
+def _curved_swath(n_frames=3000, n_pixels=60, pixel_km=0.46, drift_deg_per_frame=0.001):
+    """Swath along a great circle from (30 N, 100 W) heading 50 deg, each frame rotated about the polar axis
+    by ``drift_deg_per_frame`` times its index, which curves the swath as Earth rotation curves a ground track."""
+    lat0, lon0, az = np.radians(30.0), np.radians(-100.0), np.radians(50.0)
+    start = np.array([np.cos(lat0) * np.cos(lon0), np.cos(lat0) * np.sin(lon0), np.sin(lat0)])
+    east = np.cross([0.0, 0.0, 1.0], start)
+    east /= np.linalg.norm(east)
+    north = np.cross(start, east)
+    heading = np.cos(az) * north + np.sin(az) * east
+    s = np.arange(n_frames)[:, None, None] * pixel_km / EARTH_MEAN_RADIUS_KM
+    t = (np.arange(n_pixels) - (n_pixels - 1) / 2)[None, :, None] * pixel_km / EARTH_MEAN_RADIUS_KM
+    xyz = np.cos(t) * (np.cos(s) * start + np.sin(s) * heading) + np.sin(t) * np.cross(start, heading)
+    rot = np.radians(drift_deg_per_frame) * np.arange(n_frames)[:, None]
+    x = xyz[..., 0] * np.cos(rot) - xyz[..., 1] * np.sin(rot)
+    y = xyz[..., 0] * np.sin(rot) + xyz[..., 1] * np.cos(rot)
+    return np.degrees(np.arcsin(xyz[..., 2])), np.degrees(np.arctan2(y, x))
+
+
+def _beyond(lat, lon, inner, outer, distance_km):
+    """(lat, lon) ``distance_km`` past pixel ``outer``, continuing the great circle from pixel ``inner``."""
+
+    def unit(i):
+        la, lo = np.radians(lat[i]), np.radians(lon[i])
+        return np.array([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)])
+
+    p0, p1 = unit(outer), unit(inner)
+    direction = p0 - p1 - ((p0 - p1) @ p0) * p0
+    direction /= np.linalg.norm(direction)
+    d = distance_km / EARTH_MEAN_RADIUS_KM
+    q = np.cos(d) * p0 + np.sin(d) * direction
+    return float(np.degrees(np.arcsin(q[2]))), float(np.degrees(np.arctan2(q[1], q[0])))
 
 
 def _point(name, lon, lat) -> NamedImageGrid:
@@ -204,3 +238,90 @@ def test_pair_geolocated_raises_on_unreadable_chip(image_match_dir, tmp_path):
     chips = [bad, image_match_dir / "2/GCP10121Maracaibo_resampled.mat"]
     with pytest.raises(ValueError, match="Failed to load GCP file .*GCP00000Bad_resampled.mat"):
         pair_geolocated_dataset_with_gcp_files(_geolocated_over(maracaibo), chips)
+
+
+# ── footprint ─────────────────────────────────────────────────────────────────
+
+
+def test_curved_swath_pairs_by_its_traced_edge():
+    lat, lon = _curved_swath()
+    mid = lat.shape[0] // 2
+    # Two pixels in from each edge of the middle frame (inside), and 3 km beyond each edge (outside).
+    inside = [(float(lat[mid, 2]), float(lon[mid, 2])), (float(lat[mid, -3]), float(lon[mid, -3]))]
+    outside = [_beyond(lat, lon, (mid, 1), (mid, 0), 3.0), _beyond(lat, lon, (mid, -2), (mid, -1), 3.0)]
+    points = inside + outside
+
+    # The swath bows about 11 km over its 1380 km, as a ground track does over a several-minute granule.
+    # The polygon through the four corner pixels gets both sides wrong: it cuts inside the swath on the
+    # concave side and reaches past it on the convex side.
+    corners = np.array([[lon[i, j], lat[i, j]] for i, j in ((0, 0), (0, -1), (-1, -1), (-1, 0), (0, 0))])
+    corner_margin = footprint_margin_m(corners, np.array([p[0] for p in points]), np.array([p[1] for p in points]))
+    assert (corner_margin[:2] < 0).sum() == 1
+    assert (corner_margin[2:] >= 0).sum() == 1
+
+    gcps = [_point(f"GCP{k}", p_lon, p_lat) for k, (p_lat, p_lon) in enumerate(points)]
+    swath = NamedImageGrid(data=np.zeros_like(lat), lat=lat, lon=lon, name="L1A")
+    result = find_l1a_gcp_pairs([swath], gcps, max_distance_m=0.0)
+    assert sorted(m.gcp_index for m in result.matches) == [0, 1]
+    assert result.l1a_images[0].footprint.shape[1] == 2
+
+
+def test_footprint_tolerance_is_passed_through():
+    l1a = _rect("L1A", -1.0, 1.0, -1.0, 1.0)
+    default = find_l1a_gcp_pairs([l1a], [_point("GCP", 0.0, 0.0)], max_distance_m=0.0)
+    coarse = find_l1a_gcp_pairs([l1a], [_point("GCP", 0.0, 0.0)], max_distance_m=0.0, footprint_tolerance_km=5.0)
+    assert len(default.l1a_images[0].footprint) >= 5
+    assert not np.array_equal(default.l1a_images[0].footprint, coarse.l1a_images[0].footprint)
+
+
+def test_l1a_with_non_nan_fill_raises_naming_the_image():
+    l1a = _rect("granule_7", -1.0, 1.0, -1.0, 1.0)
+    l1a.lat[0, 0] = -9999.0
+    with pytest.raises(ValueError, match="Footprint of L1A image 'granule_7': latitude values must be within"):
+        find_l1a_gcp_pairs([l1a], [_point("GCP", 0.0, 0.0)], max_distance_m=0.0)
+
+
+def test_nan_fill_at_the_edge_is_excluded_from_the_footprint():
+    l1a = _rect("L1A", -1.0, 1.0, -1.0, 1.0)
+    l1a.lat[:, :100] = np.nan
+    l1a.lon[:, :100] = np.nan
+    result = find_l1a_gcp_pairs([l1a], [_point("west", -0.5, 0.0), _point("east", 0.5, 0.0)], max_distance_m=0.0)
+    assert [result.gcp_images[m.gcp_index].name for m in result.matches] == ["east"]
+
+
+def test_no_gcp_images_gives_no_matches():
+    result = find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [], max_distance_m=0.0)
+    assert result.matches == []
+    assert len(result.l1a_images) == 1
+
+
+def test_l1a_that_is_not_2d_raises_naming_the_image():
+    l1a = NamedImageGrid(data=np.zeros(5), lat=np.linspace(0, 1, 5), lon=np.linspace(0, 1, 5), name="granule_1d")
+    with pytest.raises(ValueError, match="Footprint of L1A image 'granule_1d': latitude must be a 2-D numpy array"):
+        find_l1a_gcp_pairs([l1a], [_point("GCP", 0.0, 0.0)], max_distance_m=0.0)
+
+
+def test_invalid_footprint_tolerance_raises_naming_the_image():
+    with pytest.raises(ValueError, match="Footprint of L1A image 'L1A': tolerance_km must be"):
+        find_l1a_gcp_pairs(
+            [_rect("L1A", -1.0, 1.0, -1.0, 1.0)],
+            [_point("GCP", 0.0, 0.0)],
+            max_distance_m=0.0,
+            footprint_tolerance_km=0.0,
+        )
+
+
+def test_untraceable_footprint_falls_back_with_a_warning_naming_the_image(caplog):
+    row = _rect("one_row", -1.0, 1.0, -1.0, 1.0)
+    row = NamedImageGrid(data=row.data[:1], lat=row.lat[:1].copy(), lon=row.lon[:1].copy(), name="one_row")
+    with caplog.at_level("WARNING", logger="curryer.correction.pairing"):
+        result = find_l1a_gcp_pairs([row], [_point("GCP", 0.0, 1.0)], max_distance_m=0.0)
+    assert "'one_row'" in caplog.text
+    assert "convex hull" in caplog.text
+    assert len(result.matches) == 1
+
+
+@pytest.mark.parametrize(("lat", "lon"), [(np.nan, 0.0), (0.0, np.nan), (0.0, 200.0)])
+def test_gcp_with_invalid_center_raises_naming_the_chip(lat, lon):
+    with pytest.raises(ValueError, match="GCP chip 'bad_chip': center pixel"):
+        find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("bad_chip", lon, lat)], max_distance_m=0.0)

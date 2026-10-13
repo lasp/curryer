@@ -22,6 +22,18 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
 - **Pairing raises** -- `pair_files` and `pair_geolocated_dataset_with_gcp_files` raise
   `ValueError` naming a file that fails to load (previously skipped, which misaligned every
   later pair).
+- **Pairing uses the traced swath footprint** -- `find_l1a_gcp_pairs`, `pair_files` and
+  `pair_geolocated_dataset_with_gcp_files` test each GCP center against the polygon traced around
+  the L1A's geolocated pixels (`curryer.compute.footprint.footprint_polygon`), half a pixel outside
+  the edge pixel centres, instead of the polygon through its four corner pixels in a flat ENU
+  plane. On a curved swath the corner polygon paired chips outside the swath and missed chips
+  inside it (by up to about 18 km on 6-9 minute CLARREO granules). Margins are great-circle
+  distances on the mean-radius sphere. `PairingResult.l1a_images` holds `L1AMetadata`, which adds
+  the `footprint`; an optional `footprint_tolerance_km` sets its simplification tolerance. An
+  untraceable footprint (folded or single-row grids) falls back to the buffered convex hull with a
+  warning naming the image. An L1A whose geolocation has non-NaN fill or out-of-range values, and a
+  GCP chip whose center pixel is non-finite or out of range (previously never paired), raise
+  `ValueError` naming the image or chip.
 - **`im_search` returns seven values** -- `(lat_err_km, lon_err_km, ccv_max, ccv_secondary, row,
 col, step_m)`, and `IntegratedImageMatchResult` gains `ccv_secondary` before its index fields.
   `im_search` raises when a shifted subimage samples outside the GCP chip (it correlated against
