@@ -17,6 +17,23 @@ TOL_KM = 0.25
 PIXEL_KM = 0.46
 
 
+def record_simplify_tolerances(monkeypatch):
+    """Record the tolerance, in radians, of every simplification the module runs.
+
+    Footprints from equal tolerances can keep different near-collinear vertices on different platforms,
+    so the default tolerance is checked where it is used rather than by comparing polygons.
+    """
+    tolerances = []
+    simplify = footprint._simplify
+
+    def recording(points, tol):
+        tolerances.append(tol)
+        return simplify(points, tol)
+
+    monkeypatch.setattr(footprint, "_simplify", recording)
+    return tolerances
+
+
 def unit_vectors(lat, lon):
     lat, lon = np.radians(lat), np.radians(lon)
     return np.stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)], axis=-1)
@@ -367,14 +384,16 @@ class TestSwathFootprint:
             assert np.isclose(offset @ out_along * EARTH_MEAN_RADIUS_KM, along / 2 + TOL_KM, rtol=0.02)
             assert np.isclose(offset @ out_cross * EARTH_MEAN_RADIUS_KM, cross / 2 + TOL_KM, rtol=0.02)
 
-    def test_default_tolerance_is_half_the_smaller_pixel_spacing(self):
+    def test_default_tolerance_is_half_the_smaller_pixel_spacing(self, monkeypatch):
         along, cross = 0.3, 0.2
         lat, lon = make_swath(40.0, -100.0, 60.0, along_km=along, cross_km=cross)
-        default = swath_footprint(lat, lon)
-        explicit = swath_footprint(lat, lon, tolerance_km=cross / 2)
+        tolerances = record_simplify_tolerances(monkeypatch)
 
-        assert outside_count(default, lat, lon) == 0
-        np.testing.assert_allclose(default, explicit, atol=1e-9)
+        vertices = swath_footprint(lat, lon)
+
+        assert outside_count(vertices, lat, lon) == 0
+        assert tolerances
+        np.testing.assert_allclose(np.array(tolerances) * EARTH_MEAN_RADIUS_KM, cross / 2, rtol=1e-3)
 
     def test_default_tolerance_with_zero_pixel_spacing_raises(self):
         lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=10, n_pixels=10)
@@ -493,17 +512,6 @@ def min_edge_distance_km(vertices, lat, lon):
     return min(distances) * EARTH_MEAN_RADIUS_KM
 
 
-def assert_same_ring(actual, desired, atol=1e-8):
-    """Closed rings with the same vertices in the same order, whatever vertex each starts at.
-
-    The convex hull's first vertex comes from qhull and can change with round-off between platforms.
-    """
-    a, d = actual[:-1], desired[:-1]
-    assert len(a) == len(d)
-    start = int(np.argmin(np.linalg.norm(a - d[0], axis=1)))
-    np.testing.assert_allclose(np.roll(a, -start, axis=0), d, atol=atol)
-
-
 class TestConvexFootprint:
     def check(self, lat, lon):
         vertices = convex_footprint(lat, lon, tolerance_km=TOL_KM)
@@ -568,11 +576,16 @@ class TestConvexFootprint:
             convex_footprint(lat, lon, tolerance_km=TOL_KM)
         assert not isinstance(err.value, FootprintGeometryError)
 
-    def test_default_tolerance(self):
+    def test_default_tolerance(self, monkeypatch):
         lat, lon = make_swath(40.0, -100.0, 60.0, n_frames=200, along_km=0.3, cross_km=0.5)
+        tolerances = record_simplify_tolerances(monkeypatch)
+
         vertices = convex_footprint(lat, lon)
+
         assert outside_count(vertices, lat, lon) == 0
-        assert_same_ring(vertices, convex_footprint(lat, lon, tolerance_km=0.15))
+        assert min_edge_distance_km(vertices, lat, lon) >= 0.5 * np.hypot(0.3, 0.5)
+        assert tolerances
+        np.testing.assert_allclose(np.array(tolerances) * EARTH_MEAN_RADIUS_KM, 0.15, rtol=1e-3)
 
     def test_default_tolerance_with_zero_pixel_spacing_raises(self):
         lat = np.full((3, 3), 40.0)
