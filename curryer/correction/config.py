@@ -17,8 +17,7 @@ for a correction analysis run, including:
   ``setup`` / ``sweep`` / ``output`` models from a JSON file
 
 All mission-specific values (kernel filenames, parameter ranges, instrument names)
-live in mission configuration modules (e.g. ``tests/test_correction/clarreo_config.py``)
-and are injected via ``GeolocationSetup`` / ``Sweep``.
+live in each mission's configuration and are injected via ``GeolocationSetup`` / ``Sweep``.
 
 All config objects are ``pydantic.BaseModel`` subclasses which provide:
 - Automatic type validation and clear ``ValidationError`` messages on construction
@@ -313,7 +312,7 @@ class GeolocationConfig(BaseModel):
         Kernels regenerated from telemetry each run (SC-SPK, SC-CK, etc.)
         but *not* altered by parameter variations.
     instrument_name
-        SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
+        SPICE instrument name, as the instrument kernel defines it.
     time_field
         Column name in the science DataFrame that holds uGPS timestamps.
     minimum_correlation
