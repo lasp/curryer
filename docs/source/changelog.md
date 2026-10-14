@@ -50,7 +50,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   reach, a crop margin that always suffices).
 - `image_io.observation_los_vectors`: a column-cropped NetCDF observation carries
   `detector_pixel`, its LOS-table row per column; without it the LOS table must have one row per
-  column. `image_matching()` checks the same for the geolocated grid.
+  column. `image_matching()` reads `detector_pixel` from a column-cropped `geolocated_data` the same
+  way, so that dataset can be cropped inside the chip across track as well as along it.
 
 ### Fixes
 

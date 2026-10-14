@@ -919,6 +919,7 @@ class TestViewingGeometryFailures:
         spice_side_effect=None,
         r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6),
         los_rows: int = 3,
+        detector_pixel=None,
     ):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -926,6 +927,8 @@ class TestViewingGeometryFailures:
         from curryer.correction.verification import image_matching
 
         grid, geolocated = self._image_matching_inputs(with_frame)
+        if detector_pixel is not None:
+            geolocated["detector_pixel"] = ("pixel", np.asarray(detector_pixel))
         match = SimpleNamespace(
             lat_error_km=0.1,
             lon_error_km=0.1,
@@ -972,6 +975,24 @@ class TestViewingGeometryFailures:
     def test_image_matching_needs_one_los_row_per_column(self, tmp_path):
         with pytest.raises(ValueError, match="3 columns but the LOS table has 1 rows"):
             self._call_image_matching(tmp_path, with_frame=True, los_rows=1)
+        assert self.image_match_calls == 0
+
+    def test_image_matching_accepts_detector_pixel_of_a_column_crop(self, tmp_path):
+        from curryer import spicierpy as sp
+
+        # The LOS check passes and the call reaches the SPICE query.
+        with pytest.raises(sp.utils.exceptions.SpiceyError, match="reached"):
+            self._call_image_matching(
+                tmp_path,
+                with_frame=True,
+                los_rows=8,
+                detector_pixel=[2, 3, 4],
+                spice_side_effect=sp.utils.exceptions.SpiceyError("reached"),
+            )
+
+    def test_image_matching_rejects_invalid_detector_pixel(self, tmp_path):
+        with pytest.raises(ValueError, match="'detector_pixel' in The geolocated grid must be 3 strictly increasing"):
+            self._call_image_matching(tmp_path, with_frame=True, los_rows=8, detector_pixel=[4, 3, 2])
         assert self.image_match_calls == 0
 
     def test_image_matching_rejects_position_in_kilometers(self, tmp_path):
