@@ -393,12 +393,12 @@ re-geolocates each pixel with it, and the built-in matching requires the PSF.
 `verify(setup, ...)` takes one input mode, keyword-only. If several are given, the first in this
 order is used:
 
-| Mode                 | Arguments                                                                                               | Use                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Pre-computed matches | `image_matching_results=`                                                                               | A mission's own matching pipeline; needs no SPICE     |
-| Geolocated dataset   | `geolocated_data=` with `setup.image_matching_func`, or with `gcp_directory=`, `los_file=`, `psf_file=` | Matching a whole geolocated dataset                   |
-| Explicit file pairs  | `gcp_pairs=`, `los_file=`, `psf_file=`                                                                  | Observation subimages already paired with their chips |
-| Auto-paired files    | `observation_paths=`, `gcp_directory=`, `los_file=`, `psf_file=`                                        | Pairing by spatial overlap                            |
+| Mode                 | Arguments                                                                                               | Use                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Pre-computed matches | `image_matching_results=`                                                                               | A mission's own matching pipeline; needs no SPICE                                                 |
+| Geolocated dataset   | `geolocated_data=` with `setup.image_matching_func`, or with `gcp_directory=`, `los_file=`, `psf_file=` | Matching a whole geolocated dataset, cropped inside the chip (`detector_pixel` for a column crop) |
+| Explicit file pairs  | `gcp_pairs=`, `los_file=`, `psf_file=`                                                                  | Observation subimages already paired with their chips                                             |
+| Auto-paired files    | `observation_paths=`, `gcp_directory=`, `los_file=`, `psf_file=`                                        | Pairing by spatial overlap                                                                        |
 
 With no mode, or a mode missing what it needs, `verify()` raises `ValueError`.
 
@@ -632,16 +632,16 @@ Set these for the instrument's ground sampling. Invalid values raise when the se
 
 ### Parameter types — `ptype`
 
-| Value             | Adjusts                                                                |
-| ----------------- | ---------------------------------------------------------------------- |
-| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK |
-| `OFFSET_KERNEL`   | A bias added to a telemetry angle field before its CK is built         |
+| Value             | Adjusts                                                                      |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK       |
+| `OFFSET_KERNEL`   | A bias added to a telemetry angle field before its CK is built               |
+| `OFFSET_TIME`     | Seconds added to the frame times: true frame time = recorded `ugps` + offset |
 
 Kernel parameters are applied in radians, so each `CONSTANT_KERNEL` and `OFFSET_KERNEL` template
 must set `"input_angle_units": "RADIANS"` (the attitude writer reads degrees without it), and an
 `OFFSET_KERNEL` telemetry field must be in radians. The loop raises before the first pair
 otherwise.
-| `OFFSET_TIME` | Seconds added to the frame times: true frame time = recorded `ugps` + offset |
 
 ### Output — `output`
 
@@ -706,7 +706,7 @@ Credentials come from the standard AWS sources (environment, profile or role).
 | `ValueError` with `geolocated_data=`                                              | Attach `setup.image_matching_func`, or pass `gcp_directory=`, `los_file=` and `psf_file=`                                                                                                                            |
 | `ValueError: Spacecraft position ...`                                             | File-pair verification needs the observation's ECEF `position` in metres; a value in kilometres lands inside the Earth                                                                                               |
 | `ValueError: Point (lat ..., lon ...) is outside the observation grid`            | The chip's centre must lie inside the observation it is paired with                                                                                                                                                  |
-| `'detector_pixel' ... must be ...` / `... columns but the LOS table has ... rows` | A column crop needs strictly increasing `detector_pixel`; an uncropped observation needs one LOS row per column                                                                                                      |
+| `'detector_pixel' ... must be ...` / `... columns but the LOS table has ... rows` | A column crop, file or `geolocated_data`, needs strictly increasing `detector_pixel`; an uncropped one needs one LOS row per column                                                                                  |
 | `Search shift ... samples the subimage outside the GCP chip`                      | Crop the observation further inside the chip: the first grid's half-width plus the expected error (and the sweep's largest shift, for correction), or `setup.search.max_shift_km()` to be sure; or narrow the search |
 | `Subimage has ... non-finite value(s)`                                            | The correlation is undefined over missing data; crop or mask before matching                                                                                                                                         |
 | `No GCP pair passes the match-quality gates ... under any parameter set.`         | Every pair failed the gates under every candidate: cloud, or bounds that never reach the true offset                                                                                                                 |

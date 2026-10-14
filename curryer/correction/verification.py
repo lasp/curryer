@@ -73,6 +73,7 @@ from curryer.correction.image_io import (
     load_image_grid,
     load_los_vectors,
     load_optical_psf,
+    select_los_rows,
 )
 from curryer.correction.image_match import IntegratedImageMatchResult, integrated_image_match
 from curryer.correction.io import resolve_path
@@ -809,7 +810,10 @@ def image_matching(
     ----------
     geolocated_data : xr.Dataset
         Geolocation output with ``latitude``, ``longitude``, and a ``frame``
-        coordinate (GPS seconds = ``ugps_times / 1e6``).
+        coordinate (GPS seconds = ``ugps_times / 1e6``).  A column crop of the
+        detector carries ``detector_pixel``, the LOS-table row of each column
+        (as for :func:`~curryer.correction.image_io.observation_los_vectors`);
+        without it the columns are the table's rows in order.
     gcp_reference_file : Path
         Path to GCP reference image (``.mat`` or ``.nc``).
     telemetry : pd.DataFrame or None, optional
@@ -847,15 +851,17 @@ def image_matching(
         calibration files are missing; if the mid-frame time cannot be
         determined (no ``frame`` coordinate and no ``setup.geo.time_field``
         telemetry column); if ``setup.geo.instrument_name`` is not set; if
-        the LOS table does not have one row per geolocated column; or if the
+        the columns do not map onto the LOS table (``detector_pixel`` invalid,
+        or absent and the table not one row per column); or if the
         ground-track azimuth at the grid centre is undefined (fewer than two
         rows, or non-finite pixels there).  All of these are checked before the
         image match runs.  The match itself
         raises if a search shift samples the geolocated grid outside the
         searchable part of the GCP chip, the chip less half a PSF kernel at
         each edge (:func:`~curryer.correction.search.im_search`): the whole
-        geolocated dataset is matched, so it must be cropped inside the chip
-        by the first search grid's half-width plus the expected error
+        geolocated dataset is matched, so it must be cropped inside the chip,
+        in both frames and columns (with ``detector_pixel``), by the first
+        search grid's half-width plus the expected error
         (``setup.search.max_shift_km()`` is a margin that always suffices).
     spiceypy.utils.exceptions.SpiceyError
         If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
@@ -901,11 +907,8 @@ def image_matching(
         if calibration.psf_file is None:
             raise ValueError("No PSF source configured. Set setup.calibration.psf_file.")
         optical_psfs = load_optical_psf(Path(calibration.psf_file))
-    if len(los_vectors) != subimage.data.shape[1]:
-        raise ValueError(
-            f"The geolocated grid has {subimage.data.shape[1]} columns but the LOS table has {len(los_vectors)} "
-            "rows; image_matching() needs one row per column."
-        )
+    detector_pixel = geolocated_data["detector_pixel"].values if "detector_pixel" in geolocated_data else None
+    los_vectors = select_los_rows(los_vectors, detector_pixel, subimage.data.shape[1], "The geolocated grid")
 
     # Spacecraft position
     if r_iss_midframe is None:
@@ -1934,6 +1937,10 @@ def load_verification(out_dir: Path) -> VerificationResult:
     ------
     FileNotFoundError
         If ``result.json`` or ``aggregate_stats.nc`` is missing.
+    ValueError
+        If ``chips/`` exists but does not hold exactly one chip per GCP of the
+        result, with matching ``gcp_index``, ``science_key`` and ``gcp_key``
+        (a chip missing, extra or from another run).
     """
     out_dir = Path(out_dir)
     data = json.loads((out_dir / "result.json").read_text())
@@ -1943,7 +1950,21 @@ def load_verification(out_dir: Path) -> VerificationResult:
         data["chip_images"] = sorted(
             (xr.load_dataset(path) for path in chip_dir.glob("gcp_*.nc")), key=lambda chip: chip.attrs["gcp_index"]
         )
-    return VerificationResult.model_validate(data)
+    result = VerificationResult.model_validate(data)
+    if result.chip_images is not None:
+        expected = [
+            (e.gcp_index, e.science_key, e.gcp_key) for e in sorted(result.per_gcp_errors, key=lambda e: e.gcp_index)
+        ]
+        found = [
+            (int(chip.attrs["gcp_index"]), chip.attrs.get("science_key"), chip.attrs.get("gcp_key"))
+            for chip in result.chip_images
+        ]
+        if found != expected:
+            raise ValueError(
+                f"{chip_dir} holds chips for (gcp_index, science_key, gcp_key) {found}, but the result's GCPs are "
+                f"{expected}; a chip is missing, extra or from another run."
+            )
+    return result
 
 
 def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict[int, Literal["accept", "reject"]]:
