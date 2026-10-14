@@ -162,13 +162,11 @@ class AttitudeTestCase(unittest.TestCase):
 
     def test_prepare_input_data_splits_at_gap_threshold(self):
         ugps = self._ugps_with_steps([40_000_000, 30_000_000, 29_999_999])
-        chunks = self._gap_writer("ugps").prepare_input_data(self._identity_quats(ugps, "ugps"))
-        self.assertListEqual([len(chunk) for chunk in chunks], [10, 10, 20])
-
-    def test_prepare_input_data_splits_et_input_at_gap(self):
-        et = spicetime.adapt(self._ugps_with_steps([40_000_000]), "ugps", "et")
-        chunks = self._gap_writer("et").prepare_input_data(self._identity_quats(et, "et"))
-        self.assertListEqual([len(chunk) for chunk in chunks], [10, 10])
+        for time_type in ("ugps", "et"):
+            with self.subTest(time_type=time_type):
+                times = spicetime.adapt(ugps, "ugps", time_type)
+                chunks = self._gap_writer(time_type).prepare_input_data(self._identity_quats(times, time_type))
+                self.assertListEqual([len(chunk) for chunk in chunks], [10, 10, 20])
 
     def test_prepare_input_data_gaps_after_invalid_quaternion_removal(self):
         writer = self._gap_writer("ugps")
