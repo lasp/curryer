@@ -24,9 +24,7 @@ from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
 # 1. Load raw chip (returns band data + ECEF X/Y/Z arrays)
-band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(
-    Path("LT08CHP.20140803.p002r071.c01.v001.hdf")
-)
+band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(Path("LT08CHP.20140803.p002r071.c01.v001.hdf"))
 
 # 2. Configure regridding (~100 m resolution for CLARREO)
 config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))
@@ -46,8 +44,8 @@ regridded = regrid_gcp_chip(
 )
 
 # 4. regridded is an ImageGrid — ready for image matching
-print(regridded.data.shape)   # e.g. (421, 433)
-print(regridded.lat[0, 0])    # top-left latitude
+print(regridded.data.shape)  # e.g. (421, 433)
+print(regridded.lat[0, 0])  # top-left latitude
 ```
 
 ---
@@ -123,7 +121,7 @@ from curryer.correction.config import RegridConfig
 from curryer.correction.image_io import load_gcp_chip_from_hdf
 from curryer.correction.regrid import regrid_gcp_chip
 
-input_dir  = Path("/data/landsat_gcps")
+input_dir = Path("/data/landsat_gcps")
 output_dir = Path("/data/regridded")
 output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -185,7 +183,7 @@ config = RegridConfig(output_grid_size=(500, 500))
 
 # Explicit geographic extent + resolution
 config = RegridConfig(
-    output_bounds=(-116.5, -115.5, 38.0, 39.0),   # (minlon, maxlon, minlat, maxlat)
+    output_bounds=(-116.5, -115.5, 38.0, 39.0),  # (minlon, maxlon, minlat, maxlat)
     output_resolution_deg=(0.001, 0.001),
 )
 
