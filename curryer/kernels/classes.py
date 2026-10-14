@@ -168,14 +168,44 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         """Prepare an accessor that will provide input data for the kernel."""
         raise NotImplementedError
 
-    def _chunk_table_by_gaps(self, table: pd.DataFrame, index_dt_type="utc"):
-        """Chunk a table by the `input_gap_threshold` (if any)."""
+    def _chunk_table_by_gaps(self, table: pd.DataFrame, times: np.ndarray, time_type: str) -> list[pd.DataFrame]:
+        """Chunk a table by the `input_gap_threshold` (if any).
+
+        A gap is a step between consecutive `times`, in uGPS, that is greater
+        than or equal to the threshold. The table is split after each gap.
+
+        Parameters
+        ----------
+        table : pd.DataFrame
+            Rows to chunk, in time order.
+        times : np.ndarray
+            Time of each row of `table`, shape (n_rows,), in the format
+            `time_type`. Independent of the table's index, which may already
+            be formatted for the kernel writer.
+        time_type : str
+            Time format (ttype) of `times`, as accepted by `spicetime.adapt`.
+
+        Returns
+        -------
+        list[pd.DataFrame]
+            Consecutive slices of `table`. Empty if no threshold is
+            configured, the table has at most one row, or no gaps are found.
+
+        Raises
+        ------
+        ValueError
+            If `times` is not one-dimensional with one value per table row.
+
+        """
+        if times.shape != (table.shape[0],):
+            raise ValueError(f"times must have shape ({table.shape[0]},) to match the table rows, not: {times.shape}")
+
         chunks = []
         if table.shape[0] <= 1 or self.properties.input_gap_threshold is None:
             return chunks
 
         gap_size_sec = pd.to_timedelta(self.properties.input_gap_threshold).seconds
-        ugps = spicetime.adapt(table.index, index_dt_type, "ugps")
+        ugps = spicetime.adapt(times, time_type, "ugps")
         (idx_gaps,) = np.where((ugps[1:] - ugps[:-1]) / 1e6 >= gap_size_sec)
 
         if idx_gaps.size:
