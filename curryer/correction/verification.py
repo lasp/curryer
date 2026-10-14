@@ -1868,6 +1868,10 @@ def load_verification(out_dir: Path) -> VerificationResult:
     ------
     FileNotFoundError
         If ``result.json`` or ``aggregate_stats.nc`` is missing.
+    ValueError
+        If ``chips/`` exists but does not hold exactly one chip per GCP of the
+        result, with matching ``gcp_index``, ``science_key`` and ``gcp_key``
+        (a chip missing, extra or from another run).
     """
     out_dir = Path(out_dir)
     data = json.loads((out_dir / "result.json").read_text())
@@ -1877,7 +1881,21 @@ def load_verification(out_dir: Path) -> VerificationResult:
         data["chip_images"] = sorted(
             (xr.load_dataset(path) for path in chip_dir.glob("gcp_*.nc")), key=lambda chip: chip.attrs["gcp_index"]
         )
-    return VerificationResult.model_validate(data)
+    result = VerificationResult.model_validate(data)
+    if result.chip_images is not None:
+        expected = [
+            (e.gcp_index, e.science_key, e.gcp_key) for e in sorted(result.per_gcp_errors, key=lambda e: e.gcp_index)
+        ]
+        found = [
+            (int(chip.attrs["gcp_index"]), chip.attrs.get("science_key"), chip.attrs.get("gcp_key"))
+            for chip in result.chip_images
+        ]
+        if found != expected:
+            raise ValueError(
+                f"{chip_dir} holds chips for (gcp_index, science_key, gcp_key) {found}, but the result's GCPs are "
+                f"{expected}; a chip is missing, extra or from another run."
+            )
+    return result
 
 
 def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict[int, Literal["accept", "reject"]]:
