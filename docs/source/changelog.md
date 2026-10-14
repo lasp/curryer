@@ -21,6 +21,10 @@ Adds footprint polygons for 2-D geolocation grids.
 - **New `curryer.compute.footprint.footprint_margin_m`** -- signed great-circle distance, in
   metres, from points to a footprint's edge: positive inside, negative outside. A clockwise,
   open or self-crossing polygon raises `ValueError`.
+- **Faster CK and SPK writes with `input_gap_threshold`** -- the attitude and ephemeris-state
+  writers detect input gaps on the input times instead of parsing the UTC strings written for
+  msopck/mkspk back to uGPS. On 1M Libera azimuth samples, gap detection drops from 12.6 s to
+  4.1 s; chunk boundaries and kernel segment data are unchanged.
 
 ## Version 0.5.3 (2026-10)
 
