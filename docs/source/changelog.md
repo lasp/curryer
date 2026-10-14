@@ -110,7 +110,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   reach, a crop margin that always suffices).
 - `image_io.observation_los_vectors`: a column-cropped NetCDF observation carries
   `detector_pixel`, its LOS-table row per column; without it the LOS table must have one row per
-  column. `image_matching()` checks the same for the geolocated grid.
+  column. `image_matching()` reads `detector_pixel` from a column-cropped `geolocated_data` the same
+  way, so that dataset can be cropped inside the chip across track as well as along it.
 - Per-GCP `along_track_error_m` / `cross_track_error_m` (geolocated minus true; from
   `track_azimuth_deg`, `psf.ground_track_azimuth_deg`), `off_nadir_angle_deg` and
   `correlation_secondary`.
@@ -119,7 +120,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
   `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
   `review` column of `summary.csv`. `read_review_decisions(summary_csv, result)` refuses a CSV
-  whose GCP indices and keys do not match `result`.
+  whose GCP indices and keys do not match `result`, and `load_verification` refuses a `chips/`
+  directory that does not hold one chip per GCP with matching keys.
 - Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
   `weighted_statistics`, `weighted_percent_below` and
   `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted

@@ -1009,6 +1009,7 @@ class TestViewingGeometryFailures:
         r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6),
         los_rows: int = 3,
         gcp_grid=None,
+        detector_pixel=None,
     ):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -1016,6 +1017,8 @@ class TestViewingGeometryFailures:
         from curryer.correction.verification import image_matching
 
         grid, geolocated = self._image_matching_inputs(with_frame)
+        if detector_pixel is not None:
+            geolocated["detector_pixel"] = ("pixel", np.asarray(detector_pixel))
         match = SimpleNamespace(
             lat_error_km=0.1,
             lon_error_km=0.1,
@@ -1075,6 +1078,24 @@ class TestViewingGeometryFailures:
     def test_image_matching_needs_one_los_row_per_column(self, tmp_path):
         with pytest.raises(ValueError, match="3 columns but the LOS table has 1 rows"):
             self._call_image_matching(tmp_path, with_frame=True, los_rows=1)
+        assert self.image_match_calls == 0
+
+    def test_image_matching_accepts_detector_pixel_of_a_column_crop(self, tmp_path):
+        from curryer import spicierpy as sp
+
+        # The LOS check passes and the call reaches the SPICE query.
+        with pytest.raises(sp.utils.exceptions.SpiceyError, match="reached"):
+            self._call_image_matching(
+                tmp_path,
+                with_frame=True,
+                los_rows=8,
+                detector_pixel=[2, 3, 4],
+                spice_side_effect=sp.utils.exceptions.SpiceyError("reached"),
+            )
+
+    def test_image_matching_rejects_invalid_detector_pixel(self, tmp_path):
+        with pytest.raises(ValueError, match="'detector_pixel' in The geolocated grid must be 3 strictly increasing"):
+            self._call_image_matching(tmp_path, with_frame=True, los_rows=8, detector_pixel=[4, 3, 2])
         assert self.image_match_calls == 0
 
     def test_image_matching_rejects_position_in_kilometers(self, tmp_path):
@@ -1387,10 +1408,13 @@ class TestChipImagesSaveAndReview:
         )
 
     @staticmethod
-    def _chips(n):
+    def _chips(result):
         return [
-            xr.Dataset({"observed": (("row", "col"), np.full((2, 3), float(i)))}, attrs={"gcp_index": i})
-            for i in range(n)
+            xr.Dataset(
+                {"observed": (("row", "col"), np.full((2, 3), float(e.gcp_index)))},
+                attrs={"gcp_index": e.gcp_index, "science_key": e.science_key, "gcp_key": e.gcp_key},
+            )
+            for e in result.per_gcp_errors
         ]
 
     def test_file_pair_matching_keeps_images(self, tmp_path):
@@ -1441,13 +1465,15 @@ class TestChipImagesSaveAndReview:
             )
 
     def test_chip_images_never_serialised(self, tmp_path):
-        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        result = self._result(tmp_path)
+        result = result.model_copy(update={"chip_images": self._chips(result)})
         assert "chip_images" not in json.loads(result.model_dump_json(exclude={"aggregate_stats"}))
 
     def test_save_and_load_round_trip(self, tmp_path):
         from curryer.correction import load_verification, save_verification
 
-        result = self._result(tmp_path).model_copy(update={"chip_images": self._chips(3)})
+        result = self._result(tmp_path)
+        result = result.model_copy(update={"chip_images": self._chips(result)})
         save_verification(result, tmp_path / "saved")
 
         assert sorted(p.name for p in (tmp_path / "saved").iterdir()) == [
@@ -1495,9 +1521,32 @@ class TestChipImagesSaveAndReview:
 
         (tmp_path / "saved" / "chips").mkdir(parents=True)
         (tmp_path / "saved" / "chips" / "gcp_0007.nc").write_text("left from an interrupted save")
-        save_verification(self._result(tmp_path).model_copy(update={"chip_images": self._chips(2)}), tmp_path / "saved")
+        result = self._result(tmp_path, correlations=(0.9, 0.1))
+        save_verification(result.model_copy(update={"chip_images": self._chips(result)}), tmp_path / "saved")
         assert sorted(p.name for p in (tmp_path / "saved" / "chips").iterdir()) == ["gcp_0000.nc", "gcp_0001.nc"]
         assert len(load_verification(tmp_path / "saved").chip_images) == 2
+
+    @pytest.mark.parametrize("change", ["missing", "added", "other run", "empty"])
+    def test_load_with_chips_not_matching_the_result_raises(self, tmp_path, change):
+        from curryer.correction import load_verification, save_verification
+
+        result = self._result(tmp_path)
+        save_verification(result.model_copy(update={"chip_images": self._chips(result)}), tmp_path / "saved")
+        chip_dir = tmp_path / "saved" / "chips"
+        if change == "missing":
+            (chip_dir / "gcp_0001.nc").unlink()
+        elif change == "added":
+            extra = self._chips(result)[0].assign_attrs(gcp_index=3)
+            extra.to_netcdf(chip_dir / "gcp_0003.nc")
+        elif change == "other run":
+            other = self._chips(result)[1].assign_attrs(science_key="other_obs.nc")
+            (chip_dir / "gcp_0001.nc").unlink()
+            other.to_netcdf(chip_dir / "gcp_0001.nc")
+        else:
+            for path in chip_dir.iterdir():
+                path.unlink()
+        with pytest.raises(ValueError, match="a chip is missing, extra or from another run"):
+            load_verification(tmp_path / "saved")
 
     def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
 

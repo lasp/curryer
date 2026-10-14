@@ -16,6 +16,7 @@ from curryer.correction.image_io import (
     load_named_image_grid,
     observation_los_vectors,
     save_image_grid,
+    select_los_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -651,3 +652,9 @@ class TestObservationLosVectors:
         path = self._obs(tmp_path, detector_pixel=detector_pixel, n_cols=len(detector_pixel))
         with pytest.raises(ValueError, match="detector_pixel"):
             observation_los_vectors(path, self.LOS, 3)
+
+
+def test_select_los_rows_takes_the_detector_pixel_rows():
+    los = np.column_stack([np.arange(8.0), np.zeros(8), np.ones(8)])
+    np.testing.assert_array_equal(select_los_rows(los, np.array([2, 3, 4]), 3, "grid"), los[2:5])
+    assert select_los_rows(los, None, 8, "grid") is los
