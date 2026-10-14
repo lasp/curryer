@@ -754,9 +754,9 @@ The GCP chip's centre must lie inside the observation it is paired with: its
 column sets the line of sight used for the error.
 
 **`ValueError: 'detector_pixel' in ... must be ...` or `... columns but the LOS table has ... rows`**
-A column-cropped observation needs `detector_pixel` with one strictly increasing
-LOS-table row per column; an uncropped one needs a LOS table with one row per
-column.
+A column-cropped observation, file or `geolocated_data`, needs `detector_pixel`
+with one strictly increasing LOS-table row per column; an uncropped one needs a
+LOS table with one row per column.
 
 **`ValueError: Search shift ... samples the subimage outside the GCP chip`**
 The observation is too large for the chip at the configured search reach. Crop

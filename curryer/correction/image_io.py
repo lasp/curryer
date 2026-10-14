@@ -904,11 +904,42 @@ def observation_los_vectors(filepath: str | Path, los_vectors: np.ndarray, n_col
         with xr.open_dataset(resolve_path(filepath)) as ds:
             if "detector_pixel" in ds:
                 detector_pixel = np.asarray(ds["detector_pixel"].values)
+    return select_los_rows(los_vectors, detector_pixel, n_columns, Path(str(filepath)).name)
 
+
+def select_los_rows(
+    los_vectors: np.ndarray, detector_pixel: np.ndarray | None, n_columns: int, name: str
+) -> np.ndarray:
+    """Return the rows of *los_vectors* for an image's columns, given its ``detector_pixel``.
+
+    Parameters
+    ----------
+    los_vectors : ndarray, shape (n_pixels, 3)
+        Detector line-of-sight table (:func:`load_los_vectors`).
+    detector_pixel : ndarray or None
+        The 0-based row of *los_vectors* for each column of a column crop;
+        ``None`` for an image whose columns are the table's rows in order.
+    n_columns : int
+        Number of columns in the image.
+    name : str
+        The image's name, for error messages.
+
+    Returns
+    -------
+    ndarray, shape (n_columns, 3)
+        Line-of-sight rows matching the image's columns.
+
+    Raises
+    ------
+    ValueError
+        If *detector_pixel* is not 1-D integers of length *n_columns*, strictly
+        increasing and within the table; or, when it is ``None``, if the table
+        does not have *n_columns* rows.
+    """
     if detector_pixel is None:
         if len(los_vectors) != n_columns:
             raise ValueError(
-                f"{Path(str(filepath)).name} has {n_columns} columns but the LOS table has {len(los_vectors)} rows; "
+                f"{name} has {n_columns} columns but the LOS table has {len(los_vectors)} rows; "
                 "a column crop must carry 'detector_pixel'."
             )
         return los_vectors
@@ -922,7 +953,7 @@ def observation_los_vectors(filepath: str | Path, los_vectors: np.ndarray, n_col
         or detector_pixel.max() >= len(los_vectors)
     ):
         raise ValueError(
-            f"'detector_pixel' in {Path(str(filepath)).name} must be {n_columns} strictly increasing integers in "
+            f"'detector_pixel' in {name} must be {n_columns} strictly increasing integers in "
             f"[0, {len(los_vectors)}); got {detector_pixel!r}."
         )
     return los_vectors[detector_pixel]
