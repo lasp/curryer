@@ -185,6 +185,13 @@ def test_pair_files_returns_the_overlapping_observation(image_match_dir, maracai
     assert pairs == [(maracaibo, maracaibo_gcp_dir / "GCP10121Maracaibo_resampled.mat")]
 
 
+def test_pair_files_with_no_pairs_says_to_lower_max_distance(image_match_dir, maracaibo_gcp_dir, caplog):
+    with caplog.at_level("WARNING", logger="curryer.correction.pairing"):
+        pairs = pair_files([image_match_dir / "1/TestCase1a_subimage.mat"], maracaibo_gcp_dir)
+    assert pairs == []
+    assert "lower it (negative allows centers outside)" in caplog.text
+
+
 def test_pair_files_raises_on_unreadable_l1a(image_match_dir, maracaibo_gcp_dir, tmp_path):
     bad = tmp_path / "bad_subimage.mat"
     bad.write_bytes(b"not a MATLAB file")

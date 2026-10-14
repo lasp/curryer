@@ -513,8 +513,9 @@ def pair_files(
 
     if not result.matches:
         logger.warning(
-            f"No valid pairs found with max_distance={max_distance_m}m. "
-            f"Try increasing max_distance_m or check spatial coverage."
+            f"No valid pairs found with max_distance_m={max_distance_m} m. A GCP center must lie at least "
+            "max_distance_m inside an L1A footprint; lower it (negative allows centers outside) or check the "
+            "spatial coverage."
         )
         return []
 
