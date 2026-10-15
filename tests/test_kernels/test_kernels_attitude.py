@@ -178,9 +178,14 @@ class AttitudeTestCase(unittest.TestCase):
         chunks = self._gap_writer("ugps", "500ms").prepare_input_data(self._identity_quats(ugps, "ugps"))
         self.assertListEqual([len(chunk) for chunk in chunks], [10, 10, 20])
 
+    def test_prepare_input_data_fractional_microsecond_threshold_rounds_up(self):
+        ugps = self._ugps_with_steps([2, 1], cadence_us=1)
+        chunks = self._gap_writer("ugps", "1500ns").prepare_input_data(self._identity_quats(ugps, "ugps"))
+        self.assertListEqual([len(chunk) for chunk in chunks], [10, 20])
+
     def test_prepare_input_data_rejects_non_positive_gap_threshold(self):
         table = self._identity_quats(self._ugps_with_steps([40_000_000]), "ugps")
-        for gap_threshold in ("0s", "-30s"):
+        for gap_threshold in ("0s", "-30s", "500ns"):
             with self.subTest(gap_threshold=gap_threshold):
                 with self.assertRaisesRegex(ValueError, "input_gap_threshold must be a positive duration"):
                     self._gap_writer("ugps", gap_threshold).prepare_input_data(table)
