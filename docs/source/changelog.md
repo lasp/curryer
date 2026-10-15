@@ -164,6 +164,22 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   so a custom `variable_name` in `parameter_metadata` works (it raised `KeyError`).
 - `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
   match-quality gates on; it counted the errors of rejected pairs too.
+- The motion blur clipped the PSF. `convolve_psf_with_spacecraft_motion` returned the blurred
+  PSF on the bounding box of its rotated frame, reused as a lat/lon box, so a PSF was cut off
+  wherever the motion was not east-west (on CLARREO flight chips, 0.13 km RMS across track
+  instead of 0.26 km); it also filled outside the sampled PSF with the nearest edge value. The
+  blurred PSF is now returned on its own footprint, zero outside the sampled PSF.
+- The motion blur follows the frame step (rows of the subimage, along track), the direction the
+  footprint moves during a frame; it followed the detector step (across track). It raises when
+  the subimage has fewer than two frames or a non-finite frame step.
+- `resample_psf_to_gcp_resolution` centres its grid on the PSF centroid with an odd number of
+  samples; the grid started at the PSF's edge, so the centroid fell up to a chip pixel off centre
+  and the convolution shifted the chip by that much (12-81 m on 100 m chips). It raises on PSF
+  weights that do not sum to a positive value.
+- Matched errors and correlations change with these three fixes. The 20 MATLAB-simulated
+  image-match cases, which reproduced the clipped and shifted PSF, are removed; image matching
+  is tested on a synthetic scene simulated independently of the convolution
+  (`tests/integration/test_image_match_synthetic.py`).
 
 ### Documentation
 

@@ -1,4 +1,4 @@
-"""Tests for the viewing and ground-track geometry in ``curryer.correction.psf``."""
+"""Unit tests for ``curryer.correction.psf``: viewing and ground-track geometry, the PSF crop and the motion blur."""
 
 from __future__ import annotations
 
@@ -7,9 +7,14 @@ import pytest
 import xarray as xr
 
 from curryer.compute.spatial import geodetic_to_ecef
+from curryer.correction.config import PSFSamplingConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
-from curryer.correction.grid_types import ImageGrid
-from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
+from curryer.correction.grid_types import ImageGrid, ProjectedPSF, PSFGrid
+from curryer.correction.psf import (
+    convolve_psf_with_spacecraft_motion,
+    ground_track_azimuth_deg,
+    resolve_spacecraft_ecef,
+)
 
 CENTER_LON, CENTER_LAT = -102.33, 26.15
 ALTITUDE_M = 410_000.0
@@ -234,3 +239,79 @@ def test_crop_with_psf_not_smaller_than_chip_raises():
     psf = PSFGrid(data=np.ones((4, 3)), lat=np.arange(4), lon=np.arange(3))
     with pytest.raises(ValueError, match="not smaller than the GCP chip"):
         crop_to_full_psf_overlap(chip, psf)
+
+
+SIGMA_DEG = 0.002
+FRAME_STEP_DEG = 0.006
+BLUR_SAMPLING = PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4, psf_lon_sample_dist_deg=1e-4)
+
+
+def _rotated(heading_deg: float, along: np.ndarray, across: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Lon/lat of offsets *along* / *across* a heading measured counterclockwise from east."""
+    h = np.deg2rad(heading_deg)
+    return CENTER_LON + along * np.cos(h) - across * np.sin(h), CENTER_LAT + along * np.sin(h) + across * np.cos(h)
+
+
+def _gaussian_psf(heading_deg: float, floor: float = 0.0) -> ProjectedPSF:
+    """Gaussian PSF twice as wide across the heading as along it, sampled on a grid aligned with it."""
+    along, across = np.meshgrid(
+        np.linspace(-4, 4, 41) * SIGMA_DEG, np.linspace(-4, 4, 41) * 2 * SIGMA_DEG, indexing="ij"
+    )
+    lon, lat = _rotated(heading_deg, along, across)
+    data = np.exp(-0.5 * ((along / SIGMA_DEG) ** 2 + (across / (2 * SIGMA_DEG)) ** 2)) + floor
+    return ProjectedPSF(data=data, lat=lat, lon=lon)
+
+
+def _frames(heading_deg: float, n_frames: int = 5) -> ImageGrid:
+    """Frames advancing FRAME_STEP_DEG along the heading, three pixels across it."""
+    along, across = np.meshgrid(np.arange(n_frames) * FRAME_STEP_DEG, np.array([-1.0, 0.0, 1.0]) * 0.005, indexing="ij")
+    lon, lat = _rotated(heading_deg, along, across)
+    return ImageGrid(data=np.ones(lat.shape), lat=lat, lon=lon)
+
+
+def _rms_widths(psf: PSFGrid, heading_deg: float) -> tuple[float, float]:
+    lat, lon = np.meshgrid(psf.lat, psf.lon, indexing="ij")
+    w = psf.data / psf.data.sum()
+    d_lon, d_lat = lon - np.sum(w * lon), lat - np.sum(w * lat)
+    h = np.deg2rad(heading_deg)
+    along = d_lon * np.cos(h) + d_lat * np.sin(h)
+    across = -d_lon * np.sin(h) + d_lat * np.cos(h)
+    return float(np.sqrt(np.sum(w * along**2))), float(np.sqrt(np.sum(w * across**2)))
+
+
+@pytest.mark.parametrize("heading_deg", [0.0, 41.0, 90.0, 139.0, 225.0])
+def test_motion_blur_widens_the_psf_by_one_frame_step_along_track(heading_deg):
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(heading_deg), _frames(heading_deg), BLUR_SAMPLING)
+
+    along, across = _rms_widths(blurred, heading_deg)
+    assert along == pytest.approx(np.sqrt(SIGMA_DEG**2 + FRAME_STEP_DEG**2 / 12), rel=0.03)
+    assert across == pytest.approx(2 * SIGMA_DEG, rel=0.03)
+
+
+def test_motion_blur_is_zero_outside_the_sampled_psf():
+    # The PSF is sampled on a grid aligned with east, the frames advance at 45 degrees: the
+    # samples do not fill the grid the blur runs on, and nothing may be filled in beyond them.
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(0.0, floor=0.5), _frames(45.0), BLUR_SAMPLING)
+
+    lat, lon = np.meshgrid(blurred.lat, blurred.lon, indexing="ij")
+    reach = FRAME_STEP_DEG / 2 + 2e-4
+    outside = (np.abs(lon - CENTER_LON) > 4 * SIGMA_DEG + reach) | (np.abs(lat - CENTER_LAT) > 8 * SIGMA_DEG + reach)
+    assert outside.any()
+    assert blurred.data[~outside].max() > 0
+    np.testing.assert_array_equal(blurred.data[outside], 0.0)
+
+
+@pytest.mark.parametrize(
+    ("frames", "match"),
+    [
+        (_frames(0.0, n_frames=1), "at least two frames"),
+        (
+            ImageGrid(data=np.ones((2, 3)), lat=np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]]), lon=np.zeros((2, 3))),
+            "not finite",
+        ),
+    ],
+    ids=["one-frame", "non-finite-step"],
+)
+def test_motion_blur_without_a_frame_step_raises(frames, match):
+    with pytest.raises(ValueError, match=match):
+        convolve_psf_with_spacecraft_motion(_gaussian_psf(0.0), frames, BLUR_SAMPLING)

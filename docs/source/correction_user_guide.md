@@ -52,8 +52,11 @@ columns are cross-track detector pixels. A **GCP pair** is one subimage with the
 ### Image matching
 
 The chip is convolved with the instrument's point-spread function (PSF), so it looks as the
-instrument would see it. A correlation search then shifts the subimage over the chip on a grid
-that shrinks each iteration (`setup.search`), keeping the shift with the highest correlation.
+instrument would see it. The PSF is the optical PSF projected to the ground from the subimage
+geometry, blurred by one frame step along track for the motion during a frame, and centred on its
+centroid so the convolution does not shift the chip. A correlation search then shifts the
+subimage over the chip on a grid that shrinks each iteration (`setup.search`), keeping the shift
+with the highest correlation.
 The result is:
 
 - the error in latitude and longitude: the subimage's geolocation minus the chip's, at the match;
