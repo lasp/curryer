@@ -278,7 +278,9 @@ def convolve_psf_with_spacecraft_motion(
     The footprint moves along track during a frame, so the PSF is blurred by the
     mean lat/lon step between successive frames (rows) of *composite_img*.  The PSF
     is rotated so the motion runs along one grid axis, blurred along it, and
-    rotated back onto a lat/lon grid that covers the whole blurred PSF.
+    rotated back onto a lat/lon grid that covers the whole blurred PSF.  The blur
+    is the whole frame step, so the detector is taken to integrate for the whole
+    frame period.
 
     Parameters
     ----------
@@ -299,17 +301,18 @@ def convolve_psf_with_spacecraft_motion(
     Raises
     ------
     ValueError
-        If *composite_img* has fewer than two frames or a non-finite frame step.
+        If *composite_img* has fewer than two frames, or its mean frame step is
+        not finite or is zero.
     """
     if composite_img.lat.shape[0] < 2:
         raise ValueError("The motion blur needs at least two frames to give the frame step.")
     lat_motion = np.mean(np.diff(composite_img.lat, axis=0))
     lon_motion = np.mean(np.diff(composite_img.lon, axis=0))
-    if not (np.isfinite(lat_motion) and np.isfinite(lon_motion)):
-        raise ValueError(f"The frame step ({lat_motion}, {lon_motion}) deg is not finite.")
+    dist = np.hypot(lat_motion, lon_motion)
+    if not (np.isfinite(dist) and dist > 0):
+        raise ValueError(f"The mean frame step ({lat_motion}, {lon_motion}) deg must be finite and nonzero.")
 
     theta = np.arctan2(lat_motion, lon_motion)
-    dist = np.hypot(lat_motion, lon_motion)
     dlat = config.psf_lat_sample_dist_deg
     dlon = config.psf_lon_sample_dist_deg
 

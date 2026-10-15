@@ -88,9 +88,12 @@ def _observe(lat, lon, r, los_hs, psfs):
     d_lon = projected.lon - np.sum(w * projected.lon)
     step_lat, step_lon = np.mean(np.diff(lat, axis=0)), np.mean(np.diff(lon, axis=0))
     motion = np.linspace(-0.5, 0.5, 9)
-    sample_lat = lat[..., None, None] + d_lat.ravel()[:, None] + motion * step_lat
-    sample_lon = lon[..., None, None] + d_lon.ravel()[:, None] + motion * step_lon
-    return np.einsum("ijkm,k->ij", _scene(sample_lat, sample_lon), w.ravel()) / motion.size
+    observed = np.zeros(lat.shape)
+    for m in motion:
+        sample_lat = lat[..., None] + d_lat.ravel() + m * step_lat
+        sample_lon = lon[..., None] + d_lon.ravel() + m * step_lon
+        observed += _scene(sample_lat, sample_lon) @ w.ravel()
+    return observed / motion.size
 
 
 @pytest.mark.parametrize(
