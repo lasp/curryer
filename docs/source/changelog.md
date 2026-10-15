@@ -27,6 +27,14 @@ Adds footprint polygons for 2-D geolocation grids.
   4.1 s; chunk boundaries and kernel segment data are unchanged, except that a gap within about
   2 µs of the threshold can split differently.
 
+### Fixes
+
+- `input_gap_threshold` is applied as its full duration. It was read as the seconds component
+  only, so a threshold of a day or more, or under 1 s, split every row into its own segment,
+  and one such as `"25h"` split at 1 h. A threshold that is not a duration of at least 1 µs now
+  raises `ValueError`. Thresholds in whole seconds under a day, such as `"30s"` and `"5min"`,
+  are unchanged.
+
 ## Version 0.5.3 (2026-10)
 
 Adds a per-pixel geolocation and surface-angle path for large focal planes.

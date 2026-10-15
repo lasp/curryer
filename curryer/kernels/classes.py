@@ -194,19 +194,29 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         Raises
         ------
         ValueError
-            If `times` is not one-dimensional with one value per table row.
+            If `times` is not one-dimensional with one value per table row, or
+            if `input_gap_threshold` is set and is not a duration of at least
+            1 microsecond.
 
         """
         if times.shape != (table.shape[0],):
             raise ValueError(f"times must have shape ({table.shape[0]},) to match the table rows, not: {times.shape}")
 
         chunks = []
-        if table.shape[0] <= 1 or self.properties.input_gap_threshold is None:
+        if self.properties.input_gap_threshold is None:
             return chunks
 
-        gap_size_sec = pd.to_timedelta(self.properties.input_gap_threshold).seconds
+        gap_size_us = pd.to_timedelta(self.properties.input_gap_threshold) // pd.Timedelta(microseconds=1)
+        if not gap_size_us > 0:
+            raise ValueError(
+                "input_gap_threshold must be a positive duration of at least 1 microsecond (e.g., '30s'), or None"
+                f" to disable gap splitting, not: {self.properties.input_gap_threshold!r}"
+            )
+        if table.shape[0] <= 1:
+            return chunks
+
         ugps = spicetime.adapt(times, time_type, "ugps")
-        (idx_gaps,) = np.where((ugps[1:] - ugps[:-1]) / 1e6 >= gap_size_sec)
+        (idx_gaps,) = np.where(np.diff(ugps) >= gap_size_us)
 
         if idx_gaps.size:
             logger.info(
