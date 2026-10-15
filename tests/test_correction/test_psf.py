@@ -348,6 +348,9 @@ def test_resampled_psf_is_centred_on_its_centroid():
     assert n_lon % 2 == 1
     assert resampled.lat[n_lat // 2] == pytest.approx(centroid_lat, abs=1e-12)
     assert resampled.lon[n_lon // 2] == pytest.approx(centroid_lon, abs=1e-12)
+    weights = resampled.data / resampled.data.sum()
+    assert np.sum(weights.sum(axis=1) * np.arange(n_lat)) == pytest.approx(n_lat // 2, abs=0.01)
+    assert np.sum(weights.sum(axis=0) * np.arange(n_lon)) == pytest.approx(n_lon // 2, abs=0.01)
     assert resampled.lat.min() <= lat.min()
     assert resampled.lat.max() >= lat.max()
     assert resampled.lon.min() <= lon.min()
