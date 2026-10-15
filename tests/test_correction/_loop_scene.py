@@ -93,7 +93,7 @@ def build_loop_scene(root_dir: Path, work: Path, time_offset_s: float = 0.2):
         / "optical_PSF_675nm_3_pix_binned_upsampled.mat",
     )
     setup.data_config = DataConfig(file_format="csv")
-    setup.search = SearchConfig(grid_size=11, grid_span_km=4.0)
+    setup.search = SearchConfig(grid_size=11, grid_span_km=4.0, peak_exclusion_km=1.0)
 
     for param in sweep.parameters:
         param.spec.bounds = (
