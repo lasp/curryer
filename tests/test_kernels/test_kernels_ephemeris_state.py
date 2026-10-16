@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from curryer import spicierpy, utils
@@ -65,6 +66,22 @@ class EphemerisStateTestCase(unittest.TestCase):
             input_times = pd.to_datetime(state_input_data["UTC"])
             self.assertEqual(input_times.min(), span[0])
             self.assertEqual(input_times.max(), span[1])
+
+    def test_prepare_input_data_splits_at_gap_threshold(self):
+        state_prop = ephemeris.EphemerisStateProperties(
+            **{**self.tsis_state_prop, "input_time_type": "ugps", "input_time_columns": ["ugps"]}
+        )
+        state_writer = ephemeris.EphemerisStateWriter(properties=state_prop, bin_dir=self.bin_dir)
+
+        steps = np.full(29, 1_000_000)
+        steps[9] = 40_000_000
+        steps[19] = 30_000_000
+        ugps = 1_400_000_000_000_000 + np.concatenate([[0], np.cumsum(steps)]).astype(np.int64)
+        columns = ["position_x", "position_y", "position_z", "velocity_x", "velocity_y", "velocity_z"]
+        state_input_data = pd.DataFrame({"ugps": ugps, **{col: 1.0 for col in columns}})
+
+        chunks = state_writer.prepare_input_data(state_input_data)
+        self.assertListEqual([len(chunk) for chunk in chunks], [10, 10, 10])
 
 
 if __name__ == "__main__":
