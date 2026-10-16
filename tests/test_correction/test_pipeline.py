@@ -33,6 +33,7 @@ from curryer.correction.pipeline import (
     _extract_error_metrics,
     _extract_parameter_values,
     _load_image_pair_data,
+    _per_pair_error_processor,
     _require_image_matching_inputs,
     _resolve_netcdf_config,
     _store_gcp_pair_results,
@@ -187,6 +188,30 @@ def test_load_image_pair_data(root_dir, clarreo_cfg, tmp_path):
     assert ugps is not None
 
 
+def test_per_pair_error_processor_ignores_correlation_threshold():
+    """Per-pair loop errors keep a below-threshold measurement; the setup's names are kept."""
+    from test_error_stats import create_test_dataset_13_cases
+
+    setup = SimpleNamespace(
+        geo=SimpleNamespace(minimum_correlation=0.5, minimum_peak_margin=0.1),
+        spacecraft_position_name="riss_ctrs",
+        boresight_name="bhat_hs",
+        transformation_matrix_name="t_hs2ctrs",
+    )
+    processor = _per_pair_error_processor(setup)
+    data = create_test_dataset_13_cases()
+    correlation = np.full(data.sizes["measurement"], 0.9)
+    correlation[0] = 0.1
+    data["correlation"] = (["measurement"], correlation)
+    data["correlation_secondary"] = (["measurement"], correlation)
+
+    out = processor.compute_nadir_equivalent_errors(data)
+
+    assert processor.config.minimum_correlation is None
+    assert processor.config.minimum_peak_margin is None
+    assert out.sizes["measurement"] == data.sizes["measurement"]
+
+
 @pytest.mark.extra
 def test_loop_optimized(root_dir, tmp_path):
     """loop() produces correct result structure. Requires GMTED – ``--run-extra``."""
@@ -215,6 +240,43 @@ def test_loop_optimized(root_dir, tmp_path):
         assert "rms_error_m" in r
         assert r["aggregate_rms_error_m"] is not None
         assert isinstance(r["aggregate_rms_error_m"], (int, float, np.number))
+
+
+@pytest.mark.extra
+def test_loop_does_not_gate_per_pair_errors_on_correlation(root_dir, tmp_path):
+    """With minimum_correlation set, a low-correlation measurement stays in the per-pair
+    errors and the sweep completes; the threshold applies only to the aggregate pass.
+    Requires GMTED – ``--run-extra``."""
+    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
+    generic_dir = root_dir / "data" / "generic"
+    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
+    sweep.n_iterations = 2
+    output.output_filename = "test_loop_corr.nc"
+    work = tmp_path / "loop"
+    work.mkdir()
+    tlm_csv, sci_csv = work / "tlm.csv", work / "sci.csv"
+    load_clarreo_telemetry(data_dir).to_csv(tlm_csv)
+    load_clarreo_science(data_dir).to_csv(sci_csv)
+    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.geo.minimum_correlation = 0.5
+
+    def matcher_with_one_low_correlation(*args, **kwargs):
+        ds = synthetic_image_matching(*args, **kwargs)
+        correlation = np.full(ds.sizes["measurement"], 0.9)
+        correlation[0] = 0.1
+        ds["correlation"] = (["measurement"], correlation)
+        return ds
+
+    setup.image_matching_func = matcher_with_one_low_correlation
+    sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
+    np.random.seed(42)
+    results, _nc = loop(setup, sweep, work, sets, output=output, resume_from_checkpoint=False)
+
+    assert len(results) == sweep.n_iterations
+    for r in results:
+        n_matched = r["image_matching"].sizes["measurement"]
+        assert r["error_stats"].sizes["measurement"] == n_matched
+        assert r["aggregate_rms_error_m"] is not None
 
 
 # ── _extract_spacecraft_position_midframe ─────────────────────────────────────
