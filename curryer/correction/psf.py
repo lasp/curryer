@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 import numpy as np
 from scipy.interpolate import (
-    NearestNDInterpolator,
+    LinearNDInterpolator,
     RegularGridInterpolator,
 )
 from scipy.ndimage import map_coordinates
@@ -275,122 +275,68 @@ def convolve_psf_with_spacecraft_motion(
     """
     Apply spacecraft motion blur to projected PSF.
 
+    The footprint moves along track during a frame, so the PSF is blurred by the
+    mean lat/lon step between successive frames (rows) of *composite_img*.  The PSF
+    is rotated so the motion runs along one grid axis, blurred along it, and
+    rotated back onto a lat/lon grid that covers the whole blurred PSF.  The blur
+    is the whole frame step, so the detector is taken to integrate for the whole
+    frame period.
+
     Parameters
     ----------
     psf : ProjectedPSF
         Projected PSF on Earth's surface.
     composite_img : ImageGrid
-        Composite image defining spacecraft motion direction.
+        Observation subimage, rows = frames (along track); its frame step sets the
+        direction and length of the blur.
     config : PSFSamplingConfig
         Configuration with PSF sampling parameters.
 
     Returns
     -------
     PSFGrid
-        PSF convolved with spacecraft motion blur.
+        PSF convolved with spacecraft motion blur, on a regular lat/lon grid at the
+        configured sample distances; zero outside the sampled PSF.
 
-    Notes
-    -----
-    The motion step is the mean lat/lon difference along axis 1 of
-    *composite_img*, matching the MATLAB reference and the test cases simulated
-    with it. For a frames x detector subimage this is the cross-track pixel step;
-    the along-track (frame) step is along axis 0.
+    Raises
+    ------
+    ValueError
+        If *composite_img* has fewer than two frames, or its mean frame step is
+        not finite or is zero.
     """
-
-    logger.debug("Convolve with SC - Init")
-    lat_motion = np.mean(np.diff(composite_img.lat, axis=1))
-    lon_motion = np.mean(np.diff(composite_img.lon, axis=1))
-
-    theta_deg = np.degrees(np.arctan2(lat_motion, lon_motion))
+    if composite_img.lat.shape[0] < 2:
+        raise ValueError("The motion blur needs at least two frames to give the frame step.")
+    lat_motion = np.mean(np.diff(composite_img.lat, axis=0))
+    lon_motion = np.mean(np.diff(composite_img.lon, axis=0))
     dist = np.hypot(lat_motion, lon_motion)
+    if not (np.isfinite(dist) and dist > 0):
+        raise ValueError(f"The mean frame step ({lat_motion}, {lon_motion}) deg must be finite and nonzero.")
 
-    psf_lon = psf.lon
-    psf_lat = psf.lat
-
-    psf_mid_lon = np.mean(psf_lon)
-    psf_mid_lat = np.mean(psf_lat)
-
-    rot_angle = np.deg2rad(-theta_deg)
-    rot_mat = np.array([[np.cos(rot_angle), -np.sin(rot_angle)], [np.sin(rot_angle), np.cos(rot_angle)]])
-
-    logger.debug("Convolve with SC - Forward prep")
-    coords = np.vstack((psf_lon.ravel() - psf_mid_lon, psf_lat.ravel() - psf_mid_lat))
-    rotated = rot_mat @ coords
-    psf_lon_rot = rotated[0].reshape(psf_lon.shape) + psf_mid_lon
-    psf_lat_rot = rotated[1].reshape(psf_lat.shape) + psf_mid_lat
-
+    theta = np.arctan2(lat_motion, lon_motion)
     dlat = config.psf_lat_sample_dist_deg
     dlon = config.psf_lon_sample_dist_deg
 
-    x = np.arange(
-        psf_lon_rot.min() - dist / 2.0,
-        psf_lon_rot.max() + dist / 2.0 + dlon,
-        dlon,
-    )
-    y = np.arange(psf_lat_rot.min(), psf_lat_rot.max() + dlat, dlat)
+    mid = np.array([np.mean(psf.lon), np.mean(psf.lat)])
+    to_motion = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
+    samples = to_motion @ np.vstack((psf.lon.ravel() - mid[0], psf.lat.ravel() - mid[1]))
+
+    x = np.arange(samples[0].min() - dist / 2.0, samples[0].max() + dist / 2.0 + dlon, dlon)
+    y = np.arange(samples[1].min(), samples[1].max() + dlat, dlat)
     X, Y = np.meshgrid(x, y)
+    sampled = LinearNDInterpolator(samples.T, psf.data.ravel(), fill_value=0.0)(X, Y)
 
-    logger.debug("Convolve with SC - Nearest interp")
-    nearest = NearestNDInterpolator(np.column_stack((psf_lon_rot.ravel(), psf_lat_rot.ravel())), psf.data.ravel())
-    psf_interp = nearest(X, Y)
-    psf_interp = np.nan_to_num(psf_interp, nan=0.0)
+    num_steps = max(1, int(round(dist / dlon)))
+    psf_map = convolve2d(sampled, np.ones((1, num_steps)), mode="same", boundary="fill", fillvalue=0.0)
 
-    logger.debug("Convolve with SC - Convolve 2d")
-    num_steps = max(1, int(round(abs(dist / dlon))))
-    kernel = np.ones((1, num_steps), dtype=float)
-    psf_map = convolve2d(psf_interp, kernel, mode="same", boundary="fill", fillvalue=0.0)
-
-    logger.debug("Convolve with SC - Linear interp")  # TODO: Orig impl was slow!!!
-    # # Original implementation.
-    # rot_angle_back = np.deg2rad(theta_deg)
-    # rot_mat_back = np.array(
-    #     [[np.cos(rot_angle_back), -np.sin(rot_angle_back)], [np.sin(rot_angle_back), np.cos(rot_angle_back)]]
-    # )
-    # coords_back = np.vstack((X.ravel() - psf_mid_lon, Y.ravel() - psf_mid_lat))
-    # rotated_back = rot_mat_back @ coords_back
-    # X_new = rotated_back[0] + psf_mid_lon
-    # Y_new = rotated_back[1] + psf_mid_lat
-    #
-    # linear = LinearNDInterpolator(
-    #     np.column_stack((X_new, Y_new)), psf_map.ravel(), fill_value=0.0
-    # )
-    # data = linear(X, Y)
-    # data = np.nan_to_num(data, nan=0.0)
-
-    # # New implementation (v1).
-    # # Convert back to fractional indices on the uniform grid
-    # y_coords = (Y_new - y[0]) / dlat
-    # x_coords = (X_new - x[0]) / dlon
-    #
-    # # Bilinear interpolation with zero padding outside the grid
-    # data = map_coordinates(
-    #     psf_map,
-    #     [y_coords.ravel(), x_coords.ravel()],
-    #     order=1,
-    #     mode="constant",
-    #     cval=0.0,
-    # ).reshape(Y.shape)
-
-    # New implementation (v2).
-    coords = np.vstack((X.ravel() - psf_mid_lon, Y.ravel() - psf_mid_lat))
-    rotated = rot_mat @ coords  # rot_mat is the earlier -theta rotation
-    X_rot = rotated[0] + psf_mid_lon
-    Y_rot = rotated[1] + psf_mid_lat
-
-    # Convert to fractional indices in the rotated grid
-    x_idx = (X_rot - x[0]) / dlon
-    y_idx = (Y_rot - y[0]) / dlat
-
+    corners = to_motion.T @ np.array([[x[0], x[-1], x[0], x[-1]], [y[0], y[0], y[-1], y[-1]]])
+    lon = mid[0] + np.arange(corners[0].min(), corners[0].max() + dlon, dlon)
+    lat = mid[1] + np.arange(corners[1].min(), corners[1].max() + dlat, dlat)
+    LON, LAT = np.meshgrid(lon, lat)
+    in_motion = to_motion @ np.vstack((LON.ravel() - mid[0], LAT.ravel() - mid[1]))
     data = map_coordinates(
-        psf_map,
-        [y_idx, x_idx],
-        order=1,
-        mode="constant",
-        cval=0.0,
-    ).reshape(X.shape)
-
-    logger.debug("Convolve with SC - End")
-    return PSFGrid(data=data, lat=y, lon=x)
+        psf_map, [(in_motion[1] - y[0]) / dlat, (in_motion[0] - x[0]) / dlon], order=1, mode="constant", cval=0.0
+    ).reshape(LON.shape)
+    return PSFGrid(data=data, lat=lat, lon=lon)
 
 
 def zero_pad_psf(psf: PSFGrid) -> PSFGrid:
@@ -453,6 +399,10 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     """
     Resample PSF to match GCP reference image resolution.
 
+    The resampled grid has an odd number of samples on each axis and its middle
+    sample at the PSF centroid, so :func:`convolve_gcp_with_psf` blurs the GCP
+    without shifting it.
+
     Parameters
     ----------
     psf : PSFGrid
@@ -463,22 +413,29 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     Returns
     -------
     PSFGrid
-        Resampled PSF at GCP resolution.
+        Resampled PSF at GCP resolution, covering the whole input PSF.
 
     Raises
     ------
     ValueError
-        If PSF is not on a rectilinear grid.
+        If PSF is not on a rectilinear grid, or its weights do not have a positive sum.
     """
 
     if psf.lat.ndim != 1 or psf.lon.ndim != 1:
         raise ValueError("PSF must be on a rectilinear grid before resampling.")
+    total = psf.data.sum()
+    if not total > 0:
+        raise ValueError(f"PSF weights sum to {total}; the centroid is undefined.")
 
     dlon = float(np.abs(np.mean(np.diff(gcp.lon, axis=1))))
     dlat = float(np.abs(np.mean(np.diff(gcp.lat, axis=0))))
 
-    x = np.arange(psf.lon.min(), psf.lon.max() + dlon, dlon)
-    y = np.arange(psf.lat.min(), psf.lat.max() + dlat, dlat)
+    lat_c = float(np.sum(psf.data.sum(axis=1) * psf.lat) / total)
+    lon_c = float(np.sum(psf.data.sum(axis=0) * psf.lon) / total)
+    half_x = int(np.ceil(max(lon_c - psf.lon.min(), psf.lon.max() - lon_c) / dlon))
+    half_y = int(np.ceil(max(lat_c - psf.lat.min(), psf.lat.max() - lat_c) / dlat))
+    x = lon_c + np.arange(-half_x, half_x + 1) * dlon
+    y = lat_c + np.arange(-half_y, half_y + 1) * dlat
     Y_new, X_new = np.meshgrid(y, x, indexing="ij")
 
     interpolant = RegularGridInterpolator((psf.lat, psf.lon), psf.data, bounds_error=False, fill_value=0.0)
