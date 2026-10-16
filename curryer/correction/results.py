@@ -78,11 +78,20 @@ class CorrectionResult(BaseModel):
     n_parameter_sets : int
         Number of parameter sets tested in the sweep.
     n_gcp_pairs : int
-        Number of GCP pairs used.
+        Number of GCP pairs the loop ran, including pairs that never pass the
+        match-quality gates.
+    n_usable_pairs : int
+        Pairs some parameter set passes the match-quality gates on: the pairs
+        the compared sets, and :attr:`met_threshold`, are judged on.
+    n_valid_sets : int
+        Parameter sets that pass the gates on every usable pair, the sets
+        compared.
     all_parameter_sets : list[ParameterSetResult]
         All tested parameter sets sorted by mean RMS (ascending).
     met_threshold : bool
-        Whether the best parameter set met the mission performance requirements.
+        Whether the best parameter set met the mission performance requirements,
+        evaluated on the pairs it passes the match-quality gates on (the usable
+        pairs every compared set is judged on).
     recommendation : str
         Human-readable next-step guidance for the instrument engineer.
     summary_table : str
@@ -112,6 +121,8 @@ class CorrectionResult(BaseModel):
     mean_rms_m: float
     n_parameter_sets: int
     n_gcp_pairs: int
+    n_usable_pairs: int
+    n_valid_sets: int
     all_parameter_sets: list[ParameterSetResult]
     met_threshold: bool
     recommendation: str
@@ -141,6 +152,8 @@ def _format_correction_summary_table(
     total_sets: int,
     n_gcp_pairs: int,
     met_threshold: bool,
+    n_valid_sets: int,
+    n_usable_pairs: int,
 ) -> str:
     """Generate a human-readable correction sweep summary table.
 
@@ -157,6 +170,8 @@ def _format_correction_summary_table(
         Number of GCP pairs used.
     met_threshold : bool
         Whether any parameter set met performance requirements.
+    n_valid_sets, n_usable_pairs : int
+        Parameter sets compared, and the pairs they are judged on.
 
     Returns
     -------
@@ -181,7 +196,7 @@ def _format_correction_summary_table(
         best_line = " No results available"
 
     verdict_text = "MET REQUIREMENTS ✓" if met_threshold else "DID NOT MEET REQUIREMENTS ✗"
-    verdict_line = f" {verdict_text}"
+    verdict_line = f" {verdict_text} on {n_usable_pairs} of {n_gcp_pairs} pairs ({n_valid_sets} sets compared)"
 
     inner_width = max(col_inner, len(title) + 2, len(best_line) + 2, len(verdict_line) + 2)
 
@@ -307,15 +322,10 @@ def build_correction_result(
         mean_rms = float("nan")
 
     # Extract parameter arrays using the same naming rules as results_io.
-    from curryer.correction.config import ParameterType  # local import to avoid cycles
 
     param_keys: list[str] = []
     for p in sweep.parameters:
-        if p.ptype == ParameterType.CONSTANT_KERNEL:
-            for angle in ("roll", "pitch", "yaw"):
-                param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p, angle).variable_name)
-        else:
-            param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
+        param_keys.append(netcdf_config.get_parameter_netcdf_metadata(p).variable_name)
 
     # Keep only keys that are present and are 1-D arrays in netcdf_data
     expected_keys = param_keys
@@ -349,31 +359,40 @@ def build_correction_result(
 
     # Evaluate requirements using legacy performance_threshold_m / performance_spec_percent.
     # (The new-style Requirement.evaluate_all() path is tracked by TODO(#151).)
+    # Only the pairs the best set passes the match-quality gates on are compared (see loop()).
     met_threshold = False
     if n_gcp_pairs > 0 and math.isfinite(best_rms) and rms_grid.shape[0] > best_idx:
-        pair_errors = [float(rms_grid[best_idx, pi]) for pi in range(n_gcp_pairs)]
-        valid_errors = [e for e in pair_errors if math.isfinite(e)]
-        if valid_errors:
+        pair_errors = rms_grid[best_idx, netcdf_data["accepted"][best_idx]]
+        valid_errors = pair_errors[np.isfinite(pair_errors)]
+        if valid_errors.size:
             threshold_m = setup.requirements.performance_threshold_m
-            pct_below = sum(1 for e in valid_errors if e < threshold_m) / len(valid_errors) * 100
+            pct_below = float(np.mean(valid_errors < threshold_m)) * 100
             met_threshold = pct_below > setup.requirements.performance_spec_percent
+
+    n_usable_pairs = n_valid_sets = 0
+    if n_param_sets > 0:
+        n_usable_pairs = int(np.asarray(netcdf_data["accepted"], dtype=bool).any(axis=0).sum())
+        n_valid_sets = int(np.asarray(netcdf_data["valid"], dtype=bool).sum())
+    basis = f"Judged on {n_usable_pairs} of {n_gcp_pairs} GCP pairs ({n_valid_sets} of {n_param_sets} sets compared)."
 
     # Human-readable recommendation
     if met_threshold:
         recommendation = (
             f"Best parameter set (#{best_idx}) achieved {best_rms:.1f}m mean RMS "
-            f"and meets performance requirements. "
+            f"and meets performance requirements. {basis} "
             f"Update kernel files with these values."
         )
     else:
         rms_str = f"{best_rms:.1f}m" if math.isfinite(best_rms) else "N/A"
         recommendation = (
             f"No parameter set met performance requirements. "
-            f"Best achieved: {rms_str} mean RMS (set #{best_idx}). "
+            f"Best achieved: {rms_str} mean RMS (set #{best_idx}). {basis} "
             f"Consider widening parameter bounds or increasing iterations."
         )
 
-    summary_table = _format_correction_summary_table(all_sets[:10], n_param_sets, n_gcp_pairs, met_threshold)
+    summary_table = _format_correction_summary_table(
+        all_sets[:10], n_param_sets, n_gcp_pairs, met_threshold, n_valid_sets, n_usable_pairs
+    )
 
     search_strategy = sweep.search_strategy
     config_snapshot = {
@@ -392,6 +411,8 @@ def build_correction_result(
         mean_rms_m=mean_rms,
         n_parameter_sets=n_param_sets,
         n_gcp_pairs=n_gcp_pairs,
+        n_usable_pairs=n_usable_pairs,
+        n_valid_sets=n_valid_sets,
         all_parameter_sets=all_sets,
         met_threshold=met_threshold,
         recommendation=recommendation,

@@ -26,9 +26,20 @@ DEFAULT_NETCDF_ATTRIBUTES = {
     "std_error_m": {"units": "meters", "long_name": "Standard deviation of geolocation error"},
     "n_measurements": {"units": "count", "long_name": "Number of measurement points"},
     # Aggregate performance metrics (per parameter set)
-    "mean_rms_all_pairs": {"units": "meters", "long_name": "Mean RMS error across all GCP pairs"},
-    "worst_pair_rms": {"units": "meters", "long_name": "Worst performing GCP pair RMS error"},
-    "best_pair_rms": {"units": "meters", "long_name": "Best performing GCP pair RMS error"},
+    "mean_rms_all_pairs": {
+        "units": "meters",
+        "long_name": "Mean RMS error across the usable GCP pairs (NaN for an invalid parameter set)",
+    },
+    "worst_pair_rms": {
+        "units": "meters",
+        "long_name": "Worst RMS error of the usable GCP pairs",
+    },
+    "best_pair_rms": {
+        "units": "meters",
+        "long_name": "Best RMS error of the usable GCP pairs",
+    },
+    "accepted": {"units": "1", "long_name": "GCP pair passes the match-quality gates under this parameter set"},
+    "valid": {"units": "1", "long_name": "Parameter set passes the match-quality gates on every usable GCP pair"},
     # Image matching metrics (per GCP pair)
     "im_lat_error_km": {"units": "kilometers", "long_name": "Image matching latitude error"},
     "im_lon_error_km": {"units": "kilometers", "long_name": "Image matching longitude error"},
@@ -88,10 +99,20 @@ class NetCDFConfig(BaseModel):
             return dict(self.standard_attributes)
         return DEFAULT_NETCDF_ATTRIBUTES.copy()
 
-    def get_parameter_netcdf_metadata(
-        self, param_config: "ParameterConfig", angle_type: str | None = None
-    ) -> "NetCDFParameterMetadata":
-        """Get NetCDF metadata for a parameter."""
+    def get_parameter_netcdf_metadata(self, param_config: "ParameterConfig") -> "NetCDFParameterMetadata":
+        """Get NetCDF metadata for a parameter.
+
+        A CONSTANT_KERNEL parameter's variable is named for its kernel file and
+        axis (``roll``, ``pitch`` or ``yaw`` for ``angle_x``, ``angle_y``,
+        ``angle_z``).
+        """
+        from curryer.correction.config import _CONSTANT_KERNEL_AXES, ParameterType
+
+        angle_type = (
+            _CONSTANT_KERNEL_AXES[param_config.spec.field]
+            if param_config.ptype == ParameterType.CONSTANT_KERNEL
+            else None
+        )
         if param_config.config_file:
             param_stem = param_config.config_file.stem
             lookup_key = f"{param_stem}_{angle_type}" if angle_type else param_stem
@@ -112,12 +133,10 @@ class NetCDFConfig(BaseModel):
         """Auto-generate NetCDF metadata from parameter configuration."""
         from curryer.correction.config import ParameterType
 
-        if param_config.ptype == ParameterType.CONSTANT_KERNEL:
-            units = "arcseconds"
-        elif param_config.ptype == ParameterType.OFFSET_KERNEL:
-            units = "arcseconds"
+        if param_config.ptype in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
+            units = "radians"
         elif param_config.ptype == ParameterType.OFFSET_TIME:
-            units = "milliseconds"
+            units = "seconds"
         else:
             units = "unknown"
 

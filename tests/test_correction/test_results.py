@@ -78,8 +78,10 @@ def _make_setup_sweep(
         parameters=[
             ParameterConfig(
                 ptype=ParameterType.CONSTANT_KERNEL,
-                spec={"current_value": [0.0, 0.0, 0.0], "bounds": [-300.0, 300.0]},
+                config_file=Path("test_kernel.json"),
+                spec={"field": axis, "bounds": [-300.0, 300.0]},
             )
+            for axis in ("angle_x", "angle_y", "angle_z")
         ],
     )
     netcdf_config = NetCDFConfig(performance_threshold_m=performance_threshold_m)
@@ -110,6 +112,8 @@ def _make_netcdf_data(n_params: int = 3, n_pairs: int = 2, threshold_m: float = 
         "im_lon_error_km": np.zeros((n_params, n_pairs)),
         "im_ccv": np.ones((n_params, n_pairs)) * 0.9,
         "im_grid_step_m": np.ones((n_params, n_pairs)) * 30.0,
+        "accepted": np.ones((n_params, n_pairs), dtype=bool),
+        "valid": np.ones(n_params, dtype=bool),
     }
 
 
@@ -204,6 +208,8 @@ class TestCorrectionResult:
             mean_rms_m=200.0,
             n_parameter_sets=3,
             n_gcp_pairs=2,
+            n_usable_pairs=2,
+            n_valid_sets=3,
             all_parameter_sets=[
                 ParameterSetResult(
                     index=0,
@@ -289,7 +295,9 @@ def _make_ps(idx: int, rms: float) -> ParameterSetResult:
 class TestFormatCorrectionSummaryTable:
     def test_basic_structure(self):
         sets = [_make_ps(0, 120.0), _make_ps(1, 200.0)]
-        table = _format_correction_summary_table(sets, total_sets=5, n_gcp_pairs=2, met_threshold=True)
+        table = _format_correction_summary_table(
+            sets, total_sets=5, n_gcp_pairs=2, met_threshold=True, n_valid_sets=1, n_usable_pairs=1
+        )
         lines = table.splitlines()
         # First line starts with ┌ and last with └
         assert lines[0].startswith("┌")
@@ -300,18 +308,20 @@ class TestFormatCorrectionSummaryTable:
 
     def test_met_threshold_shows_in_footer(self):
         sets = [_make_ps(0, 100.0)]
-        table = _format_correction_summary_table(sets, 1, 1, met_threshold=True)
+        table = _format_correction_summary_table(sets, 1, 1, met_threshold=True, n_valid_sets=1, n_usable_pairs=1)
         assert "MET REQUIREMENTS" in table
         assert "✓" in table
 
     def test_not_met_shows_in_footer(self):
         sets = [_make_ps(0, 500.0)]
-        table = _format_correction_summary_table(sets, 1, 1, met_threshold=False)
+        table = _format_correction_summary_table(sets, 1, 1, met_threshold=False, n_valid_sets=1, n_usable_pairs=1)
         assert "DID NOT MEET" in table
         assert "✗" in table
 
     def test_empty_sets_no_crash(self):
-        table = _format_correction_summary_table([], total_sets=0, n_gcp_pairs=0, met_threshold=False)
+        table = _format_correction_summary_table(
+            [], total_sets=0, n_gcp_pairs=0, met_threshold=False, n_valid_sets=1, n_usable_pairs=1
+        )
         assert "No results available" in table
         lines = table.splitlines()
         lengths = {len(line) for line in lines}
@@ -319,25 +329,29 @@ class TestFormatCorrectionSummaryTable:
 
     def test_best_set_has_star_marker(self):
         sets = [_make_ps(0, 80.0), _make_ps(1, 150.0)]
-        table = _format_correction_summary_table(sets, 2, 1, met_threshold=True)
+        table = _format_correction_summary_table(sets, 2, 1, met_threshold=True, n_valid_sets=1, n_usable_pairs=1)
         assert "★" in table
 
     def test_nan_values_display_as_na(self):
         sets = [_make_ps(0, float("nan"))]
-        table = _format_correction_summary_table(sets, 1, 1, met_threshold=False)
+        table = _format_correction_summary_table(sets, 1, 1, met_threshold=False, n_valid_sets=1, n_usable_pairs=1)
         assert "N/A" in table
 
     def test_long_title_widens_table_consistently(self):
         """Wide title (many GCP pairs) must not break line-width consistency."""
         sets = [_make_ps(i, 100.0 + i * 10) for i in range(5)]
-        table = _format_correction_summary_table(sets, total_sets=10000, n_gcp_pairs=99, met_threshold=True)
+        table = _format_correction_summary_table(
+            sets, total_sets=10000, n_gcp_pairs=99, met_threshold=True, n_valid_sets=1, n_usable_pairs=1
+        )
         lines = table.splitlines()
         lengths = {len(line) for line in lines}
         assert len(lengths) == 1
 
     def test_title_appears_in_output(self):
         sets = [_make_ps(0, 200.0)]
-        table = _format_correction_summary_table(sets, total_sets=7, n_gcp_pairs=3, met_threshold=False)
+        table = _format_correction_summary_table(
+            sets, total_sets=7, n_gcp_pairs=3, met_threshold=False, n_valid_sets=1, n_usable_pairs=1
+        )
         assert "7 sets" in table
         assert "3 pairs" in table
 
@@ -397,6 +411,18 @@ class TestBuildCorrectionResult:
         assert result.met_threshold is False
         assert "No parameter set met performance requirements" in result.recommendation
 
+    def test_met_threshold_ignores_pairs_failing_the_gates(self):
+        """A pair the best set fails the match-quality gates on does not count toward the requirement."""
+        setup, sweep, netcdf_config = _make_setup_sweep(performance_threshold_m=150.0, performance_spec_percent=60.0)
+        nc = _make_netcdf_data(n_params=2, n_pairs=2)
+        nc["rms_error_m"][:, 1] = 7000.0
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert result.met_threshold is False
+
+        nc["accepted"][:, 1] = False
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert result.met_threshold is True
+
     def test_met_threshold_needs_more_than_the_spec(self):
         """Exactly the spec percentage of pairs within the threshold does not meet it."""
         setup, sweep, netcdf_config = _make_setup_sweep(performance_threshold_m=150.0, performance_spec_percent=50.0)
@@ -405,6 +431,17 @@ class TestBuildCorrectionResult:
         nc["rms_error_m"][:, 1] = 7000.0
         result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
         assert result.met_threshold is False
+
+    def test_result_states_the_pairs_and_sets_it_rests_on(self):
+        setup, sweep, netcdf_config = _make_setup_sweep()
+        nc = _make_netcdf_data(n_params=3, n_pairs=4)
+        nc["accepted"][:, 3] = False
+        nc["accepted"][2, 1] = False
+        nc["valid"][2] = False
+        result = build_correction_result(setup, sweep, netcdf_config, [], nc, None, 0.0)
+        assert (result.n_usable_pairs, result.n_valid_sets, result.n_gcp_pairs) == (3, 2, 4)
+        assert "Judged on 3 of 4 GCP pairs (2 of 3 sets compared)." in result.recommendation
+        assert "on 3 of 4 pairs (2 sets compared)" in result.summary_table
 
     def test_all_nan_rms_does_not_crash(self):
         """Degenerate case: all RMS values are NaN — build should not raise."""
