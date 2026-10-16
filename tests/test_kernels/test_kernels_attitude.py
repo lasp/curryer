@@ -163,7 +163,7 @@ class AttitudeTestCase(unittest.TestCase):
 
     def test_prepare_input_data_splits_at_gap_threshold(self):
         ugps = self._ugps_with_steps([40_000_000, 30_000_000, 29_999_999])
-        for time_type in ("ugps", "et"):
+        for time_type in ("ugps", "et", "utc"):
             with self.subTest(time_type=time_type):
                 times = spicetime.adapt(ugps, "ugps", time_type)
                 chunks = self._gap_writer(time_type).prepare_input_data(self._identity_quats(times, time_type))
@@ -183,12 +183,11 @@ class AttitudeTestCase(unittest.TestCase):
         chunks = self._gap_writer("ugps", "1500ns").prepare_input_data(self._identity_quats(ugps, "ugps"))
         self.assertListEqual([len(chunk) for chunk in chunks], [10, 20])
 
-    def test_prepare_input_data_rejects_non_positive_gap_threshold(self):
-        table = self._identity_quats(self._ugps_with_steps([40_000_000]), "ugps")
+    def test_properties_reject_gap_threshold_under_1us(self):
         for gap_threshold in ("0s", "-30s", "500ns"):
             with self.subTest(gap_threshold=gap_threshold):
-                with self.assertRaisesRegex(ValueError, "input_gap_threshold must be a positive duration"):
-                    self._gap_writer("ugps", gap_threshold).prepare_input_data(table)
+                with self.assertRaisesRegex(ValueError, "input_gap_threshold must be a duration of at least 1"):
+                    self._gap_writer("ugps", gap_threshold)
 
     def test_prepare_input_data_gaps_after_invalid_quaternion_removal(self):
         writer = self._gap_writer("ugps")

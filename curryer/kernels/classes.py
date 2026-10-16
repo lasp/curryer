@@ -64,6 +64,8 @@ class AbstractKernelProperties:
     # Input properties.
     input_data_type: Enum = field()  # Required
     input_gap_threshold: str = None
+    # `input_gap_threshold` rounded up to whole microseconds, set at construction.
+    input_gap_threshold_us: int = field(init=False, default=None, repr=False)
 
     # Existing kernels that are required to build this one.
     leapsecond_kernel: str = None
@@ -77,6 +79,16 @@ class AbstractKernelProperties:
     def __post_init__(self):
         if self.SUPPORTED_INPUT_DATA_TYPES is not None and self.input_data_type not in self.SUPPORTED_INPUT_DATA_TYPES:
             raise ValueError(f"Invalid properties class for input type {self.input_data_type}")
+
+        if self.input_gap_threshold is not None:
+            gap_size = pd.to_timedelta(self.input_gap_threshold)
+            if not gap_size >= pd.Timedelta(microseconds=1):
+                raise ValueError(
+                    "input_gap_threshold must be a duration of at least 1 microsecond (e.g., '30s'), or None"
+                    f" to disable gap splitting, not: {self.input_gap_threshold!r}"
+                )
+            # uGPS gaps are whole microseconds, so rounding the threshold up keeps `gap >= threshold` exact.
+            self.input_gap_threshold_us = -(-gap_size // pd.Timedelta(microseconds=1))
 
         if self.leapsecond_kernel is None:
             self.leapsecond_kernel = str(spicetime.leapsecond.find_default_file())
@@ -194,31 +206,18 @@ class AbstractKernelWriter(metaclass=ABCMeta):
         Raises
         ------
         ValueError
-            If `times` is not one-dimensional with one value per table row, or
-            if `input_gap_threshold` is set and is not a duration of at least
-            1 microsecond.
+            If `times` is not one-dimensional with one value per table row.
 
         """
         if times.shape != (table.shape[0],):
             raise ValueError(f"times must have shape ({table.shape[0]},) to match the table rows, not: {times.shape}")
 
         chunks = []
-        if self.properties.input_gap_threshold is None:
-            return chunks
-
-        gap_size = pd.to_timedelta(self.properties.input_gap_threshold)
-        if not gap_size >= pd.Timedelta(microseconds=1):
-            raise ValueError(
-                "input_gap_threshold must be a positive duration of at least 1 microsecond (e.g., '30s'), or None"
-                f" to disable gap splitting, not: {self.properties.input_gap_threshold!r}"
-            )
-        # uGPS gaps are whole microseconds, so rounding the threshold up keeps `gap >= threshold` exact.
-        gap_size_us = -(-gap_size // pd.Timedelta(microseconds=1))
-        if table.shape[0] <= 1:
+        if self.properties.input_gap_threshold_us is None or table.shape[0] <= 1:
             return chunks
 
         ugps = spicetime.adapt(times, time_type, "ugps")
-        (idx_gaps,) = np.where(np.diff(ugps) >= gap_size_us)
+        (idx_gaps,) = np.where(np.diff(ugps) >= self.properties.input_gap_threshold_us)
 
         if idx_gaps.size:
             logger.info(
