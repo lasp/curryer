@@ -109,7 +109,17 @@ from .image_io import (
 from .io import resolve_path
 from .pipeline import compute_error_stats, loop, run_correction, run_image_matching
 from .results import CorrectionResult, ParameterSetResult
-from .verification import GCPError, VerificationResult, compare_results, match_geolocated_to_gcp_files, verify
+from .verification import (
+    GCPError,
+    VerificationResult,
+    apply_review,
+    compare_results,
+    load_verification,
+    match_geolocated_to_gcp_files,
+    read_review_decisions,
+    save_verification,
+    verify,
+)
 
 __all__ = [
     # Sub-modules
@@ -179,7 +189,11 @@ __all__ = [
     # Verification
     "GCPError",
     "VerificationResult",
+    "apply_review",
     "compare_results",
+    "load_verification",
+    "read_review_decisions",
+    "save_verification",
     "verify",
     # Structured results
     "CorrectionResult",
