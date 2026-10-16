@@ -278,6 +278,7 @@ class AttitudeWriter(AbstractKernelWriter):
 
         # Convert input type to the stored type (i.e., UTC).
         #   NOTE: Can't use "ET" with negative times ("-" breaks MSOPCK).
+        input_times = table.index.to_numpy()
         table.index = pd.Index(
             spicetime.adapt(
                 table.index,
@@ -303,6 +304,7 @@ class AttitudeWriter(AbstractKernelWriter):
                     dt_max_bad,
                 )
                 table = table[~is_invalid]
+                input_times = input_times[~is_invalid.to_numpy()]
 
                 # Was everything invalid?
                 if table.size == 0:
@@ -310,7 +312,7 @@ class AttitudeWriter(AbstractKernelWriter):
                     return []
 
         # Create chunks if a gap threshold was configured and gaps are present.
-        chunks = self._chunk_table_by_gaps(table, index_dt_type=self.properties.writer_time_type.name)
+        chunks = self._chunk_table_by_gaps(table, input_times, self.properties.input_time_type)
         return chunks if chunks else [table]
 
     def write_input_data(self, fobj_or_str, input_data: pd.DataFrame):
