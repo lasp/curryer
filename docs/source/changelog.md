@@ -19,6 +19,17 @@ regions near the dateline read the right heights.
   could put the cosine of the view zenith just above 1, where `arccos` is NaN; on a test grid this
   hit 204 of 2409 exact-nadir views. The cosine is now clipped to [-1, 1], and the infinite step
   length at zero zenith no longer warns.
+- **`Elevation.local_region` bounds past +180 or -180 loaded the wrong side of the dateline
+  (#199).** Bounds such as 175 to 185, from padding a box near the dateline, built a region from
+  -180 to -170 only, so lookups at 175 to 180 failed. Bounds are now wrapped into range first, and
+  tiles that merge into an unevenly spaced grid raise `ValueError` instead of placing heights at
+  the wrong pixels.
+- **`ElevationRegion.query` failed on points outside the region with an `AssertionError` and a
+  misleading longitude (#211).** It now raises `ValueError` giving the number of such points, the
+  first one's index and longitude/latitude as passed, and the region's bounds; an `assert` also
+  disappears under `python -O`. A point west of a region that does not cross the dateline is no
+  longer shifted by 360 degrees before the check, which made its reported longitude wrong. New
+  `ElevationRegion.contains` tests points without raising.
 
 ## Version 0.5.4 (unreleased)
 
