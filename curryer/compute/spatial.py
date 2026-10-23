@@ -981,6 +981,8 @@ def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.
 
 # Distance step of the terrain search, in km. Must consider DEM resolution!
 TERRAIN_STEP_KM = 0.5
+# View zenith angle, in degrees, beyond which terrain correction is not attempted.
+TERRAIN_MAX_ZENITH_DEG = 85
 
 
 def terrain_correct(
@@ -1079,7 +1081,7 @@ def terrain_correct(
 
     # Skip (or exit if all) within 5-deg of horizontal! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    idx_ang_valid = (v_zenith_ang <= np.deg2rad(85)).ravel()
+    idx_ang_valid = (v_zenith_ang <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
     n_ang_valid = idx_ang_valid.sum()
     if n_ang_valid != npts:
         logger.info(
@@ -2232,15 +2234,19 @@ class Geolocate:
             sc_xyz_arr_sub = sc_xyz_df.values[is_valid]
 
             # Each search starts at the region's max height along the view vector, which an oblique view
-            # places beyond the pad. Widen the region to cover those start points.
+            # places beyond the pad. Widen the region to cover those start points. Taller terrain in the wider
+            # region moves them further out, so re-check, up to three loads; `terrain_correct` flags any left.
             ec_sat_vec, cos_sat = _view_vector(ellips_xyz_arr_sub, sc_xyz_arr_sub, np.deg2rad(ellips_lla_arr_sub))
-            idx_ang_valid = (np.arccos(cos_sat) <= np.deg2rad(85)).ravel()
-            alt_srf_max = max(elev_region.local_minmax()[1], TERRAIN_STEP_KM)
-            gd_start = ecef_to_geodetic(
-                ellips_xyz_arr_sub[idx_ang_valid] + (alt_srf_max / cos_sat[idx_ang_valid]) * ec_sat_vec[idx_ang_valid],
-                degrees=True,
-            )
-            if not elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
+            idx_ang_valid = (np.arccos(cos_sat) <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
+            for _ in range(3):
+                alt_srf_max = max(elev_region.local_minmax()[1], TERRAIN_STEP_KM)
+                gd_start = ecef_to_geodetic(
+                    ellips_xyz_arr_sub[idx_ang_valid]
+                    + (alt_srf_max / cos_sat[idx_ang_valid]) * ec_sat_vec[idx_ang_valid],
+                    degrees=True,
+                )
+                if elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
+                    break
                 elev_region = load_region(
                     pd.concat([ellips_lla_df["lon"], pd.Series(gd_start[:, 0])]),
                     pd.concat([ellips_lla_df["lat"], pd.Series(gd_start[:, 1])]),
@@ -2415,7 +2421,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
 
     # Exit early if within 5-deg of horizontal! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    if v_zenith_ang > np.deg2rad(85):
+    if v_zenith_ang > np.deg2rad(TERRAIN_MAX_ZENITH_DEG):
         logger.info(
             "Unable to perform terrain correction! Zenith angle [%s] (degrees) too high!", np.rad2deg(v_zenith_ang)
         )

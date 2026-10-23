@@ -35,8 +35,8 @@ regions near the dateline read the right heights.
   quality flag `SpatialQualityFlags.CALC_TERRAIN_OUTSIDE_DEM` (`0x8000`) and corrects the rest.
   Products that store the flags need at least an unsigned 16-bit or a signed 32-bit integer.
   `Geolocate.correct_terrain` also loads the region again, widened, when a search would start
-  outside it, as an oblique view near the region's edge can, so those points are corrected rather
-  than flagged.
+  outside it, as an oblique view near the region's edge can; it re-checks against the wider
+  region's maximum height, up to three loads, and flags any search still starting outside.
 - **A point that did not reach the surface in 1000 steps set every point to NaN.**
   `terrain_correct` now flags only the points still searching `CALC_TERRAIN_MAX_ITER` and returns
   the others.
