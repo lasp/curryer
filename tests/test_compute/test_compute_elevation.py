@@ -523,10 +523,6 @@ class ElevationTestCase(unittest.TestCase):
         return
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ElevationRegionTestCase(unittest.TestCase):
     """Region queries on synthetic data, without DEM files."""
 
@@ -537,7 +533,9 @@ class ElevationRegionTestCase(unittest.TestCase):
 
     def test_query_inside(self):
         npt.assert_array_equal(self.region.query(np.array([-10.0, 0.0]), np.array([5.0, 0.0])), [0, 50 * 200 + 100])
-        self.assertEqual(self.region.query(0.0, 0.0), 50 * 200 + 100)
+        value = self.region.query(0.0, 0.0)
+        self.assertIsInstance(value, np.floating)
+        self.assertEqual(value, 50 * 200 + 100)
 
     def test_query_outside_raises_with_given_lon(self):
         # West of the region: not wrapped to +350, which the message would otherwise show.
@@ -562,3 +560,20 @@ class ElevationRegionTestCase(unittest.TestCase):
             region.contains(np.array([176.0, -176.0, -170.0, 170.0]), np.full(4, 0.5)), [True, True, False, False]
         )
         npt.assert_array_equal(region.query(np.array([-176.0]), np.array([0.5])), [0.0])
+
+    def test_contains_dateline_radians(self):
+        step = np.deg2rad(0.1)
+        region = elevation.ElevationRegion(np.zeros((10, 100)), np.deg2rad(175.0), np.deg2rad(1.0), step, -step)
+        lon = np.deg2rad([176.0, -176.0, -170.0, 170.0])
+        npt.assert_array_equal(region.contains(lon, np.full(4, np.deg2rad(0.5))), [True, True, False, False])
+
+    def test_local_region_full_turn_raises(self):
+        # Checked before any DEM file is read.
+        elev = elevation.Elevation.__new__(elevation.Elevation)
+        elev.degrees = True
+        with self.assertRaisesRegex(ValueError, "span a full turn"):
+            elev.local_region(-181, 181, -5, 5)
+
+
+if __name__ == "__main__":
+    unittest.main()
