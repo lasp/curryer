@@ -757,8 +757,9 @@ class Elevation:
         Raises
         ------
         ValueError
-            If no DEM file intersects the region, or the merged tiles do not
-            form an evenly spaced longitude grid.
+            If the longitude bounds span 360 degrees or more, no DEM file
+            intersects the region, or the merged tiles do not form an evenly
+            spaced grid.
 
         Notes
         -----
@@ -768,6 +769,8 @@ class Elevation:
 
         """
         half_turn = 180 if self.degrees else np.pi
+        if max_lon - min_lon >= 2 * half_turn:
+            raise ValueError(f"Longitude bounds [{min_lon}, {max_lon}] span a full turn or more")
         if min_lon < -half_turn:
             min_lon += 2 * half_turn
         if max_lon > half_turn:
@@ -1019,8 +1022,9 @@ class ElevationRegion:
         Returns
         -------
         np.ndarray
-            True where the point is inside the region. NaN coordinates are
-            outside.
+            True where the point is inside the region. The region runs from
+            the first pixel's center to the last pixel's far edge, in both
+            longitude and latitude. NaN coordinates are outside.
 
         """
         return self._locate(lon, lat)[2]
