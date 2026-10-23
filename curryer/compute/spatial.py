@@ -981,6 +981,8 @@ def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.
 
 # Distance step of the terrain search, in km. Must consider DEM resolution!
 TERRAIN_STEP_KM = 0.5
+# View zenith angle, in degrees, beyond which terrain correction is not attempted.
+TERRAIN_MAX_ZENITH_DEG = 85
 
 
 def terrain_correct(
@@ -1010,7 +1012,10 @@ def terrain_correct(
         WGS84 ellipsoid (geoid height + orthometric (DEM) height). Points that
         can not be corrected (e.g., >85 degree off-nadir) are set to NaNs.
     np.ndarray
-        Quality flags indicating why the correction failed.
+        Quality flags indicating why the correction failed. A point whose
+        search leaves an `elevation.ElevationRegion` is flagged
+        `CALC_TERRAIN_OUTSIDE_DEM`, and one that does not reach the surface in
+        1000 steps `CALC_TERRAIN_MAX_ITER`; the other points are unaffected.
 
     References
     ----------
@@ -1074,9 +1079,9 @@ def terrain_correct(
     # 1-3) Unit vector from ground to satellite, and its local vertical component.
     ec_sat_vec, cos_sat = _view_vector(ec_srf_pos, ec_sat_pos, gd_xyz)
 
-    # Skip (or exit if all) within 5-deg of horizontal! Too off nadir.
+    # Skip (or exit if all) beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    idx_ang_valid = (v_zenith_ang <= np.deg2rad(85)).ravel()
+    idx_ang_valid = (v_zenith_ang <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
     n_ang_valid = idx_ang_valid.sum()
     if n_ang_valid != npts:
         logger.info(
@@ -1114,8 +1119,13 @@ def terrain_correct(
     gd_cur_xyz[:, 2] = np.zeros(npts)
 
     # 10) Terrain intersection.
+    idx_valid = idx_ang_valid.copy()
     gd_cur_h = np.full(npts, np.nan)
-    gd_cur_h[idx_ang_valid] = elev.query(gd_cur_xyz[idx_ang_valid, 0], gd_cur_xyz[idx_ang_valid, 1])
+    _drop_outside_region(
+        elev, idx_ang_valid, gd_cur_xyz[idx_ang_valid, 0], gd_cur_xyz[idx_ang_valid, 1], idx_valid, qf_values
+    )
+    if idx_valid.any():
+        gd_cur_h[idx_valid] = elev.query(gd_cur_xyz[idx_valid, 0], gd_cur_xyz[idx_valid, 1])
     gd_prev_h = gd_cur_h.copy()
 
     # Initialize to the max local height.
@@ -1129,7 +1139,7 @@ def terrain_correct(
     dist_cur = dist_srf_max.copy()
 
     # Iterate until the point is below the elevation.
-    idx_cont = idx_ang_valid & (gd_cur_h < gd_cur_alt)
+    idx_cont = idx_valid & (gd_cur_h < gd_cur_alt)
     iloop = 0
     while idx_cont.any():
         iloop += 1
@@ -1140,6 +1150,13 @@ def terrain_correct(
 
         # Convert to geodetic lon, lat and altitude (above ellipsoid).
         gd_cur_pos_subset = ecef_to_geodetic(ec_cur_pos_subset, degrees=False)
+        is_inside = _drop_outside_region(
+            elev, idx_cont, gd_cur_pos_subset[:, 0], gd_cur_pos_subset[:, 1], idx_valid, qf_values
+        )
+        idx_cont &= idx_valid
+        if not idx_cont.any():
+            break
+        gd_cur_pos_subset = gd_cur_pos_subset[is_inside]
         gd_prev_alt[idx_cont] = gd_cur_alt[idx_cont]
         gd_cur_alt[idx_cont] = gd_cur_pos_subset[:, 2]
 
@@ -1170,7 +1187,7 @@ def terrain_correct(
             )
 
         # Update if we've stepped below the surface (ends loop after all points).
-        idx_cont = idx_ang_valid & (gd_cur_h < gd_cur_alt)
+        idx_cont = idx_valid & (gd_cur_h < gd_cur_alt)
 
         # Fail-safe to prevent infinite looping.
         if iloop > 1000:
@@ -1181,13 +1198,8 @@ def terrain_correct(
                 idx_cont.size,
             )
             qf_values[idx_cont] |= SQF.CALC_TERRAIN_MAX_ITER
-
-            gd_final = np.array([np.nan, np.nan, np.nan])
-            if not given_1d:
-                gd_final = np.tile(gd_final, (npts, 1))
-            else:
-                qf_values = qf_values.ravel()
-            return gd_final, qf_values
+            idx_valid &= ~idx_cont
+            break
 
     # 11) Precise terrain intersection from last two iterations.
     delta_gd_cur_alt = gd_cur_alt - gd_prev_alt
@@ -1195,24 +1207,25 @@ def terrain_correct(
 
     # Final DEM-based height above the ellipsoid.
     gd_final_pos = np.full((npts, 3), np.nan)
-    gd_final_pos[idx_ang_valid, 2] = (alpha * gd_cur_h + (1 - alpha) * gd_prev_h)[idx_ang_valid]
+    gd_final_pos[idx_valid, 2] = (alpha * gd_cur_h + (1 - alpha) * gd_prev_h)[idx_valid]
 
     # 12) Final geodetic coordinates. Note that the DEM height is used over the
     # computed geodetic altitude (discarded).
     dist_final = dist_cur + (1 - alpha[..., None]) * delta_dist
     ec_final_pos = ec_srf_pos + dist_final * ec_sat_vec
-    gd_final_pos[idx_ang_valid, :2] = ecef_to_geodetic(ec_final_pos[idx_ang_valid, :], degrees=True)[:, :2]
+    if idx_valid.any():
+        gd_final_pos[idx_valid, :2] = ecef_to_geodetic(ec_final_pos[idx_valid, :], degrees=True)[:, :2]
 
     # 13) Set final quality flag if any nans (shouldn't happen).
     idx_out_valid = np.isfinite(gd_final_pos).all(axis=1)
-    qf_values[~idx_out_valid & idx_ang_valid] |= SQF.CALC_TERRAIN_NOT_FINITE
+    qf_values[~idx_out_valid & idx_valid] |= SQF.CALC_TERRAIN_NOT_FINITE
 
     if logger.isEnabledFor(logging.DEBUG):
         if idx_out_valid.sum():
             pt_minmax_lla = []
             for ith in range(3):
                 pt_minmax_lla.extend([gd_final_pos[idx_out_valid, ith].min(), gd_final_pos[idx_out_valid, ith].max()])
-            pt_ellps_ht = ecef_to_geodetic(ec_final_pos[idx_ang_valid, :])[:, 2]
+            pt_ellps_ht = ecef_to_geodetic(ec_final_pos[idx_valid, :])[:, 2]
             pt_ellps_ht = [pt_ellps_ht.min(), pt_ellps_ht.max()]
         else:
             pt_minmax_lla = [np.nan for _ in range(6)]
@@ -1252,6 +1265,38 @@ def _view_vector(
     # Rounding can put an exact-nadir view just past 1, where arccos is NaN.
     cos_sat = np.clip(np.prod([ec_sat_vec, ellips_norm_vec], axis=0).sum(axis=1)[..., None], -1.0, 1.0)
     return ec_sat_vec, cos_sat
+
+
+def _drop_outside_region(
+    elev: elevation.Elevation,
+    idx_pts: np.ndarray,
+    lon: np.ndarray,
+    lat: np.ndarray,
+    idx_valid: np.ndarray,
+    qf_values: np.ndarray,
+) -> np.ndarray:
+    """Flag and invalidate, in place, the points an elevation region does not
+    cover. `lon` and `lat` (radians) hold one value per True in mask `idx_pts`.
+    Returns which of those points are inside; an `elevation.Elevation` is
+    global, so all are.
+    """
+    if not isinstance(elev, elevation.ElevationRegion):
+        return np.ones(lon.shape, dtype=bool)
+
+    is_inside = elev.contains(lon, lat)
+    if not is_inside.all():
+        idx_out = np.flatnonzero(idx_pts)[~is_inside]
+        logger.warning(
+            "Terrain search left the elevation region for [%d/%d] points, first at lon=[%.6f], lat=[%.6f] (deg); %s",
+            idx_out.size,
+            idx_valid.size,
+            np.rad2deg(lon[~is_inside][0]),
+            np.rad2deg(lat[~is_inside][0]),
+            elev,
+        )
+        qf_values[idx_out] |= SQF.CALC_TERRAIN_OUTSIDE_DEM
+        idx_valid[idx_out] = False
+    return is_inside
 
 
 def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False, signed=False) -> np.ndarray:
@@ -2150,7 +2195,9 @@ class Geolocate:
             The index is the product of `ugps_times` and pixels across-track.
         pad_degrees : float, optional
             Number of lon/lat degrees to pad the intersections when loading
-            the regional extent of the surface elevation.
+            the regional extent of the surface elevation. The extent also
+            covers where each terrain search starts, above the point along the
+            view vector.
 
         Returns
         -------
@@ -2168,21 +2215,47 @@ class Geolocate:
         qf_arr = ellips_qf_ds.values.copy()
 
         if is_valid.any():
-            # Pre-compute regional DEM for faster elevation look-ups.
-            mm_lon = minmax_lon(ellips_lla_df["lon"], degrees=True)
-            minmax_lonlat = [
-                mm_lon[0] - pad_degrees,
-                mm_lon[1] + pad_degrees,
-                ellips_lla_df["lat"].min() - pad_degrees,
-                ellips_lla_df["lat"].max() + pad_degrees,
-            ]
-            elev_region = self.elevation.local_region(*np.deg2rad(minmax_lonlat))
 
-            ellips_xyz_arr_sub = geodetic_to_ecef(ellips_lla_df.values[is_valid], degrees=True)
+            def load_region(lons: pd.Series, lats: pd.Series) -> elevation.ElevationRegion:
+                mm_lon = minmax_lon(lons, degrees=True)
+                minmax_lonlat = [
+                    mm_lon[0] - pad_degrees,
+                    mm_lon[1] + pad_degrees,
+                    lats.min() - pad_degrees,
+                    lats.max() + pad_degrees,
+                ]
+                return self.elevation.local_region(*np.deg2rad(minmax_lonlat))
+
+            # Pre-compute regional DEM for faster elevation look-ups.
+            elev_region = load_region(ellips_lla_df["lon"], ellips_lla_df["lat"])
+
+            ellips_lla_arr_sub = ellips_lla_df.values[is_valid]
+            ellips_xyz_arr_sub = geodetic_to_ecef(ellips_lla_arr_sub, degrees=True)
+            sc_xyz_arr_sub = sc_xyz_df.values[is_valid]
+
+            # Each search starts at the region's max height along the view vector, which an oblique view
+            # places beyond the pad. Widen the region to cover those start points. Taller terrain in the wider
+            # region moves them further out, so re-check, up to three loads; `terrain_correct` flags any left.
+            ec_sat_vec, cos_sat = _view_vector(ellips_xyz_arr_sub, sc_xyz_arr_sub, np.deg2rad(ellips_lla_arr_sub))
+            idx_ang_valid = (np.arccos(cos_sat) <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
+            for n_reload in range(3):
+                alt_srf_max = max(elev_region.local_minmax()[1], TERRAIN_STEP_KM)
+                gd_start = ecef_to_geodetic(
+                    ellips_xyz_arr_sub[idx_ang_valid]
+                    + (alt_srf_max / cos_sat[idx_ang_valid]) * ec_sat_vec[idx_ang_valid],
+                    degrees=True,
+                )
+                if n_reload == 2 or elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
+                    break
+                elev_region = load_region(
+                    pd.concat([ellips_lla_df["lon"], pd.Series(gd_start[:, 0])]),
+                    pd.concat([ellips_lla_df["lat"], pd.Series(gd_start[:, 1])]),
+                )
+
             terrain_lla_arr_sub, terrain_qf_arr_sub = terrain_correct(
                 elev=elev_region,
                 ec_srf_pos=ellips_xyz_arr_sub,
-                ec_sat_pos=sc_xyz_df.values[is_valid],
+                ec_sat_pos=sc_xyz_arr_sub,
             )
 
             data_arr[is_valid, :] = terrain_lla_arr_sub
@@ -2346,9 +2419,9 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     # 3) Local vertical component of the vector.
     cos_sat = np.clip(ec_sat_vec @ ellips_norm_vec, -1.0, 1.0)
 
-    # Exit early if within 5-deg of horizontal! Too off nadir.
+    # Exit early if beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    if v_zenith_ang > np.deg2rad(85):
+    if v_zenith_ang > np.deg2rad(TERRAIN_MAX_ZENITH_DEG):
         logger.info(
             "Unable to perform terrain correction! Zenith angle [%s] (degrees) too high!", np.rad2deg(v_zenith_ang)
         )
