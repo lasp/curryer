@@ -1,5 +1,25 @@
 # Changelog
 
+## Version 0.5.5 (unreleased)
+
+Terrain-correction fixes: one point's view geometry no longer fails the other points, and elevation
+regions near the dateline read the right heights.
+
+### Fixes
+
+- **Terrain correction failed where every local height was below the ellipsoid, as over ocean with
+  a negative geoid (#198).** The search for the terrain intersection starts at the local maximum
+  height along the view vector. A maximum at or below zero started it at or below the ellipsoid,
+  stepping away from the surface: `terrain_correct` flagged every point `CALC_TERRAIN_MAX_ITER` and
+  `terrain_correct_single` raised `ValueError`. The search now starts at least `TERRAIN_STEP_KM`
+  (0.5 km) up. Where the local maximum was under 0.5 km the steps fall at different heights, which
+  can move a result by the terrain's height change within one step; elsewhere results are
+  unchanged.
+- **Exact-nadir views were flagged `CALC_TERRAIN_EXTREME_ZENITH` and returned NaN (#202).** Rounding
+  could put the cosine of the view zenith just above 1, where `arccos` is NaN; on a test grid this
+  hit 204 of 2409 exact-nadir views. The cosine is now clipped to [-1, 1], and the infinite step
+  length at zero zenith no longer warns.
+
 ## Version 0.5.4 (unreleased)
 
 Adds footprint polygons for 2-D geolocation grids.
