@@ -1079,7 +1079,7 @@ def terrain_correct(
     # 1-3) Unit vector from ground to satellite, and its local vertical component.
     ec_sat_vec, cos_sat = _view_vector(ec_srf_pos, ec_sat_pos, gd_xyz)
 
-    # Skip (or exit if all) within 5-deg of horizontal! Too off nadir.
+    # Skip (or exit if all) beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
     idx_ang_valid = (v_zenith_ang <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
     n_ang_valid = idx_ang_valid.sum()
@@ -2238,14 +2238,14 @@ class Geolocate:
             # region moves them further out, so re-check, up to three loads; `terrain_correct` flags any left.
             ec_sat_vec, cos_sat = _view_vector(ellips_xyz_arr_sub, sc_xyz_arr_sub, np.deg2rad(ellips_lla_arr_sub))
             idx_ang_valid = (np.arccos(cos_sat) <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
-            for _ in range(3):
+            for n_reload in range(3):
                 alt_srf_max = max(elev_region.local_minmax()[1], TERRAIN_STEP_KM)
                 gd_start = ecef_to_geodetic(
                     ellips_xyz_arr_sub[idx_ang_valid]
                     + (alt_srf_max / cos_sat[idx_ang_valid]) * ec_sat_vec[idx_ang_valid],
                     degrees=True,
                 )
-                if elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
+                if n_reload == 2 or elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
                     break
                 elev_region = load_region(
                     pd.concat([ellips_lla_df["lon"], pd.Series(gd_start[:, 0])]),
@@ -2419,7 +2419,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     # 3) Local vertical component of the vector.
     cos_sat = np.clip(ec_sat_vec @ ellips_norm_vec, -1.0, 1.0)
 
-    # Exit early if within 5-deg of horizontal! Too off nadir.
+    # Exit early if beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
     if v_zenith_ang > np.deg2rad(TERRAIN_MAX_ZENITH_DEG):
         logger.info(

@@ -707,6 +707,32 @@ class SpatialTestCase(unittest.TestCase):
         npt.assert_array_equal(terrain_qf_ds.values, [SQF.GOOD])
         npt.assert_allclose(terrain_lla_df["alt"].values, [2.0])
 
+    def test_correct_terrain_widen_limit_flags(self):
+        # Every wider region is taller, so no load covers the start point; after three loads it is flagged.
+        heights = iter([0.1, 2.0, 4.0])
+
+        def taller_region(min_lon, max_lon, min_lat, max_lat):
+            region = self._flat_region(min_lon, max_lon, min_lat, max_lat, height=1.0)
+            region.data[0, -1] = next(heights)
+            return region
+
+        geo = spatial.Geolocate.__new__(spatial.Geolocate)
+        geo.instrument = MagicMock(name="instrument")
+        geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
+        geo.elevation.local_region.side_effect = taller_region
+
+        ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0]], columns=["lon", "lat", "alt"])
+        sc_xyz_df = pd.DataFrame(spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0]]), degrees=True))
+        ellips_qf_ds = pd.Series([SQF.GOOD])
+
+        with self.assertLogs("curryer.compute.spatial", level="WARNING"):
+            terrain_lla_df, terrain_qf_ds = geo.correct_terrain(
+                ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01
+            )
+        self.assertEqual(geo.elevation.local_region.call_count, 3)
+        npt.assert_array_equal(terrain_qf_ds.values, [SQF.CALC_TERRAIN_OUTSIDE_DEM])
+        self.assertTrue(terrain_lla_df.isna().all(axis=None))
+
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)
     # =========================================================================
