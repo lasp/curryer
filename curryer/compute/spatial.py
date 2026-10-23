@@ -979,6 +979,10 @@ def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.
     return xyz.ravel() if given_1d else xyz
 
 
+# Distance step of the terrain search, in km. Must consider DEM resolution!
+TERRAIN_STEP_KM = 0.5
+
+
 def terrain_correct(
     elev: elevation.Elevation, ec_srf_pos: np.ndarray, ec_sat_pos: np.ndarray, local_minmax: tuple[float, float] = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1063,17 +1067,12 @@ def terrain_correct(
             alt_srf_max,
         )
 
-    # 1) Local ellipsoid normal unit vector from geodetic lat/lon.
-    ellips_norm_vec = np.array(
-        [np.cos(gd_xyz[:, 1]) * np.cos(gd_xyz[:, 0]), np.cos(gd_xyz[:, 1]) * np.sin(gd_xyz[:, 0]), np.sin(gd_xyz[:, 1])]
-    ).T
+    # The search must start above the surface. Over a region with only negative heights (ocean with a
+    # negative geoid), the max would start it below the ellipsoid, stepping away from the surface.
+    alt_srf_max = max(alt_srf_max, TERRAIN_STEP_KM)
 
-    # 2) ECR unit vector from ground to satellite.
-    ec_sat_vec = ec_srf_pos - ec_sat_pos
-    ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec, axis=1)[..., None]) * -1
-
-    # 3) Local vertical component of the vector.
-    cos_sat = np.prod([ec_sat_vec, ellips_norm_vec], axis=0).sum(axis=1)[..., None]
+    # 1-3) Unit vector from ground to satellite, and its local vertical component.
+    ec_sat_vec, cos_sat = _view_vector(ec_srf_pos, ec_sat_pos, gd_xyz)
 
     # Skip (or exit if all) within 5-deg of horizontal! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
@@ -1123,10 +1122,10 @@ def terrain_correct(
     gd_cur_alt = np.full(npts, alt_srf_max)
     gd_prev_alt = gd_cur_alt.copy()
 
-    # Distance step size. Must consider DEM resolution!
-    d_step = 0.5  # km
-    delta_dist = d_step / np.sin(v_zenith_ang)
-    delta_dist = np.min([delta_dist, dist_srf_max], axis=0)  # Added due to issues around pure-nadir.
+    # Distance step size. Infinite at exact nadir, where the minimum takes the whole distance.
+    with np.errstate(divide="ignore"):
+        delta_dist = TERRAIN_STEP_KM / np.sin(v_zenith_ang)
+    delta_dist = np.min([delta_dist, dist_srf_max], axis=0)
     dist_cur = dist_srf_max.copy()
 
     # Iterate until the point is below the elevation.
@@ -1229,6 +1228,30 @@ def terrain_correct(
         )
 
     return (gd_final_pos.ravel(), qf_values.ravel()) if given_1d else (gd_final_pos, qf_values)
+
+
+def _view_vector(
+    ec_srf_pos: np.ndarray, ec_sat_pos: np.ndarray, gd_srf_pos: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Unit vectors from surface points to the spacecraft (ECEF, Nx3) and the
+    cosine of their view zenith angles (Nx1), from surface positions in ECEF
+    and geodetic radians (Nx3).
+    """
+    # Local ellipsoid normal unit vector from geodetic lat/lon.
+    ellips_norm_vec = np.array(
+        [
+            np.cos(gd_srf_pos[:, 1]) * np.cos(gd_srf_pos[:, 0]),
+            np.cos(gd_srf_pos[:, 1]) * np.sin(gd_srf_pos[:, 0]),
+            np.sin(gd_srf_pos[:, 1]),
+        ]
+    ).T
+
+    ec_sat_vec = ec_srf_pos - ec_sat_pos
+    ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec, axis=1)[..., None]) * -1
+
+    # Rounding can put an exact-nadir view just past 1, where arccos is NaN.
+    cos_sat = np.clip(np.prod([ec_sat_vec, ellips_norm_vec], axis=0).sum(axis=1)[..., None], -1.0, 1.0)
+    return ec_sat_vec, cos_sat
 
 
 def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False, signed=False) -> np.ndarray:
@@ -2289,6 +2312,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
         alt_srf_min, alt_srf_max = elev.local_minmax(gd_lon, gd_lat, pad=10)  # km
     else:
         alt_srf_min, alt_srf_max = local_minmax
+    alt_srf_max = max(alt_srf_max, TERRAIN_STEP_KM)  # See `terrain_correct`.
 
     if logger.isEnabledFor(5):
         gd_sat_pos = spicierpy.recgeo(
@@ -2320,7 +2344,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec)) * -1
 
     # 3) Local vertical component of the vector.
-    cos_sat = ec_sat_vec @ ellips_norm_vec
+    cos_sat = np.clip(ec_sat_vec @ ellips_norm_vec, -1.0, 1.0)
 
     # Exit early if within 5-deg of horizontal! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
@@ -2364,10 +2388,9 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     gd_cur_alt = alt_srf_max
     gd_prev_alt = gd_cur_alt
 
-    # Distance step size. Must consider DEM resolution!
-    d_step = 0.5  # km
-    delta_dist = d_step / np.sin(v_zenith_ang)
-    delta_dist = np.min([delta_dist, dist_srf_max])  # Added due to issues around pure-nadir.
+    with np.errstate(divide="ignore"):
+        delta_dist = TERRAIN_STEP_KM / np.sin(v_zenith_ang)
+    delta_dist = np.min([delta_dist, dist_srf_max])
     dist_cur = dist_srf_max
 
     # Iterate until the point is below the elevation.

@@ -574,6 +574,33 @@ class SpatialTestCase(unittest.TestCase):
         self.assertTupleEqual((npts, 3), out_srf_locs.shape)
         self.assertTrue(np.isfinite(out_srf_locs).all())
 
+    def test_terrain_correct_negative_surface(self):
+        # All heights below the ellipsoid, as over ocean with a negative geoid.
+        self.mock_elev.local_minmax.return_value = -0.10, -0.02
+        self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), -0.05)
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[170.0, -50.0, 0.0], [170.1, -50.0, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[171.0, -50.0, 400.0], [171.0, -50.0, 400.0]]), degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+        npt.assert_array_equal(out_qf, [SQF.GOOD, SQF.GOOD])
+        npt.assert_allclose(out_srf_loc[:, 2], -0.05)
+        npt.assert_allclose(out_srf_loc[:, :2], [[170.0, -50.0], [170.1, -50.0]], atol=1e-3)
+
+        self.mock_elev.query.side_effect = lambda ll, lt: -0.05
+        out_single = spatial.terrain_correct_single(self.mock_elev, ec_srf_pos[0], ec_sat_pos[0])
+        npt.assert_allclose(out_single, [170.0, -50.0, -0.05], atol=1e-3)
+
+    def test_terrain_correct_exact_nadir(self):
+        # Views along the ellipsoid normal, where rounding puts cos(zenith) just past 1.
+        self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), 0.2)
+        for lon, lat in [(-180.0, -5.0), (-175.0, 0.0), (-175.0, -20.0), (0.0, 0.0)]:
+            with self.subTest(lon=lon, lat=lat):
+                ec_srf_pos = spatial.geodetic_to_ecef(np.array([lon, lat, 0.0]), degrees=True)
+                ec_sat_pos = spatial.geodetic_to_ecef(np.array([lon, lat, 400.0]), degrees=True)
+                out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+                npt.assert_array_equal(out_qf, [SQF.GOOD])
+                npt.assert_allclose(out_srf_loc, [lon, lat, 0.2], atol=1e-6)
+
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)
     # =========================================================================
