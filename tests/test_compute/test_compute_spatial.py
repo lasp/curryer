@@ -657,6 +657,26 @@ class SpatialTestCase(unittest.TestCase):
         self.assertTrue(np.isnan(out_srf_loc[1]).all())
         npt.assert_allclose(out_srf_loc[[0, 2]], [[0.0, 0.0, 0.1], [-0.1, 0.1, 0.1]], atol=1e-6)
 
+    def test_terrain_correct_leaves_region_mid_search(self):
+        # Region spans [-0.001, 0.01) rad. Points 1 and 3 sit just outside the west edge, viewed from the east
+        # (~76 deg zenith): their searches start ~0.3 mrad east, inside, and step west out of the region before
+        # reaching the 0.1 km surface.
+        region = self._flat_region(-0.001, 0.01, -0.01, 0.01)
+        lon_deg = np.rad2deg([0.004, -0.00115, 0.005, -0.00112, 0.006])
+        gd_srf = np.column_stack([lon_deg, np.zeros(5), np.zeros(5)])
+        gd_sat = np.column_stack([lon_deg + 10.0, np.zeros(5), np.full(5, 400.0)])
+        ec_srf_pos = spatial.geodetic_to_ecef(gd_srf, degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(gd_sat, degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(region, ec_srf_pos, ec_sat_pos)
+        expected_qf = [SQF.GOOD, SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD, SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD]
+        npt.assert_array_equal(out_qf, expected_qf)
+        self.assertTrue(np.isnan(out_srf_loc[[1, 3]]).all())
+
+        idx_keep = [0, 2, 4]
+        alone_srf_loc, _ = spatial.terrain_correct(region, ec_srf_pos[idx_keep], ec_sat_pos[idx_keep])
+        npt.assert_array_equal(out_srf_loc[idx_keep], alone_srf_loc)
+
     def test_terrain_correct_max_iter_one_point(self):
         # The second point's surface is out of reach, so only its search runs out of steps.
         self.mock_elev.query.side_effect = lambda ll, lt: np.where(lt > np.deg2rad(0.05), -1e5, 1.6)
@@ -692,6 +712,30 @@ class SpatialTestCase(unittest.TestCase):
         self.assertGreater(second_max_lon, first_max_lon)
         npt.assert_array_equal(terrain_qf_ds.values, [SQF.GOOD, SQF.GOOD])
         npt.assert_allclose(terrain_lla_df["alt"].values, [0.1, 0.1])
+
+    def test_correct_terrain_widens_region_until_covered(self):
+        # A region reaching past 0.02 deg lon is 2 km high with a 3 km peak in a corner, so widening it moves the
+        # start points further out and the region is widened again.
+        def stepped_region(min_lon, max_lon, min_lat, max_lat):
+            if max_lon <= np.deg2rad(0.02):
+                return self._flat_region(min_lon, max_lon, min_lat, max_lat)
+            region = self._flat_region(min_lon, max_lon, min_lat, max_lat, height=2.0)
+            region.data[0, -1] = 3.0
+            return region
+
+        geo = spatial.Geolocate.__new__(spatial.Geolocate)
+        geo.instrument = MagicMock(name="instrument")
+        geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
+        geo.elevation.local_region.side_effect = stepped_region
+
+        ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0]], columns=["lon", "lat", "alt"])
+        sc_xyz_df = pd.DataFrame(spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0]]), degrees=True))
+        ellips_qf_ds = pd.Series([SQF.GOOD])
+
+        terrain_lla_df, terrain_qf_ds = geo.correct_terrain(ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01)
+        self.assertEqual(geo.elevation.local_region.call_count, 3)
+        npt.assert_array_equal(terrain_qf_ds.values, [SQF.GOOD])
+        npt.assert_allclose(terrain_lla_df["alt"].values, [2.0])
 
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)
