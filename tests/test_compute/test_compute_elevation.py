@@ -2,6 +2,7 @@ import logging
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import h5py
 import numpy as np
@@ -292,6 +293,33 @@ class ElevationTestCase(unittest.TestCase):
         npt.assert_allclose(ht_calc2a, ht_calc12[1], rtol=1e-13)
         npt.assert_allclose(ht_calc2b, ht_calc12[2], rtol=1e-13)
 
+    def test_elevation_local_region_dateline_padded(self):
+        # Bounds padded past +180 or -180 describe the same region as the wrapped bounds.
+        elev = elevation.Elevation()
+        for bounds in [(175, 185, -5, 5), (-185, -175, -5, 5)]:
+            with self.subTest(bounds=bounds):
+                elev_region = elev.local_region(*bounds)
+                for lon in (177, 179, -179, -177):
+                    npt.assert_allclose(elev_region.query(lon, 0.5), elev.query(lon, 0.5), rtol=1e-3)
+
+        elev_rad = elevation.Elevation(degrees=False)
+        elev_region = elev_rad.local_region(*np.deg2rad((175, 185, -5, 5)))
+        npt.assert_allclose(elev_region.query(np.deg2rad(-179), 0.0), elev.query(-179, 0), rtol=1e-3)
+
+    def test_elevation_local_region_uneven_tiles(self):
+        elev = elevation.Elevation()
+        slice_file = elev._slice_file
+
+        def shifted_slice(rds, *args, **kwargs):
+            tile = slice_file(rds, *args, **kwargs)
+            if tile["x"].min().item() > -100:
+                tile["x"] = tile["x"] + 0.001
+            return tile
+
+        with patch.object(elev, "_slice_file", side_effect=shifted_slice):
+            with self.assertRaisesRegex(ValueError, r"not evenly spaced in \[x\]"):
+                elev.local_region(-110, -85, 25, 45)
+
     # TODO: Delete or move else where. Used to investigate DEM data sources.
     @unittest.skip("Requires test data files - enable if needed for DEM source investigation")
     def test_dem_source_assumptions(self):
@@ -493,6 +521,58 @@ class ElevationTestCase(unittest.TestCase):
 
         print(f"Invalid records found: {len(invalid)}")
         return
+
+
+class ElevationRegionTestCase(unittest.TestCase):
+    """Region queries on synthetic data, without DEM files."""
+
+    def setUp(self) -> None:
+        # Pixel centers -10.0 to 9.9 deg lon, 5.0 to -4.9 deg lat; heights encode the pixel.
+        data = np.arange(100 * 200, dtype=float).reshape(100, 200)
+        self.region = elevation.ElevationRegion(data, -10.0, 5.0, 0.1, -0.1, degrees=True)
+
+    def test_query_inside(self):
+        npt.assert_array_equal(self.region.query(np.array([-10.0, 0.0]), np.array([5.0, 0.0])), [0, 50 * 200 + 100])
+        value = self.region.query(0.0, 0.0)
+        self.assertIsInstance(value, np.floating)
+        self.assertEqual(value, 50 * 200 + 100)
+
+    def test_query_outside_raises_with_given_lon(self):
+        # West of the region: not wrapped to +350, which the message would otherwise show.
+        with self.assertRaisesRegex(
+            ValueError,
+            r"\[2/3\] points are outside .* index \[1\] lon=\[-20.0\], lat=\[0.0\]; region lon=\[-10.0, 10.0\)",
+        ):
+            self.region.query(np.array([0.0, -20.0, 0.0]), np.array([0.0, 0.0, 10.0]))
+        with self.assertRaisesRegex(ValueError, r"\[1/1\] points .* lon=\[10.0\]"):
+            self.region.query(10.0, 0.0)
+
+    def test_contains(self):
+        npt.assert_array_equal(
+            self.region.contains(np.array([0.0, -20.0, 9.9, np.nan]), np.array([0.0, 0.0, -4.9, 0.0])),
+            [True, False, True, False],
+        )
+
+    def test_contains_dateline(self):
+        # A region crossing the dateline is stored with longitudes past +180.
+        region = elevation.ElevationRegion(np.zeros((10, 100)), 175.0, 1.0, 0.1, -0.1, degrees=True)
+        npt.assert_array_equal(
+            region.contains(np.array([176.0, -176.0, -170.0, 170.0]), np.full(4, 0.5)), [True, True, False, False]
+        )
+        npt.assert_array_equal(region.query(np.array([-176.0]), np.array([0.5])), [0.0])
+
+    def test_contains_dateline_radians(self):
+        step = np.deg2rad(0.1)
+        region = elevation.ElevationRegion(np.zeros((10, 100)), np.deg2rad(175.0), np.deg2rad(1.0), step, -step)
+        lon = np.deg2rad([176.0, -176.0, -170.0, 170.0])
+        npt.assert_array_equal(region.contains(lon, np.full(4, np.deg2rad(0.5))), [True, True, False, False])
+
+    def test_local_region_full_turn_raises(self):
+        # Checked before any DEM file is read.
+        elev = elevation.Elevation.__new__(elevation.Elevation)
+        elev.degrees = True
+        with self.assertRaisesRegex(ValueError, "span a full turn"):
+            elev.local_region(-181, 181, -5, 5)
 
 
 if __name__ == "__main__":

@@ -754,7 +754,28 @@ class Elevation:
             Elevation subset that only supports queries within its region, but
             SIGNIFICANTLY faster within the region!
 
+        Raises
+        ------
+        ValueError
+            If the longitude bounds span 360 degrees or more, no DEM file
+            intersects the region, or the merged tiles do not form an evenly
+            spaced grid.
+
+        Notes
+        -----
+        Longitude bounds past -180 or +180 (e.g., from padding) are wrapped
+        into range, so `min_lon` > `max_lon` describes a region crossing the
+        dateline.
+
         """
+        half_turn = 180 if self.degrees else np.pi
+        if max_lon - min_lon >= 2 * half_turn:
+            raise ValueError(f"Longitude bounds [{min_lon}, {max_lon}] span a full turn or more")
+        if min_lon < -half_turn:
+            min_lon += 2 * half_turn
+        if max_lon > half_turn:
+            max_lon -= 2 * half_turn
+
         files = self._regional_files(min_lon, max_lon, min_lat, max_lat, allow_empty=False)
         files = sorted(files)
 
@@ -826,6 +847,15 @@ class Elevation:
             tiles = new_tiles
 
         hts = xr.combine_by_coords(tiles, combine_attrs="drop_conflicts", join="outer")
+
+        # `ElevationRegion` indexes by a constant step, so a gap or overlap between tiles would misplace heights.
+        for dim in ("x", "y"):
+            steps = np.diff(hts[dim].values)
+            if steps.size and not np.allclose(steps, steps[0], rtol=0, atol=1e-3 * abs(steps[0])):
+                raise ValueError(
+                    f"Merged DEM tiles are not evenly spaced in [{dim}] for lon=[{min_lon}, {max_lon}],"
+                    f" lat=[{min_lat}, {max_lat}] (degrees); steps range [{steps.min()}, {steps.max()}]"
+                )
 
         if not self.degrees:
             hts["x"] = np.deg2rad(hts["x"])
@@ -951,6 +981,13 @@ class ElevationRegion:
             ellipsoid. Default is kilometers unless init variable `meters` was
             True.
 
+        Raises
+        ------
+        ValueError
+            If any point is outside the region (see `contains`). The message
+            gives the number of such points and the first one's index and
+            lon/lat as given.
+
         """
         if orthometric is not None and self.orthometric is not None and orthometric != self.orthometric:
             raise ValueError(f"Region was created with orthometric={self.orthometric}, unable to change!")
@@ -959,31 +996,55 @@ class ElevationRegion:
         if in_scalar != np.isscalar(lat) or (not in_scalar and (len(lon) != len(lat) or len(lon) == 0)):
             raise ValueError("Inputs must be of same length and not empty!")
 
-        # Edge case of crossing the dateline.
-        if in_scalar and lon < self.ulx:
-            lon = lon + self._wrap
-        elif not in_scalar:
-            idx_wrap = lon < self.ulx
-            if idx_wrap.any():
-                lon = lon.copy()
-                lon[idx_wrap] += self._wrap
-
-        ix = np.int64((lon - self.ulx + self.dx / 2) / self.dx)
-        iy = np.int64((lat - self.uly + self.dy / 2) / self.dy)
-
-        if in_scalar:
-            assert self.ulx <= lon < self.lrx, (self.ulx, lon, self.lrx)  # noqa: S101
-            assert self.uly >= lat > self.lry, (self.uly, lat, self.lry)  # noqa: S101
-            assert 0 <= ix < self.data.shape[1], (ix, self.data.shape[1])  # noqa: S101
-            assert 0 <= iy < self.data.shape[0], (iy, self.data.shape[0])  # noqa: S101
-        else:
-            assert all((self.ulx <= lon) & (lon < self.lrx)), (self.ulx, lon, self.lrx)  # noqa: S101
-            assert all((self.uly >= lat) & (lat > self.lry)), (self.uly, lat, self.lry)  # noqa: S101
-            assert all((0 <= ix) & (ix < self.data.shape[1])), (ix, self.data.shape[1])  # noqa: S101
-            assert all((0 <= iy) & (iy < self.data.shape[0])), (iy, self.data.shape[0])  # noqa: S101
+        ix, iy, is_inside = self._locate(lon, lat)
+        if not is_inside.all():
+            idx_out = np.flatnonzero(~is_inside)
+            first = idx_out[0]
+            raise ValueError(
+                f"[{idx_out.size}/{is_inside.size}] points are outside the elevation region, first at index [{first}]"
+                f" lon=[{np.ravel(lon)[first]}], lat=[{np.ravel(lat)[first]}]; region lon=[{self.ulx}, {self.lrx}),"
+                f" lat=({self.lry}, {self.uly}]"
+            )
 
         val = self.data[iy, ix]
-        return val
+        return val[0] if in_scalar else val
+
+    def contains(self, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
+        """Test which points `query` can look up.
+
+        Parameters
+        ----------
+        lon : np.ndarray
+            Longitude in degrees or radians, see init `degrees`.
+        lat : np.ndarray
+            Latitude in degrees or radians, see init `degrees`.
+
+        Returns
+        -------
+        np.ndarray
+            True where the point is inside the region. The region runs from
+            the first pixel's center to the last pixel's far edge, in both
+            longitude and latitude. NaN coordinates are outside.
+
+        """
+        return self._locate(lon, lat)[2]
+
+    def _locate(self, lon, lat) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Pixel indices of each point (1-D) and whether it is inside the region."""
+        lon = np.atleast_1d(np.asarray(lon, dtype=float))
+        lat = np.atleast_1d(np.asarray(lat, dtype=float))
+
+        # A region that crosses the dateline is stored with longitudes past +180.
+        if self.lrx > self._wrap / 2:
+            lon = np.where(lon < self.ulx, lon + self._wrap, lon)
+
+        is_inside = (self.ulx <= lon) & (lon < self.lrx) & (self.uly >= lat) & (lat > self.lry)
+        ix = np.zeros(lon.shape, dtype=np.int64)
+        iy = np.zeros(lat.shape, dtype=np.int64)
+        ix[is_inside] = (lon[is_inside] - self.ulx + self.dx / 2) / self.dx
+        iy[is_inside] = (lat[is_inside] - self.uly + self.dy / 2) / self.dy
+        is_inside &= (ix < self.data.shape[1]) & (iy < self.data.shape[0])
+        return ix, iy, is_inside
 
     @track_performance
     def local_minmax(self, lon=None, lat=None, pad=None) -> tuple[float, float]:
