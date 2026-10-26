@@ -319,7 +319,7 @@ def find_l1a_gcp_pairs(
         Iterable of :class:`NamedImageGrid` instances representing GCP chips.
         The center pixel's latitude and longitude are the chip's position.
     max_distance_m
-        Minimum signed margin (meters, finite) of the GCP center from the
+        Minimum signed margin (meters, a finite ``float`` or ``int``) of the GCP center from the
         L1A footprint edge, positive inside.  Only pairs with
         ``margin >= max_distance_m`` are returned: ``0`` pairs centers inside
         or on the edge, a positive value requires them at least that far
@@ -349,7 +349,7 @@ def find_l1a_gcp_pairs(
         pixels (a single row, say), along which the pixel size is unknown; an
         invalid ``footprint_tolerance_km``; or, with
         ``footprint_tolerance_km=None``, a zero median pixel spacing (as with
-        repeated frames). If ``max_distance_m`` is not a finite number. Naming the chip, if a GCP chip's center pixel
+        repeated frames). If ``max_distance_m`` is not a finite ``float`` or ``int``. Naming the chip, if a GCP chip's center pixel
         has a non-finite or out-of-range latitude or longitude.
     FootprintGeometryError
         Only if a convex-hull footprint fails its own verification, which
@@ -360,7 +360,7 @@ def find_l1a_gcp_pairs(
         or not isinstance(max_distance_m, (int, float))
         or not np.isfinite(max_distance_m)
     ):
-        raise ValueError(f"max_distance_m must be a finite number, got {max_distance_m!r}")
+        raise ValueError(f"max_distance_m must be a finite float or int, got {max_distance_m!r}")
     l1a_meta: list[L1AMetadata] = []
     gcp_meta: list[GCPMetadata] = []
     for idx, image in enumerate(l1a_images):
