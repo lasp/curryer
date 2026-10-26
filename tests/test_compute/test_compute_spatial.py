@@ -576,12 +576,14 @@ class SpatialTestCase(unittest.TestCase):
 
     @staticmethod
     def _flat_region(min_lon, max_lon, min_lat, max_lat, height=0.1, step=1e-4):
-        """Constant-height region (km) over a radian lon/lat box."""
+        """Constant-height region (km) over a radian lon/lat box, with a 0.5 km peak in its north-east corner
+        so the searches start above the surface.
+        """
         nx = int(round((max_lon - min_lon) / step))
         ny = int(round((max_lat - min_lat) / step))
-        return elevation.ElevationRegion(
-            np.full((ny, nx), height), min_lon, max_lat, step, -step, meters=False, degrees=False
-        )
+        data = np.full((ny, nx), height)
+        data[0, -1] = max(height, 0.5)
+        return elevation.ElevationRegion(data, min_lon, max_lat, step, -step, meters=False, degrees=False)
 
     def test_terrain_correct_negative_surface(self):
         # All heights below the ellipsoid, as over ocean with a negative geoid.
@@ -690,9 +692,9 @@ class SpatialTestCase(unittest.TestCase):
         alone_srf_loc, _ = spatial.terrain_correct(self.mock_elev, ec_srf_pos[:1], ec_sat_pos[:1])
         npt.assert_array_equal(out_srf_loc[0], alone_srf_loc[0])
 
-    def test_correct_terrain_widens_region(self):
-        # A pad of 0.01 deg (~1 km) is narrower than the search's offset for a ~70 deg view, so the region is
-        # loaded again to cover the start points.
+    def test_correct_terrain_start_outside_region(self):
+        # A pad of 0.01 deg (~1 km) is narrower than the search's offset for a ~70 deg view, so that point's search
+        # starts outside the region and is flagged, while the nadir view beside it is corrected.
         geo = spatial.Geolocate.__new__(spatial.Geolocate)
         geo.instrument = MagicMock(name="instrument")
         geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
@@ -701,67 +703,15 @@ class SpatialTestCase(unittest.TestCase):
         index = pd.Index([0, 1])
         ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]], columns=["lon", "lat", "alt"], index=index)
         sc_xyz_df = pd.DataFrame(
-            spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0], [10.0, 0.0, 400.0]]), degrees=True), index=index
+            spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0], [0.001, 0.0, 400.0]]), degrees=True), index=index
         )
         ellips_qf_ds = pd.Series([SQF.GOOD, SQF.GOOD], index=index)
 
         terrain_lla_df, terrain_qf_ds = geo.correct_terrain(ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01)
-        self.assertEqual(geo.elevation.local_region.call_count, 2)
-        first_max_lon = geo.elevation.local_region.call_args_list[0].args[1]
-        second_max_lon = geo.elevation.local_region.call_args_list[1].args[1]
-        self.assertGreater(second_max_lon, first_max_lon)
-        npt.assert_array_equal(terrain_qf_ds.values, [SQF.GOOD, SQF.GOOD])
-        npt.assert_allclose(terrain_lla_df["alt"].values, [0.1, 0.1])
-
-    def test_correct_terrain_widens_region_until_covered(self):
-        # A region reaching past 0.02 deg lon is 2 km high with a 3 km peak in a corner, so widening it moves the
-        # start points further out and the region is widened again.
-        def stepped_region(min_lon, max_lon, min_lat, max_lat):
-            if max_lon <= np.deg2rad(0.02):
-                return self._flat_region(min_lon, max_lon, min_lat, max_lat)
-            region = self._flat_region(min_lon, max_lon, min_lat, max_lat, height=2.0)
-            region.data[0, -1] = 3.0
-            return region
-
-        geo = spatial.Geolocate.__new__(spatial.Geolocate)
-        geo.instrument = MagicMock(name="instrument")
-        geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
-        geo.elevation.local_region.side_effect = stepped_region
-
-        ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0]], columns=["lon", "lat", "alt"])
-        sc_xyz_df = pd.DataFrame(spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0]]), degrees=True))
-        ellips_qf_ds = pd.Series([SQF.GOOD])
-
-        terrain_lla_df, terrain_qf_ds = geo.correct_terrain(ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01)
-        self.assertEqual(geo.elevation.local_region.call_count, 3)
-        npt.assert_array_equal(terrain_qf_ds.values, [SQF.GOOD])
-        npt.assert_allclose(terrain_lla_df["alt"].values, [2.0])
-
-    def test_correct_terrain_widen_limit_flags(self):
-        # Every wider region is taller, so no load covers the start point; after three loads it is flagged.
-        heights = iter([0.1, 2.0, 4.0])
-
-        def taller_region(min_lon, max_lon, min_lat, max_lat):
-            region = self._flat_region(min_lon, max_lon, min_lat, max_lat, height=1.0)
-            region.data[0, -1] = next(heights)
-            return region
-
-        geo = spatial.Geolocate.__new__(spatial.Geolocate)
-        geo.instrument = MagicMock(name="instrument")
-        geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
-        geo.elevation.local_region.side_effect = taller_region
-
-        ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0]], columns=["lon", "lat", "alt"])
-        sc_xyz_df = pd.DataFrame(spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0]]), degrees=True))
-        ellips_qf_ds = pd.Series([SQF.GOOD])
-
-        with self.assertLogs("curryer.compute.spatial", level="WARNING"):
-            terrain_lla_df, terrain_qf_ds = geo.correct_terrain(
-                ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01
-            )
-        self.assertEqual(geo.elevation.local_region.call_count, 3)
-        npt.assert_array_equal(terrain_qf_ds.values, [SQF.CALC_TERRAIN_OUTSIDE_DEM])
-        self.assertTrue(terrain_lla_df.isna().all(axis=None))
+        geo.elevation.local_region.assert_called_once()
+        npt.assert_array_equal(terrain_qf_ds.values, [SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD])
+        self.assertTrue(terrain_lla_df.iloc[0].isna().all())
+        npt.assert_allclose(terrain_lla_df["alt"].values[1], 0.1)
 
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)

@@ -2199,9 +2199,7 @@ class Geolocate:
             The index is the product of `ugps_times` and pixels across-track.
         pad_degrees : float, optional
             Number of lon/lat degrees to pad the intersections when loading
-            the regional extent of the surface elevation. The extent also
-            covers where each terrain search starts, above the point along the
-            view vector.
+            the regional extent of the surface elevation.
 
         Returns
         -------
@@ -2219,47 +2217,21 @@ class Geolocate:
         qf_arr = ellips_qf_ds.values.copy()
 
         if is_valid.any():
-
-            def load_region(lons: pd.Series, lats: pd.Series) -> elevation.ElevationRegion:
-                mm_lon = minmax_lon(lons, degrees=True)
-                minmax_lonlat = [
-                    mm_lon[0] - pad_degrees,
-                    mm_lon[1] + pad_degrees,
-                    lats.min() - pad_degrees,
-                    lats.max() + pad_degrees,
-                ]
-                return self.elevation.local_region(*np.deg2rad(minmax_lonlat))
-
             # Pre-compute regional DEM for faster elevation look-ups.
-            elev_region = load_region(ellips_lla_df["lon"], ellips_lla_df["lat"])
+            mm_lon = minmax_lon(ellips_lla_df["lon"], degrees=True)
+            minmax_lonlat = [
+                mm_lon[0] - pad_degrees,
+                mm_lon[1] + pad_degrees,
+                ellips_lla_df["lat"].min() - pad_degrees,
+                ellips_lla_df["lat"].max() + pad_degrees,
+            ]
+            elev_region = self.elevation.local_region(*np.deg2rad(minmax_lonlat))
 
-            ellips_lla_arr_sub = ellips_lla_df.values[is_valid]
-            ellips_xyz_arr_sub = geodetic_to_ecef(ellips_lla_arr_sub, degrees=True)
-            sc_xyz_arr_sub = sc_xyz_df.values[is_valid]
-
-            # Each search starts at the region's max height along the view vector, which an oblique view
-            # places beyond the pad. Widen the region to cover those start points. Taller terrain in the wider
-            # region moves them further out, so re-check, up to three loads; `terrain_correct` flags any left.
-            ec_sat_vec, cos_sat = _view_vector(ellips_xyz_arr_sub, sc_xyz_arr_sub, np.deg2rad(ellips_lla_arr_sub))
-            idx_ang_valid = (np.arccos(cos_sat) <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
-            for n_reload in range(3):
-                alt_srf_max = max(elev_region.local_minmax()[1], TERRAIN_STEP_KM)
-                gd_start = ecef_to_geodetic(
-                    ellips_xyz_arr_sub[idx_ang_valid]
-                    + (alt_srf_max / cos_sat[idx_ang_valid]) * ec_sat_vec[idx_ang_valid],
-                    degrees=True,
-                )
-                if n_reload == 2 or elev_region.contains(*np.deg2rad(gd_start[:, :2]).T).all():
-                    break
-                elev_region = load_region(
-                    pd.concat([ellips_lla_df["lon"], pd.Series(gd_start[:, 0])]),
-                    pd.concat([ellips_lla_df["lat"], pd.Series(gd_start[:, 1])]),
-                )
-
+            ellips_xyz_arr_sub = geodetic_to_ecef(ellips_lla_df.values[is_valid], degrees=True)
             terrain_lla_arr_sub, terrain_qf_arr_sub = terrain_correct(
                 elev=elev_region,
                 ec_srf_pos=ellips_xyz_arr_sub,
-                ec_sat_pos=sc_xyz_arr_sub,
+                ec_sat_pos=sc_xyz_df.values[is_valid],
             )
 
             data_arr[is_valid, :] = terrain_lla_arr_sub
