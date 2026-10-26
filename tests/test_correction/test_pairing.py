@@ -335,9 +335,9 @@ def test_single_row_l1a_raises_naming_the_image():
         find_l1a_gcp_pairs([row], [_point("GCP", 0.0, 1.0)], max_distance_m=0.0)
 
 
-@pytest.mark.parametrize("max_distance_m", [float("nan"), float("inf"), True, "0"])
+@pytest.mark.parametrize("max_distance_m", [float("nan"), float("inf"), True, "0", np.float32(0.0)])
 def test_invalid_max_distance_raises(max_distance_m):
-    with pytest.raises(ValueError, match="max_distance_m must be a finite number"):
+    with pytest.raises(ValueError, match="max_distance_m must be a finite float or int"):
         find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m)
 
 
