@@ -2,7 +2,6 @@ import logging
 import re
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import h5py
 import numpy as np
@@ -293,33 +292,6 @@ class ElevationTestCase(unittest.TestCase):
         npt.assert_allclose(ht_calc2a, ht_calc12[1], rtol=1e-13)
         npt.assert_allclose(ht_calc2b, ht_calc12[2], rtol=1e-13)
 
-    def test_elevation_local_region_dateline_padded(self):
-        # Bounds padded past +180 or -180 describe the same region as the wrapped bounds.
-        elev = elevation.Elevation()
-        for bounds in [(175, 185, -5, 5), (-185, -175, -5, 5)]:
-            with self.subTest(bounds=bounds):
-                elev_region = elev.local_region(*bounds)
-                for lon in (177, 179, -179, -177):
-                    npt.assert_allclose(elev_region.query(lon, 0.5), elev.query(lon, 0.5), rtol=1e-3)
-
-        elev_rad = elevation.Elevation(degrees=False)
-        elev_region = elev_rad.local_region(*np.deg2rad((175, 185, -5, 5)))
-        npt.assert_allclose(elev_region.query(np.deg2rad(-179), 0.0), elev.query(-179, 0), rtol=1e-3)
-
-    def test_elevation_local_region_uneven_tiles(self):
-        elev = elevation.Elevation()
-        slice_file = elev._slice_file
-
-        def shifted_slice(rds, *args, **kwargs):
-            tile = slice_file(rds, *args, **kwargs)
-            if tile["x"].min().item() > -100:
-                tile["x"] = tile["x"] + 0.001
-            return tile
-
-        with patch.object(elev, "_slice_file", side_effect=shifted_slice):
-            with self.assertRaisesRegex(ValueError, r"not evenly spaced in \[x\]"):
-                elev.local_region(-110, -85, 25, 45)
-
     # TODO: Delete or move else where. Used to investigate DEM data sources.
     @unittest.skip("Requires test data files - enable if needed for DEM source investigation")
     def test_dem_source_assumptions(self):
@@ -566,6 +538,45 @@ class ElevationRegionTestCase(unittest.TestCase):
         region = elevation.ElevationRegion(np.zeros((10, 100)), np.deg2rad(175.0), np.deg2rad(1.0), step, -step)
         lon = np.deg2rad([176.0, -176.0, -170.0, 170.0])
         npt.assert_array_equal(region.contains(lon, np.full(4, np.deg2rad(0.5))), [True, True, False, False])
+
+    @staticmethod
+    def _tile_elevation(tiles, degrees=True):
+        """Elevation over synthetic 1-degree tiles, each given by its west pixel center, height = lon."""
+
+        def load_tile(x0):
+            x = x0 + np.arange(10.0)
+            y = 4.5 - np.arange(10.0)
+            return xr.DataArray(
+                np.tile(x, (y.size, 1)) * 1e3,
+                dims=("y", "x"),
+                coords={"x": x, "y": y},
+                attrs={"_FillValue": -32768, "resolution": (1.0, -1.0)},
+            )
+
+        elev = elevation.Elevation.__new__(elevation.Elevation)
+        elev.degrees = degrees
+        elev.meters = False
+        elev._regional_files = lambda *args, **kwargs: set(tiles)
+        elev.load_file = load_tile
+        return elev
+
+    def test_local_region_dateline_padded(self):
+        # Bounds padded past +180 or -180 describe the same region as the wrapped bounds.
+        elev = self._tile_elevation([170.5, -179.5])
+        lons = np.array([177.5, 179.5, -179.5, -177.5])
+        for bounds in [(175, 185, -5, 5), (-185, -175, -5, 5)]:
+            with self.subTest(bounds=bounds):
+                region = elev.local_region(*bounds, orthometric=True)
+                npt.assert_allclose(region.query(lons, np.full(4, 0.5)), lons)
+
+        elev_rad = self._tile_elevation([170.5, -179.5], degrees=False)
+        region = elev_rad.local_region(*np.deg2rad((175, 185, -5, 5)), orthometric=True)
+        npt.assert_allclose(region.query(np.deg2rad(-179.5), np.deg2rad(0.5)), -179.5)
+
+    def test_local_region_uneven_tiles_raises(self):
+        elev = self._tile_elevation([0.5, 10.6])
+        with self.assertRaisesRegex(ValueError, r"not evenly spaced in \[x\]"):
+            elev.local_region(0, 20, -5, 5, orthometric=True)
 
     def test_local_region_full_turn_raises(self):
         # Checked before any DEM file is read.
