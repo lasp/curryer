@@ -5,7 +5,9 @@
 `verify()` gives correct nadir-equivalent statistics on real flight data: pairing fails loudly,
 the error uses the viewing geometry of the pixel that saw the GCP, matching is configurable per
 mission, and the correlation gates apply. Every matched GCP is reported with a status, and the
-results can be saved, reviewed by a person and re-scored without re-matching.
+results can be saved, reviewed by a person and re-scored without re-matching. The correction
+loop runs on observation subimages, with SPICE geolocation and image matching on the
+observation's radiance.
 
 ### Breaking changes
 
@@ -54,6 +56,53 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - Error-stats NetCDF attributes are strings or numbers: `processing_timestamp` is an ISO string
   and `correlation_filtering_applied` is `1`.
 - An accepted measurement with a non-finite correlation raises (its quality weight is undefined).
+- **`loop()` / `run_correction()` take an observation subimage as the science input** -- a
+  NetCDF file with `band_data` (frame, pixel) radiance, `ugps` (frame) integer frame times and
+  `detector_pixel` (pixel) LOS-table rows, cropped inside its GCP chip
+  (`curryer.correction.load_loop_observation`). Each parameter set re-geolocates those frames
+  and pixels with the LOS table (`compute_ellipsoid_intersection`), terrain-corrects them with
+  `GeolocationConfig.dem_data_dir`, takes the spacecraft position from SPICE, and matches the
+  radiance on that grid to the chip. The loop previously geolocated a whole granule and matched
+  an all-ones image, so its errors did not depend on the parameters.
+- **New `curryer.correction.match_observation`**, shared by `verify()` (observation files) and
+  the loop. `GeolocationSetup.observation_matching_func` replaces it in the loop;
+  `image_matching_func` now applies only to `verify(geolocated_data=...)`.
+- **Parameter sets are compared on the same GCP pairs** -- a pair is used when some parameter
+  set passes the match-quality gates on it, and a parameter set is selectable (`valid`) only
+  when it passes them on every used pair. The output NetCDF gains `accepted` and `valid`.
+- **`DataConfig.time_scale_factor` is removed** and `DataConfig` rejects unknown fields;
+  `file_format` applies to the telemetry file.
+- `OFFSET_TIME` shifts the observation's frame times (`apply_offset` takes a uGPS ndarray and
+  returns int64 uGPS).
+- `loop()` raises before the first pair when a `CONSTANT_KERNEL` or `OFFSET_KERNEL` template
+  does not set `input_angle_units` to `RADIANS`; the loop applies radians, and a template
+  reading degrees made every correction 57.3 times too small.
+- Missing `OFFSET_KERNEL` telemetry fields, unknown parameter variables and SPICE coverage gaps
+  raise instead of logging a warning; the 111 km/degree fallback statistics are removed.
+- `ParameterConfig` raises on `spec.units` its type does not convert (previously any unknown
+  string was treated as radians or seconds).
+- `loop(resume_from_checkpoint=True)` raises `NotImplementedError` when the checkpoint holds
+  completed pairs, whose image-matching results it cannot restore (CURRYER-100).
+- `dataio.validate_science_output` is removed.
+- **A `CONSTANT_KERNEL` parameter is one rotation axis** -- `spec.field` names it (`angle_x`,
+  `angle_y` or `angle_z`) and `spec.current_value` is a float; a frame takes three parameters
+  sharing its `config_file`, joined into one CK. `GRID_SEARCH` and `SINGLE_OFFSET` previously
+  added one offset to all three axes at once, so pitch and roll could not be swept separately.
+  The output variables keep their `<kernel>_roll` / `_pitch` / `_yaw` names and are stored in
+  the configured units (radians when `units` is `None`). `Sweep.update_param` raises on a
+  selector matching more than one parameter, and `NetCDFConfig.get_parameter_netcdf_metadata`
+  no longer takes `angle_type`.
+- **A parameter with zero-width `bounds` `[b, b]` is held at `current_value + b`** in every
+  strategy (one grid point in `GRID_SEARCH`, not swept by `SINGLE_OFFSET`, not drawn by
+  `RANDOM`); `SINGLE_OFFSET` raises when no parameter has non-zero-width bounds. A held
+  `CONSTANT_KERNEL` axis no longer needs `sigma=None`.
+- `CONSTANT_KERNEL` accepts `units="radians"`, as `OFFSET_KERNEL` does; with `units=None` its
+  NetCDF `units` attribute is `radians` (it said `arcseconds`).
+- `KernelContext` and `ImageMatchingContext` are removed from `curryer.correction.config`.
+- The `results` dicts `loop()` returns carry the subimage's (frame, pixel) `geolocation`; a set
+  that is not compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- `CorrectionResult` gains `n_usable_pairs` and `n_valid_sets`, and its recommendation and
+  summary table state the pairs and sets the verdict rests on.
 
 ### New
 
@@ -84,9 +133,30 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - Matched errors were converted to degrees with 111.0 km/degree and back with the WGS-84 radius,
   a 0.29% north-south error; both now use `WGS84_SEMI_MAJOR_AXIS_KM`.
 - Per-GCP attribution in `verify()` follows the measurements that survive filtering.
-- File-pair verification downloads an `s3://` observation once per pair (it was read twice).
+- File-pair verification downloads an `s3://` observation once per pair (it was read twice), and
+  so does the correction loop.
 - The verification summary table's rows lined up with its borders only when the footer was not
   the widest line.
+- `OFFSET_KERNEL` offsets were converted from arcseconds twice and applied about 2e5 times too
+  small; they are applied in radians as `load_param_sets` returns them.
+- `CONSTANT_KERNEL` attitude kernels covered only their two sentinel epochs because the
+  template's gap threshold split them; gap chunking is disabled for them.
+- `loop()` creates `work_dir` when it is missing; the kernel writers took the missing
+  directory for a file name and wrote every kernel to that one path.
+- `OFFSET_KERNEL` and `OFFSET_TIME` values are stored in the output in their configured units
+  (they were stored in radians and seconds under arcsecond and millisecond labels).
+- A failed parameter-set selection (no usable pair, or no set passing the gates on every usable
+  pair) writes the per-pair results NetCDF before raising.
+- Parameter values are stored under `NetCDFConfig.get_parameter_netcdf_metadata(...).variable_name`,
+  so a custom `variable_name` in `parameter_metadata` works (it raised `KeyError`).
+- `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
+  match-quality gates on; it counted the errors of rejected pairs too.
+
+### Documentation
+
+- The correction user guide is reorganized around concepts (pairs, matching, gates, errors,
+  weighting, the correction loop), the input contracts and what raises, and the result objects.
+  It links the GCP regridding guide, now in the docs index, instead of repeating it.
 
 ## Version 0.5.5 (unreleased)
 
