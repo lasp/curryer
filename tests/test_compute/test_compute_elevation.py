@@ -573,6 +573,21 @@ class ElevationRegionTestCase(unittest.TestCase):
         region = elev_rad.local_region(*np.deg2rad((175, 185, -5, 5)), orthometric=True)
         npt.assert_allclose(region.query(np.deg2rad(-179.5), np.deg2rad(0.5)), -179.5)
 
+    def test_local_region_bounds_outside_range(self):
+        # Boxes entirely past +180 or -180 select the same box wrapped into range, no wider.
+        for bounds, wrapped, tiles, lon in [
+            ((355, 365, -5, 5), (-5, 5), [-9.5, 0.5], np.array([-4.5, 4.5])),
+            ((190, 200, -5, 5), (-170, -160), [-169.5], np.array([-169.5, -160.5])),
+            ((-200, -190, -5, 5), (160, 170), [160.5], np.array([160.5, 169.5])),
+        ]:
+            with self.subTest(bounds=bounds):
+                elev = self._tile_elevation(tiles)
+                searched = []
+                elev._regional_files = lambda *args, **kwargs: searched.append(args[:2]) or set(tiles)
+                region = elev.local_region(*bounds, orthometric=True)
+                self.assertEqual(searched, [wrapped])
+                npt.assert_allclose(region.query(lon, np.full(2, 0.5)), lon)
+
     def test_local_region_uneven_tiles_raises(self):
         elev = self._tile_elevation([0.5, 10.6])
         with self.assertRaisesRegex(ValueError, r"not evenly spaced in \[x\]"):

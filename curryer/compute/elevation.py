@@ -763,7 +763,7 @@ class Elevation:
 
         Notes
         -----
-        Longitude bounds past -180 or +180 (e.g., from padding) are wrapped
+        Longitude bounds outside [-180, 180] (e.g., from padding) are wrapped
         into range, so `min_lon` > `max_lon` describes a region crossing the
         dateline.
 
@@ -771,10 +771,10 @@ class Elevation:
         half_turn = 180 if self.degrees else np.pi
         if max_lon - min_lon >= 2 * half_turn:
             raise ValueError(f"Longitude bounds [{min_lon}, {max_lon}] span a full turn or more")
-        if min_lon < -half_turn:
-            min_lon += 2 * half_turn
-        if max_lon > half_turn:
-            max_lon -= 2 * half_turn
+        if not -half_turn <= min_lon <= half_turn:
+            min_lon = (min_lon + half_turn) % (2 * half_turn) - half_turn
+        if not -half_turn <= max_lon <= half_turn:
+            max_lon = half_turn - (half_turn - max_lon) % (2 * half_turn)
 
         files = self._regional_files(min_lon, max_lon, min_lat, max_lat, allow_empty=False)
         files = sorted(files)
