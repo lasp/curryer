@@ -31,6 +31,7 @@ Supported parameter types:
 
 import itertools
 import logging
+import math
 import typing
 
 import numpy as np
@@ -297,7 +298,7 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
     n = sweep.grid_points_per_param
     n_params = len(sweep.parameters)
     per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
-    total = int(np.prod([len(values) for values in per_param_values]))
+    total = math.prod(len(values) for values in per_param_values)
     logger.info(f"GRID_SEARCH: {n} points per swept parameter, {n_params} parameter(s) = {total} total parameter sets")
 
     if total > sweep.max_grid_sets:

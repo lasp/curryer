@@ -377,6 +377,14 @@ class TestGridSearchStrategy:
         with pytest.raises(ValueError, match="exceeds the safety limit"):
             load_param_sets(config)
 
+    def test_guardrail_counts_without_overflow(self, geo, param_offset_time):
+        """2 points over 64 parameters is 2**64 sets, which wraps to 0 in a 64-bit integer."""
+        config = _make_config(
+            geo, [param_offset_time] * 64, strategy=SearchStrategy.GRID_SEARCH, grid_points_per_param=2
+        )
+        with pytest.raises(ValueError, match="18,446,744,073,709,551,616 parameter sets"):
+            load_param_sets(config)
+
     def test_guardrail_passes_when_limit_raised(self, geo, param_offset_time):
         """Explicitly raising max_grid_sets allows larger sweeps through."""
         # 5 points × 1 param = 5 sets; set limit to 5 exactly — should succeed
