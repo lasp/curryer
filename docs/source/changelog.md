@@ -25,6 +25,11 @@ regions near the dateline read the right heights.
   hit 204 of 2409 exact-nadir views. The cosine is now clipped to [-1, 1], and the infinite step
   length at zero zenith no longer warns.
 
+- **`terrain_correct_single` placed the intersection along the view vector using the start
+  height in place of the previous step's.** Every search longer than one step returned a shifted
+  position, by about 90 m on a flat surface viewed at 45 degrees. `terrain_correct`, which
+  `Geolocate` uses, was not affected.
+
 ## Version 0.5.4 (unreleased)
 
 Adds footprint polygons for 2-D geolocation grids.

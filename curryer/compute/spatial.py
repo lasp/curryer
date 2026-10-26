@@ -2409,6 +2409,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
             re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
             f=constants.WGS84_INVERSE_FLATTENING,
         )
+        gd_prev_alt = gd_cur_alt
         gd_cur_lon, gd_cur_lat, gd_cur_alt = gd_cur_pos  # Key that `gd_cur_alt` is updated!
 
         gd_prev_h = gd_cur_h

@@ -450,7 +450,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 100, 100, 0]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.067565, 0.0, 7.595]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.0680746, 0.0, 7.591553]), rtol=1e-5)
 
     def test_terrain_correct_basic_way_off(self):
         out_srf_loc = spatial.terrain_correct_single(
@@ -458,7 +458,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 111, 340, 340]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.187102, 0.188361, 6.877]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.187149, 0.1884079, 6.877106]), rtol=1e-5)
 
     def test_terrain_correct_basic_misc(self):
         self.mock_elev.query.side_effect = lambda ll, lt: 1.6
@@ -467,7 +467,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 420, 420, 0]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.01353132, 0.0, 1.6]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.0143676, 0.0, 1.6]), rtol=1e-5)  # Exact flat-surface intersection.
 
     def test_terrain_correct_edge_case_extreme_zenith(self):
         self.mock_elev.local_minmax.return_value = -0.153543799821783, 4.711536036914816
