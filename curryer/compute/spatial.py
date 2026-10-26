@@ -1131,8 +1131,9 @@ def terrain_correct(
     delta_dist = np.min([delta_dist, dist_srf_max], axis=0)
     dist_cur = dist_srf_max.copy()
 
-    # Iterate until the point is below the elevation.
-    idx_cont = idx_ang_valid & (gd_cur_h < gd_cur_alt)
+    # Iterate until the point is below the elevation. A start on the surface steps once, so the interpolation
+    # between the last two steps lands on the start.
+    idx_cont = idx_ang_valid & (gd_cur_h <= gd_cur_alt)
     iloop = 0
     while idx_cont.any():
         iloop += 1
