@@ -670,7 +670,7 @@ def regrid_gcp_chip(
     ...     output_file="regridded_chip.nc",
     ...     output_metadata={
     ...         'source_file': 'LT08CHP.20140803.p002r071.c01.v001.hdf',
-    ...         'mission': 'CLARREO Pathfinder',
+    ...         'mission': 'Example Mission',
     ...         'band': 'red',
     ...     }
     ... )
