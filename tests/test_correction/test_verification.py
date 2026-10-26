@@ -1535,6 +1535,46 @@ class TestChipImagesSaveAndReview:
         with pytest.raises(ValueError, match="a chip is missing, extra or from another run"):
             load_verification(tmp_path / "saved")
 
+    def test_save_without_chips_replaces_an_incomplete_save_with_chips(self, tmp_path):
+        from curryer.correction import load_verification, save_verification
+
+        (tmp_path / "saved" / "chips").mkdir(parents=True)
+        (tmp_path / "saved" / "chips" / "gcp_0007.nc").write_text("left from an interrupted save")
+        result = self._result(tmp_path)
+        save_verification(result, tmp_path / "saved")
+        assert not (tmp_path / "saved" / "chips").exists()
+        assert load_verification(tmp_path / "saved").chip_images is None
+
+    def test_save_interrupted_writing_result_json_can_be_saved_again(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from curryer.correction import load_verification, save_verification
+
+        write_text = Path.write_text
+
+        def write_half_then_fail(path, text, *args, **kwargs):
+            write_text(path, text[: len(text) // 2])
+            raise OSError("No space left on device")
+
+        result = self._result(tmp_path)
+        monkeypatch.setattr(Path, "write_text", write_half_then_fail)
+        with pytest.raises(OSError, match="No space left"):
+            save_verification(result, tmp_path / "saved")
+        monkeypatch.undo()
+        assert not (tmp_path / "saved" / "result.json").exists()
+
+        save_verification(result, tmp_path / "saved")
+        assert load_verification(tmp_path / "saved").per_gcp_errors == result.per_gcp_errors
+
+    def test_read_review_decisions_rejects_a_fractional_gcp_index(self, tmp_path):
+        from curryer.correction import read_review_decisions
+
+        result = self._result(tmp_path)
+        table = self._summary(result).iloc[[0, 0]].assign(gcp_index=[0.1, 0.9], review=["accept", "reject"])
+        table.to_csv(tmp_path / "summary.csv", index=False)
+        with pytest.raises(ValueError, match="gcp_index must hold integers"):
+            read_review_decisions(tmp_path / "summary.csv", result)
+
     def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
 
         from curryer.correction import read_review_decisions
