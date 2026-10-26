@@ -981,6 +981,9 @@ def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.
 
 # Distance step of the terrain search, in km. Must consider DEM resolution!
 TERRAIN_STEP_KM = 0.5
+# Lowest height, in km, the terrain search starts from. The search steps down by at most its start height, so
+# 10 m reaches the lowest geoid (about -0.11 km) in about a dozen steps.
+TERRAIN_MIN_START_KM = 0.01
 
 
 def terrain_correct(
@@ -1067,9 +1070,9 @@ def terrain_correct(
             alt_srf_max,
         )
 
-    # The search must start above the surface. Over a region with only negative heights (ocean with a
-    # negative geoid), the max would start it below the ellipsoid, stepping away from the surface.
-    alt_srf_max = max(alt_srf_max, TERRAIN_STEP_KM)
+    # The search must start above the ellipsoid. Over a region with only negative heights (ocean with a
+    # negative geoid), the max would start it below, stepping away from the surface.
+    alt_srf_max = max(alt_srf_max, TERRAIN_MIN_START_KM)
 
     # 1-3) Unit vector from ground to satellite, and its local vertical component.
     ec_sat_vec, cos_sat = _view_vector(ec_srf_pos, ec_sat_pos, gd_xyz)
@@ -2312,7 +2315,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
         alt_srf_min, alt_srf_max = elev.local_minmax(gd_lon, gd_lat, pad=10)  # km
     else:
         alt_srf_min, alt_srf_max = local_minmax
-    alt_srf_max = max(alt_srf_max, TERRAIN_STEP_KM)  # See `terrain_correct`.
+    alt_srf_max = max(alt_srf_max, TERRAIN_MIN_START_KM)  # See `terrain_correct`.
 
     if logger.isEnabledFor(5):
         gd_sat_pos = spicierpy.recgeo(
