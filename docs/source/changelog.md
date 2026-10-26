@@ -35,6 +35,15 @@ regions near the dateline read the right heights.
   disappears under `python -O`. A point west of a region that does not cross the dateline is no
   longer shifted by 360 degrees before the check, which made its reported longitude wrong. New
   `ElevationRegion.contains` tests points without raising.
+- **One point whose terrain search left the elevation region failed the whole terrain correction
+  (#211).** Given an `ElevationRegion`, `terrain_correct` now sets such points to NaN with the new
+  quality flag `SpatialQualityFlags.CALC_TERRAIN_OUTSIDE_DEM` (`0x8000`) and corrects the rest.
+  Products that store the flags need at least an unsigned 16-bit or a signed 32-bit integer. This
+  includes a search that starts outside the region, which an oblique view near the region's edge
+  can; `Geolocate.correct_terrain`'s `pad_degrees` sets how far the region reaches.
+- **A point that did not reach the surface in 1000 steps set every point to NaN.**
+  `terrain_correct` now flags only the points still searching `CALC_TERRAIN_MAX_ITER` and returns
+  the others.
 - **`terrain_correct_single` placed the intersection along the view vector using the start
   height in place of the previous step's.** Every search longer than one step returned a shifted
   position, by about 90 m on a flat surface viewed at 45 degrees. `terrain_correct`, which

@@ -574,6 +574,17 @@ class SpatialTestCase(unittest.TestCase):
         self.assertTupleEqual((npts, 3), out_srf_locs.shape)
         self.assertTrue(np.isfinite(out_srf_locs).all())
 
+    @staticmethod
+    def _flat_region(min_lon, max_lon, min_lat, max_lat, height=0.1, step=1e-4):
+        """Constant-height region (km) over a radian lon/lat box, with a 0.5 km peak in its north-east corner
+        so the searches start above the surface.
+        """
+        nx = int(round((max_lon - min_lon) / step))
+        ny = int(round((max_lat - min_lat) / step))
+        data = np.full((ny, nx), height)
+        data[0, -1] = max(height, 0.5)
+        return elevation.ElevationRegion(data, min_lon, max_lat, step, -step, meters=False, degrees=False)
+
     def test_terrain_correct_negative_surface(self):
         # All heights below the ellipsoid, as over ocean with a negative geoid.
         self.mock_elev.local_minmax.return_value = -0.10, -0.02
@@ -630,6 +641,77 @@ class SpatialTestCase(unittest.TestCase):
                 out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
                 npt.assert_array_equal(out_qf, [SQF.GOOD])
                 npt.assert_allclose(out_srf_loc, [lon, lat, 0.2], atol=1e-6)
+
+    def test_terrain_correct_outside_region(self):
+        # Region spans [-0.01, 0.01) rad. The second point is 50 microrad inside the east edge, viewed from the
+        # east, so its search starts outside the region.
+        region = self._flat_region(-0.01, 0.01, -0.01, 0.01)
+        gd_srf = np.array([[0.0, 0.0, 0.0], [np.rad2deg(0.00995), 0.0, 0.0], [-0.1, 0.1, 0.0]])
+        gd_sat = np.array([[0.0, 0.0, 400.0], [10.0, 0.0, 400.0], [-0.1, 0.1, 400.0]])
+        ec_srf_pos = spatial.geodetic_to_ecef(gd_srf, degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(gd_sat, degrees=True)
+
+        with self.assertLogs("curryer.compute.spatial", level="WARNING") as logs:
+            out_srf_loc, out_qf = spatial.terrain_correct(region, ec_srf_pos, ec_sat_pos)
+        self.assertIn("left the elevation region for [1/3] points", logs.output[0])
+
+        npt.assert_array_equal(out_qf, [SQF.GOOD, SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD])
+        self.assertTrue(np.isnan(out_srf_loc[1]).all())
+        npt.assert_allclose(out_srf_loc[[0, 2]], [[0.0, 0.0, 0.1], [-0.1, 0.1, 0.1]], atol=1e-6)
+
+    def test_terrain_correct_leaves_region_mid_search(self):
+        # Region spans [-0.001, 0.01) rad. Points 1 and 3 sit just outside the west edge, viewed from the east
+        # (~76 deg zenith): their searches start ~0.3 mrad east, inside, and step west out of the region before
+        # reaching the 0.1 km surface.
+        region = self._flat_region(-0.001, 0.01, -0.01, 0.01)
+        lon_deg = np.rad2deg([0.004, -0.00115, 0.005, -0.00112, 0.006])
+        gd_srf = np.column_stack([lon_deg, np.zeros(5), np.zeros(5)])
+        gd_sat = np.column_stack([lon_deg + 10.0, np.zeros(5), np.full(5, 400.0)])
+        ec_srf_pos = spatial.geodetic_to_ecef(gd_srf, degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(gd_sat, degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(region, ec_srf_pos, ec_sat_pos)
+        expected_qf = [SQF.GOOD, SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD, SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD]
+        npt.assert_array_equal(out_qf, expected_qf)
+        self.assertTrue(np.isnan(out_srf_loc[[1, 3]]).all())
+
+        idx_keep = [0, 2, 4]
+        alone_srf_loc, _ = spatial.terrain_correct(region, ec_srf_pos[idx_keep], ec_sat_pos[idx_keep])
+        npt.assert_array_equal(out_srf_loc[idx_keep], alone_srf_loc)
+
+    def test_terrain_correct_max_iter_one_point(self):
+        # The second point's surface is out of reach, so only its search runs out of steps.
+        self.mock_elev.query.side_effect = lambda ll, lt: np.where(lt > np.deg2rad(0.05), -1e5, 1.6)
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[0.0, 0.0, 0.0], [0.0, 0.1, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[1.0, 0.0, 400.0], [1.0, 0.1, 400.0]]), degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+        npt.assert_array_equal(out_qf, [SQF.GOOD, SQF.CALC_TERRAIN_MAX_ITER])
+        self.assertTrue(np.isnan(out_srf_loc[1]).all())
+
+        alone_srf_loc, _ = spatial.terrain_correct(self.mock_elev, ec_srf_pos[:1], ec_sat_pos[:1])
+        npt.assert_array_equal(out_srf_loc[0], alone_srf_loc[0])
+
+    def test_correct_terrain_start_outside_region(self):
+        # A pad of 0.01 deg (~1 km) is narrower than the search's offset for a ~70 deg view, so that point's search
+        # starts outside the region and is flagged, while the nadir view beside it is corrected.
+        geo = spatial.Geolocate.__new__(spatial.Geolocate)
+        geo.instrument = MagicMock(name="instrument")
+        geo.elevation = MagicMock(elevation.Elevation, meters=False, degrees=False)
+        geo.elevation.local_region.side_effect = self._flat_region
+
+        index = pd.Index([0, 1])
+        ellips_lla_df = pd.DataFrame([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]], columns=["lon", "lat", "alt"], index=index)
+        sc_xyz_df = pd.DataFrame(
+            spatial.geodetic_to_ecef(np.array([[10.0, 0.0, 400.0], [0.001, 0.0, 400.0]]), degrees=True), index=index
+        )
+        ellips_qf_ds = pd.Series([SQF.GOOD, SQF.GOOD], index=index)
+
+        terrain_lla_df, terrain_qf_ds = geo.correct_terrain(ellips_lla_df, sc_xyz_df, ellips_qf_ds, pad_degrees=0.01)
+        geo.elevation.local_region.assert_called_once()
+        npt.assert_array_equal(terrain_qf_ds.values, [SQF.CALC_TERRAIN_OUTSIDE_DEM, SQF.GOOD])
+        self.assertTrue(terrain_lla_df.iloc[0].isna().all())
+        npt.assert_allclose(terrain_lla_df["alt"].values[1], 0.1)
 
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)
