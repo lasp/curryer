@@ -4,7 +4,8 @@
 
 `verify()` gives correct nadir-equivalent statistics on real flight data: pairing fails loudly,
 the error uses the viewing geometry of the pixel that saw the GCP, matching is configurable per
-mission, and the correlation gates apply.
+mission, and the correlation gates apply. Every matched GCP is reported with a status, and the
+results can be saved, reviewed by a person and re-scored without re-matching.
 
 ### Breaking changes
 
@@ -43,6 +44,16 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   requirement is written; a run exactly at the spec used to pass. This applies to
   `VerificationResult.passed` and `CorrectionResult.met_threshold`. `RequirementsConfig` rejects
   a spec of 100, which no run could exceed. The summary table reads `(req: > 39.0%)`.
+- **Rejected matches are kept** -- `ErrorStatsProcessor.compute_nadir_equivalent_errors`,
+  `process_geolocation_errors` and `process_from_netcdf` return every measurement with
+  `accepted` and `rejection_reason`; statistics cover the accepted ones. A caller averaging
+  `nadir_equiv_total_error_m` must mask by `accepted`. `verify()` no longer raises when the gates
+  reject everything: `percent_within_threshold` is `None` (nothing was measured), `passed` is
+  `False`, and the warning says the run was inconclusive.
+- `GCPError.status` (`pass` / `fail` / `rejected`) is required and must agree with `passed`.
+- Error-stats NetCDF attributes are strings or numbers: `processing_timestamp` is an ISO string
+  and `correlation_filtering_applied` is `1`.
+- An accepted measurement with a non-finite correlation raises (its quality weight is undefined).
 
 ### New
 
@@ -52,6 +63,21 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   `detector_pixel`, its LOS-table row per column; without it the LOS table must have one row per
   column. `image_matching()` reads `detector_pixel` from a column-cropped `geolocated_data` the same
   way, so that dataset can be cropped inside the chip across track as well as along it.
+- Per-GCP `along_track_error_m` / `cross_track_error_m` (geolocated minus true; from
+  `track_azimuth_deg`, `psf.ground_track_azimuth_deg`), `off_nadir_angle_deg` and
+  `correlation_secondary`.
+- `verify(..., keep_images=True)` keeps each match's observed, reference and emulated images
+  (`image_match.chip_image_dataset`); file-pair modes only.
+- `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
+  `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
+  `review` column of `summary.csv`. `read_review_decisions(summary_csv, result)` refuses a CSV
+  whose GCP indices and keys do not match `result`, and `load_verification` refuses a `chips/`
+  directory that does not hold one chip per GCP with matching keys.
+- Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
+  `weighted_statistics`, `weighted_percent_below` and
+  `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted
+  statistics and never deciding `passed`. `error_stats.STATISTIC_ATTRS` and `without_statistics`
+  name and clear the statistic attributes.
 
 ### Fixes
 
@@ -59,6 +85,8 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   a 0.29% north-south error; both now use `WGS84_SEMI_MAJOR_AXIS_KM`.
 - Per-GCP attribution in `verify()` follows the measurements that survive filtering.
 - File-pair verification downloads an `s3://` observation once per pair (it was read twice).
+- The verification summary table's rows lined up with its borders only when the footer was not
+  the widest line.
 
 ## Version 0.5.5 (unreleased)
 
