@@ -1,5 +1,34 @@
 # Changelog
 
+## Version 0.5.5 (unreleased)
+
+Terrain-correction fixes: one point's view geometry no longer fails the other points, and elevation
+regions near the dateline read the right heights.
+
+### Fixes
+
+- **Terrain correction failed where every local height was below the ellipsoid, as over ocean with
+  a negative geoid (#198).** The search for the terrain intersection starts at the local maximum
+  height along the view vector. A maximum at or below zero started it at or below the ellipsoid,
+  stepping away from the surface: `terrain_correct` flagged every point `CALC_TERRAIN_MAX_ITER` and
+  `terrain_correct_single` raised `ValueError`. The search now starts at least
+  `TERRAIN_MIN_START_KM` (10 m) up. Regions whose maximum is 10 m or more are unchanged: on real
+  DEM regions, every point corrected before is bit-identical. Regions whose maximum is between 0
+  and 10 m (open ocean with a small positive geoid) now start higher, which can move a result by
+  the surface's height change within one step.
+- **A terrain search that started exactly on the surface returned NaN.** Where the start fell on
+  the region's highest pixel, the search never stepped and its interpolation divided 0/0:
+  `terrain_correct` flagged the point `CALC_TERRAIN_NOT_FINITE`, and `terrain_correct_single`
+  returned NaN or raised `ZeroDivisionError`. The search now steps at least once.
+- **Exact-nadir views were flagged `CALC_TERRAIN_EXTREME_ZENITH` and returned NaN (#202).** Rounding
+  could put the cosine of the view zenith just above 1, where `arccos` is NaN; on a test grid this
+  hit 204 of 2409 exact-nadir views. The cosine is now clipped to [-1, 1], and the infinite step
+  length at zero zenith no longer warns.
+- **`terrain_correct_single` placed the intersection along the view vector using the start
+  height in place of the previous step's.** Every search longer than one step returned a shifted
+  position, by about 90 m on a flat surface viewed at 45 degrees. `terrain_correct`, which
+  `Geolocate` uses, was not affected.
+
 ## Version 0.5.4 (unreleased)
 
 Adds footprint polygons for 2-D geolocation grids.

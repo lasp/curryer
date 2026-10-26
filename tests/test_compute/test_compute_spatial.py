@@ -450,7 +450,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 100, 100, 0]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.067565, 0.0, 7.595]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.0680746, 0.0, 7.591553]), rtol=1e-5)
 
     def test_terrain_correct_basic_way_off(self):
         out_srf_loc = spatial.terrain_correct_single(
@@ -458,7 +458,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 111, 340, 340]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.187102, 0.188361, 6.877]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.187149, 0.1884079, 6.877106]), rtol=1e-5)
 
     def test_terrain_correct_basic_misc(self):
         self.mock_elev.query.side_effect = lambda ll, lt: 1.6
@@ -467,7 +467,7 @@ class SpatialTestCase(unittest.TestCase):
             ec_srf_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 0, 0, 0]),
             ec_sat_pos=np.array([constants.WGS84_SEMI_MAJOR_AXIS_KM + 420, 420, 0]),
         )
-        npt.assert_allclose(out_srf_loc, np.array([0.01353132, 0.0, 1.6]), rtol=1e-4)
+        npt.assert_allclose(out_srf_loc, np.array([0.0143676, 0.0, 1.6]), rtol=1e-5)  # Exact flat-surface intersection.
 
     def test_terrain_correct_edge_case_extreme_zenith(self):
         self.mock_elev.local_minmax.return_value = -0.153543799821783, 4.711536036914816
@@ -573,6 +573,63 @@ class SpatialTestCase(unittest.TestCase):
         logger.info("Loops completed in: %s", t1 - t0)
         self.assertTupleEqual((npts, 3), out_srf_locs.shape)
         self.assertTrue(np.isfinite(out_srf_locs).all())
+
+    def test_terrain_correct_negative_surface(self):
+        # All heights below the ellipsoid, as over ocean with a negative geoid.
+        self.mock_elev.local_minmax.return_value = -0.10, -0.02
+        self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), -0.05)
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[170.0, -50.0, 0.0], [170.1, -50.0, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[171.0, -50.0, 400.0], [171.0, -50.0, 400.0]]), degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+        npt.assert_array_equal(out_qf, [SQF.GOOD, SQF.GOOD])
+        npt.assert_allclose(out_srf_loc[:, 2], -0.05)
+        npt.assert_allclose(out_srf_loc[:, :2], [[170.0, -50.0], [170.1, -50.0]], atol=1e-3)
+
+        self.mock_elev.query.side_effect = lambda ll, lt: -0.05
+        out_single = spatial.terrain_correct_single(self.mock_elev, ec_srf_pos[0], ec_sat_pos[0])
+        npt.assert_allclose(out_single, [170.0, -50.0, -0.05], atol=1e-3)
+
+    def test_terrain_correct_start_on_surface(self):
+        # Flat terrain at the region's max height puts the search's start on the surface.
+        self.mock_elev.local_minmax.return_value = 0.0, 0.3
+        self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), 0.3)
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[0.0, 0.0, 400.0], [1.0, 0.0, 400.0]]), degrees=True)
+
+        out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+        npt.assert_array_equal(out_qf, [SQF.GOOD, SQF.GOOD])
+        npt.assert_allclose(out_srf_loc[:, 2], 0.3)
+        npt.assert_allclose(out_srf_loc[0, :2], [0.0, 0.0], atol=1e-9)
+
+        self.mock_elev.query.side_effect = lambda ll, lt: 0.3
+        out_single = spatial.terrain_correct_single(self.mock_elev, ec_srf_pos[1], ec_sat_pos[1])
+        npt.assert_allclose(out_single, out_srf_loc[1], atol=1e-6)
+
+    def test_terrain_correct_start_height(self):
+        # The search starts at the local max height, or at TERRAIN_MIN_START_KM if that is lower.
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[0.0, 0.0, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[1.0, 0.0, 400.0]]), degrees=True)
+        ec_sat_vec, cos_sat = spatial._view_vector(ec_srf_pos, ec_sat_pos, np.zeros((1, 3)))
+        for local_max, start in [(0.2, 0.2), (0.005, spatial.TERRAIN_MIN_START_KM)]:
+            with self.subTest(local_max=local_max):
+                lons = []
+                self.mock_elev.local_minmax.return_value = -0.1, local_max
+                self.mock_elev.query.side_effect = lambda ll, lt: lons.append(ll[0]) or np.full(np.size(ll), -0.05)
+                spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+                expected = spatial.ecef_to_geodetic(ec_srf_pos + (start / cos_sat) * ec_sat_vec, degrees=False)
+                npt.assert_allclose(lons[0], expected[0, 0], rtol=1e-12)
+
+    def test_terrain_correct_exact_nadir(self):
+        # Views along the ellipsoid normal, where rounding puts cos(zenith) just past 1.
+        self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), 0.2)
+        for lon, lat in [(-180.0, -5.0), (-175.0, 0.0), (-175.0, -20.0), (0.0, 0.0)]:
+            with self.subTest(lon=lon, lat=lat):
+                ec_srf_pos = spatial.geodetic_to_ecef(np.array([lon, lat, 0.0]), degrees=True)
+                ec_sat_pos = spatial.geodetic_to_ecef(np.array([lon, lat, 400.0]), degrees=True)
+                out_srf_loc, out_qf = spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+                npt.assert_array_equal(out_qf, [SQF.GOOD])
+                npt.assert_allclose(out_srf_loc, [lon, lat, 0.2], atol=1e-6)
 
     # =========================================================================
     # SECTION 4: INTEGRATION TESTS (Requires Loaded Example Kernels)
