@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1883,8 +1884,9 @@ def save_verification(result: VerificationResult, out_dir: Path) -> None:
     - ``chips/gcp_<index>.nc``: one zlib-compressed file per entry of
       :attr:`VerificationResult.chip_images`, when present.
 
-    ``result.json`` is written last, so a directory without it holds an
-    incomplete save; saving there replaces its files.
+    ``result.json`` is written last, through a temporary file renamed into
+    place, so a directory without it holds an incomplete save; saving there
+    replaces its files.
 
     Parameters
     ----------
@@ -1916,7 +1918,11 @@ def save_verification(result: VerificationResult, out_dir: Path) -> None:
                 chip_dir / f"gcp_{chip.attrs['gcp_index']:04d}.nc",
                 encoding={name: {"zlib": True, "complevel": 4} for name in chip.data_vars},
             )
-    (out_dir / "result.json").write_text(result.model_dump_json(indent=2, exclude={"aggregate_stats"}))
+    elif chip_dir.is_dir():
+        chip_dir.rmdir()
+    partial = out_dir / "result.json.partial"
+    partial.write_text(result.model_dump_json(indent=2, exclude={"aggregate_stats"}))
+    os.replace(partial, out_dir / "result.json")
 
 
 def load_verification(out_dir: Path) -> VerificationResult:
@@ -1990,12 +1996,19 @@ def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict
     Raises
     ------
     ValueError
-        If the CSV lacks a column, a ``gcp_index`` appears twice or is not in
-        *result*, a row's ``science_key`` / ``gcp_key`` differ from *result*'s
+        If the CSV lacks a column, a ``gcp_index`` is not an integer, appears
+        twice or is not in *result*, a row's ``science_key`` / ``gcp_key`` differ from *result*'s
         for its ``gcp_index``, or a ``review`` cell holds anything but
         ``accept``, ``reject`` or nothing.
     """
-    table = pd.read_csv(summary_csv, dtype={"review": str, "science_key": str, "gcp_key": str}, keep_default_na=False)
+    try:
+        table = pd.read_csv(
+            summary_csv,
+            dtype={"gcp_index": "int64", "review": str, "science_key": str, "gcp_key": str},
+            keep_default_na=False,
+        )
+    except ValueError as err:
+        raise ValueError(f"{summary_csv}: gcp_index must hold integers.") from err
     missing = {"gcp_index", "science_key", "gcp_key", "review"} - set(table.columns)
     if missing:
         raise ValueError(f"{summary_csv} has no {sorted(missing)} column(s).")
