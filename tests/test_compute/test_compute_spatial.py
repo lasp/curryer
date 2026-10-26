@@ -602,6 +602,24 @@ class SpatialTestCase(unittest.TestCase):
         npt.assert_allclose(out_srf_loc[:, 2], 0.3)
         npt.assert_allclose(out_srf_loc[0, :2], [0.0, 0.0], atol=1e-9)
 
+        self.mock_elev.query.side_effect = lambda ll, lt: 0.3
+        out_single = spatial.terrain_correct_single(self.mock_elev, ec_srf_pos[1], ec_sat_pos[1])
+        npt.assert_allclose(out_single, out_srf_loc[1], atol=1e-6)
+
+    def test_terrain_correct_start_height(self):
+        # The search starts at the local max height, or at TERRAIN_MIN_START_KM if that is lower.
+        ec_srf_pos = spatial.geodetic_to_ecef(np.array([[0.0, 0.0, 0.0]]), degrees=True)
+        ec_sat_pos = spatial.geodetic_to_ecef(np.array([[1.0, 0.0, 400.0]]), degrees=True)
+        ec_sat_vec, cos_sat = spatial._view_vector(ec_srf_pos, ec_sat_pos, np.zeros((1, 3)))
+        for local_max, start in [(0.2, 0.2), (0.005, spatial.TERRAIN_MIN_START_KM)]:
+            with self.subTest(local_max=local_max):
+                lons = []
+                self.mock_elev.local_minmax.return_value = -0.1, local_max
+                self.mock_elev.query.side_effect = lambda ll, lt: lons.append(ll[0]) or np.full(np.size(ll), -0.05)
+                spatial.terrain_correct(self.mock_elev, ec_srf_pos, ec_sat_pos)
+                expected = spatial.ecef_to_geodetic(ec_srf_pos + (start / cos_sat) * ec_sat_vec, degrees=False)
+                npt.assert_allclose(lons[0], expected[0, 0], rtol=1e-12)
+
     def test_terrain_correct_exact_nadir(self):
         # Views along the ellipsoid normal, where rounding puts cos(zenith) just past 1.
         self.mock_elev.query.side_effect = lambda ll, lt: np.full(np.size(ll), 0.2)
