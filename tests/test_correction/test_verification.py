@@ -279,6 +279,14 @@ class TestCheckThreshold:
         assert passed is False
         assert pct == pytest.approx(39.0)
 
+    def test_exactly_at_a_spec_the_float_percentage_rounds_past_fails(self):
+        """7 of 100 computes to 7.000000000000001 %; exactly at the spec still fails."""
+        errors = [100.0] * 7 + [300.0] * 93
+        stats = _make_aggregate_stats_dataset(errors)
+        passed, pct = _check_threshold(stats, self._req(spec_pct=7.0))
+        assert passed is False
+        assert pct == pytest.approx(7.0)
+
     def test_one_above_spec_percent_passes(self):
         errors = [100.0] * 40 + [300.0] * 60
         stats = _make_aggregate_stats_dataset(errors)
