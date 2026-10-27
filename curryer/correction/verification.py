@@ -49,6 +49,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
@@ -353,7 +354,8 @@ def _check_threshold(
         return False, None
     count_below = int(np.sum(nadir_errors < requirements.performance_threshold_m))
     percent_below = float(count_below / len(nadir_errors) * 100.0)
-    passed = percent_below > requirements.performance_spec_percent
+    # Exact counts: the float percentage can round past the spec (7 of 100 is 7.000000000000001).
+    passed = 100 * count_below > Fraction(requirements.performance_spec_percent) * len(nadir_errors)
     return passed, percent_below
 
 

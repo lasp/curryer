@@ -653,6 +653,11 @@ class TestObservationLosVectors:
         with pytest.raises(ValueError, match="detector_pixel"):
             observation_los_vectors(path, self.LOS, 3)
 
+    def test_unsigned_decreasing_detector_pixel_raises(self):
+        # np.diff on unsigned integers wraps: [4, 3, 2] gives 65535, which looks increasing.
+        with pytest.raises(ValueError, match="strictly increasing"):
+            select_los_rows(self.LOS, np.array([4, 3, 2], dtype=np.uint16), 3, "grid")
+
 
 def test_select_los_rows_takes_the_detector_pixel_rows():
     los = np.column_stack([np.arange(8.0), np.zeros(8), np.ones(8)])
