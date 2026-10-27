@@ -401,7 +401,10 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
 
     The resampled grid has an odd number of samples on each axis and its middle
     sample at the PSF centroid, so :func:`convolve_gcp_with_psf` blurs the GCP
-    without shifting it.
+    without shifting it. The samples are point values, so the GCP pixel must
+    be no wider than the PSF's RMS width on each axis: on a coarser grid the
+    few samples' weighted centre falls off the middle sample (by about 0.1
+    pixel for a pixel three times the PSF's width), shifting the blurred chip.
 
     Parameters
     ----------
@@ -418,7 +421,8 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     Raises
     ------
     ValueError
-        If PSF is not on a rectilinear grid, or its weights do not have a positive sum.
+        If PSF is not on a rectilinear grid, its weights do not have a positive
+        sum, or the GCP pixel is wider than the PSF's RMS width on either axis.
     """
 
     if psf.lat.ndim != 1 or psf.lon.ndim != 1:
@@ -432,6 +436,13 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
 
     lat_c = float(np.sum(psf.data.sum(axis=1) * psf.lat) / total)
     lon_c = float(np.sum(psf.data.sum(axis=0) * psf.lon) / total)
+    rms_lat = float(np.sqrt(np.sum(psf.data.sum(axis=1) * (psf.lat - lat_c) ** 2) / total))
+    rms_lon = float(np.sqrt(np.sum(psf.data.sum(axis=0) * (psf.lon - lon_c) ** 2) / total))
+    if dlat > rms_lat or dlon > rms_lon:
+        raise ValueError(
+            f"GCP pixel ({dlat:.3g}, {dlon:.3g}) deg lat/lon is wider than the PSF's RMS width "
+            f"({rms_lat:.3g}, {rms_lon:.3g}) deg; the resampled PSF would shift the chip."
+        )
     half_x = int(np.ceil(max(lon_c - psf.lon.min(), psf.lon.max() - lon_c) / dlon))
     half_y = int(np.ceil(max(lat_c - psf.lat.min(), psf.lat.max() - lat_c) / dlat))
     x = lon_c + np.arange(-half_x, half_x + 1) * dlon

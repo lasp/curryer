@@ -176,7 +176,9 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - `resample_psf_to_gcp_resolution` centres its grid on the PSF centroid with an odd number of
   samples; the grid started at the PSF's edge, so the centroid fell up to a chip pixel off centre
   and the convolution shifted the chip by that much (12-81 m on 100 m chips). It raises on PSF
-  weights that do not sum to a positive value.
+  weights that do not sum to a positive value, and on a GCP pixel wider than the PSF's RMS width,
+  where the few point samples' weighted centre falls off the middle sample and still shifts the
+  chip (about 0.1 pixel for a pixel three times the PSF's width).
 - Matched errors and correlations change with these three fixes. The 20 MATLAB-simulated
   image-match cases, which reproduced the clipped and shifted PSF, are removed; image matching
   is tested on a synthetic scene simulated independently of the convolution

@@ -329,6 +329,16 @@ def _chip_grid(step_deg: float = 1e-3, n: int = 41) -> ImageGrid:
     return ImageGrid(data=np.zeros((n, n)), lat=lat, lon=lon)
 
 
+def test_resample_onto_gcp_pixels_wider_than_the_psf_raises():
+    # Lobes of 0.001 deg sampled every 0.003 deg would put the samples' weighted centre 0.1 pixel off.
+    lat = CENTER_LAT + np.linspace(-0.004, 0.006, 101)
+    lon = CENTER_LON + np.linspace(-0.005, 0.003, 81)
+    d_lat, d_lon = np.meshgrid(lat - CENTER_LAT, lon - CENTER_LON, indexing="ij")
+    data = np.exp(-0.5 * (d_lat**2 + d_lon**2) / 0.001**2)
+    with pytest.raises(ValueError, match="wider than the PSF's RMS width"):
+        resample_psf_to_gcp_resolution(PSFGrid(data=data, lat=lat, lon=lon), _chip_grid(step_deg=0.003))
+
+
 def test_resampled_psf_is_centred_on_its_centroid():
     # Two lobes of unequal weight: the centroid is off the middle of the PSF's own grid.
     lat = CENTER_LAT + np.linspace(-0.004, 0.006, 101)
