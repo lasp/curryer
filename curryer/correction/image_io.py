@@ -948,7 +948,7 @@ def select_los_rows(
         detector_pixel.ndim != 1
         or detector_pixel.dtype.kind not in "iu"
         or len(detector_pixel) != n_columns
-        or np.any(np.diff(detector_pixel) <= 0)
+        or np.any(detector_pixel[1:] <= detector_pixel[:-1])
         or detector_pixel.min() < 0
         or detector_pixel.max() >= len(los_vectors)
     ):
