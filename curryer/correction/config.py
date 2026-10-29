@@ -147,15 +147,14 @@ class DataConfig(BaseModel):
         The time column name is taken from :attr:`GeolocationConfig.time_field`
         (single source of truth).
     position_columns
-        Explicit column name mappings for telemetry spacecraft-position data,
-        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  ``None`` means use
-        mission defaults from the geolocation configuration.
+        Telemetry columns holding the spacecraft's ECEF position in meters,
+        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  Required when
+        :func:`~curryer.correction.verification.image_matching` reads the
+        position from telemetry; ``None`` otherwise.
     """
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
     time_scale_factor: float = 1.0
-    # Explicit column name mappings for telemetry spacecraft-position data.
-    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"]. None means use mission defaults from the geolocation configuration.
     position_columns: list[str] | None = None
 
 

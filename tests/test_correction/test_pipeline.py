@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -341,24 +340,14 @@ class TestExtractSpacecraftPositionMidframe:
         with pytest.raises(ValueError, match="not found in telemetry"):
             _extract_spacecraft_position_midframe(telemetry, setup=config)
 
-    def test_no_position_columns_falls_back_with_warning(self, caplog):
-        """When position_columns is None, fall back to pattern-guessing with warning."""
-        telemetry = _make_telemetry()
+    @pytest.mark.parametrize("data_config", [None, DataConfig()], ids=["no-data-config", "no-position-columns"])
+    def test_no_position_columns_raises(self, data_config):
+        """Column names do not identify a position's frame or units, so none are guessed."""
         config = MagicMock()
-        config.data_config = None  # position_columns not configured
+        config.data_config = data_config
+        with pytest.raises(ValueError, match="Set setup.data_config.position_columns"):
+            _extract_spacecraft_position_midframe(_make_telemetry(), setup=config)
 
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
-            result = _extract_spacecraft_position_midframe(telemetry, setup=config)
-
-        assert "position_columns not configured" in caplog.text
-        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
-
-    def test_no_config_falls_back_to_pattern_guessing(self, caplog):
-        """When config=None entirely, pattern-guessing is used (backward compat)."""
-        telemetry = _make_telemetry()
-
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
-            result = _extract_spacecraft_position_midframe(telemetry, setup=None)
-
-        assert "position_columns not configured" in caplog.text
-        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
+    def test_no_setup_raises(self):
+        with pytest.raises(ValueError, match="Set setup.data_config.position_columns"):
+            _extract_spacecraft_position_midframe(_make_telemetry(), setup=None)

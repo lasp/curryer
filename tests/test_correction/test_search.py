@@ -90,6 +90,24 @@ def test_non_finite_subimage_raises():
         im_search(chip, sub, _small_config())
 
 
+@pytest.mark.parametrize(
+    ("target", "axis", "match"),
+    [
+        ("chip", "lat", "GCP chip lat has 1 non-finite value"),
+        ("chip", "lon", "GCP chip lon has 1 non-finite value"),
+        ("subimage", "lat", "Subimage lat has 1 non-finite value"),
+        ("subimage", "lon", "Subimage lon has 1 non-finite value"),
+    ],
+)
+def test_non_finite_coordinates_raise(target, axis, match):
+    # A NaN coordinate made the chip-extent check (np.min/np.max) NaN, so a search off the chip went unchecked.
+    chip = _chip(np.random.default_rng(3).normal(size=(121, 121)))
+    sub = _subimage(chip, 30)
+    getattr(chip if target == "chip" else sub, axis)[5, 5] = np.nan
+    with pytest.raises(ValueError, match=match):
+        im_search(chip, sub, _small_config())
+
+
 def test_uniform_subimage_raises():
     chip = _chip(np.random.default_rng(3).normal(size=(121, 121)))
     sub = _subimage(chip, 30)
