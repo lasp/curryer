@@ -139,14 +139,24 @@ def test_boresight_targets_gcp_column_in_mid_frame_row():
     [
         ((CENTER_LAT + 0.05, CENTER_LON), "outside the observation grid"),
         ((CENTER_LAT, CENTER_LON - 0.03), "outside the observation grid"),
+        ((CENTER_LAT + 0.0215, CENTER_LON), "outside the observation grid"),
         ((np.nan, CENTER_LON), "Target lat/lon must be finite"),
     ],
-    ids=["north-of-grid", "west-of-grid", "non-finite"],
+    ids=["north-of-grid", "west-of-grid", "just-over-a-pixel-north", "non-finite"],
 )
 def test_invalid_target_raises(target, match):
     r = _spacecraft_at_view_zenith(30.0, 500_000.0)
     with pytest.raises(ValueError, match=match):
         resolve_spacecraft_ecef(_grid(), r, *target)
+
+
+def test_target_within_a_pixel_of_the_edge_uses_the_edge_column():
+    # 0.009 deg north of the top row, under the 0.01 deg row spacing: the top-centre pixel's column.
+    r = _spacecraft_at_view_zenith(30.0, 500_000.0)
+    grid = _grid()
+    _, boresight, _ = resolve_spacecraft_ecef(grid, r, CENTER_LAT + 0.019, CENTER_LON)
+    _, column_boresight, _ = resolve_spacecraft_ecef(grid, r, CENTER_LAT, CENTER_LON)
+    np.testing.assert_allclose(boresight, column_boresight, atol=1e-15)
 
 
 def test_non_finite_mid_frame_pixel_raises():
