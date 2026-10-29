@@ -63,6 +63,7 @@ from curryer.correction.config import GeolocationSetup, RequirementsConfig
 from curryer.correction.error_stats import (
     ErrorStatsConfig,
     ErrorStatsProcessor,
+    correlation_name,
     quality_weights,
     weighted_percent_below,
     without_statistics,
@@ -309,10 +310,10 @@ def _run_error_stats(
     """
     error_config = ErrorStatsConfig.from_setup(setup)
     processor = ErrorStatsProcessor(config=error_config)
-    return _with_statistics(processor, processor.compute_nadir_equivalent_errors(aggregated))
+    return _with_statistics(processor.compute_nadir_equivalent_errors(aggregated))
 
 
-def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset) -> xr.Dataset:
+def _with_statistics(per_measurement: xr.Dataset) -> xr.Dataset:
     """Add statistics over the accepted measurements, or none when every one is rejected."""
     if not per_measurement["accepted"].values.any():
         logger.warning(
@@ -320,7 +321,7 @@ def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset
             per_measurement.sizes["measurement"],
         )
         return per_measurement
-    return processor.add_statistics(per_measurement)
+    return ErrorStatsProcessor.add_statistics(per_measurement)
 
 
 def _check_threshold(
@@ -449,7 +450,7 @@ def _build_per_gcp_errors(
         value = float(aggregate_stats[name].values[i])
         return value if np.isfinite(value) else None
 
-    corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in aggregate_stats.data_vars), "")
+    corr_name = correlation_name(aggregate_stats) or ""
     labels = aggregate_stats["measurement"].values
 
     errors: list[GCPError] = []
@@ -538,6 +539,7 @@ def _format_summary_table(
     percent_within: float | None,
     passed: bool,
     weighted_percent: float | None = None,
+    effective_measurements: float | None = None,
 ) -> str:
     """Generate a human-readable summary table.
 
@@ -568,8 +570,11 @@ def _format_summary_table(
     passed : bool
         Overall pass/fail result.
     weighted_percent : float or None, optional
-        Quality-weighted percentage within the threshold, shown on its own
-        line when given.
+        Quality-weighted percentage within the threshold, shown with
+        *effective_measurements* when given.
+    effective_measurements : float or None, optional
+        ``effective_measurements`` of the weighted statistics; required with
+        *weighted_percent*.
 
     Returns
     -------
@@ -598,9 +603,7 @@ def _format_summary_table(
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
     counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected"
     if weighted_percent is not None:
-        weights = [err.quality_weight for err in per_gcp_errors if err.status != "rejected"]
-        effective = sum(weights) ** 2 / sum(w**2 for w in weights)
-        counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective:.1f})"
+        counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective_measurements:.1f})"
 
     # inner_width must accommodate columns, title, AND footer; the Status column takes any extra width
     inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
@@ -999,7 +1002,7 @@ def _aggregate_image_matching_results(
             all_gcp_lons.extend(result["gcp_lon_deg"].values)
         if "gcp_alt" in result:
             all_gcp_alts.extend(result["gcp_alt"].values)
-        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in result), None)
+        corr_name = correlation_name(result)
         if corr_name is not None:
             all_correlations.extend(result[corr_name].values)
         if "correlation_secondary" in result:
@@ -1167,8 +1170,9 @@ def _run_image_matching_for_pairs(
     -------
     datasets : list[xr.Dataset]
         One dataset per pair, in *pairs* order, with ``track_azimuth_deg``
-        (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the GCP
-        centre) alongside the errors, correlation and geometry.
+        (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the
+        observation grid's centre, where the search measures the error, as in
+        :func:`image_matching`) alongside the errors, correlation and geometry.
     chip_images : list[xr.Dataset]
         One image dataset per pair, in *pairs* order, with ``science_key``
         and ``gcp_key`` attributes; empty unless *keep_images*.
@@ -1213,7 +1217,10 @@ def _run_image_matching_for_pairs(
         gcp_lon = float(gcp_grid.lon[mid_i, mid_j])
 
         r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(obs_grid, r_sc_file, gcp_lat, gcp_lon)
-        track_azimuth = ground_track_azimuth_deg(obs_grid, gcp_lat, gcp_lon)
+        obs_i, obs_j = obs_grid.mid_indices
+        track_azimuth = ground_track_azimuth_deg(
+            obs_grid, float(obs_grid.lat[obs_i, obs_j]), float(obs_grid.lon[obs_i, obs_j])
+        )
 
         result = integrated_image_match(
             subimage=obs_grid,
@@ -1263,7 +1270,7 @@ def _run_image_matching_for_pairs(
         )
         datasets.append(ds)
         if keep_images:
-            chip = chip_image_dataset(obs_grid, gcp_grid, result)
+            chip = chip_image_dataset(obs_grid, gcp_grid, result, setup.search)
             chip.attrs.update({"science_key": Path(obs_path).name, "gcp_key": Path(gcp_path).name})
             chip_images.append(chip)
         logger.info(
@@ -1386,10 +1393,12 @@ def verify(
         observation grid; when a search shift samples an observation outside
         the searchable part of its GCP chip (crop observations inside their
         chips by the first search grid's half-width plus the expected error;
-        ``setup.search.max_shift_km()`` always suffices; the *geolocated_data*
-        mode matches the whole dataset); when image matching produces no
-        results; or when *keep_images* is set with *image_matching_results* or
-        *geolocated_data*.
+        ``setup.search.max_shift_km()`` always suffices; a *geolocated_data*
+        dataset must already be cropped so); when image matching produces no
+        results; when a measurement the gates accept has a non-finite
+        correlation, whose quality weight is undefined, with or without
+        gates set; or when *keep_images* is set with *image_matching_results*
+        or *geolocated_data*.
     FileNotFoundError
         If *los_file* or *psf_file* does not exist, if *gcp_directory* does
         not exist in *observation_paths* mode, or if a file listed in
@@ -1599,7 +1608,14 @@ def verify(
     # Step 5: Warnings + summary table
     # ------------------------------------------------------------------
     warnings = _generate_warnings(passed, percent_within, requirements)
-    summary_table = _format_summary_table(per_gcp_errors, requirements, percent_within, passed, weighted_percent)
+    summary_table = _format_summary_table(
+        per_gcp_errors,
+        requirements,
+        percent_within,
+        passed,
+        weighted_percent,
+        aggregate_stats.attrs.get("effective_measurements"),
+    )
 
     if warnings:
         for w in warnings:
@@ -1849,7 +1865,8 @@ def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict
     Raises
     ------
     ValueError
-        If the CSV lacks a column, a ``gcp_index`` is not an integer, appears
+        If the CSV is malformed (the parser's error chained), lacks a column,
+        a ``gcp_index`` is not an integer, appears
         twice or is not in *result*, a row's ``science_key`` / ``gcp_key`` differ from *result*'s
         for its ``gcp_index``, or a ``review`` cell holds anything but
         ``accept``, ``reject`` or nothing.
@@ -1860,6 +1877,8 @@ def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict
             dtype={"gcp_index": "int64", "review": str, "science_key": str, "gcp_key": str},
             keep_default_na=False,
         )
+    except pd.errors.ParserError as err:
+        raise ValueError(f"{summary_csv} is not a well-formed CSV: {err}") from err
     except ValueError as err:
         raise ValueError(f"{summary_csv}: gcp_index must hold integers.") from err
     missing = {"gcp_index", "science_key", "gcp_key", "review"} - set(table.columns)
@@ -1895,9 +1914,11 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     """Apply reviewer decisions and recompute the statistics without re-matching.
 
     ``"accept"`` brings a GCP into the statistics (status ``pass`` / ``fail``
-    by its error); ``"reject"`` takes it out (status ``rejected``, reason
-    ``"rejected in review"`` unless the match-quality gates already rejected
-    it).  GCPs without a decision keep their current state.
+    by its error); ``"reject"`` takes it out (status ``rejected``, with the
+    match-quality gates' reason when they rejected it, else ``"rejected in
+    review"``).  The gates' reasons are kept in a ``gate_reason`` variable,
+    so a later review can restore them.  GCPs without a decision keep their
+    current state.
 
     Parameters
     ----------
@@ -1909,8 +1930,9 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     Returns
     -------
     VerificationResult
-        A new result: ``aggregate_stats`` gains a ``review`` variable, its
-        ``quality_weight`` follows the new acceptance, and its statistics
+        A new result: ``aggregate_stats`` gains ``review`` and
+        ``gate_reason`` variables and a ``review_time`` attribute (UTC, ISO
+        8601), its ``quality_weight`` follows the new acceptance, and its statistics
         cover the accepted GCPs (none when every one is rejected);
         ``per_gcp_errors``, ``passed``, ``percent_within_threshold``,
         ``weighted_percent_within_threshold``, ``warnings`` and
@@ -1935,26 +1957,28 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
 
     accepted = stats["accepted"].values.copy()
     reasons = stats["rejection_reason"].values.astype(object)
+    gate_reasons = stats["gate_reason"].values.astype(object) if "gate_reason" in stats.data_vars else reasons.copy()
     reviews = stats["review"].values.astype(object) if "review" in stats.data_vars else np.full(len(labels), "", object)
     for i, label in enumerate(labels):
         decision = decisions.get(label)
         if decision == "accept":
             accepted[i], reasons[i] = True, ""
-        elif decision == "reject" and accepted[i]:
-            accepted[i], reasons[i] = False, "rejected in review"
+        elif decision == "reject":
+            accepted[i], reasons[i] = False, gate_reasons[i] or "rejected in review"
         if decision is not None:
             reviews[i] = decision
     stats["accepted"] = (["measurement"], accepted)
     stats["rejection_reason"] = (["measurement"], reasons.astype(str))
+    stats["gate_reason"] = (["measurement"], gate_reasons.astype(str))
     stats["review"] = (["measurement"], reviews.astype(str))
+    stats.attrs["review_time"] = datetime.now(tz=timezone.utc).isoformat()
     if "quality_weight" in stats.data_vars:
-        corr_name = next(name for name in ("correlation", "ccv", "im_ccv") if name in stats.data_vars)
+        corr_name = correlation_name(stats)
         stats["quality_weight"] = quality_weights(stats[corr_name].values, accepted)
 
-    processor = ErrorStatsProcessor(config=ErrorStatsConfig())
     stats = without_statistics(stats)
     stats.attrs.update(n_accepted=int(accepted.sum()), n_rejected=int((~accepted).sum()))
-    stats = _with_statistics(processor, stats)
+    stats = _with_statistics(stats)
 
     requirements = result.requirements
     passed, percent_within = _check_threshold(stats, requirements)
@@ -1972,7 +1996,12 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
             "per_gcp_errors": per_gcp_errors,
             "warnings": _generate_warnings(passed, percent_within, requirements),
             "summary_table": _format_summary_table(
-                per_gcp_errors, requirements, percent_within, passed, weighted_percent
+                per_gcp_errors,
+                requirements,
+                percent_within,
+                passed,
+                weighted_percent,
+                stats.attrs.get("effective_measurements"),
             ),
         }
     )

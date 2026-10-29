@@ -73,20 +73,26 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   column. `image_matching()` reads `detector_pixel` from a column-cropped `geolocated_data` the same
   way, so that dataset can be cropped inside the chip across track as well as along it.
 - Per-GCP `along_track_error_m` / `cross_track_error_m` (geolocated minus true; from
-  `track_azimuth_deg`, `psf.ground_track_azimuth_deg`), `off_nadir_angle_deg` and
-  `correlation_secondary`.
+  `track_azimuth_deg`, `psf.ground_track_azimuth_deg` at the observation's centre in every
+  matching path), `off_nadir_angle_deg` and `correlation_secondary`.
 - `verify(..., keep_images=True)` keeps each match's observed, reference and emulated images
-  (`image_match.chip_image_dataset`); file-pair modes only.
+  (`image_match.chip_image_dataset(subimage, gcp, result, search_config)`); file-pair modes only.
+  The reference images are cropped to the part of the chip the search could reach and stored as
+  float32 (17 MB instead of 63 MB for a 1400 x 1400 chip with an 8 km search reach).
 - `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
   `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
   `review` column of `summary.csv`. `read_review_decisions(summary_csv, result)` refuses a CSV
-  whose GCP indices and keys do not match `result`, and `load_verification` refuses a `chips/`
-  directory that does not hold one chip per GCP with matching keys.
+  whose GCP indices and keys do not match `result` (or a malformed CSV, as such), and
+  `load_verification` refuses a `chips/` directory that does not hold one chip per GCP with
+  matching keys. `apply_review` keeps the gates' reasons in a `gate_reason` variable, so a GCP
+  rejected again after an accept gets its gate reason back, and records `review_time`.
 - Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
   `weighted_statistics`, `weighted_percent_below` and
   `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted
-  statistics and never deciding `passed`. `error_stats.STATISTIC_ATTRS` and `without_statistics`
-  name and clear the statistic attributes.
+  statistics and never deciding `passed`. An accepted measurement with a non-finite
+  correlation raises, gates set or not. `error_stats.STATISTIC_ATTRS` and `without_statistics`
+  name and clear the statistic attributes; `error_stats.correlation_name` finds the correlation
+  variable (`correlation`, `ccv` or `im_ccv`).
 
 ### Fixes
 

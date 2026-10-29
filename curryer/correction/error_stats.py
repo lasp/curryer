@@ -89,6 +89,14 @@ STATISTIC_ATTRS = (
 )
 
 
+CORRELATION_NAMES = ("correlation", "ccv", "im_ccv")
+
+
+def correlation_name(dataset: xr.Dataset) -> str | None:
+    """Return the first of :data:`CORRELATION_NAMES` that is a data variable of *dataset*, else ``None``."""
+    return next((name for name in CORRELATION_NAMES if name in dataset.data_vars), None)
+
+
 def match_snr_weight(correlation: np.ndarray, max_correlation: float = QUALITY_WEIGHT_MAX_CORRELATION) -> np.ndarray:
     """Return the match signal-to-noise weight ``rho**2 / (1 - rho**2)`` of each correlation.
 
@@ -239,7 +247,9 @@ def quality_weights(correlation: np.ndarray, accepted: np.ndarray) -> xr.DataArr
     Raises
     ------
     ValueError
-        As :func:`match_snr_weight`, for an accepted measurement's correlation.
+        If an accepted measurement's correlation is not finite: a match with
+        no defined correlation is invalid, and its weight undefined
+        (:func:`match_snr_weight`).  Rejected measurements are not checked.
     """
     weights = np.zeros(len(accepted))
     weights[accepted] = match_snr_weight(np.asarray(correlation)[accepted])
@@ -375,7 +385,7 @@ class ErrorStatsProcessor:
         if self.config.minimum_correlation is None and self.config.minimum_peak_margin is None:
             return np.full(n, "", dtype=object)
 
-        corr_var = next((name for name in ("correlation", "ccv", "im_ccv") if name in data.data_vars), None)
+        corr_var = correlation_name(data)
         if corr_var is None:
             raise ValueError(
                 f"minimum_correlation={self.config.minimum_correlation} / minimum_peak_margin="
@@ -497,7 +507,7 @@ class ErrorStatsProcessor:
             )
 
         output = self._create_output_dataset(input_data, results, reasons)
-        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in output.data_vars), None)
+        corr_name = correlation_name(output)
         if corr_name is not None:
             output["quality_weight"] = quality_weights(output[corr_name].values, output["accepted"].values)
         logger.info(
@@ -509,8 +519,11 @@ class ErrorStatsProcessor:
         )
         return output
 
-    def add_statistics(self, per_measurement: xr.Dataset) -> xr.Dataset:
+    @staticmethod
+    def add_statistics(per_measurement: xr.Dataset) -> xr.Dataset:
         """Add aggregate statistics over the accepted measurements as attributes.
+
+        Independent of the processor's configuration, which only the gates use.
 
         Parameters
         ----------
@@ -540,7 +553,7 @@ class ErrorStatsProcessor:
             )
         output = without_statistics(per_measurement)
         errors = output["nadir_equiv_total_error_m"].values[accepted]
-        output.attrs.update(self._calculate_statistics(errors))
+        output.attrs.update(ErrorStatsProcessor._calculate_statistics(errors))
         weights = output["quality_weight"].values[accepted] if "quality_weight" in output.data_vars else np.zeros(1)
         if weights.sum() > 0:
             output.attrs.update(weighted_statistics(errors, weights))
@@ -841,7 +854,8 @@ class ErrorStatsProcessor:
 
         return output_ds
 
-    def _calculate_statistics(self, nadir_equiv_errors_m: np.ndarray) -> dict[str, float | int]:
+    @staticmethod
+    def _calculate_statistics(nadir_equiv_errors_m: np.ndarray) -> dict[str, float | int]:
         """Calculate comprehensive, mission-agnostic performance statistics.
 
         This method intentionally does NOT include any pass/fail evaluation.
