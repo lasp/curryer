@@ -24,6 +24,10 @@ from .grid_types import (
 logger = logging.getLogger(__name__)
 
 
+_CENTRING_TOLERANCE_PX = 1e-6
+_MAX_CENTRING_ITERATIONS = 20
+
+
 def centroid(weights: np.ndarray) -> float:
     """
     Compute center-of-mass index for a one-dimensional weight vector.
@@ -399,12 +403,15 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     """
     Resample PSF to match GCP reference image resolution.
 
-    The resampled grid has an odd number of samples on each axis and its middle
-    sample at the PSF centroid, so :func:`convolve_gcp_with_psf` blurs the GCP
-    without shifting it. The samples are point values, so the GCP pixel must
-    be no wider than the PSF's RMS width on each axis: on a coarser grid the
-    few samples' weighted centre falls off the middle sample (by about 0.1
-    pixel for a pixel three times the PSF's width), shifting the blurred chip.
+    The resampled grid has an odd number of samples on each axis, and its
+    sample positions are offset (by less than a pixel) so that the weighted
+    centre of the sampled weights is the middle sample to within
+    ``1e-6`` pixel; :func:`convolve_gcp_with_psf` then blurs the GCP without
+    shifting it. Sampling at the PSF centroid alone leaves the discrete
+    weights' centre off the middle sample by up to about 0.1 pixel on a
+    coarse grid. The returned coordinates put the middle sample at the PSF
+    centroid. The GCP pixel must be no wider than the PSF's RMS width on each
+    axis, so that the samples represent the PSF.
 
     Parameters
     ----------
@@ -422,7 +429,8 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     ------
     ValueError
         If PSF is not on a rectilinear grid, its weights do not have a positive
-        sum, or the GCP pixel is wider than the PSF's RMS width on either axis.
+        sum, the GCP pixel is wider than the PSF's RMS width on either axis, or
+        the sampled weights cannot be centred.
     """
 
     if psf.lat.ndim != 1 or psf.lon.ndim != 1:
@@ -441,18 +449,32 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     if dlat > rms_lat or dlon > rms_lon:
         raise ValueError(
             f"GCP pixel ({dlat:.3g}, {dlon:.3g}) deg lat/lon is wider than the PSF's RMS width "
-            f"({rms_lat:.3g}, {rms_lon:.3g}) deg; the resampled PSF would shift the chip."
+            f"({rms_lat:.3g}, {rms_lon:.3g}) deg; too few samples to represent the PSF."
         )
-    half_x = int(np.ceil(max(lon_c - psf.lon.min(), psf.lon.max() - lon_c) / dlon))
-    half_y = int(np.ceil(max(lat_c - psf.lat.min(), psf.lat.max() - lat_c) / dlat))
-    x = lon_c + np.arange(-half_x, half_x + 1) * dlon
-    y = lat_c + np.arange(-half_y, half_y + 1) * dlat
-    Y_new, X_new = np.meshgrid(y, x, indexing="ij")
-
+    extent_x = max(lon_c - psf.lon.min(), psf.lon.max() - lon_c)
+    extent_y = max(lat_c - psf.lat.min(), psf.lat.max() - lat_c)
     interpolant = RegularGridInterpolator((psf.lat, psf.lon), psf.data, bounds_error=False, fill_value=0.0)
-    data = interpolant(np.stack((Y_new.ravel(), X_new.ravel()), axis=-1)).reshape(Y_new.shape)
 
-    return PSFGrid(data=data, lat=y, lon=x)
+    # Shift the samples until the discrete weights' centre is the middle sample; the offset
+    # moves that centre by about offset / step, so each step removes the residual to first order.
+    shift_x = shift_y = 0.0
+    for _ in range(_MAX_CENTRING_ITERATIONS):
+        half_x = int(np.ceil((extent_x + abs(shift_x)) / dlon))
+        half_y = int(np.ceil((extent_y + abs(shift_y)) / dlat))
+        k_x = np.arange(-half_x, half_x + 1)
+        k_y = np.arange(-half_y, half_y + 1)
+        Y_new, X_new = np.meshgrid(lat_c + shift_y + k_y * dlat, lon_c + shift_x + k_x * dlon, indexing="ij")
+        data = interpolant(np.stack((Y_new.ravel(), X_new.ravel()), axis=-1)).reshape(Y_new.shape)
+        off_y = centroid(data.sum(axis=1)) - half_y
+        off_x = centroid(data.sum(axis=0)) - half_x
+        if abs(off_x) < _CENTRING_TOLERANCE_PX and abs(off_y) < _CENTRING_TOLERANCE_PX:
+            return PSFGrid(data=data, lat=lat_c + k_y * dlat, lon=lon_c + k_x * dlon)
+        shift_x += off_x * dlon
+        shift_y += off_y * dlat
+    raise ValueError(
+        f"Resampled PSF weights stay ({off_y:.3g}, {off_x:.3g}) pixel lat/lon off the middle sample after "
+        f"{_MAX_CENTRING_ITERATIONS} centring steps."
+    )
 
 
 def normalize_psf(psf: PSFGrid) -> PSFGrid:

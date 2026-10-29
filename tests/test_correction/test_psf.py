@@ -339,8 +339,10 @@ def test_resample_onto_gcp_pixels_wider_than_the_psf_raises():
         resample_psf_to_gcp_resolution(PSFGrid(data=data, lat=lat, lon=lon), _chip_grid(step_deg=0.003))
 
 
-def test_resampled_psf_is_centred_on_its_centroid():
-    # Two lobes of unequal weight: the centroid is off the middle of the PSF's own grid.
+@pytest.mark.parametrize("step_deg", [1e-3, 1.3e-3], ids=["fine", "coarsest-allowed"])
+def test_resampled_psf_is_centred_on_its_centroid(step_deg):
+    # Two lobes of unequal weight: the centroid is off the middle of the PSF's own grid. At the
+    # coarsest step the guard allows, samples taken at the centroid leave the weights 0.004 pixel off.
     lat = CENTER_LAT + np.linspace(-0.004, 0.006, 101)
     lon = CENTER_LON + np.linspace(-0.005, 0.003, 81)
     d_lat, d_lon = np.meshgrid(lat - CENTER_LAT, lon - CENTER_LON, indexing="ij")
@@ -351,7 +353,7 @@ def test_resampled_psf_is_centred_on_its_centroid():
     centroid_lat = np.sum(data.sum(axis=1) * lat) / data.sum()
     centroid_lon = np.sum(data.sum(axis=0) * lon) / data.sum()
 
-    resampled = resample_psf_to_gcp_resolution(psf, _chip_grid())
+    resampled = resample_psf_to_gcp_resolution(psf, _chip_grid(step_deg=step_deg))
 
     n_lat, n_lon = resampled.data.shape
     assert n_lat % 2 == 1
@@ -359,8 +361,8 @@ def test_resampled_psf_is_centred_on_its_centroid():
     assert resampled.lat[n_lat // 2] == pytest.approx(centroid_lat, abs=1e-12)
     assert resampled.lon[n_lon // 2] == pytest.approx(centroid_lon, abs=1e-12)
     weights = resampled.data / resampled.data.sum()
-    assert np.sum(weights.sum(axis=1) * np.arange(n_lat)) == pytest.approx(n_lat // 2, abs=0.01)
-    assert np.sum(weights.sum(axis=0) * np.arange(n_lon)) == pytest.approx(n_lon // 2, abs=0.01)
+    assert np.sum(weights.sum(axis=1) * np.arange(n_lat)) == pytest.approx(n_lat // 2, abs=1e-6)
+    assert np.sum(weights.sum(axis=0) * np.arange(n_lon)) == pytest.approx(n_lon // 2, abs=1e-6)
     assert resampled.lat.min() <= lat.min()
     assert resampled.lat.max() >= lat.max()
     assert resampled.lon.min() <= lon.min()
