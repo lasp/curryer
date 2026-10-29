@@ -612,7 +612,10 @@ def resolve_spacecraft_ecef(
         Spacecraft ECEF position in meters at the observation mid-frame.
     target_lat_deg, target_lon_deg : float
         Geodetic latitude and longitude of the GCP centre, degrees.  Must lie
-        within *grid*.
+        within *grid* or at most one pixel spacing beyond its edge pixels,
+        where the edge pixel's line of sight is the nearest available; pairing
+        with the default footprint tolerance pairs GCPs up to about a pixel
+        beyond the image edge.
 
     Returns
     -------
