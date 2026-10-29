@@ -309,9 +309,21 @@ def test_motion_blur_is_zero_outside_the_sampled_psf():
     lat, lon = np.meshgrid(blurred.lat, blurred.lon, indexing="ij")
     reach = FRAME_STEP_DEG / 2 + 2e-4
     outside = (np.abs(lon - CENTER_LON) > 4 * SIGMA_DEG + reach) | (np.abs(lat - CENTER_LAT) > 8 * SIGMA_DEG + reach)
-    assert outside.any()
     assert blurred.data[~outside].max() > 0
     np.testing.assert_array_equal(blurred.data[outside], 0.0)
+    nonzero_lon = lon[blurred.data != 0]
+    assert np.abs(nonzero_lon - CENTER_LON).max() > 4 * SIGMA_DEG
+
+
+@pytest.mark.parametrize("heading_deg", [0.0, 41.0, 90.0, 139.0])
+def test_motion_blur_grid_spans_the_support_plus_one_sample(heading_deg):
+    # The rotated grid's corners are zero; at most one zero sample is kept around the support.
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(heading_deg), _frames(heading_deg), BLUR_SAMPLING)
+
+    for axis in (0, 1):
+        nonzero = np.flatnonzero(blurred.data.any(axis=1 - axis))
+        assert nonzero[0] <= 1
+        assert nonzero[-1] >= blurred.data.shape[axis] - 2
 
 
 @pytest.mark.parametrize(

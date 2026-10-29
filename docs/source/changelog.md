@@ -169,7 +169,9 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   wherever the motion was not east-west (on a CLARREO flight chip with the motion 41 degrees from
   east, 0.13 km RMS across track instead of 0.26 km); it also filled outside the sampled PSF with
   the nearest edge value. The blurred PSF is now returned on its own footprint, zero outside the
-  sampled PSF.
+  sampled PSF, on a grid that spans its support plus one sample. The blur is a running box sum
+  (0.05 s instead of 6 s for the 2-D convolution it replaces on a 1038 x 7571 grid, with the same
+  result to 1e-14).
 - The motion blur follows the frame step (rows of the subimage, along track), the direction the
   footprint moves during a frame; it followed the detector step (across track). It raises when
   the subimage has fewer than two frames or a mean frame step that is not finite or is zero.

@@ -8,8 +8,8 @@ from scipy.interpolate import (
     LinearNDInterpolator,
     RegularGridInterpolator,
 )
-from scipy.ndimage import map_coordinates
-from scipy.signal import convolve2d, fftconvolve
+from scipy.ndimage import map_coordinates, uniform_filter1d
+from scipy.signal import fftconvolve
 
 from ..compute import constants
 from ..compute.spatial import calc_azimuth, ecef_to_geodetic, geodetic_to_ecef
@@ -300,7 +300,8 @@ def convolve_psf_with_spacecraft_motion(
     -------
     PSFGrid
         PSF convolved with spacecraft motion blur, on a regular lat/lon grid at the
-        configured sample distances; zero outside the sampled PSF.
+        configured sample distances that spans the blurred PSF's nonzero support
+        plus one sample on each side; zero outside the sampled PSF.
 
     Raises
     ------
@@ -330,7 +331,12 @@ def convolve_psf_with_spacecraft_motion(
     sampled = LinearNDInterpolator(samples.T, psf.data.ravel(), fill_value=0.0)(X, Y)
 
     num_steps = max(1, int(round(dist / dlon)))
-    psf_map = convolve2d(sampled, np.ones((1, num_steps)), mode="same", boundary="fill", fillvalue=0.0)
+    # Box sum of num_steps samples along the motion axis, aligned as convolve2d(mode="same"). The
+    # running sum leaves rounding residue where the window holds no sample; the count of nonzero
+    # samples in the window is exact, and is zero exactly there.
+    box = dict(size=num_steps, axis=1, mode="constant", cval=0.0)
+    psf_map = uniform_filter1d(sampled, **box) * num_steps
+    psf_map[uniform_filter1d((sampled != 0).astype(float), **box) * num_steps < 0.5] = 0.0
 
     corners = to_motion.T @ np.array([[x[0], x[-1], x[0], x[-1]], [y[0], y[0], y[-1], y[-1]]])
     lon = mid[0] + np.arange(corners[0].min(), corners[0].max() + dlon, dlon)
@@ -340,6 +346,15 @@ def convolve_psf_with_spacecraft_motion(
     data = map_coordinates(
         psf_map, [(in_motion[1] - y[0]) / dlat, (in_motion[0] - x[0]) / dlon], order=1, mode="constant", cval=0.0
     ).reshape(LON.shape)
+
+    # The rotated grid's bounding box is mostly zero at its corners; keep the PSF's support and
+    # one zero sample around it, so linear interpolation of the result is unchanged.
+    rows = np.flatnonzero(data.any(axis=1))
+    cols = np.flatnonzero(data.any(axis=0))
+    if rows.size:
+        r0, r1 = max(rows[0] - 1, 0), min(rows[-1] + 2, data.shape[0])
+        c0, c1 = max(cols[0] - 1, 0), min(cols[-1] + 2, data.shape[1])
+        data, lat, lon = data[r0:r1, c0:c1], lat[r0:r1], lon[c0:c1]
     return PSFGrid(data=data, lat=lat, lon=lon)
 
 
