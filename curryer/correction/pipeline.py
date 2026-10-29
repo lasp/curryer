@@ -187,15 +187,17 @@ def _load_calibration_data(setup: "GeolocationSetup") -> CalibrationData:
     -------
     CalibrationData
         NamedTuple ``(los_vectors, optical_psfs)``; ``(None, None)`` when
-        ``setup.calibration`` names neither file, which
-        :func:`_require_image_matching_inputs` then rejects.
+        ``setup.calibration`` names neither file, and ``optical_psfs`` is
+        ``None`` when it names no PSF file.  :func:`_require_image_matching_inputs`
+        rejects a missing LOS table, and a missing PSF unless
+        ``setup.observation_matching_func`` replaces the built-in matching.
 
     Raises
     ------
     FileNotFoundError
         If a calibration file is configured but does not exist.
     ValueError
-        If only one of the two files is configured, or a file fails to load.
+        If a PSF file is configured without an LOS file, or a file fails to load.
     """
     calibration = setup.calibration
     if calibration is None or (calibration.los_vectors_file is None and calibration.psf_file is None):
@@ -223,7 +225,8 @@ def _load_calibration_data(setup: "GeolocationSetup") -> CalibrationData:
 
     # ---- Optical PSF ----
     if calibration.psf_file is None:
-        raise ValueError("No PSF source configured. Set setup.calibration.psf_file.")
+        logger.info(f"  Cached LOS vectors: {los_vectors_cached.shape}; no optical PSF configured")
+        return CalibrationData(los_vectors=los_vectors_cached, optical_psfs=None)
     psf_file = Path(calibration.psf_file)
 
     if not psf_file.exists():

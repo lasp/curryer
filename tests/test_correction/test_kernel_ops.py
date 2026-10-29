@@ -212,6 +212,31 @@ def test_load_calibration_data_direct_los_missing(clarreo_cfg, tmp_path):
         _load_calibration_data(setup)
 
 
+def test_load_calibration_data_los_only(clarreo_cfg, tmp_path):
+    """An LOS table without a PSF file loads, for a custom observation matcher."""
+    from unittest.mock import patch
+
+    setup, _sweep, _output = clarreo_cfg
+    setup = setup.model_copy(deep=True)
+    fake_los = tmp_path / "los.mat"
+    fake_los.touch()
+    setup.calibration = CalibrationFiles(los_vectors_file=fake_los, psf_file=None)
+    los = np.zeros((4, 3))
+    with patch("curryer.correction.pipeline.load_los_vectors", return_value=los):
+        cal = _load_calibration_data(setup)
+    assert cal.los_vectors is los
+    assert cal.optical_psfs is None
+
+
+def test_load_calibration_data_psf_without_los_raises(clarreo_cfg, tmp_path):
+    """A PSF file without an LOS file raises."""
+    setup, _sweep, _output = clarreo_cfg
+    setup = setup.model_copy(deep=True)
+    setup.calibration = CalibrationFiles(los_vectors_file=None, psf_file=tmp_path / "psf.mat")
+    with pytest.raises(ValueError, match="No LOS vectors source configured"):
+        _load_calibration_data(setup)
+
+
 def test_load_calibration_data_direct_psf_missing(clarreo_cfg, tmp_path):
     """FileNotFoundError when psf_file points to a non-existent file."""
     from unittest.mock import patch
