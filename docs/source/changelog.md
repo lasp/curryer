@@ -14,9 +14,18 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
   and raises when the GCP is outside the grid; a spacecraft position is required and validated
   (`psf.validate_spacecraft_ecef_m`: shape, finite, metres, above the ellipsoid). Nothing falls
   back to a nadir geometry: `default_altitude_m` is removed from `verify()`,
-  `_run_image_matching_for_pairs` and `resolve_spacecraft_ecef`, and the deprecated
-  `infer_spacecraft_state` raises on a missing position. `image_matching` raises on a SPICE
-  failure or a missing mid-frame time, and the per-pair loops no longer skip failed pairs.
+  `_run_image_matching_for_pairs`, `resolve_spacecraft_ecef` and the deprecated
+  `infer_spacecraft_state`, which raises on a missing position. `image_matching` (the
+  `geolocated_data` mode and the loop's built-in matching) records the same per-GCP line of sight
+  through `resolve_spacecraft_ecef` instead of the SPICE instrument boresight at mid-frame, so it
+  no longer needs `instrument_name`, a mid-frame time or loaded kernels; it raises when the GCP
+  centre is outside the geolocated grid, and the per-pair loops no longer skip failed pairs.
+- **Inputs image matching cannot use raise** -- `image_matching` raises on a geolocated dataset
+  with neither `radiance` nor `reflectance` (it matched an all-ones placeholder). The telemetry
+  position comes only from `DataConfig.position_columns`, documented as ECEF meters; the
+  column-name guessing (`sc_pos_*`, `pos_*`, any column containing "pos") is removed, since it
+  picked inertial positions in feet as ECEF meters. `im_search` raises on non-finite chip or
+  subimage latitude/longitude, which disabled its out-of-chip check.
 - **Pairing raises** -- `pair_files` and `pair_geolocated_dataset_with_gcp_files` raise
   `ValueError` naming a file that fails to load (previously skipped, which misaligned every
   later pair).

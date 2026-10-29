@@ -86,13 +86,23 @@ def im_search(
     Raises
     ------
     ValueError
-        If the subimage data are not all finite, or are uniform (the correlation
+        If the GCP chip's or the subimage's lat/lon are not all finite (the
+        chip-extent check and the shifted sampling are undefined); if the
+        subimage data are not all finite, or are uniform (the correlation
         is undefined for every shift); if a search shift samples the
         subimage outside the GCP chip's lat/lon extent (crop the subimage further
         inside the chip or reduce ``grid_span_km`` / ``reduction_factor``); or if
         no shift in a search grid has a finite correlation.
     """
 
+    for name, grid in (("GCP chip", gcp), ("Subimage", subimage)):
+        for axis in ("lat", "lon"):
+            values = np.asarray(getattr(grid, axis))
+            if not np.all(np.isfinite(values)):
+                raise ValueError(
+                    f"{name} {axis} has {int(np.sum(~np.isfinite(values)))} non-finite value(s); the search "
+                    "geometry is undefined."
+                )
     if not np.all(np.isfinite(subimage.data)):
         raise ValueError(
             f"Subimage has {int(np.sum(~np.isfinite(subimage.data)))} non-finite value(s); the correlation is "
