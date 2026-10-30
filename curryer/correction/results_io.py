@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from curryer.correction.config import GeolocationSetup, NetCDFConfig, ParameterType, Sweep
+from curryer.correction.config import GeolocationSetup, NetCDFConfig, Sweep
 
 logger = logging.getLogger(__name__)
 
@@ -54,21 +54,11 @@ def _build_netcdf_structure(
     # Add parameter variables dynamically based on sweep.parameters
     param_count = 0
     for param in sweep.parameters:
-        if param.ptype == ParameterType.CONSTANT_KERNEL:
-            # CONSTANT_KERNEL parameters have roll, pitch, yaw components
-            for angle in ["roll", "pitch", "yaw"]:
-                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
-                var_name = metadata.variable_name
-                netcdf_data[var_name] = np.full(n_param_sets, np.nan)
-                logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
-                param_count += 1
-        else:
-            # OFFSET_KERNEL and OFFSET_TIME are single values
-            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
-            var_name = metadata.variable_name
-            netcdf_data[var_name] = np.full(n_param_sets, np.nan)
-            logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
-            param_count += 1
+        metadata = netcdf_config.get_parameter_netcdf_metadata(param)
+        var_name = metadata.variable_name
+        netcdf_data[var_name] = np.full(n_param_sets, np.nan)
+        logger.debug(f"  Added parameter variable: {var_name} ({metadata.long_name})")
+        param_count += 1
 
     logger.info(f"  Created {param_count} parameter variables from {len(sweep.parameters)} parameter configs")
 
@@ -99,6 +89,11 @@ def _build_netcdf_structure(
     for var_name, description in image_match_vars.items():
         netcdf_data[var_name] = np.full((n_param_sets, n_gcp_pairs), np.nan)
         logger.debug(f"  Added image matching variable: {var_name}")
+
+    # Whether each pair passes the match-quality gates under each parameter set
+    netcdf_data["accepted"] = np.zeros((n_param_sets, n_gcp_pairs), dtype=bool)
+    # Whether each parameter set passes the gates on every usable pair (compared in the selection)
+    netcdf_data["valid"] = np.zeros(n_param_sets, dtype=bool)
 
     # Add overall performance metrics (1D: parameter_set_id)
     # Use dynamic threshold metric name
@@ -177,15 +172,9 @@ def _save_netcdf_checkpoint(netcdf_data, output_file, setup, sweep, netcdf_confi
 
     # Add parameter variable attributes from config
     for param in sweep.parameters:
-        if param.ptype == ParameterType.CONSTANT_KERNEL:
-            for angle in ["roll", "pitch", "yaw"]:
-                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
-                if metadata.variable_name in ds.data_vars:
-                    ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
-        else:
-            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
-            if metadata.variable_name in ds.data_vars:
-                ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
+        metadata = netcdf_config.get_parameter_netcdf_metadata(param)
+        if metadata.variable_name in ds.data_vars:
+            ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes
     standard_attrs = netcdf_config.standard_attributes_dict
@@ -336,17 +325,9 @@ def _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config):
 
     # Add parameter variable attributes from config
     for param in sweep.parameters:
-        if param.ptype == ParameterType.CONSTANT_KERNEL:
-            # Add metadata for roll, pitch, yaw components
-            for angle in ["roll", "pitch", "yaw"]:
-                metadata = netcdf_config.get_parameter_netcdf_metadata(param, angle)
-                if metadata.variable_name in ds.data_vars:
-                    ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
-        else:
-            # Add metadata for single-value parameters
-            metadata = netcdf_config.get_parameter_netcdf_metadata(param)
-            if metadata.variable_name in ds.data_vars:
-                ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
+        metadata = netcdf_config.get_parameter_netcdf_metadata(param)
+        if metadata.variable_name in ds.data_vars:
+            ds[metadata.variable_name].attrs.update({"units": metadata.units, "long_name": metadata.long_name})
 
     # Add standard metric attributes from config (allows mission overrides)
     standard_attrs = netcdf_config.standard_attributes_dict

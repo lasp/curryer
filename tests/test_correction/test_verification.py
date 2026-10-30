@@ -921,7 +921,7 @@ class TestViewingGeometryFailures:
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match") as mock_match,
+            patch("curryer.correction.verification.integrated_image_match") as mock_match,
             pytest.raises(ValueError, match="Spacecraft ECEF position is required"),
         ):
             verify(
@@ -948,12 +948,14 @@ class TestViewingGeometryFailures:
         r_sc = obs_center + 410_000.0 * obs_center / np.linalg.norm(obs_center) + 700_000.0 * east
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.10, -102.28)
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3)
+        match = SimpleNamespace(
+            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3, final_grid_step_m=30.0
+        )
         setup = _make_setup()
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+            patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
         ):
             (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
@@ -988,11 +990,19 @@ class TestViewingGeometryFailures:
             }
         ).to_netcdf(tmp_path / "obs.nc")
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", float(lat[3, 4]), float(lon[3, 4]))
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3)
+        match = SimpleNamespace(
+            lat_error_km=0.1,
+            lon_error_km=-0.2,
+            ccv_final=0.9,
+            ccv_secondary=0.3,
+            final_grid_step_m=30.0,
+            final_index_row=2,
+            final_index_col=2,
+        )
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match),
         ):
             (ds,), _ = _run_image_matching_for_pairs(
                 [(tmp_path / "obs.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
@@ -1038,13 +1048,21 @@ class TestViewingGeometryFailures:
         )
 
         def match(subimage, gcp, **_):
-            lat_km, lon_km, ccv, ccv_secondary, *_ = im_search(gcp, subimage, search)
-            return SimpleNamespace(lat_error_km=lat_km, lon_error_km=lon_km, ccv_final=ccv, ccv_secondary=ccv_secondary)
+            lat_km, lon_km, ccv, ccv_secondary, row, col, step_m = im_search(gcp, subimage, search)
+            return SimpleNamespace(
+                lat_error_km=lat_km,
+                lon_error_km=lon_km,
+                ccv_final=ccv,
+                ccv_secondary=ccv_secondary,
+                final_grid_step_m=step_m,
+                final_index_row=row,
+                final_index_col=col,
+            )
 
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (41, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", side_effect=match),
+            patch("curryer.correction.verification.integrated_image_match", side_effect=match),
         ):
             result = verify(
                 _make_setup(),
@@ -1071,11 +1089,13 @@ class TestViewingGeometryFailures:
         r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
         obs = self._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
-        match = SimpleNamespace(lat_error_km=0.3, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3)
+        match = SimpleNamespace(
+            lat_error_km=0.3, lon_error_km=-0.2, ccv_final=0.9, ccv_secondary=0.3, final_grid_step_m=30.0
+        )
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match),
         ):
             (ds,), _ = _run_image_matching_for_pairs(
                 [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
@@ -1260,11 +1280,13 @@ class TestMatchingConfigAndCorrelation:
             psf_sampling=PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4),
             search=SearchConfig(grid_size=20, grid_span_km=40.0),
         )
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4)
+        match = SimpleNamespace(
+            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4, final_grid_step_m=30.0
+        )
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+            patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
         ):
             (ds,), _ = _run_image_matching_for_pairs([(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", setup)
 
@@ -1307,11 +1329,13 @@ class TestMatchingConfigAndCorrelation:
         cropped.to_netcdf(tmp_path / "obs_crop.nc")
         gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
         table = np.column_stack([np.zeros(20), np.linspace(-0.1, 0.1, 20), np.ones(20)])
-        match = SimpleNamespace(lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4)
+        match = SimpleNamespace(
+            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4, final_grid_step_m=30.0
+        )
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=table),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match) as mock_match,
+            patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
         ):
             (ds,), _ = _run_image_matching_for_pairs(
                 [(tmp_path / "obs_crop.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
@@ -1528,14 +1552,19 @@ class TestChipImagesSaveAndReview:
         obs = TestViewingGeometryFailures._write_grid_nc(tmp_path / "obs.nc", 26.15, -102.33, position_m=r_sc)
         gcp = TestViewingGeometryFailures._write_grid_nc(tmp_path / "gcp_regridded.nc", 26.15, -102.33)
         match = SimpleNamespace(
-            lat_error_km=0.1, lon_error_km=-0.2, ccv_final=0.83, ccv_secondary=0.4, convolved_gcp=load_image_grid(gcp)
+            lat_error_km=0.1,
+            lon_error_km=-0.2,
+            ccv_final=0.83,
+            ccv_secondary=0.4,
+            final_grid_step_m=30.0,
+            convolved_gcp=load_image_grid(gcp),
         )
         from curryer.correction.verification import _run_image_matching_for_pairs
 
         with (
             patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
             patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
-            patch("curryer.correction.image_match.integrated_image_match", return_value=match),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match),
         ):
             _, kept = _run_image_matching_for_pairs(
                 [(obs, gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup(), keep_images=True

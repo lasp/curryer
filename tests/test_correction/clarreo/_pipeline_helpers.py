@@ -1,10 +1,10 @@
 """
 Pipeline runner helpers for CLARREO integration tests.
 
-Provides ``run_upstream_pipeline`` and ``run_downstream_pipeline``,
-which exercise the upstream (kernel creation + geolocation) and
-downstream (GCP pairing + image matching + error statistics) halves
-of the Correction pipeline respectively.
+Provides ``run_downstream_pipeline``, which exercises the downstream
+(GCP pairing + image matching + error statistics) half of the Correction
+pipeline.  The whole loop, with kernel creation and SPICE geolocation, is
+tested in ``test_pipeline.py`` (``_loop_scene``).
 
 These are *test infrastructure helpers*, not pytest tests themselves.
 """
@@ -21,7 +21,7 @@ import numpy as np
 import xarray as xr
 
 from curryer.correction.config import DataConfig, ParameterConfig, ParameterType, Sweep
-from curryer.correction.pipeline import call_error_stats_module, loop
+from curryer.correction.pipeline import call_error_stats_module
 from curryer.correction.results_io import _build_netcdf_structure, _save_netcdf_results
 
 logger = logging.getLogger(__name__)
@@ -43,79 +43,6 @@ def _load_clarreo_loaders():
         discover_test_image_match_cases,
         run_image_matching_with_applied_errors,
     )
-
-
-# ---------------------------------------------------------------------------
-# Upstream pipeline
-# ---------------------------------------------------------------------------
-
-
-def run_upstream_pipeline(
-    n_iterations: int = 5,
-    work_dir: Path | None = None,
-) -> tuple[list, dict, Path]:
-    """Test the upstream segment: parameter generation → kernel creation → geolocation.
-
-    Uses ``synthetic_image_matching`` so it does NOT require valid GCP pairs.
-
-    Returns
-    -------
-    (results_list, results_summary_dict, output_file_path)
-    """
-    from _synthetic_helpers import synthetic_image_matching
-
-    (
-        create_clarreo_setup_sweep,
-        load_clarreo_telemetry,
-        load_clarreo_science,
-        _,
-        _,
-    ) = _load_clarreo_loaders()
-
-    logger.info("=== UPSTREAM PIPELINE TEST ===")
-
-    root_dir = Path(__file__).parents[3]
-    generic_dir = root_dir / "data" / "generic"
-    data_dir = root_dir / "tests" / "data" / "clarreo" / "gcs"
-
-    if work_dir is None:
-        _tmp = tempfile.mkdtemp(prefix="curryer_upstream_")
-        work_dir = Path(_tmp)
-        atexit.register(shutil.rmtree, work_dir, True)
-        logger.info("Temporary work dir: %s", work_dir)
-    else:
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-    setup, sweep, output = create_clarreo_setup_sweep(data_dir, generic_dir)
-    sweep.n_iterations = n_iterations
-    output.output_filename = "upstream_results.nc"
-
-    tlm_df = load_clarreo_telemetry(data_dir)
-    sci_df = load_clarreo_science(data_dir)
-
-    tlm_csv = work_dir / "clarreo_telemetry.csv"
-    sci_csv = work_dir / "clarreo_science.csv"
-    tlm_df.to_csv(tlm_csv)
-    sci_df.to_csv(sci_csv)
-
-    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
-    setup.image_matching_func = synthetic_image_matching
-
-    tlm_sci_gcp_sets = [(str(tlm_csv), str(sci_csv), "synthetic_gcp.mat")]
-
-    logger.info("Executing Correction upstream workflow (%d iterations)…", n_iterations)
-    results, netcdf_data = loop(setup, sweep, work_dir, tlm_sci_gcp_sets, output)
-
-    output_file = work_dir / output.get_output_filename()
-    logger.info("Upstream pipeline complete. Output: %s", output_file)
-
-    summary = {
-        "mode": "upstream",
-        "iterations": n_iterations,
-        "parameter_sets": len(netcdf_data["parameter_set_id"]),
-        "status": "complete",
-    }
-    return results, summary, output_file
 
 
 # ---------------------------------------------------------------------------
@@ -210,16 +137,18 @@ def run_downstream_pipeline(
                 ptype=ParameterType.CONSTANT_KERNEL,
                 config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
                 spec={
-                    "current_value": [0.0, 0.0, 0.0],
+                    "field": axis,
+                    "current_value": 0.0,
                     "sigma": 0.0,
                     "units": "arcseconds",
                     "transformation_type": "dcm_rotation",
                     "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
                 },
             )
+            for axis in ("angle_x", "angle_y", "angle_z")
         ],
     )
-    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.data_config = DataConfig(file_format="csv")
 
     # --- STEP 4: iterate ---
     netcdf_data = _build_netcdf_structure(setup, sweep, netcdf_config, n_iterations, n_gcp_pairs)
