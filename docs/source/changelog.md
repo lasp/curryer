@@ -108,8 +108,14 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - `CONSTANT_KERNEL` accepts `units="radians"`, as `OFFSET_KERNEL` does; with `units=None` its
   NetCDF `units` attribute is `radians` (it said `arcseconds`).
 - `KernelContext` and `ImageMatchingContext` are removed from `curryer.correction.config`.
-- The `results` dicts `loop()` returns carry the subimage's (frame, pixel) `geolocation`; a set
-  that is not compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- The `results` dicts `loop()` returns no longer carry a `geolocation` dataset (three float64
+  (frame, pixel) grids per parameter set and pair, unread by the package); a set that is not
+  compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- When matching raises for a parameter set (for example, one that moves the subimage so the
+  search samples outside the chip), `loop()` writes the results so far to its output NetCDF,
+  then raises, naming the set, the pair and the file.
+- `loop()` keeps one pair's DEM tiles in memory at a time; the elevation cache grew with every
+  tile a chip list touched (about 70 MB per GMTED tile).
 - `CorrectionResult` gains `n_usable_pairs` and `n_valid_sets`, and its recommendation and
   summary table state the pairs and sets the verdict rests on.
 
