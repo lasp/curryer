@@ -1989,7 +1989,7 @@ class Geolocate:
             standardized locations.
 
         """
-        self.instrument = spicierpy.obj.Body(instrument, frame=True)  # E.g. "CPRS_HYSICS"
+        self.instrument = spicierpy.obj.Body(instrument, frame=True)
         self.sc_state_frame = spicierpy.obj.Frame("J2000")  # TODO: Or ECEF (ITRF93)?
         self.elevation = elevation.Elevation(dem_data_dir, meters=False, degrees=False)
         self._step_time = None

@@ -17,8 +17,7 @@ for a correction analysis run, including:
   ``setup`` / ``sweep`` / ``output`` models from a JSON file
 
 All mission-specific values (kernel filenames, parameter ranges, instrument names)
-live in mission configuration modules (e.g. ``tests/test_correction/clarreo_config.py``)
-and are injected via ``GeolocationSetup`` / ``Sweep``.
+live in each mission's configuration and are injected via ``GeolocationSetup`` / ``Sweep``.
 
 All config objects are ``pydantic.BaseModel`` subclasses which provide:
 - Automatic type validation and clear ``ValidationError`` messages on construction
@@ -148,15 +147,14 @@ class DataConfig(BaseModel):
         The time column name is taken from :attr:`GeolocationConfig.time_field`
         (single source of truth).
     position_columns
-        Explicit column name mappings for telemetry spacecraft-position data,
-        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  ``None`` means use
-        mission defaults from the geolocation configuration.
+        Telemetry columns holding the spacecraft's ECEF position in meters,
+        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  Required when
+        :func:`~curryer.correction.verification.image_matching` reads the
+        position from telemetry; ``None`` otherwise.
     """
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
     time_scale_factor: float = 1.0
-    # Explicit column name mappings for telemetry spacecraft-position data.
-    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"]. None means use mission defaults from the geolocation configuration.
     position_columns: list[str] | None = None
 
 
@@ -313,11 +311,23 @@ class GeolocationConfig(BaseModel):
         Kernels regenerated from telemetry each run (SC-SPK, SC-CK, etc.)
         but *not* altered by parameter variations.
     instrument_name
-        SPICE instrument name (e.g. ``"CPRS_HYSICS"``).
+        SPICE instrument name, as the instrument kernel defines it.
     time_field
         Column name in the science DataFrame that holds uGPS timestamps.
     minimum_correlation
-        Optional image-matching quality filter threshold (0.0–1.0).
+        Optional image-matching quality threshold (0.0–1.0).  When set,
+        :func:`~curryer.correction.verification.verify` and the correction
+        loop's final aggregate statistics drop measurements whose
+        ``correlation`` is below it; per-pair errors inside the loop are not
+        gated.  Raises :class:`ValueError` if the image-matching results carry
+        no correlation variable or if no measurement survives.
+    minimum_peak_margin
+        Optional distinctness threshold for a match (correlation units).  When
+        set, measurements whose ``correlation`` exceeds ``correlation_secondary``
+        (the strongest competing correlation, see
+        :attr:`SearchConfig.peak_exclusion_km`) by less than this are dropped,
+        under the same rules as *minimum_correlation*.  Raises
+        :class:`ValueError` if the results carry no ``correlation_secondary``.
     """
 
     meta_kernel_file: Path
@@ -325,7 +335,8 @@ class GeolocationConfig(BaseModel):
     dynamic_kernels: list[Path] = Field(default_factory=list)
     instrument_name: str
     time_field: str
-    minimum_correlation: float | None = None
+    minimum_correlation: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    minimum_peak_margin: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 # ============================================================================
@@ -346,12 +357,12 @@ class RequirementsConfig(BaseModel):
         Per-measurement nadir-equivalent error limit in meters (must be > 0).
         A measurement *passes* when its error is **below** this value.
     performance_spec_percent : float
-        Minimum fraction of measurements (0–100) that must pass for the
-        overall verification to be considered successful.
+        Percentage of accepted measurements below the threshold that a run must
+        exceed to pass, in [0, 100); a run at exactly this percentage fails.
     """
 
     performance_threshold_m: float = Field(gt=0)
-    performance_spec_percent: float = Field(ge=0, le=100)
+    performance_spec_percent: float = Field(ge=0, lt=100)
 
 
 # ============================================================================
@@ -359,42 +370,41 @@ class RequirementsConfig(BaseModel):
 # ============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class PSFSamplingConfig:
     """Configuration for PSF sampling during image matching.
 
     Default values are calibrated for Landsat 30 m GCPs, which are the
-    standard reference for GCP-based geolocation verification. Override
-    all fields for instruments with different ground resolution or motion
-    characteristics.
+    standard reference for GCP-based geolocation verification.
 
     Parameters
     ----------
-    gcp_step_m : float, optional
-        Ground control point step size in meters. Default is 30.0.
-    motion_convolution_step_m : float or None, optional
-        Step size for spacecraft motion convolution in meters.
-        If ``None`` (default), derived as ``gcp_step_m / 20.0`` in
-        ``__post_init__``.
     psf_lat_sample_dist_deg : float, optional
         PSF sample distance in the latitude direction in degrees.
         Default approximately 2.7 m at the equator (Landsat calibration).
     psf_lon_sample_dist_deg : float, optional
         PSF sample distance in the longitude direction in degrees.
         Default approximately 2.7 m at the equator (Landsat calibration).
+
+    Raises
+    ------
+    ValueError
+        If a sample distance is not finite and positive.
     """
 
-    gcp_step_m: float = 30.0
-    motion_convolution_step_m: float | None = None  # defaults to gcp_step_m / 20.0 if None
     psf_lat_sample_dist_deg: float = 2.4397105613972e-05
     psf_lon_sample_dist_deg: float = 2.8737038710207e-05
 
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
     def __post_init__(self) -> None:
-        if self.motion_convolution_step_m is None:
-            self.motion_convolution_step_m = self.gcp_step_m / 20.0
+        for name in ("psf_lat_sample_dist_deg", "psf_lon_sample_dist_deg"):
+            value = getattr(self, name)
+            if not (np.isfinite(value) and value > 0):
+                raise ValueError(f"PSFSamplingConfig.{name} must be finite and positive, got {value!r}.")
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchConfig:
     """Configuration for the image-matching correlation search grid.
 
@@ -407,19 +417,78 @@ class SearchConfig:
         Number of grid points per axis in the correlation search grid.
         Default 44 (Landsat-tuned).
     grid_span_km : float, optional
-        Half-width of the search grid in kilometers. Default 11.0.
+        Full width of the first search grid in kilometers (shifts up to about
+        ``grid_span_km / 2`` each way). Default 11.0.
     reduction_factor : float, optional
         Multiplicative reduction applied to grid spacing each iteration.
         Default 0.8.
     spacing_limit_m : float, optional
         Minimum grid spacing in meters; search stops when reached.
         Default 10.0 (Landsat-tuned).
+    peak_exclusion_km : float, optional
+        Distance from the first-pass correlation peak beyond which the
+        strongest competing correlation is reported (``ccv_secondary``), used
+        to judge whether a match is distinct. Must be less than
+        ``grid_span_km / 2``, so that some first-grid point always lies beyond
+        it. Default 2.0.
+
+    Raises
+    ------
+    ValueError
+        If ``grid_size`` is not an integer of at least 2; if ``grid_span_km``,
+        ``spacing_limit_m`` or ``peak_exclusion_km`` is not finite and positive;
+        if ``reduction_factor`` is not in (0, 1); if ``spacing_limit_m`` is not
+        smaller than the first grid's step (the search would not run); or if
+        ``peak_exclusion_km`` is not less than ``grid_span_km / 2``.
+
+    The instance is frozen, so these checks hold for its lifetime.
     """
 
     grid_size: int = 44
     grid_span_km: float = 11.0
     reduction_factor: float = 0.8
     spacing_limit_m: float = 10.0
+    peak_exclusion_km: float = 2.0
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
+    def __post_init__(self) -> None:
+        if isinstance(self.grid_size, bool) or not isinstance(self.grid_size, int) or self.grid_size < 2:
+            raise ValueError(f"SearchConfig.grid_size must be an integer >= 2, got {self.grid_size!r}.")
+        for name in ("grid_span_km", "spacing_limit_m", "peak_exclusion_km"):
+            value = getattr(self, name)
+            if not (np.isfinite(value) and value > 0):
+                raise ValueError(f"SearchConfig.{name} must be finite and positive, got {value!r}.")
+        if not 0 < self.reduction_factor < 1:
+            raise ValueError(f"SearchConfig.reduction_factor must be in (0, 1), got {self.reduction_factor!r}.")
+        first_step_m = 1000.0 * self.grid_span_km / (self.grid_size - 1)
+        if self.spacing_limit_m >= first_step_m:
+            raise ValueError(
+                f"SearchConfig.spacing_limit_m ({self.spacing_limit_m} m) must be smaller than the first grid step "
+                f"({first_step_m:.3f} m = grid_span_km / (grid_size - 1)), or the search does not run."
+            )
+        if self.peak_exclusion_km >= self.grid_span_km / 2:
+            raise ValueError(
+                f"SearchConfig.peak_exclusion_km ({self.peak_exclusion_km} km) must be less than grid_span_km / 2 "
+                f"({self.grid_span_km / 2} km), or no first-grid point may lie beyond it and the peak margin is "
+                "undefined."
+            )
+
+    def max_shift_km(self) -> float:
+        """Upper bound (km) on how far the iterative search can move the subimage along each axis.
+
+        Each iteration re-centres a grid of ``grid_size // 2`` steps each way, and
+        the step shrinks by ``reduction_factor``; the sum of the geometric series
+        bounds the total shift.  It is the worst case, the best point on the
+        grid's edge in every iteration, so it is a sufficient margin rather than a
+        required one: a subimage at least this far inside the searchable part of
+        the GCP chip on every side never samples outside it.  Every search
+        reaches the first grid's half-width, ``grid_size // 2`` steps of
+        ``grid_span_km / (grid_size - 1)``, beyond the subimage, so the margin
+        needed in practice is that half-width plus the distance to the match.
+        """
+        first_step_km = self.grid_span_km / (self.grid_size - 1)
+        return (self.grid_size // 2) * first_step_km / (1.0 - self.reduction_factor)
 
 
 class RegridConfig(BaseModel):
@@ -568,6 +637,12 @@ class GeolocationSetup(BaseModel):
     spacecraft_position_name, boresight_name, transformation_matrix_name
         Variable names for the spacecraft-state fields in the image-matching
         ``xr.Dataset`` (mission-configurable; generic defaults).
+    psf_sampling
+        PSF sampling used by the built-in image matching.  Defaults to
+        :class:`PSFSamplingConfig` (Landsat calibration).
+    search
+        Correlation search grid used by the built-in image matching.
+        Defaults to :class:`SearchConfig` (44 points, first grid 11 km wide).
     image_matching_func
         Optional custom image-matching callable.  ``None`` uses the built-in
         :func:`~curryer.correction.verification.image_matching`.  Excluded from
@@ -584,6 +659,9 @@ class GeolocationSetup(BaseModel):
     spacecraft_position_name: str = "sc_position"
     boresight_name: str = "boresight"
     transformation_matrix_name: str = "t_inst2ref"
+
+    psf_sampling: PSFSamplingConfig = Field(default_factory=PSFSamplingConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
     image_matching_func: Callable | None = Field(default=None, exclude=True)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timezone
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -355,8 +356,8 @@ def build_correction_result(
         valid_errors = [e for e in pair_errors if math.isfinite(e)]
         if valid_errors:
             threshold_m = setup.requirements.performance_threshold_m
-            pct_below = sum(1 for e in valid_errors if e < threshold_m) / len(valid_errors) * 100
-            met_threshold = pct_below >= setup.requirements.performance_spec_percent
+            n_below = sum(1 for e in valid_errors if e < threshold_m)
+            met_threshold = 100 * n_below > Fraction(setup.requirements.performance_spec_percent) * len(valid_errors)
 
     # Human-readable recommendation
     if met_threshold:
