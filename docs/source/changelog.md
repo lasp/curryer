@@ -172,6 +172,9 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   so a custom `variable_name` in `parameter_metadata` works (it raised `KeyError`).
 - `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
   match-quality gates on; it counted the errors of rejected pairs too.
+- `im_search` builds the chip interpolant once per search and evaluates a whole row of shifts per
+  call, with identical results: about 8 times faster (2.3 s to 0.3 s per match with the default
+  search, 0.30 s to 0.04 s with an 8 km, 31-point grid).
 
 ### Documentation
 
