@@ -12,8 +12,8 @@ from .grid_types import ImageGrid
 logger = logging.getLogger(__name__)
 
 
-def emulate_image(test_lon: np.ndarray, test_lat: np.ndarray, gcp: ImageGrid) -> np.ndarray:
-    """Interpolate the GCP chip at test latitude/longitude coordinates."""
+def _chip_interpolant(gcp: ImageGrid) -> RegularGridInterpolator:
+    """Bilinear interpolant of the GCP chip on its lat/lon axes, zero outside the chip."""
 
     lon_axis = gcp.lon[0, :]
     lat_axis = gcp.lat[:, 0]
@@ -34,10 +34,14 @@ def emulate_image(test_lon: np.ndarray, test_lat: np.ndarray, gcp: ImageGrid) ->
         if not np.all(np.diff(lon_axis_work) > 0):
             raise ValueError("GCP longitude axis must be monotonic.")
 
-    interpolant = RegularGridInterpolator((lat_axis_work, lon_axis_work), data_work, bounds_error=False, fill_value=0.0)
+    return RegularGridInterpolator((lat_axis_work, lon_axis_work), data_work, bounds_error=False, fill_value=0.0)
+
+
+def emulate_image(test_lon: np.ndarray, test_lat: np.ndarray, gcp: ImageGrid) -> np.ndarray:
+    """Interpolate the GCP chip at test latitude/longitude coordinates."""
+
     points = np.stack((test_lat.ravel(), test_lon.ravel()), axis=-1)
-    values = interpolant(points)
-    return values.reshape(test_lat.shape)
+    return _chip_interpolant(gcp)(points).reshape(test_lat.shape)
 
 
 def ccv2d(image1: np.ndarray, image2: np.ndarray) -> float:
@@ -52,6 +56,17 @@ def ccv2d(image1: np.ndarray, image2: np.ndarray) -> float:
     if denominator == 0.0:
         return 0.0
     return float(numerator / denominator)
+
+
+def _ccv_rows(images: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """:func:`ccv2d` of each row of *images* (shape ``(n, m)``) against *reference* (``m`` values)."""
+
+    diff1 = images - images.mean(axis=1, keepdims=True)
+    diff2 = reference - reference.mean()
+    numerator = np.sum(diff1 * diff2, axis=1)
+    denominator = np.sqrt(np.sum(diff1**2, axis=1) * np.sum(diff2**2))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(denominator == 0.0, 0.0, numerator / denominator)
 
 
 def im_search(
@@ -135,21 +150,24 @@ def im_search(
 
     best_grid = (0, 0)
     ccv_max = -np.inf
+    subimage_data = np.asarray(subimage.data, dtype=float).ravel()
 
+    interpolant = _chip_interpolant(gcp)
+    shift_steps = np.arange(config.grid_size) - mid_index
     while lat_spacing > lat_spacing_min:
-        ccv_max = -np.inf
-        ccv_grid = np.full((config.grid_size, config.grid_size), -np.inf)
+        # The extremes of a shifted grid are the shifted extremes: adding a constant is monotone under rounding.
+        lat_lo, lat_hi = new_image_lat.min(), new_image_lat.max()
+        lon_lo, lon_hi = new_image_lon.min(), new_image_lon.max()
+        lon_shifts = shift_steps * lat_spacing
         for k in range(config.grid_size):
+            lat_shift = (mid_index - k) * lat_spacing
             for kk in range(config.grid_size):
-                lat_shift = (mid_index - k) * lat_spacing
-                lon_shift = (kk - mid_index) * lat_spacing
-                test_lat = new_image_lat + lat_shift
-                test_lon = new_image_lon + lon_shift
+                lon_shift = lon_shifts[kk]
                 if (
-                    test_lat.min() < gcp_lat_min
-                    or test_lat.max() > gcp_lat_max
-                    or test_lon.min() < gcp_lon_min
-                    or test_lon.max() > gcp_lon_max
+                    lat_lo + lat_shift < gcp_lat_min
+                    or lat_hi + lat_shift > gcp_lat_max
+                    or lon_lo + lon_shift < gcp_lon_min
+                    or lon_hi + lon_shift > gcp_lon_max
                 ):
                     raise ValueError(
                         f"Search shift ({lat_shift * km_per_deg:+.2f} km N, "
@@ -157,12 +175,20 @@ def im_search(
                         f"(lat {gcp_lat_min:.4f}..{gcp_lat_max:.4f}, lon {gcp_lon_min:.4f}..{gcp_lon_max:.4f}); "
                         "crop the subimage further inside the chip or reduce grid_span_km / reduction_factor."
                     )
-                test_image = emulate_image(test_lon, test_lat, gcp)
-                ccv_value = ccv2d(test_image, subimage.data)
-                ccv_grid[k, kk] = ccv_value
-                if ccv_value > ccv_max:
-                    ccv_max = ccv_value
-                    best_grid = (k, kk)
+
+        ccv_grid = np.empty((config.grid_size, config.grid_size))
+        # One interpolation call per grid row: every column shift of that row's subimage.
+        test_lon = new_image_lon.ravel()[np.newaxis, :] + lon_shifts[:, np.newaxis]
+        for k in range(config.grid_size):
+            test_lat = np.broadcast_to(new_image_lat.ravel() + (mid_index - k) * lat_spacing, test_lon.shape)
+            test_images = interpolant(np.stack((test_lat.ravel(), test_lon.ravel()), axis=-1))
+            ccv_grid[k] = _ccv_rows(test_images.reshape(config.grid_size, -1), subimage_data)
+
+        if np.all(np.isnan(ccv_grid)):
+            ccv_max = -np.inf
+        else:
+            best_grid = np.unravel_index(np.nanargmax(ccv_grid), ccv_grid.shape)
+            ccv_max = float(ccv_grid[best_grid])
 
         if not np.isfinite(ccv_max):
             raise ValueError(
