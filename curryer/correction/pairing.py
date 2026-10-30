@@ -6,8 +6,10 @@ swaths. Its edge lies half a pixel plus the footprint tolerance outside the edge
 pixel centres (one pixel at the default tolerance), moved by up to the tolerance
 either way by simplification. A GCP chip pairs with an L1A
 image by the signed great-circle distance from the chip's center pixel to that
-polygon's edge (:func:`curryer.compute.footprint.footprint_margin_m`). The core
-entry point is :func:`find_l1a_gcp_pairs`, which returns a many-to-many mapping
+polygon's edge (:func:`curryer.compute.footprint.footprint_margin_m`), and only
+when the center is within one pixel spacing of its nearest L1A pixel, the limit
+:func:`curryer.correction.psf.resolve_spacecraft_ecef` accepts for the line of
+sight that views the GCP. The core entry point is :func:`find_l1a_gcp_pairs`, which returns a many-to-many mapping
 between the supplied L1A and GCP collections.
 
 File-based utilities (discover_gcp_files, pair_files) provide higher-level
@@ -27,6 +29,7 @@ import xarray as xr
 from ..compute.footprint import FootprintGeometryError, convex_footprint, footprint_margin_m, swath_footprint
 from ..compute.spatial import geodetic_to_ecef
 from .grid_types import ImageGrid, NamedImageGrid
+from .psf import _nearest_grid_pixel
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +317,8 @@ def find_l1a_gcp_pairs(
         either way by simplification. Where the edge cannot be traced (folded
         or overlapping grids), it is the buffered convex hull of the pixels,
         logged as a warning naming the image; the hull reaches past a concave
-        swath, so it can pair chips just outside the pixels.
+        swath, and chips in that gap are dropped by the nearest-pixel test
+        below.
     gcp_images
         Iterable of :class:`NamedImageGrid` instances representing GCP chips.
         The center pixel's latitude and longitude are the chip's position.
@@ -324,7 +328,13 @@ def find_l1a_gcp_pairs(
         ``margin >= max_distance_m`` are returned: ``0`` pairs centers inside
         or on the edge, a positive value requires them at least that far
         inside, a negative value allows them up to ``abs(max_distance_m)``
-        outside.
+        outside. A chip that meets it is still not paired, and is logged at
+        INFO, when its center is farther from its nearest L1A pixel than that
+        pixel's farthest adjacent pixel (about one pixel spacing outside the
+        edge pixel centres; more than that at a corner of the footprint), as
+        :func:`curryer.correction.psf.resolve_spacecraft_ecef` would reject
+        it. So a negative ``max_distance_m`` cannot pair a center more than
+        about a pixel spacing outside the pixels.
     footprint_tolerance_km
         Tolerance of each L1A footprint polygon, km: the edge's offset beyond
         the half-pixel line and how far simplification may move it, so a
@@ -336,7 +346,8 @@ def find_l1a_gcp_pairs(
     -------
     PairingResult
         Metadata for the supplied images together with the pairs whose signed
-        margin is at least ``max_distance_m``.
+        margin is at least ``max_distance_m`` and whose GCP center passes the
+        nearest-pixel test.
 
     Raises
     ------
@@ -361,9 +372,10 @@ def find_l1a_gcp_pairs(
         or not np.isfinite(max_distance_m)
     ):
         raise ValueError(f"max_distance_m must be a finite float or int, got {max_distance_m!r}")
+    l1a_list = list(l1a_images)
     l1a_meta: list[L1AMetadata] = []
     gcp_meta: list[GCPMetadata] = []
-    for idx, image in enumerate(l1a_images):
+    for idx, image in enumerate(l1a_list):
         l1a_meta.append(_build_l1a_metadata(idx, image, footprint_tolerance_km))
     for idx, image in enumerate(gcp_images):
         gcp_meta.append(_build_gcp_metadata(idx, image))
@@ -373,10 +385,15 @@ def find_l1a_gcp_pairs(
         return PairingResult(l1a_meta, gcp_meta, matches)
     gcp_lat = np.array([gcp.center[0] for gcp in gcp_meta], dtype=float)
     gcp_lon = np.array([gcp.center[1] for gcp in gcp_meta], dtype=float)
-    for l1a in l1a_meta:
+    for l1a, image in zip(l1a_meta, l1a_list):
         margins = footprint_margin_m(l1a.footprint, gcp_lat, gcp_lon)
         for gcp, margin in zip(gcp_meta, margins):
             if margin >= max_distance_m:
+                try:
+                    _nearest_grid_pixel(image, gcp.center[0], gcp.center[1])
+                except ValueError as e:
+                    logger.info("No-pair [%s] to [%s] within [%s m]: %s", l1a.name, gcp.name, margin, e)
+                    continue
                 logger.info("Paired [%s] to [%s] within [%s m]", l1a.name, gcp.name, margin)
                 matches.append(PairMatch(l1a.index, gcp.index, float(margin)))
             else:
@@ -442,6 +459,8 @@ def pair_files(
             - 0.0: GCP center inside the L1A footprint or on its edge
             - >0: GCP center at least this far inside the footprint
             - <0: GCP center may lie up to abs(max_distance_m) outside
+            A GCP center more than about one pixel spacing from its nearest
+            L1A pixel is never paired (see :func:`find_l1a_gcp_pairs`).
         l1a_key: MATLAB struct key for L1A data (default: "subimage").
             Ignored for NetCDF files.
         gcp_key: MATLAB struct key for GCP data (default: "GCP").
@@ -557,7 +576,9 @@ def pair_geolocated_dataset_with_gcp_files(
         and the nearest observation footprint edge.  ``0.0`` (default) means
         the GCP center must fall inside the footprint or on its edge;
         negative values allow the center to lie *outside* the footprint by up
-        to ``abs(max_distance_m)`` meters.
+        to ``abs(max_distance_m)`` meters, but a center more than about one
+        pixel spacing from its nearest observation pixel is never paired (see
+        :func:`find_l1a_gcp_pairs`).
     gcp_key : str, optional
         MATLAB struct key used when loading ``.mat`` GCP chips.  Defaults to
         ``"GCP"``.  Ignored for NetCDF files.

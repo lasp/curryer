@@ -343,13 +343,23 @@ def test_invalid_max_distance_raises(max_distance_m):
 
 @pytest.mark.parametrize(
     ("max_distance_m", "paired"),
-    [(0.0, ["inside"]), (-6_000.0, ["inside", "outside"]), (5_000.0, ["inside"]), (8_000.0, [])],
+    [
+        (0.0, ["inside"]),
+        (-1_000.0, ["inside", "near"]),
+        (-6_000.0, ["inside", "near"]),
+        (5_000.0, ["inside"]),
+        (8_000.0, []),
+    ],
 )
 def test_max_distance_is_a_signed_margin(max_distance_m, paired):
-    # Pixels every 0.01 deg (1.11 km); the edge lies about one pixel beyond the edge pixel centres at lon +-1.
-    # "inside" is 5.56 km inside the east pixels (margin about +6.7 km), "outside" 5.56 km beyond them (about -4.4 km).
-    gcps = [_point("inside", 0.95, 0.0), _point("outside", 1.05, 0.0)]
-    result = find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], gcps, max_distance_m=max_distance_m)
+    # Pixels every 0.01 deg (1.11 km); with a 10 m tolerance the edge lies half a pixel plus 10 m beyond the edge
+    # pixel centres at lon +-1. "inside" is 5.56 km inside the east pixels (margin about +6.1 km), "near" 0.9 pixel
+    # beyond them (about -0.43 km), "far" 5.56 km beyond them (about -5.0 km): far meets -6 km but is more than a
+    # pixel spacing from its nearest pixel, so it is never paired.
+    gcps = [_point("inside", 0.95, 0.0), _point("near", 1.009, 0.0), _point("far", 1.05, 0.0)]
+    result = find_l1a_gcp_pairs(
+        [_rect("L1A", -1.0, 1.0, -1.0, 1.0)], gcps, max_distance_m=max_distance_m, footprint_tolerance_km=0.01
+    )
     assert [result.gcp_images[m.gcp_index].name for m in result.matches] == paired
 
 
@@ -357,6 +367,40 @@ def test_footprint_edge_is_about_one_pixel_beyond_the_edge_pixels():
     result = find_l1a_gcp_pairs([_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("edge", 1.0, 0.0)], max_distance_m=0.0)
     pixel_m = np.radians(0.01) * EARTH_MEAN_RADIUS_KM * 1e3
     assert 0.5 * pixel_m < result.matches[0].distance_m < 1.5 * pixel_m
+
+
+def _grid_at_40n() -> NamedImageGrid:
+    # 41 x 41 pixels every 0.01 deg, rows from 40.2 N south, columns from 100.2 W east.
+    return _rect("L1A", -100.2, -99.8, 39.8, 40.2, n=41)
+
+
+def test_corner_chip_inside_the_footprint_but_beyond_a_pixel_is_not_paired(caplog):
+    # 0.8 pixel north and 0.9 pixel east of the north-east corner pixel: 1.06 north-south spacings from it, farther
+    # than its adjacent pixels, yet about 90 m inside the footprint, which reaches past the corner diagonally.
+    grid = _grid_at_40n()
+    corner = _point("corner", -99.8 + 0.009, 40.2 + 0.008)
+    with caplog.at_level("INFO", logger="curryer.correction.pairing"):
+        result = find_l1a_gcp_pairs([grid], [corner], max_distance_m=0.0)
+    margin = footprint_margin_m(result.l1a_images[0].footprint, np.array([40.208]), np.array([-99.791]))
+    assert margin[0] >= 0.0
+    assert result.matches == []
+    assert any(
+        "No-pair [L1A] to [corner]" in r.message and "outside the observation grid" in r.message for r in caplog.records
+    )
+
+
+def test_side_chip_within_a_pixel_pairs_and_gets_a_line_of_sight():
+    from curryer.compute.spatial import geodetic_to_ecef
+    from curryer.correction.psf import resolve_spacecraft_ecef
+
+    grid = _grid_at_40n()
+    side = _point("side", -99.8 + 0.009, 40.0)
+    result = find_l1a_gcp_pairs([grid], [side], max_distance_m=0.0)
+    assert [m.gcp_index for m in result.matches] == [0]
+    r = geodetic_to_ecef(np.array([-100.0, 40.0, 400_000.0]), meters=True, degrees=True)
+    _, boresight, _ = resolve_spacecraft_ecef(grid, r, 40.0, -99.8 + 0.009)
+    edge = geodetic_to_ecef(np.array([-99.8, 40.0, 0.0]), meters=True, degrees=True)
+    np.testing.assert_allclose(boresight, (edge - r) / np.linalg.norm(edge - r), atol=1e-12)
 
 
 def test_pairing_across_the_antimeridian():
