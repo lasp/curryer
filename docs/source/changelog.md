@@ -189,6 +189,26 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   so a custom `variable_name` in `parameter_metadata` works (it raised `KeyError`).
 - `CorrectionResult.met_threshold` counts only the pairs the best parameter set passes the
   match-quality gates on; it counted the errors of rejected pairs too.
+- The motion blur clipped the PSF. `convolve_psf_with_spacecraft_motion` returned the blurred
+  PSF on the bounding box of its rotated frame, reused as a lat/lon box, so a PSF was cut off
+  wherever the motion was not east-west (on a CLARREO flight chip with the motion 41 degrees from
+  east, 0.13 km RMS across track instead of 0.26 km); it also filled outside the sampled PSF with
+  the nearest edge value. The blurred PSF is now returned on its own footprint, zero outside the
+  sampled PSF, on a grid that spans its support plus one sample. The blur is a running box sum
+  (0.05 s instead of 6 s for the 2-D convolution it replaces on a 1038 x 7571 grid, with the same
+  result to 1e-14).
+- The motion blur follows the frame step (rows of the subimage, along track), the direction the
+  footprint moves during a frame; it followed the detector step (across track). It raises when
+  the subimage has fewer than two frames or a mean frame step that is not finite or is zero.
+- `resample_psf_to_gcp_resolution` centres the resampled weights on the middle of an odd number
+  of samples, to within 1e-6 pixel; the grid started at the PSF's edge, so the centroid fell up to
+  a chip pixel off centre and the convolution shifted the chip by that much (12-81 m on 100 m
+  chips). It raises on PSF weights that do not sum to a positive value, and on a GCP pixel wider
+  than the PSF's RMS width, which too few samples represent.
+- Matched errors and correlations change with these three fixes. The 20 MATLAB-simulated
+  image-match cases, which reproduced the clipped and shifted PSF, are removed; image matching
+  is tested on a synthetic scene simulated independently of the convolution
+  (`tests/integration/test_image_match_synthetic.py`).
 - `im_search` builds the chip interpolant once per search and evaluates a whole row of shifts per
   call, with identical results: about 8 times faster (2.3 s to 0.3 s per match with the default
   search, 0.30 s to 0.04 s with an 8 km, 31-point grid).
