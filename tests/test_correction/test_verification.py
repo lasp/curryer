@@ -474,7 +474,9 @@ class TestFormatSummaryTable:
 
     def test_rows_aligned_when_footer_is_widest(self):
         errors = [e.model_copy(update={"quality_weight": 4.0}) for e in self._errors()]
-        table = _format_summary_table(errors, self._req(), 50.0, False, weighted_percent=50.0)
+        table = _format_summary_table(
+            errors, self._req(), 50.0, False, weighted_percent=50.0, effective_measurements=2.0
+        )
         assert "effective n = 2.0" in table
         assert len({len(line) for line in table.splitlines()}) == 1
 
@@ -964,6 +966,117 @@ class TestViewingGeometryFailures:
         to_obs_center = (obs_center - r_sc) / np.linalg.norm(obs_center - r_sc)
         assert np.rad2deg(np.arccos(np.dot(expected, to_obs_center))) > 0.1
 
+    def test_gcp_pair_takes_the_track_azimuth_at_the_observation_centre(self, tmp_path):
+        """The file-pair path takes the azimuth where image_matching does: the grid centre, not the GCP."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.grid_types import ImageGrid
+        from curryer.correction.psf import ground_track_azimuth_deg
+        from curryer.correction.verification import _run_image_matching_for_pairs
+
+        # Columns fan out: the centre column runs due south, the east columns south-south-east.
+        rows, cols = np.meshgrid(np.arange(-2, 3), np.arange(-2, 3), indexing="ij")
+        lat = 26.15 - 0.05 * rows
+        lon = -102.33 + 0.05 * cols + 0.02 * rows * cols
+        r_sc = geodetic_to_ecef(np.array([-102.33, 26.15, 410_000.0]), meters=True, degrees=True)
+        xr.Dataset(
+            {
+                "band_data": (["y", "x"], np.ones((5, 5))),
+                "lat": (["y", "x"], lat),
+                "lon": (["y", "x"], lon),
+                "position": (["xyz"], r_sc),
+            }
+        ).to_netcdf(tmp_path / "obs.nc")
+        gcp = self._write_grid_nc(tmp_path / "gcp_regridded.nc", float(lat[3, 4]), float(lon[3, 4]))
+        match = SimpleNamespace(
+            lat_error_km=0.1,
+            lon_error_km=-0.2,
+            ccv_final=0.9,
+            ccv_secondary=0.3,
+            final_grid_step_m=30.0,
+            final_index_row=2,
+            final_index_col=2,
+        )
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (5, 1))),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.verification.integrated_image_match", return_value=match),
+        ):
+            (ds,), _ = _run_image_matching_for_pairs(
+                [(tmp_path / "obs.nc", gcp)], tmp_path / "los.mat", tmp_path / "psf.mat", _make_setup()
+            )
+
+        grid = ImageGrid(data=np.ones((5, 5)), lat=lat, lon=lon)
+        at_centre = ground_track_azimuth_deg(grid, float(lat[2, 2]), float(lon[2, 2]))
+        at_gcp = ground_track_azimuth_deg(grid, float(lat[3, 4]), float(lon[3, 4]))
+        assert float(ds["track_azimuth_deg"].values[0]) == pytest.approx(at_centre, abs=1e-9)
+        assert abs(at_gcp - at_centre) > 5.0
+
+    def test_along_track_error_is_geolocated_minus_true(self, tmp_path):
+        """A subimage geolocated north of the truth on a south-going track is behind it: negative along track."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from test_search import _chip, _subimage
+
+        from curryer.compute.spatial import geodetic_to_ecef
+        from curryer.correction.config import SearchConfig
+        from curryer.correction.search import im_search
+
+        chip = _chip(np.random.default_rng(7).normal(size=(121, 121)))  # rows run north to south
+        truth = _subimage(chip, 20)
+        shift_deg = 0.004
+        geolocated_lat = truth.lat + shift_deg
+        r_sc = geodetic_to_ecef(
+            np.array([float(truth.lon[20, 20]), float(truth.lat[20, 20]), 410_000.0]), meters=True, degrees=True
+        )
+        xr.Dataset(
+            {
+                "band_data": (["y", "x"], truth.data),
+                "lat": (["y", "x"], geolocated_lat),
+                "lon": (["y", "x"], truth.lon),
+                "position": (["xyz"], r_sc),
+            }
+        ).to_netcdf(tmp_path / "obs.nc")
+        xr.Dataset(
+            {"band_data": (["y", "x"], chip.data), "lat": (["y", "x"], chip.lat), "lon": (["y", "x"], chip.lon)}
+        ).to_netcdf(tmp_path / "gcp_regridded.nc")
+        search = SearchConfig(
+            grid_size=11, grid_span_km=2.0, reduction_factor=0.5, spacing_limit_m=20.0, peak_exclusion_km=0.5
+        )
+
+        def match(subimage, gcp, **_):
+            lat_km, lon_km, ccv, ccv_secondary, row, col, step_m = im_search(gcp, subimage, search)
+            return SimpleNamespace(
+                lat_error_km=lat_km,
+                lon_error_km=lon_km,
+                ccv_final=ccv,
+                ccv_secondary=ccv_secondary,
+                final_grid_step_m=step_m,
+                final_index_row=row,
+                final_index_col=col,
+            )
+
+        with (
+            patch("curryer.correction.image_io.load_los_vectors", return_value=np.tile([0.0, 0.0, 1.0], (41, 1))),
+            patch("curryer.correction.image_io.load_optical_psf", return_value=[]),
+            patch("curryer.correction.verification.integrated_image_match", side_effect=match),
+        ):
+            result = verify(
+                _make_setup(),
+                gcp_pairs=[(tmp_path / "obs.nc", tmp_path / "gcp_regridded.nc")],
+                los_file=tmp_path / "los.mat",
+                psf_file=tmp_path / "psf.mat",
+                work_dir=tmp_path,
+            )
+
+        (error,) = result.per_gcp_errors
+        shift_m = np.deg2rad(shift_deg) * 6_378_137.0
+        assert error.along_track_error_m == pytest.approx(-shift_m, abs=25.0)
+        assert error.cross_track_error_m == pytest.approx(0.0, abs=25.0)
+
     def test_error_degrees_round_trip_to_matched_meters(self, tmp_path):
         """km → deg here and deg → m in ErrorStatsProcessor use the same radius."""
         from types import SimpleNamespace
@@ -1005,7 +1118,12 @@ class TestViewingGeometryFailures:
         grid = ImageGrid(data=np.ones((3, 3)), lat=lat, lon=lon)
         coords = {"frame": [1.4699e9, 1.4699e9 + 0.0667, 1.4699e9 + 0.1334]} if with_frame else {}
         geolocated = xr.Dataset(
-            {"latitude": (["frame", "pixel"], lat), "longitude": (["frame", "pixel"], lon)}, coords=coords
+            {
+                "latitude": (["frame", "pixel"], lat),
+                "longitude": (["frame", "pixel"], lon),
+                "radiance": (["frame", "pixel"], np.ones((3, 3))),
+            },
+            coords=coords,
         )
         return grid, geolocated
 
@@ -1013,7 +1131,6 @@ class TestViewingGeometryFailures:
         self,
         tmp_path,
         with_frame: bool,
-        spice_side_effect=None,
         r_iss_midframe=(-1.5e6, -5.9e6, 3.0e6),
         los_rows: int = 3,
         gcp_grid=None,
@@ -1042,11 +1159,6 @@ class TestViewingGeometryFailures:
                 "curryer.correction.verification.load_image_grid", return_value=grid if gcp_grid is None else gcp_grid
             ),
             patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
-            patch(
-                "curryer.correction.verification._get_spice_boresight_and_rotation",
-                side_effect=spice_side_effect,
-                return_value=(np.array([0.0, 0.0, 1.0]), np.eye(3)),
-            ),
         ):
             try:
                 return image_matching(
@@ -1060,26 +1172,43 @@ class TestViewingGeometryFailures:
             finally:
                 self.image_match_calls = mock_match.call_count
 
-    def test_image_matching_without_midframe_time_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="mid-frame time"):
-            self._call_image_matching(tmp_path, with_frame=False)
-        assert self.image_match_calls == 0
+    def test_image_matching_records_the_line_of_sight_to_the_gcp_column(self, tmp_path):
+        from curryer.compute.spatial import geodetic_to_ecef
 
-    def test_image_matching_spice_failure_propagates(self, tmp_path):
-        from curryer import spicierpy as sp
+        r = np.array([-1.5e6, -5.9e6, 3.0e6])
+        ds = self._call_image_matching(tmp_path, with_frame=False, r_iss_midframe=r)
+        grid, _ = self._image_matching_inputs(with_frame=False)
+        # The patched GCP is the grid itself, so its centre is the mid-frame pixel of the middle column.
+        p = geodetic_to_ecef(np.array([grid.lon[1, 1], grid.lat[1, 1], 0.0]), meters=True, degrees=True)
+        setup = _make_setup()
+        np.testing.assert_allclose(ds[setup.boresight_name].values[0], (p - r) / np.linalg.norm(p - r), atol=1e-12)
+        np.testing.assert_array_equal(ds[setup.transformation_matrix_name].values[0], np.eye(3))
 
-        SpiceyError = sp.utils.exceptions.SpiceyError
-        with pytest.raises(SpiceyError, match="no attitude coverage"):
-            self._call_image_matching(tmp_path, with_frame=True, spice_side_effect=SpiceyError("no attitude coverage"))
-        assert self.image_match_calls == 0
+    def test_image_matching_without_radiance_raises(self, tmp_path):
+        from unittest.mock import patch
+
+        from curryer.correction.verification import image_matching
+
+        _, geolocated = self._image_matching_inputs(with_frame=True)
+        with (
+            patch("curryer.correction.verification.integrated_image_match") as mock_match,
+            pytest.raises(ValueError, match="no 'radiance' or 'reflectance'"),
+        ):
+            image_matching(
+                geolocated_data=geolocated.drop_vars("radiance"),
+                gcp_reference_file=tmp_path / "gcp.nc",
+                setup=_make_setup(),
+                r_iss_midframe=np.array([-1.5e6, -5.9e6, 3.0e6]),
+            )
+        mock_match.assert_not_called()
 
     def test_image_matching_takes_the_track_azimuth_at_the_subimage_centre(self, tmp_path):
         from curryer.correction.grid_types import ImageGrid
 
         grid, _ = self._image_matching_inputs(with_frame=True)
-        # A chip centred 50 km east of the geolocated grid: off the grid, which needs no azimuth there.
-        far_chip = ImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon + 0.5)
-        ds = self._call_image_matching(tmp_path, with_frame=True, gcp_grid=far_chip)
+        # A chip centred on the grid's east column, off the subimage centre where the azimuth is taken.
+        east_chip = ImageGrid(data=grid.data, lat=grid.lat, lon=grid.lon + 0.01)
+        ds = self._call_image_matching(tmp_path, with_frame=True, gcp_grid=east_chip)
         assert self.image_match_calls == 1
         assert float(ds["track_azimuth_deg"].values[0]) == pytest.approx(180.0, abs=0.01)  # rows advance south
 
@@ -1089,17 +1218,8 @@ class TestViewingGeometryFailures:
         assert self.image_match_calls == 0
 
     def test_image_matching_accepts_detector_pixel_of_a_column_crop(self, tmp_path):
-        from curryer import spicierpy as sp
-
-        # The LOS check passes and the call reaches the SPICE query.
-        with pytest.raises(sp.utils.exceptions.SpiceyError, match="reached"):
-            self._call_image_matching(
-                tmp_path,
-                with_frame=True,
-                los_rows=8,
-                detector_pixel=[2, 3, 4],
-                spice_side_effect=sp.utils.exceptions.SpiceyError("reached"),
-            )
+        self._call_image_matching(tmp_path, with_frame=True, los_rows=8, detector_pixel=[2, 3, 4])
+        assert self.image_match_calls == 1
 
     def test_image_matching_rejects_invalid_detector_pixel(self, tmp_path):
         with pytest.raises(ValueError, match="'detector_pixel' in The geolocated grid must be 3 strictly increasing"):
@@ -1342,10 +1462,6 @@ class TestMatchingConfigAndCorrelation:
             patch("curryer.correction.verification.geolocated_to_image_grid", return_value=grid),
             patch("curryer.correction.verification.load_image_grid", return_value=grid),
             patch("curryer.correction.verification.integrated_image_match", return_value=match) as mock_match,
-            patch(
-                "curryer.correction.verification._get_spice_boresight_and_rotation",
-                return_value=(np.array([0.0, 0.0, 1.0]), np.eye(3)),
-            ),
         ):
             ds = image_matching(
                 geolocated_data=geolocated,
@@ -1596,8 +1712,18 @@ class TestChipImagesSaveAndReview:
         with pytest.raises(ValueError, match="gcp_index must hold integers"):
             read_review_decisions(tmp_path / "summary.csv", result)
 
-    def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
+    def test_read_review_decisions_reports_a_malformed_csv_as_such(self, tmp_path):
+        import pandas as pd
 
+        from curryer.correction import read_review_decisions
+
+        result = self._result(tmp_path)
+        (tmp_path / "summary.csv").write_text('gcp_index,science_key,gcp_key,review\n0,"unclosed,b,accept\n')
+        with pytest.raises(ValueError, match="is not a well-formed CSV") as raised:
+            read_review_decisions(tmp_path / "summary.csv", result)
+        assert isinstance(raised.value.__cause__, pd.errors.ParserError)
+
+    def test_read_review_decisions_rejects_a_repeated_gcp(self, tmp_path):
         from curryer.correction import read_review_decisions
 
         result = self._result(tmp_path)
@@ -1648,7 +1774,6 @@ class TestChipImagesSaveAndReview:
         ("column", "value", "match"), [("review", "maybe", "expected 'accept'"), (None, None, "column")]
     )
     def test_read_review_decisions_rejects_bad_input(self, tmp_path, column, value, match):
-
         from curryer.correction import read_review_decisions
 
         result = self._result(tmp_path)
@@ -1679,6 +1804,29 @@ class TestChipImagesSaveAndReview:
         assert reviewed.aggregate_stats.attrs["n_rejected"] == 1
         assert list(reviewed.aggregate_stats["review"].values) == ["", "accept", "reject"]
         assert [e.status for e in result.per_gcp_errors] == before  # input untouched
+
+    def test_gate_reason_survives_an_accept_then_reject_through_save_and_load(self, tmp_path):
+        from datetime import datetime
+
+        from curryer.correction import apply_review, load_verification, save_verification
+
+        result = self._result(tmp_path)
+        accepted = apply_review(result, {1: "accept"})
+        assert {e.gcp_index: e.rejection_reason for e in accepted.per_gcp_errors}[1] is None
+        save_verification(accepted, tmp_path / "accepted")
+        rejected = apply_review(load_verification(tmp_path / "accepted"), {1: "reject"})
+
+        assert {e.gcp_index: e.rejection_reason for e in rejected.per_gcp_errors}[1] == "correlation 0.1000 < 0.5"
+        assert list(rejected.aggregate_stats["gate_reason"].values) == ["", "correlation 0.1000 < 0.5", ""]
+        datetime.fromisoformat(rejected.aggregate_stats.attrs["review_time"])
+
+    def test_apply_review_keeps_chip_images(self, tmp_path):
+        from curryer.correction import apply_review
+
+        result = self._result(tmp_path)
+        chips = self._chips(result)
+        reviewed = apply_review(result.model_copy(update={"chip_images": chips}), {1: "accept"})
+        assert reviewed.chip_images is chips
 
     def test_weighted_percent_reported_alongside(self, tmp_path):
         from curryer.correction.error_stats import match_snr_weight

@@ -16,9 +16,18 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
   and raises when the GCP is outside the grid; a spacecraft position is required and validated
   (`psf.validate_spacecraft_ecef_m`: shape, finite, metres, above the ellipsoid). Nothing falls
   back to a nadir geometry: `default_altitude_m` is removed from `verify()`,
-  `_run_image_matching_for_pairs` and `resolve_spacecraft_ecef`, and the deprecated
-  `infer_spacecraft_state` raises on a missing position. `image_matching` raises on a SPICE
-  failure or a missing mid-frame time, and the per-pair loops no longer skip failed pairs.
+  `_run_image_matching_for_pairs`, `resolve_spacecraft_ecef` and the deprecated
+  `infer_spacecraft_state`, which raises on a missing position. `image_matching` (the
+  `geolocated_data` mode and the loop's built-in matching) records the same per-GCP line of sight
+  through `resolve_spacecraft_ecef` instead of the SPICE instrument boresight at mid-frame, so it
+  no longer needs `instrument_name`, a mid-frame time or loaded kernels; it raises when the GCP
+  centre is outside the geolocated grid, and the per-pair loops no longer skip failed pairs.
+- **Inputs image matching cannot use raise** -- `image_matching` raises on a geolocated dataset
+  with neither `radiance` nor `reflectance` (it matched an all-ones placeholder). The telemetry
+  position comes only from `DataConfig.position_columns`, documented as ECEF meters; the
+  column-name guessing (`sc_pos_*`, `pos_*`, any column containing "pos") is removed, since it
+  picked inertial positions in feet as ECEF meters. `im_search` raises on non-finite chip or
+  subimage latitude/longitude, which disabled its out-of-chip check.
 - **Pairing raises** -- `pair_files` and `pair_geolocated_dataset_with_gcp_files` raise
   `ValueError` naming a file that fails to load (previously skipped, which misaligned every
   later pair).
@@ -31,7 +40,11 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
   distances on the mean-radius sphere. `PairingResult.l1a_images` holds `L1AMetadata`, which adds
   the `footprint`; an optional `footprint_tolerance_km` sets its tolerance (the edge's offset and
   simplification). An untraceable footprint (folded or overlapping grids) falls back to the
-  buffered convex hull with a warning naming the image. An L1A whose geolocation has non-NaN fill,
+  buffered convex hull with a warning naming the image. A chip whose center is farther than one
+  pixel spacing from its nearest L1A pixel is not paired, whatever its margin, and is logged at
+  INFO: `resolve_spacecraft_ecef` rejects it, and the footprint reaches about 1.3 pixels past a
+  corner pixel, so such a chip ended the verification run. A negative `max_distance_m` therefore
+  cannot reach past about one pixel spacing. An L1A whose geolocation has non-NaN fill,
   out-of-range values or a single row, a GCP chip whose center pixel is non-finite or out of range
   (previously never paired), and a non-finite `max_distance_m` raise `ValueError` naming the image
   or chip.
@@ -112,8 +125,14 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
 - `CONSTANT_KERNEL` accepts `units="radians"`, as `OFFSET_KERNEL` does; with `units=None` its
   NetCDF `units` attribute is `radians` (it said `arcseconds`).
 - `KernelContext` and `ImageMatchingContext` are removed from `curryer.correction.config`.
-- The `results` dicts `loop()` returns carry the subimage's (frame, pixel) `geolocation`; a set
-  that is not compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- The `results` dicts `loop()` returns no longer carry a `geolocation` dataset (three float64
+  (frame, pixel) grids per parameter set and pair, unread by the package); a set that is not
+  compared has `aggregate_rms_error_m=None` and no `aggregate_error_stats`.
+- When matching raises for a parameter set (for example, one that moves the subimage so the
+  search samples outside the chip), `loop()` writes the results so far to its output NetCDF,
+  then raises, naming the set, the pair and the file.
+- `loop()` keeps one pair's DEM tiles in memory at a time; the elevation cache grew with every
+  tile a chip list touched (about 70 MB per GMTED tile).
 - `CorrectionResult` gains `n_usable_pairs` and `n_valid_sets`, and its recommendation and
   summary table state the pairs and sets the verdict rests on.
 
@@ -126,20 +145,26 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   column. `image_matching()` reads `detector_pixel` from a column-cropped `geolocated_data` the same
   way, so that dataset can be cropped inside the chip across track as well as along it.
 - Per-GCP `along_track_error_m` / `cross_track_error_m` (geolocated minus true; from
-  `track_azimuth_deg`, `psf.ground_track_azimuth_deg`), `off_nadir_angle_deg` and
-  `correlation_secondary`.
+  `track_azimuth_deg`, `psf.ground_track_azimuth_deg` at the observation's centre in every
+  matching path), `off_nadir_angle_deg` and `correlation_secondary`.
 - `verify(..., keep_images=True)` keeps each match's observed, reference and emulated images
-  (`image_match.chip_image_dataset`); file-pair modes only.
+  (`image_match.chip_image_dataset(subimage, gcp, result, search_config)`); file-pair modes only.
+  The reference images are cropped to the part of the chip the search could reach and stored as
+  float32 (17 MB instead of 63 MB for a 1400 x 1400 chip with an 8 km search reach).
 - `save_verification` / `load_verification` (`result.json`, `summary.csv`, `aggregate_stats.nc`,
   `chips/`), `read_review_decisions` and `apply_review` re-score after a reviewer edits the
   `review` column of `summary.csv`. `read_review_decisions(summary_csv, result)` refuses a CSV
-  whose GCP indices and keys do not match `result`, and `load_verification` refuses a `chips/`
-  directory that does not hold one chip per GCP with matching keys.
+  whose GCP indices and keys do not match `result` (or a malformed CSV, as such), and
+  `load_verification` refuses a `chips/` directory that does not hold one chip per GCP with
+  matching keys. `apply_review` keeps the gates' reasons in a `gate_reason` variable, so a GCP
+  rejected again after an accept gets its gate reason back, and records `review_time`.
 - Match signal-to-noise weights `match_snr_weight` (rho^2 / (1 - rho^2), rho capped at 0.99),
   `weighted_statistics`, `weighted_percent_below` and
   `VerificationResult.weighted_percent_within_threshold`, reported alongside the unweighted
-  statistics and never deciding `passed`. `error_stats.STATISTIC_ATTRS` and `without_statistics`
-  name and clear the statistic attributes.
+  statistics and never deciding `passed`. An accepted measurement with a non-finite
+  correlation raises, gates set or not. `error_stats.STATISTIC_ATTRS` and `without_statistics`
+  name and clear the statistic attributes; `error_stats.correlation_name` finds the correlation
+  variable (`correlation`, `ccv` or `im_ccv`).
 
 ### Fixes
 
@@ -184,6 +209,9 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   image-match cases, which reproduced the clipped and shifted PSF, are removed; image matching
   is tested on a synthetic scene simulated independently of the convolution
   (`tests/integration/test_image_match_synthetic.py`).
+- `im_search` builds the chip interpolant once per search and evaluates a whole row of shifts per
+  call, with identical results: about 8 times faster (2.3 s to 0.3 s per match with the default
+  search, 0.30 s to 0.04 s with an 8 km, 31-point grid).
 
 ### Documentation
 

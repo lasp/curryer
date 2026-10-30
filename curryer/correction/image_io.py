@@ -962,12 +962,10 @@ def select_los_rows(
 def infer_spacecraft_state(
     grid: ImageGrid,
     r_spacecraft_m: np.ndarray | None,
-    default_altitude_m: float = 400_000.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Deprecated — use ``resolve_spacecraft_ecef`` from ``curryer.correction.psf`` instead.
 
-    *default_altitude_m* is accepted for signature compatibility and ignored:
-    a missing *r_spacecraft_m* raises :class:`ValueError` instead of being
+    A missing *r_spacecraft_m* raises :class:`ValueError`; nothing is
     approximated as a nadir position.  The boresight targets the grid's
     central pixel.
     """
@@ -1007,8 +1005,9 @@ def geolocated_to_image_grid(geo_dataset: xr.Dataset) -> ImageGrid:
     Notes
     -----
     Altitude/height defaults to an all-zeros array when absent.  The placeholder
-    ``data`` array (all ones) is used only for geometric operations where actual
-    radiance values are not yet required.
+    ``data`` array (all ones) serves geometric uses such as pairing;
+    :func:`~curryer.correction.verification.image_matching` raises on a dataset
+    without ``radiance`` or ``reflectance`` instead of matching it.
     """
 
     # Accept both "latitude"/"longitude" (geolocation output) and "lat"/"lon" (observation files)

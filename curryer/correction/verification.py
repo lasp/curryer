@@ -58,13 +58,12 @@ import pandas as pd
 import xarray as xr
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from curryer import spicetime
-from curryer import spicierpy as sp
 from curryer.compute import constants
 from curryer.correction.config import GeolocationSetup, RequirementsConfig
 from curryer.correction.error_stats import (
     ErrorStatsConfig,
     ErrorStatsProcessor,
+    correlation_name,
     quality_weights,
     weighted_percent_below,
     without_statistics,
@@ -79,7 +78,7 @@ from curryer.correction.image_io import (
 )
 from curryer.correction.image_match import IntegratedImageMatchResult, integrated_image_match
 from curryer.correction.io import resolve_path
-from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef, validate_spacecraft_ecef_m
+from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
 
 logger = logging.getLogger(__name__)
 
@@ -312,10 +311,10 @@ def _run_error_stats(
     """
     error_config = ErrorStatsConfig.from_setup(setup)
     processor = ErrorStatsProcessor(config=error_config)
-    return _with_statistics(processor, processor.compute_nadir_equivalent_errors(aggregated))
+    return _with_statistics(processor.compute_nadir_equivalent_errors(aggregated))
 
 
-def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset) -> xr.Dataset:
+def _with_statistics(per_measurement: xr.Dataset) -> xr.Dataset:
     """Add statistics over the accepted measurements, or none when every one is rejected."""
     if not per_measurement["accepted"].values.any():
         logger.warning(
@@ -323,7 +322,7 @@ def _with_statistics(processor: ErrorStatsProcessor, per_measurement: xr.Dataset
             per_measurement.sizes["measurement"],
         )
         return per_measurement
-    return processor.add_statistics(per_measurement)
+    return ErrorStatsProcessor.add_statistics(per_measurement)
 
 
 def _check_threshold(
@@ -452,7 +451,7 @@ def _build_per_gcp_errors(
         value = float(aggregate_stats[name].values[i])
         return value if np.isfinite(value) else None
 
-    corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in aggregate_stats.data_vars), "")
+    corr_name = correlation_name(aggregate_stats) or ""
     labels = aggregate_stats["measurement"].values
 
     errors: list[GCPError] = []
@@ -541,6 +540,7 @@ def _format_summary_table(
     percent_within: float | None,
     passed: bool,
     weighted_percent: float | None = None,
+    effective_measurements: float | None = None,
 ) -> str:
     """Generate a human-readable summary table.
 
@@ -571,8 +571,11 @@ def _format_summary_table(
     passed : bool
         Overall pass/fail result.
     weighted_percent : float or None, optional
-        Quality-weighted percentage within the threshold, shown on its own
-        line when given.
+        Quality-weighted percentage within the threshold, shown with
+        *effective_measurements* when given.
+    effective_measurements : float or None, optional
+        ``effective_measurements`` of the weighted statistics; required with
+        *weighted_percent*.
 
     Returns
     -------
@@ -601,9 +604,7 @@ def _format_summary_table(
     n_rejected = sum(err.status == "rejected" for err in per_gcp_errors)
     counts_text = f" {len(per_gcp_errors) - n_rejected} accepted, {n_rejected} rejected"
     if weighted_percent is not None:
-        weights = [err.quality_weight for err in per_gcp_errors if err.status != "rejected"]
-        effective = sum(weights) ** 2 / sum(w**2 for w in weights)
-        counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective:.1f})"
+        counts_text += f"; weighted {weighted_percent:.1f}% within (effective n = {effective_measurements:.1f})"
 
     # inner_width must accommodate columns, title, AND footer; the Status column takes any extra width
     inner_width = max(col_inner, len(title) + 2, len(footer_text), len(counts_text))
@@ -691,41 +692,6 @@ def _log_pairing_summary(pairs: list[tuple[Path, Path]], unpaired: list[Path] | 
 # ============================================================================
 
 
-def _get_spice_boresight_and_rotation(
-    instrument_name: str,
-    et_midframe: float,
-    ref_frame: str = "ITRF93",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the instrument boresight and HS→CTRS rotation matrix from SPICE.
-
-    Parameters
-    ----------
-    instrument_name : str
-        SPICE instrument name, as the instrument kernel defines it.
-    et_midframe : float
-        Ephemeris time (ET seconds past J2000) at the mid-frame epoch.
-    ref_frame : str, optional
-        Target reference frame.  Default ``"ITRF93"`` (ECEF).
-
-    Returns
-    -------
-    boresight : np.ndarray, shape (3,)
-        Unit boresight vector in instrument (HS) frame.
-    t_hs2ctrs : np.ndarray, shape (3, 3)
-        Rotation matrix ``v_ctrs = R @ v_hs``.
-
-    Raises
-    ------
-    SpiceyError
-        If required kernels are not loaded or do not cover *et_midframe*.
-    """
-    boresight = sp.ext.instrument_boresight(instrument_name, norm=True)
-    instr = sp.obj.Instrument(instrument_name)
-    _, hs_frame_name, _, _, _ = sp.getfov(instr.id, 1, 80, 80)
-    t_hs2ctrs = np.asarray(sp.pxform(hs_frame_name, ref_frame, et_midframe))
-    return boresight, t_hs2ctrs
-
-
 def _extract_spacecraft_position_midframe(
     telemetry: pd.DataFrame,
     setup: GeolocationSetup | None = None,
@@ -736,58 +702,37 @@ def _extract_spacecraft_position_midframe(
     ----------
     telemetry : pd.DataFrame
         Telemetry DataFrame with spacecraft position columns.
-    setup : GeolocationSetup or None, optional
-        If provided and ``setup.data_config.position_columns`` is set, those
-        column names are used directly. Otherwise falls back to
-        pattern-guessing (with a deprecation warning).
+    setup : GeolocationSetup or None
+        Setup whose ``data_config.position_columns`` names the telemetry
+        columns holding the spacecraft's ECEF position in meters.
 
     Returns
     -------
     np.ndarray
-        Shape ``(3,)`` — ``[x, y, z]`` position in meters (J2000 frame).
+        Shape ``(3,)`` — ``[x, y, z]`` ECEF position in meters, from the middle
+        telemetry row.
 
     Raises
     ------
     ValueError
-        If ``position_columns`` has wrong length, or specified columns are
-        not found, or pattern-guessing fails.
+        If ``setup.data_config.position_columns`` is not set (column names do
+        not identify a position's frame or units, so none are guessed), does
+        not have three entries, or names columns not in *telemetry*.
     """
-    mid_idx = len(telemetry) // 2
-
-    if setup is not None and setup.data_config is not None and setup.data_config.position_columns is not None:
-        cols = setup.data_config.position_columns
-        if len(cols) != 3:
-            raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
-        missing = [c for c in cols if c not in telemetry.columns]
-        if missing:
-            raise ValueError(
-                f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}"
-            )
-        position = telemetry[cols].iloc[mid_idx].values.astype(np.float64)
-        logger.debug("Extracted spacecraft position from setup.data_config.position_columns %s: %s", cols, position)
-        return position
-
-    # Legacy fallback: pattern guessing
-    logger.warning(
-        "position_columns not configured — falling back to column name pattern-guessing. "
-        "Set setup.data_config.position_columns = ['col_x', 'col_y', 'col_z'] to silence this warning."
-    )
-
-    for cols in [
-        ["sc_pos_x", "sc_pos_y", "sc_pos_z"],
-        ["position_x", "position_y", "position_z"],
-        ["r_x", "r_y", "r_z"],
-        ["pos_x", "pos_y", "pos_z"],
-    ]:
-        if all(c in telemetry.columns for c in cols):
-            return telemetry[cols].iloc[mid_idx].values.astype(np.float64)
-
-    pos_cols = [c for c in telemetry.columns if "pos" in c.lower() or c.startswith("r_")]
-    if len(pos_cols) >= 3:
-        logger.warning("Using first 3 position-like columns: %s", pos_cols[:3])
-        return telemetry[pos_cols[:3]].iloc[mid_idx].values.astype(np.float64)
-
-    raise ValueError(f"Cannot find position columns in telemetry. Available columns: {telemetry.columns.tolist()}")
+    if setup is None or setup.data_config is None or setup.data_config.position_columns is None:
+        raise ValueError(
+            "Set setup.data_config.position_columns to the telemetry columns holding the spacecraft's ECEF "
+            f"position in meters, or pass r_iss_midframe. Available columns: {telemetry.columns.tolist()}"
+        )
+    cols = setup.data_config.position_columns
+    if len(cols) != 3:
+        raise ValueError(f"position_columns must have exactly 3 entries, got {len(cols)}: {cols}")
+    missing = [c for c in cols if c not in telemetry.columns]
+    if missing:
+        raise ValueError(f"position_columns {missing} not found in telemetry. Available: {telemetry.columns.tolist()}")
+    position = telemetry[cols].iloc[len(telemetry) // 2].values.astype(np.float64)
+    logger.debug("Extracted spacecraft position from setup.data_config.position_columns %s: %s", cols, position)
+    return position
 
 
 def image_matching(
@@ -812,16 +757,20 @@ def image_matching(
     Parameters
     ----------
     geolocated_data : xr.Dataset
-        Geolocation output with ``latitude``, ``longitude``, and a ``frame``
-        coordinate (GPS seconds = ``ugps_times / 1e6``).  A column crop of the
-        detector carries ``detector_pixel``, the LOS-table row of each column
-        (as for :func:`~curryer.correction.image_io.observation_los_vectors`);
-        without it the columns are the table's rows in order.
+        Geolocation output with ``latitude``, ``longitude`` and ``radiance``
+        (or ``reflectance``) on (frame, pixel), rows in frame order with the
+        middle row at the spacecraft position's time, and optionally
+        ``altitude``/``height`` in meters.  It must already be cropped to lie
+        inside the GCP chip (see Raises).  A column crop of the detector
+        carries ``detector_pixel``, the LOS-table row of each column (as for
+        :func:`~curryer.correction.image_io.observation_los_vectors`); without
+        it the columns are the table's rows in order.
     gcp_reference_file : Path
         Path to GCP reference image (``.mat`` or ``.nc``).
     telemetry : pd.DataFrame or None, optional
-        Telemetry DataFrame with spacecraft state.  Required when
-        *r_iss_midframe* is not supplied.
+        Telemetry DataFrame with the spacecraft's ECEF position in meters in
+        the columns ``setup.data_config.position_columns`` names.  Required
+        when *r_iss_midframe* is not supplied.
     params_info : list or None, optional
         Current parameter values for error tracking.  Defaults to ``[]``.
     setup : GeolocationSetup or None, optional
@@ -848,17 +797,16 @@ def image_matching(
     Raises
     ------
     ValueError
-        If neither *telemetry* nor *r_iss_midframe* is supplied; if the
-        spacecraft position fails
-        :func:`~curryer.correction.psf.validate_spacecraft_ecef_m`; if
-        calibration files are missing; if the mid-frame time cannot be
-        determined (no ``frame`` coordinate and no ``setup.geo.time_field``
-        telemetry column); if ``setup.geo.instrument_name`` is not set; if
-        the columns do not map onto the LOS table (``detector_pixel`` invalid,
-        or absent and the table not one row per column); or if the
-        ground-track azimuth at the grid centre is undefined (fewer than two
-        rows, or non-finite pixels there).  All of these are checked before the
-        image match runs.  The match itself
+        If *geolocated_data* has neither ``radiance`` nor ``reflectance``; if
+        neither *telemetry* nor *r_iss_midframe* is supplied, or the telemetry
+        position columns are not configured; if calibration files are
+        missing; if the columns do not map onto the LOS table
+        (``detector_pixel`` invalid, or absent and the table not one row per
+        column); or if :func:`~curryer.correction.psf.resolve_spacecraft_ecef`
+        rejects the spacecraft position or finds the GCP centre outside the
+        geolocated grid; or if the ground-track azimuth at the grid centre is
+        undefined (fewer than two rows, or non-finite pixels there).  All of these are checked before the image match
+        runs.  The match itself
         raises if a search shift samples the geolocated grid outside the
         searchable part of the GCP chip, the chip less half a PSF kernel at
         each edge (:func:`~curryer.correction.search.im_search`): the whole
@@ -866,19 +814,13 @@ def image_matching(
         in both frames and columns (with ``detector_pixel``), by the first
         search grid's half-width plus the expected error
         (``setup.search.max_shift_km()`` is a margin that always suffices).
-    spiceypy.utils.exceptions.SpiceyError
-        If the SPICE boresight or HS→CTRS rotation query fails (e.g. kernels
-        not furnished or no coverage at the mid-frame time).
 
     Notes
     -----
-    The boresight and rotation recorded for error statistics are the SPICE
-    instrument boresight at the dataset's mid-frame, and the spacecraft
-    position is likewise a single mid-frame value.  Every GCP matched against
-    the same dataset therefore receives the mid-frame off-nadir angle, wherever
-    in the swath it was imaged.  For strongly off-nadir data this differs from
-    the per-GCP line of sight used by the file-pair path
-    (:func:`~curryer.correction.psf.resolve_spacecraft_ecef`).
+    The boresight recorded for error statistics is the ECEF line of sight from
+    the mid-frame spacecraft position to the mid-frame pixel in the GCP's
+    column (:func:`~curryer.correction.psf.resolve_spacecraft_ecef`), as in the
+    file-pair path, with an identity rotation.
     """
     if params_info is None:
         params_info = []
@@ -886,7 +828,11 @@ def image_matching(
     logger.info("Image Matching: correlation with %s", Path(gcp_reference_file).name)
     start_time = time.time()
 
-    # Convert geolocation output to ImageGrid
+    if "radiance" not in geolocated_data and "reflectance" not in geolocated_data:
+        raise ValueError(
+            "geolocated_data has no 'radiance' or 'reflectance' variable to match against the GCP chip; "
+            f"variables: {list(geolocated_data.data_vars)}."
+        )
     subimage = geolocated_to_image_grid(geolocated_data)
     logger.info("  Subimage shape: %s", subimage.data.shape)
 
@@ -921,34 +867,12 @@ def image_matching(
                 "'r_iss_midframe' (standalone / verification use)."
             )
         r_iss_midframe = _extract_spacecraft_position_midframe(telemetry, setup=setup)
-    r_iss_midframe = validate_spacecraft_ecef_m(r_iss_midframe)
     logger.info("  Spacecraft position: %s", r_iss_midframe)
 
-    # Derive mid-frame epoch from geolocated_data["frame"] (GPS seconds = ugps/1e6)
-    if "frame" in geolocated_data.coords:
-        frame_vals = geolocated_data.coords["frame"].values
-        ugps_midframe = int(float(frame_vals[len(frame_vals) // 2]) * 1e6)
-    else:
-        _time_field = getattr(setup.geo, "time_field", None) if setup and setup.geo else None
-        if (
-            _time_field
-            and telemetry is not None
-            and _time_field in (telemetry.columns if telemetry is not None else [])
-        ):
-            ugps_midframe = int(telemetry[_time_field].iloc[len(telemetry) // 2])
-            logger.warning("geolocated_data has no 'frame' coord; using telemetry column '%s'.", _time_field)
-        else:
-            raise ValueError(
-                "Cannot determine the mid-frame time for the SPICE boresight query: geolocated_data has no "
-                "'frame' coordinate and no telemetry column named by setup.geo.time_field was supplied."
-            )
-    et_midframe = float(spicetime.adapt(ugps_midframe, from_="ugps", to="et"))
-
-    instrument_name = setup.geo.instrument_name if setup and setup.geo else None
-    if instrument_name is None:
-        raise ValueError("setup.geo.instrument_name is required for the SPICE boresight query.")
-    boresight, t_matrix = _get_spice_boresight_and_rotation(instrument_name, et_midframe)
-    logger.info("  Boresight from SPICE IK (HS frame): %s", boresight)
+    r_iss_midframe, boresight, t_matrix = resolve_spacecraft_ecef(
+        subimage, r_iss_midframe, gcp_center_lat, gcp_center_lon
+    )
+    logger.info("  Boresight (ECEF) to the mid-frame pixel in the GCP's column: %s", boresight)
 
     mid_i, mid_j = subimage.mid_indices
     track_azimuth = ground_track_azimuth_deg(
@@ -1079,7 +1003,7 @@ def _aggregate_image_matching_results(
             all_gcp_lons.extend(result["gcp_lon_deg"].values)
         if "gcp_alt" in result:
             all_gcp_alts.extend(result["gcp_alt"].values)
-        corr_name = next((name for name in ("correlation", "ccv", "im_ccv") if name in result), None)
+        corr_name = correlation_name(result)
         if corr_name is not None:
             all_correlations.extend(result[corr_name].values)
         if "correlation_secondary" in result:
@@ -1158,8 +1082,11 @@ def match_geolocated_to_gcp_files(
     Parameters
     ----------
     geolocated_data : xr.Dataset
-        Geolocated observation dataset with ``latitude``, ``longitude``, and
-        a ``frame`` coordinate (GPS seconds).
+        Geolocated observation dataset as :func:`image_matching` takes it:
+        ``latitude``, ``longitude`` and ``radiance`` (or ``reflectance``),
+        already cropped to lie inside every GCP chip in *gcp_files*, with the
+        spacecraft's ECEF position in meters in the variable
+        ``setup.spacecraft_position_name`` (its middle row when per frame).
     gcp_files : list of Path
         GCP reference files to match against.
     setup : GeolocationSetup
@@ -1176,7 +1103,7 @@ def match_geolocated_to_gcp_files(
 
     Raises
     ------
-    ValueError, spiceypy.utils.exceptions.SpiceyError
+    ValueError
         Propagated from :func:`image_matching` for the first GCP file that
         fails; no file is skipped.
     """
@@ -1244,8 +1171,9 @@ def _run_image_matching_for_pairs(
     -------
     datasets : list[xr.Dataset]
         One dataset per pair, in *pairs* order, with ``track_azimuth_deg``
-        (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the GCP
-        centre) alongside the errors, correlation and geometry.
+        (:func:`~curryer.correction.psf.ground_track_azimuth_deg` at the
+        observation grid's centre, where the search measures the error, as in
+        :func:`image_matching`) alongside the errors, correlation and geometry.
     chip_images : list[xr.Dataset]
         One image dataset per pair, in *pairs* order, with ``science_key``
         and ``gcp_key`` attributes; empty unless *keep_images*.
@@ -1289,7 +1217,7 @@ def _run_image_matching_for_pairs(
         )
         datasets.append(ds)
         if keep_images:
-            chip = chip_image_dataset(obs_grid, gcp_grid, result)
+            chip = chip_image_dataset(obs_grid, gcp_grid, result, setup.search)
             chip.attrs.update({"science_key": Path(obs_path).name, "gcp_key": Path(gcp_path).name})
             chip_images.append(chip)
         logger.info(
@@ -1321,7 +1249,10 @@ def _match_observation(
     gcp_lon = float(gcp.lon[mid_i, mid_j])
 
     r_iss_m, boresight, t_matrix = resolve_spacecraft_ecef(observation, r_spacecraft_m, gcp_lat, gcp_lon)
-    track_azimuth = ground_track_azimuth_deg(observation, gcp_lat, gcp_lon)
+    obs_i, obs_j = observation.mid_indices
+    track_azimuth = ground_track_azimuth_deg(
+        observation, float(observation.lat[obs_i, obs_j]), float(observation.lon[obs_i, obs_j])
+    )
 
     result = integrated_image_match(
         subimage=observation,
@@ -1496,11 +1427,9 @@ def verify(
     geolocated_data : xr.Dataset or None
         Already-geolocated data.  Matched either via ``setup.image_matching_func``
         (custom override) or, when *gcp_directory*, *los_file*, and *psf_file* are
-        supplied, via built-in spatial pairing + image matching.  The built-in
-        path queries SPICE for the instrument boresight, so the caller must have
-        the instrument, frame, attitude and leapsecond kernels loaded and
-        covering the dataset's mid-frame time; see :func:`image_matching` for
-        the mid-frame geometry this records.
+        supplied, via built-in spatial pairing + image matching; see
+        :func:`match_geolocated_to_gcp_files` for the variables and cropping
+        the built-in path needs.
     work_dir : Path or None, optional
         Working directory for outputs.  Created if absent.
     keep_images : bool, optional
@@ -1533,17 +1462,17 @@ def verify(
         observation grid; when a search shift samples an observation outside
         the searchable part of its GCP chip (crop observations inside their
         chips by the first search grid's half-width plus the expected error;
-        ``setup.search.max_shift_km()`` always suffices; the *geolocated_data*
-        mode matches the whole dataset); when image matching produces no
-        results; or when *keep_images* is set with *image_matching_results* or
-        *geolocated_data*.
+        ``setup.search.max_shift_km()`` always suffices; a *geolocated_data*
+        dataset must already be cropped so); when image matching produces no
+        results; when a measurement the gates accept has a non-finite
+        correlation, whose quality weight is undefined, with or without
+        gates set; or when *keep_images* is set with *image_matching_results*
+        or *geolocated_data*.
     FileNotFoundError
         If *los_file* or *psf_file* does not exist, if *gcp_directory* does
         not exist in *observation_paths* mode, or if a file listed in
         *gcp_pairs* does not exist. Missing observation or GCP files found
         during pairing raise ``ValueError`` as above.
-    spiceypy.utils.exceptions.SpiceyError
-        In the *geolocated_data* mode, if the SPICE boresight query fails.
     """
     # Handle optional work_dir with sensible default
     if work_dir is None:
@@ -1748,7 +1677,14 @@ def verify(
     # Step 5: Warnings + summary table
     # ------------------------------------------------------------------
     warnings = _generate_warnings(passed, percent_within, requirements)
-    summary_table = _format_summary_table(per_gcp_errors, requirements, percent_within, passed, weighted_percent)
+    summary_table = _format_summary_table(
+        per_gcp_errors,
+        requirements,
+        percent_within,
+        passed,
+        weighted_percent,
+        aggregate_stats.attrs.get("effective_measurements"),
+    )
 
     if warnings:
         for w in warnings:
@@ -1998,7 +1934,8 @@ def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict
     Raises
     ------
     ValueError
-        If the CSV lacks a column, a ``gcp_index`` is not an integer, appears
+        If the CSV is malformed (the parser's error chained), lacks a column,
+        a ``gcp_index`` is not an integer, appears
         twice or is not in *result*, a row's ``science_key`` / ``gcp_key`` differ from *result*'s
         for its ``gcp_index``, or a ``review`` cell holds anything but
         ``accept``, ``reject`` or nothing.
@@ -2009,6 +1946,8 @@ def read_review_decisions(summary_csv: Path, result: VerificationResult) -> dict
             dtype={"gcp_index": "int64", "review": str, "science_key": str, "gcp_key": str},
             keep_default_na=False,
         )
+    except pd.errors.ParserError as err:
+        raise ValueError(f"{summary_csv} is not a well-formed CSV: {err}") from err
     except ValueError as err:
         raise ValueError(f"{summary_csv}: gcp_index must hold integers.") from err
     missing = {"gcp_index", "science_key", "gcp_key", "review"} - set(table.columns)
@@ -2044,9 +1983,11 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     """Apply reviewer decisions and recompute the statistics without re-matching.
 
     ``"accept"`` brings a GCP into the statistics (status ``pass`` / ``fail``
-    by its error); ``"reject"`` takes it out (status ``rejected``, reason
-    ``"rejected in review"`` unless the match-quality gates already rejected
-    it).  GCPs without a decision keep their current state.
+    by its error); ``"reject"`` takes it out (status ``rejected``, with the
+    match-quality gates' reason when they rejected it, else ``"rejected in
+    review"``).  The gates' reasons are kept in a ``gate_reason`` variable,
+    so a later review can restore them.  GCPs without a decision keep their
+    current state.
 
     Parameters
     ----------
@@ -2058,8 +1999,9 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
     Returns
     -------
     VerificationResult
-        A new result: ``aggregate_stats`` gains a ``review`` variable, its
-        ``quality_weight`` follows the new acceptance, and its statistics
+        A new result: ``aggregate_stats`` gains ``review`` and
+        ``gate_reason`` variables and a ``review_time`` attribute (UTC, ISO
+        8601), its ``quality_weight`` follows the new acceptance, and its statistics
         cover the accepted GCPs (none when every one is rejected);
         ``per_gcp_errors``, ``passed``, ``percent_within_threshold``,
         ``weighted_percent_within_threshold``, ``warnings`` and
@@ -2084,26 +2026,28 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
 
     accepted = stats["accepted"].values.copy()
     reasons = stats["rejection_reason"].values.astype(object)
+    gate_reasons = stats["gate_reason"].values.astype(object) if "gate_reason" in stats.data_vars else reasons.copy()
     reviews = stats["review"].values.astype(object) if "review" in stats.data_vars else np.full(len(labels), "", object)
     for i, label in enumerate(labels):
         decision = decisions.get(label)
         if decision == "accept":
             accepted[i], reasons[i] = True, ""
-        elif decision == "reject" and accepted[i]:
-            accepted[i], reasons[i] = False, "rejected in review"
+        elif decision == "reject":
+            accepted[i], reasons[i] = False, gate_reasons[i] or "rejected in review"
         if decision is not None:
             reviews[i] = decision
     stats["accepted"] = (["measurement"], accepted)
     stats["rejection_reason"] = (["measurement"], reasons.astype(str))
+    stats["gate_reason"] = (["measurement"], gate_reasons.astype(str))
     stats["review"] = (["measurement"], reviews.astype(str))
+    stats.attrs["review_time"] = datetime.now(tz=timezone.utc).isoformat()
     if "quality_weight" in stats.data_vars:
-        corr_name = next(name for name in ("correlation", "ccv", "im_ccv") if name in stats.data_vars)
+        corr_name = correlation_name(stats)
         stats["quality_weight"] = quality_weights(stats[corr_name].values, accepted)
 
-    processor = ErrorStatsProcessor(config=ErrorStatsConfig())
     stats = without_statistics(stats)
     stats.attrs.update(n_accepted=int(accepted.sum()), n_rejected=int((~accepted).sum()))
-    stats = _with_statistics(processor, stats)
+    stats = _with_statistics(stats)
 
     requirements = result.requirements
     passed, percent_within = _check_threshold(stats, requirements)
@@ -2121,7 +2065,12 @@ def apply_review(result: VerificationResult, decisions: dict[int, Literal["accep
             "per_gcp_errors": per_gcp_errors,
             "warnings": _generate_warnings(passed, percent_within, requirements),
             "summary_table": _format_summary_table(
-                per_gcp_errors, requirements, percent_within, passed, weighted_percent
+                per_gcp_errors,
+                requirements,
+                percent_within,
+                passed,
+                weighted_percent,
+                stats.attrs.get("effective_measurements"),
             ),
         }
     )

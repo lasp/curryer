@@ -121,16 +121,15 @@ class DataConfig(BaseModel):
         ``"csv"`` uses :func:`pandas.read_csv`; ``"netcdf"`` converts via
         :func:`xarray.open_dataset`; ``"hdf5"`` uses :func:`pandas.read_hdf`.
     position_columns
-        Explicit column name mappings for telemetry spacecraft-position data,
-        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  ``None`` means use
-        mission defaults from the geolocation configuration.
+        Telemetry columns holding the spacecraft's ECEF position in meters,
+        e.g. ``["sc_pos_x", "sc_pos_y", "sc_pos_z"]``.  Required when
+        :func:`~curryer.correction.verification.image_matching` reads the
+        position from telemetry; ``None`` otherwise.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     file_format: Literal["csv", "netcdf", "hdf5"] = "csv"
-    # Explicit column name mappings for telemetry spacecraft-position data.
-    # e.g. ["sc_pos_x", "sc_pos_y", "sc_pos_z"]. None means use mission defaults from the geolocation configuration.
     position_columns: list[str] | None = None
 
 

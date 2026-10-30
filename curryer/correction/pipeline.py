@@ -367,6 +367,10 @@ def _geolocate_observation(
         Elevation source, kilometers and radians.
     pad_degrees : float, optional
         Padding of the DEM region around the ellipsoid intersections, degrees.
+        Terrain correction moves a point by up to its height times the tangent
+        of the view zenith angle, under 55 km for heights below 9 km and view
+        zeniths below 80 degrees; one degree covers that at latitudes up to
+        60 degrees, where a degree of longitude is 55 km.
 
     Returns
     -------
@@ -511,9 +515,10 @@ def loop(
     ValueError
         If the calibration is incomplete (:func:`_require_image_matching_inputs`),
         an observation fails :func:`load_loop_observation`, a subimage pixel
-        cannot be geolocated (:func:`_geolocate_observation`), a parameter set
-        moves the subimage so the correlation search samples outside the chip,
-        no parameter set can be compared (:func:`_usable_pairs_and_valid_sets`),
+        cannot be geolocated (:func:`_geolocate_observation`), matching raises
+        for a parameter set (for example, the set moves the subimage so the
+        correlation search samples outside the chip; the results so far are
+        written to the output NetCDF first), no parameter set can be compared (:func:`_usable_pairs_and_valid_sets`),
         or a kernel parameter's template does not read radians
         (:func:`~curryer.correction.kernel_ops._require_radian_kernel_templates`).
     KeyError
@@ -606,7 +611,6 @@ def loop(
     # Load calibration data once (LOS vectors and optical PSF are static instrument calibration)
     calibration_data = _load_calibration_data(setup)
     _require_image_matching_inputs(setup, calibration_data)
-    elev = elevation.Elevation(setup.geo.dem_data_dir, meters=False, degrees=False)
 
     # Create error stats processors once (setup is constant; processors are stateless)
     error_processor = _per_pair_error_processor(setup)
@@ -629,6 +633,9 @@ def loop(
         gcp = load_image_grid(gcp_key, mat_key="GCP")
         logger.info(f"  GCP file: {gcp_key}, observation {observation.radiance.shape}")
 
+        # One Elevation per pair, so its tile cache holds one pair's DEM tiles, not every tile the chip list touches.
+        elev = elevation.Elevation(setup.geo.dem_data_dir, meters=False, degrees=False)
+
         # Create dynamic kernels once (these don't change with parameters)
         dynamic_kernels = _create_dynamic_kernels(setup, work_dir, tlm_dataset, creator)
 
@@ -644,22 +651,22 @@ def loop(
             with sp.ext.load_kernel([mkrn.sds_kernels, mkrn.mission_kernels, dynamic_kernels, param_kernels]):
                 grid, r_spacecraft_m = _geolocate_observation(setup.geo.instrument_name, frame_ugps, observation, elev)
 
-            image_matching_output = matching_func(
-                grid, gcp, r_spacecraft_m, observation.los_vectors, calibration_data.optical_psfs, setup
-            )
+            try:
+                image_matching_output = matching_func(
+                    grid, gcp, r_spacecraft_m, observation.los_vectors, calibration_data.optical_psfs, setup
+                )
+            except ValueError as err:
+                _save_netcdf_results(netcdf_data, output_file, setup, sweep, netcdf_config)
+                raise ValueError(
+                    f"Matching failed for parameter set {param_idx + 1}/{n_param_sets} on GCP pair "
+                    f"{pair_idx + 1}/{n_gcp_pairs} ({sci_key} to {gcp_key}); the results so far are in "
+                    f"{output_file}: {err}"
+                ) from err
             validate_image_matching_output(image_matching_output)
             image_matching_output.attrs["gcp_pair_index"] = pair_idx
             image_matching_output.attrs["gcp_pair_id"] = f"{sci_key}_pair_{pair_idx}"
             netcdf_data["accepted"][param_idx, pair_idx] = not any(
                 gate_processor.rejection_reasons(image_matching_output)
-            )
-            geo_dataset = xr.Dataset(
-                {
-                    "latitude": (["frame", "pixel"], grid.lat),
-                    "longitude": (["frame", "pixel"], grid.lon),
-                    "altitude": (["frame", "pixel"], grid.h),
-                },
-                coords={"ugps": ("frame", frame_ugps)},
             )
 
             # Compute nadir-equivalent errors for this GCP pair.
@@ -709,7 +716,6 @@ def loop(
                 "pair_index": pair_idx,
                 "param_index": param_idx,
                 "parameters": param_values,
-                "geolocation": geo_dataset,
                 "gcp_pairs": [(sci_key, gcp_key)],
                 "image_matching": image_matching_output,
                 "error_stats": individual_stats,
