@@ -14,7 +14,6 @@ Covers:
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -354,9 +353,16 @@ def loop_run(root_dir, tmp_path_factory):
 
     work = tmp_path_factory.mktemp("loop")
     setup, sweep, output, sets = build_loop_scene(root_dir, work, time_offset_s=0.2)
-    setup.observation_matching_func = _reject_first_parameter_set(len(load_param_sets(sweep)))
+    matcher = _reject_first_parameter_set(len(load_param_sets(sweep)))
+    grids = []  # the re-geolocated grid of each call, in call order (one pair: parameter-set order)
+
+    def recording_matcher(grid, *args):
+        grids.append(grid)
+        return matcher(grid, *args)
+
+    setup.observation_matching_func = recording_matcher
     results, netcdf_data = loop(setup, sweep, work, sets, output=output)
-    return setup, sweep, output, sets, work, results, netcdf_data
+    return setup, sweep, output, sets, work, grids, results, netcdf_data
 
 
 @pytest.mark.extra
@@ -389,15 +395,15 @@ def test_loop_every_parameter_moves_the_geolocation(loop_run):
     HySICS yaw turns the 21 pixels about the boresight, a move of about 3 m for 20 arcsec; every other
     parameter moves them more than 100 m.
     """
-    _, sweep, *_, results, _nc = loop_run
+    _, sweep, *_, grids, _results, _nc = loop_run
     for k, param in enumerate(sweep.parameters):
         boresight_yaw = (
             param.config_file is not None and "hysics" in param.config_file.name and param.spec.field == "angle_z"
         )
-        nominal = results[3 * k + 1]["geolocation"]
+        nominal = grids[3 * k + 1]
         for off in (3 * k, 3 * k + 2):
-            moved = results[off]["geolocation"]
-            shift_deg = np.hypot(moved.latitude - nominal.latitude, moved.longitude - nominal.longitude)
+            moved = grids[off]
+            shift_deg = np.hypot(moved.lat - nominal.lat, moved.lon - nominal.lon)
             assert float(shift_deg.mean()) * 111e3 > (1.0 if boresight_yaw else 20.0), (
                 f"{param.config_file} {param.spec.field} set {off}"
             )
@@ -476,27 +482,17 @@ class TestExtractSpacecraftPositionMidframe:
         with pytest.raises(ValueError, match="not found in telemetry"):
             _extract_spacecraft_position_midframe(telemetry, setup=config)
 
-    def test_no_position_columns_falls_back_with_warning(self, caplog):
-        """When position_columns is None, fall back to pattern-guessing with warning."""
-        telemetry = _make_telemetry()
+    @pytest.mark.parametrize("data_config", [None, DataConfig()], ids=["no-data-config", "no-position-columns"])
+    def test_no_position_columns_raises(self, data_config):
+        """Column names do not identify a position's frame or units, so none are guessed."""
         config = MagicMock()
-        config.data_config = None  # position_columns not configured
+        config.data_config = data_config
+        with pytest.raises(ValueError, match="Set setup.data_config.position_columns"):
+            _extract_spacecraft_position_midframe(_make_telemetry(), setup=config)
 
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
-            result = _extract_spacecraft_position_midframe(telemetry, setup=config)
-
-        assert "position_columns not configured" in caplog.text
-        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
-
-    def test_no_config_falls_back_to_pattern_guessing(self, caplog):
-        """When config=None entirely, pattern-guessing is used (backward compat)."""
-        telemetry = _make_telemetry()
-
-        with caplog.at_level(logging.WARNING, logger="curryer.correction.verification"):
-            result = _extract_spacecraft_position_midframe(telemetry, setup=None)
-
-        assert "position_columns not configured" in caplog.text
-        np.testing.assert_array_equal(result, [2.0, 5.0, 8.0])
+    def test_no_setup_raises(self):
+        with pytest.raises(ValueError, match="Set setup.data_config.position_columns"):
+            _extract_spacecraft_position_midframe(_make_telemetry(), setup=None)
 
 
 class TestLoopWiring:
@@ -599,6 +595,23 @@ class TestLoopWiring:
         saved = list((tmp_path / "work").glob("*.nc"))
         assert len(saved) == 1
         assert not xr.load_dataset(saved[0])["valid"].values.any()
+
+    def test_matching_failure_saves_the_sweep_then_raises(self, root_dir, tmp_path, monkeypatch):
+        """A set whose match raises (as one moving the subimage off the chip does) stops the loop after a save."""
+
+        def correlation(pair, offset):
+            if pair == 1 and offset > 0.05:
+                raise ValueError("A shifted subimage samples outside the GCP chip")
+            return 0.9
+
+        with pytest.raises(ValueError, match=r"parameter set 3/3 on GCP pair 2/2 .*outside the GCP chip") as err:
+            self._run(root_dir, tmp_path, monkeypatch, correlation)
+        (saved,) = (tmp_path / "work").glob("*.nc")
+        assert str(saved) in str(err.value)
+        rms = xr.load_dataset(saved)["rms_error_m"].values
+        assert np.isfinite(rms[:, 0]).all()
+        assert np.isfinite(rms[:2, 1]).all()
+        assert np.isnan(rms[2, 1])
 
 
 class TestGeolocateObservationFailures:
