@@ -266,7 +266,6 @@ def _create_parameter_kernels(
 
         # Create static changing SPICE kernels
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-            # Aka: BASE-CK, YOKE-CK, HYSICS-CK
             param_kernels.append(
                 creator.write_from_json(
                     a_param.config_file,
@@ -277,7 +276,6 @@ def _create_parameter_kernels(
 
         # Create dynamic changing SPICE kernels
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            # Aka: AZ-CK, EL-CK
             tlm_dataset_alt = apply_offset(a_param, p_data, tlm_dataset)
             param_kernels.append(
                 creator.write_from_json(

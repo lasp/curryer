@@ -6,10 +6,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import xarray as xr
 from scipy.io import loadmat
 
 from curryer.correction.grid_types import NamedImageGrid
-from curryer.correction.pairing import find_l1a_gcp_pairs
+from curryer.correction.pairing import find_l1a_gcp_pairs, pair_files, pair_geolocated_dataset_with_gcp_files
 
 # ── test-case metadata ────────────────────────────────────────────────────────
 
@@ -130,3 +131,76 @@ def test_synthetic_pairing_partial_threshold_not_met():
         [_rect("L1A", -1.0, 1.0, -1.0, 1.0)], [_point("GCP", 0.0, 0.0)], max_distance_m=200_000.0
     )
     assert result.matches == []
+
+
+# ── pair_files ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def maracaibo_gcp_dir(image_match_dir, tmp_path):
+    gcp_dir = tmp_path / "gcp"
+    gcp_dir.mkdir()
+    (gcp_dir / "GCP10121Maracaibo_resampled.mat").symlink_to(image_match_dir / "2/GCP10121Maracaibo_resampled.mat")
+    return gcp_dir
+
+
+def test_pair_files_returns_the_overlapping_observation(image_match_dir, maracaibo_gcp_dir):
+    dili = image_match_dir / "1/TestCase1a_subimage.mat"
+    maracaibo = image_match_dir / "2/TestCase2a_subimage.mat"
+    pairs = pair_files([dili, maracaibo], maracaibo_gcp_dir)
+    assert pairs == [(maracaibo, maracaibo_gcp_dir / "GCP10121Maracaibo_resampled.mat")]
+
+
+def test_pair_files_raises_on_unreadable_l1a(image_match_dir, maracaibo_gcp_dir, tmp_path):
+    bad = tmp_path / "bad_subimage.mat"
+    bad.write_bytes(b"not a MATLAB file")
+    maracaibo = image_match_dir / "2/TestCase2a_subimage.mat"
+    with pytest.raises(ValueError, match="Failed to load L1A file .*bad_subimage.mat"):
+        pair_files([bad, maracaibo], maracaibo_gcp_dir)
+
+
+def test_pair_files_raises_on_unreadable_gcp(image_match_dir, maracaibo_gcp_dir):
+    (maracaibo_gcp_dir / "GCP00000Bad_resampled.mat").write_bytes(b"not a MATLAB file")
+    maracaibo = image_match_dir / "2/TestCase2a_subimage.mat"
+    with pytest.raises(ValueError, match="Failed to load GCP file .*GCP00000Bad_resampled.mat"):
+        pair_files([maracaibo], maracaibo_gcp_dir)
+
+
+def test_pair_files_raises_on_empty_l1a_list(maracaibo_gcp_dir):
+    with pytest.raises(ValueError, match="No L1A files provided"):
+        pair_files([], maracaibo_gcp_dir)
+
+
+def test_pair_files_missing_l1a_chains_file_not_found(maracaibo_gcp_dir, tmp_path):
+    with pytest.raises(ValueError, match="Failed to load L1A file .*missing_subimage.mat") as excinfo:
+        pair_files([tmp_path / "missing_subimage.mat"], maracaibo_gcp_dir)
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+
+# ── pair_geolocated_dataset_with_gcp_files ────────────────────────────────────
+
+
+def _geolocated_over(grid: NamedImageGrid) -> xr.Dataset:
+    return xr.Dataset(
+        {
+            "latitude": (["frame", "pixel"], grid.lat),
+            "longitude": (["frame", "pixel"], grid.lon),
+        },
+        coords={"frame": np.arange(grid.lat.shape[0], dtype=float)},
+    )
+
+
+def test_pair_geolocated_returns_overlapping_chip(image_match_dir):
+    maracaibo = _load(image_match_dir / "2/TestCase2a_subimage.mat", "subimage", "obs")
+    chips = [image_match_dir / "1/GCP12055Dili_resampled.mat", image_match_dir / "2/GCP10121Maracaibo_resampled.mat"]
+    matched = pair_geolocated_dataset_with_gcp_files(_geolocated_over(maracaibo), chips)
+    assert matched == [chips[1]]
+
+
+def test_pair_geolocated_raises_on_unreadable_chip(image_match_dir, tmp_path):
+    bad = tmp_path / "GCP00000Bad_resampled.mat"
+    bad.write_bytes(b"not a MATLAB file")
+    maracaibo = _load(image_match_dir / "2/TestCase2a_subimage.mat", "subimage", "obs")
+    chips = [bad, image_match_dir / "2/GCP10121Maracaibo_resampled.mat"]
+    with pytest.raises(ValueError, match="Failed to load GCP file .*GCP00000Bad_resampled.mat"):
+        pair_geolocated_dataset_with_gcp_files(_geolocated_over(maracaibo), chips)

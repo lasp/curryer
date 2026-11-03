@@ -24,6 +24,7 @@ error stats) that the correction loop reuses for its own last three steps.
 import logging
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,63 +108,21 @@ def call_error_stats_module(image_matching_results, setup: "GeolocationSetup"):
     if not isinstance(image_matching_results, list):
         image_matching_results = [image_matching_results]
 
-    try:
-        from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
+    from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
 
-        logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
+    logger.info(f"Error Statistics: Processing geolocation errors from {len(image_matching_results)} GCP pairs")
 
-        # Create error stats config directly from the geolocation setup (single source of truth)
-        error_config = ErrorStatsConfig.from_setup(setup)
+    # Create error stats config directly from the geolocation setup (single source of truth)
+    error_config = ErrorStatsConfig.from_setup(setup)
 
-        processor = ErrorStatsProcessor(config=error_config)
+    processor = ErrorStatsProcessor(config=error_config)
 
-        if len(image_matching_results) == 1:
-            # Single GCP pair case
-            error_results = processor.process_geolocation_errors(image_matching_results[0])
-        else:
-            # Multiple GCP pairs - aggregate the data first
-            aggregated_data = _aggregate_image_matching_results(image_matching_results, setup)
-            error_results = processor.process_geolocation_errors(aggregated_data)
-
-        return error_results
-
-    except ImportError as e:
-        logger.warning(f"Error stats module not available: {e}")
-        logger.info(f"Error Statistics: Using placeholder calculations for {len(image_matching_results)} GCP pairs")
-
-        # Fallback: compute basic statistics across all GCP pairs
-        all_lat_errors = []
-        all_lon_errors = []
-        total_measurements = 0
-
-        for result in image_matching_results:
-            lat_errors = result["lat_error_deg"].values
-            lon_errors = result["lon_error_deg"].values
-            all_lat_errors.extend(lat_errors)
-            all_lon_errors.extend(lon_errors)
-            total_measurements += len(lat_errors)
-
-        all_lat_errors = np.array(all_lat_errors)
-        all_lon_errors = np.array(all_lon_errors)
-
-        # Convert to meters (approximate)
-        lat_error_m = all_lat_errors * 111000
-        lon_error_m = all_lon_errors * 111000
-        total_error_m = np.sqrt(lat_error_m**2 + lon_error_m**2)
-
-        mean_error = float(np.mean(total_error_m))
-        rms_error = float(np.sqrt(np.mean(total_error_m**2)))
-        std_error = float(np.std(total_error_m))
-
-        return xr.Dataset(
-            {
-                "mean_error": mean_error,
-                "rms_error": rms_error,
-                "std_error": std_error,
-                "max_error": float(np.max(total_error_m)),
-                "min_error": float(np.min(total_error_m)),
-            }
-        )
+    if len(image_matching_results) == 1:
+        # Single GCP pair case
+        return processor.process_geolocation_errors(image_matching_results[0])
+    # Multiple GCP pairs - aggregate the data first
+    aggregated_data = _aggregate_image_matching_results(image_matching_results, setup)
+    return processor.process_geolocation_errors(aggregated_data)
 
 
 # _aggregate_image_matching_results and image_matching live in verification.py
@@ -543,6 +502,31 @@ def _resolve_netcdf_config(setup: "GeolocationSetup", output: "OutputConfig") ->
     return output.netcdf.model_copy(update={"performance_threshold_m": threshold_m})
 
 
+def _per_pair_error_processor(setup: GeolocationSetup) -> ErrorStatsProcessor:
+    """Return the error-stats processor for per-pair errors inside :func:`loop`.
+
+    Per-pair errors are not gated by ``setup.geo.minimum_correlation`` or
+    ``minimum_peak_margin``: a weak match under one parameter set is an
+    ordinary sweep outcome, not a reason to stop the sweep.  The thresholds
+    apply to the aggregate pass
+    (:func:`call_error_stats_module`) and to
+    :func:`~curryer.correction.verification.verify`.
+
+    Parameters
+    ----------
+    setup : GeolocationSetup
+        Supplies the spacecraft-state variable names.
+
+    Returns
+    -------
+    ErrorStatsProcessor
+        Processor with the setup's variable names and no correlation threshold.
+    """
+    return ErrorStatsProcessor(
+        config=replace(ErrorStatsConfig.from_setup(setup), minimum_correlation=None, minimum_peak_margin=None)
+    )
+
+
 def loop(
     setup: GeolocationSetup,
     sweep: Sweep,
@@ -657,8 +641,7 @@ def loop(
     _require_image_matching_inputs(setup, calibration_data)
 
     # Create error stats processor once (setup is constant; processor is stateless)
-    error_config = ErrorStatsConfig.from_setup(setup)
-    error_processor = ErrorStatsProcessor(config=error_config)
+    error_processor = _per_pair_error_processor(setup)
 
     # Store parameter values once (before loops)
     for param_idx, params in enumerate(params_set):
@@ -907,7 +890,7 @@ def _store_gcp_pair_results(netcdf_data, param_idx, pair_idx, error_metrics):
     netcdf_data["n_measurements"][param_idx, pair_idx] = error_metrics["n_measurements"]
 
 
-def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m=250.0):
+def _compute_parameter_set_metrics(netcdf_data, param_idx, pair_errors, threshold_m):
     """
     Compute overall performance metrics for a parameter set.
 

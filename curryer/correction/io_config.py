@@ -133,7 +133,7 @@ class NetCDFConfig(BaseModel):
             file_stem = param_config.config_file.stem
             # Cosmetic only: strip any kernel version suffix (``_v01``, ``_v02``, ...) and
             # the ``.attitude.ck`` format tag so the NetCDF ``long_name`` reads cleanly
-            # (e.g. ``cprs_hysics_v01.attitude.ck`` -> "Cprs Hysics correction").
+            # (e.g. ``imager_v01.attitude.ck`` -> "Imager correction").
             # These tokens are conventional in mission kernel filenames; unmatched
             # names simply pass through unchanged, so this is safe for any mission.
             clean_name = re.sub(r"_v\d+", "", file_stem).replace(".attitude.ck", "")
