@@ -297,8 +297,7 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
     """
     n = sweep.grid_points_per_param
     n_params = len(sweep.parameters)
-    per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
-    total = math.prod(len(values) for values in per_param_values)
+    total = math.prod(1 if param.spec.bounds[0] == param.spec.bounds[1] else n for param in sweep.parameters)
     logger.info(f"GRID_SEARCH: {n} points per swept parameter, {n_params} parameter(s) = {total} total parameter sets")
 
     if total > sweep.max_grid_sets:
@@ -312,6 +311,7 @@ def _generate_grid_search(sweep: Sweep) -> list[list[tuple[ParameterConfig, typi
             f"  • use SearchStrategy.SINGLE_OFFSET for high-dimensional sweeps."
         )
 
+    per_param_values = [_get_grid_values(param, n) for param in sweep.parameters]
     output = []
     for combo in itertools.product(*per_param_values):
         out_set = list(zip(sweep.parameters, combo))
