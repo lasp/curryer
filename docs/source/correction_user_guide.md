@@ -1,279 +1,220 @@
 # Correction & Verification User Guide
 
-`curryer.correction` answers two practical questions about a mission's
-geolocation. Each is driven by **one configuration file** and a short,
-copy-paste call — there are no Python classes to write.
+`curryer.correction` measures and improves a mission's geolocation against ground control
+points (GCPs). It answers two questions:
 
-- **Verification** — _"Does our current geolocation meet the accuracy
-  requirement?"_ Returns a pass/fail verdict with per-point error.
-- **Correction** — _"What adjustment makes it more accurate?"_ Tries a range
-  of pointing/timing adjustments and reports the best one.
+- **Verification**: does the geolocation meet the accuracy requirement? It returns a pass/fail
+  verdict, with the error at every GCP.
+- **Correction**: which pointing or timing adjustment makes the geolocation more accurate? It
+  tries a sweep of candidate adjustments and reports the one that fits the GCPs best.
 
-Correction is verification run in a loop: for each candidate adjustment it
-re-geolocates the observations, then evaluates the result with verification.
+Both are driven by one configuration file and a short call; a mission writes no classes. Both
+measure error the same way: an observation subimage is matched to a GCP chip, and the shift that
+aligns them is the error. Correction runs that measurement once per candidate, after
+re-geolocating the observation with SPICE:
 
 ```
-correction loop
-│
-├── [per candidate adjustment]
-│   ├── generate trial SPICE kernels
-│   ├── geolocate observations (SPICE → lat/lon/alt)
-│   └── verification ──► GCP pairing
-│                    ──► image matching
-│                    ──► error statistics
-│                    ──► pass/fail verdict
-│
-└── aggregate results → best adjustment + verdict
+verification                          correction
+                                      for each candidate adjustment:
+                                          write the candidate's kernels
+                                          re-geolocate each observation (SPICE + DEM)
+match each observation to its chip        match each observation to its chip
+error statistics -> verdict           compare candidates -> best adjustment + verdict
 ```
+
+This guide is generic. A mission supplies its own data access and command lines on top of it,
+in its own repository.
+
+## Contents
+
+1. [Concepts](#concepts)
+2. [Quickstart](#quickstart)
+3. [Configuration](#configuration)
+4. [Input contracts](#input-contracts)
+5. [Verification](#verification)
+6. [Correction](#correction)
+7. [Configuration reference](#configuration-reference)
+8. [Adding a mission](#adding-a-mission)
+9. [Troubleshooting](#troubleshooting)
+10. [Reference examples](#reference-examples)
+
+---
+
+## Concepts
+
+### GCP pairs
+
+A **GCP chip** is a reference image of a patch of ground with known geolocation, such as a
+Landsat chip regridded to latitude and longitude ([GCP chip regridding](gcp_regridding.md)).
+An **observation subimage** is the mission's image of the same ground: rows are frames (time),
+columns are cross-track detector pixels. A **GCP pair** is one subimage with the chip it lies in.
+
+### Image matching
+
+The chip is convolved with the instrument's point-spread function (PSF), so it looks as the
+instrument would see it. A correlation search then shifts the subimage over the chip on a grid
+that shrinks each iteration (`setup.search`), keeping the shift with the highest correlation.
+The result is:
+
+- the error in latitude and longitude: the subimage's geolocation minus the chip's, at the match;
+- `correlation`: the correlation of the best match;
+- `correlation_secondary`: the best first-grid correlation farther than
+  `search.peak_exclusion_km` from the peak. The **peak margin** is `correlation` minus this.
+
+The search samples only the part of the PSF-convolved chip where the PSF lies wholly inside the
+chip, so half a PSF kernel at each edge is not searchable. A shift that would sample outside that
+part raises rather than correlate against zero fill. Every search reaches the first grid's
+half-width, `grid_size // 2` steps of `grid_span_km / (grid_size - 1)` (5.6 km with the defaults),
+beyond the subimage, so a subimage needs that margin plus its expected error inside the chip.
+`search.max_shift_km()` is the worst case, the best point on the grid's edge in every iteration
+(28.1 km with the defaults); that margin always suffices but is rarely needed.
+
+### Match-quality gates and statuses
+
+A match can be meaningless: the chip may be clouded over, featureless, or changed since it was
+imaged. Two gates on `setup.geo` decide whether a match is a measurement:
+
+- `minimum_correlation`: rejects a match whose `correlation` is lower;
+- `minimum_peak_margin`: rejects a match whose peak is not distinct, i.e. one whose `correlation`
+  exceeds `correlation_secondary` by less than this.
+
+Each matched GCP gets a status:
+
+| Status     | Meaning                                                                       |
+| ---------- | ----------------------------------------------------------------------------- |
+| `pass`     | Passed the gates; nadir-equivalent error below `performance_threshold_m`      |
+| `fail`     | Passed the gates; error at or above the threshold                             |
+| `rejected` | Failed a gate; `rejection_reason` names the gate, the value and the threshold |
+
+Rejected GCPs keep their errors so they can be reviewed, but they are not measurements: they are
+left out of every statistic.
+
+### Errors
+
+Every error is **geolocated minus true**. It is reported three ways:
+
+- **Latitude and longitude** (`lat_error_deg`, `lon_error_deg`): positive is north and east.
+- **Along- and cross-track** (`along_track_error_m`, `cross_track_error_m`): along the ground
+  track (the direction of increasing frame time at the GCP) and 90° clockwise from it. A
+  positive along-track error means the geolocation is ahead of the GCP along the track. A timing
+  error shows up along track; a roll error across track.
+- **Nadir-equivalent** (`nadir_equiv_error_m`): the error scaled to what it would be at nadir,
+  so GCPs viewed off nadir count fairly against one requirement. The error is split into its
+  components in the view plane (containing the line of sight and nadir) and across it. Each is
+  divided by a scale factor that grows with the off-nadir angle of the line of sight of the pixel
+  that viewed the GCP. The test suite checks it against a MATLAB reference implementation, to
+  within 2 mm.
+
+The **requirement** is more than `performance_spec_percent` of accepted GCPs within
+`performance_threshold_m`, nadir-equivalent. A run passes when the percentage of accepted GCPs
+below the threshold exceeds the spec; a run exactly at the spec fails, so the spec must be below 100. With no accepted GCP nothing was measured, and the run fails with `percent_within_threshold`
+`None`.
+
+### Quality weighting
+
+Each accepted GCP gets a `quality_weight`, the match signal-to-noise ratio `ρ² / (1 − ρ²)` of its
+correlation `ρ` (`error_stats.match_snr_weight`). If the observed image is the emulated scene plus
+independent noise, `ρ²` is the scene's share of the variance. The variance of a
+correlation-registration error scales as noise over signal, so this is an inverse-variance
+weight. `ρ` is capped at 0.99 (weight 49), so one near-perfect match cannot dominate; rejected
+GCPs weigh 0.
+
+| ρ      | 0.80 | 0.90 | 0.95 | 0.99 |
+| ------ | ---- | ---- | ---- | ---- |
+| weight | 1.8  | 4.3  | 9.3  | 49   |
+
+Weighted statistics are reported next to the unweighted ones and never decide pass or fail.
+`effective_measurements = (Σw)² / Σw²` is the number of equally good GCPs the weighted set is
+worth: when it is much smaller than the accepted count, a few GCPs carry the weighted statistics.
+
+### The correction loop
+
+The **parameters** of a correction are the adjustments it may make: a rotation angle of a
+fixed-attitude frame, a bias on a telemetry angle, or a time offset (see
+[Parameter types](#parameter-types--ptype)). A **sweep** gives each parameter a nominal value
+and bounds, and a **strategy** picks the candidate parameter sets: a grid, one parameter at a
+time, or random draws (Monte Carlo).
+
+For every candidate, the loop re-geolocates each subimage with SPICE and the DEM and matches it
+to its chip. Candidates are compared on the same GCP pairs:
+
+- A pair is **usable** when it passes the gates under at least one candidate.
+- A candidate is **valid** when it passes the gates on every usable pair.
+- The **best** candidate is the valid one with the lowest mean, over usable pairs, of each pair's
+  RMS error.
+
+One candidate that passes a hard pair, even on a spurious peak, makes that pair usable and so
+invalidates every candidate that fails it; `n_valid_sets` shows when this has narrowed the
+comparison to a few candidates.
+
+The loop raises if no pair is usable or no candidate is valid. The best candidate is one of the
+candidates tried; the loop does not interpolate between them, so its precision is the grid step
+or the spread of the random draws.
+
+Three consequences to plan a sweep around:
+
+- **Degenerate parameters.** Parameters that move the image the same way cannot be separated by
+  GCPs that see them the same way. For example, a pitch rotation and a time offset both move a
+  near-nadir image along track, so the fit finds a valley of equal error rather than a point.
+  Separating them needs GCPs at different viewing geometries: a rotation moves a pixel in
+  proportion to slant range, a time offset does not.
+- **Bounds limit the subimage.** The search-reach rule applies under every candidate, so a
+  subimage must lie inside its chip by the search reach plus the largest shift the sweep can
+  cause there. Wider bounds mean smaller subimages; a pair with no room must be dropped from
+  the inputs, or the loop raises.
+- **Fail loud.** A pixel the kernels cannot geolocate, a candidate that moves a subimage off its
+  chip, or an `OFFSET_KERNEL` field missing from the telemetry stops the run; nothing is skipped
+  silently.
+
+---
 
 ## Quickstart
 
-Both workflows read the same mission config file. Copy
-`examples/correction/example_config.json`, edit the values for your mission,
-and run.
+Both workflows read the same configuration file. Copy `examples/correction/example_config.json`,
+edit the values for the mission, and run.
 
-**Check accuracy** — verification:
+**Check accuracy:**
 
 ```python
 from curryer.correction import load_setup_from_json, verify
 
 setup = load_setup_from_json("mission.json")
-result = verify(setup, image_matching_results=[...])  # one dataset per GCP comparison
+result = verify(setup, gcp_pairs=[("obs_001.nc", "chip_001.nc")], los_file="los.mat", psf_file="psf.mat")
 
-print(result.summary_table)  # per-point pass/fail table
+print(result.summary_table)  # one row per GCP, with the verdict
 print("Passed:", result.passed)
 ```
 
-**Find a correction** — correction loop:
+**Find a correction:**
 
 ```python
-from curryer.correction import load_config_files, run_correction, CorrectionInput
+from curryer.correction import CorrectionInput, load_config_files, run_correction
 
 setup, sweep, output = load_config_files("mission.json")
-inputs = [CorrectionInput(telemetry_file="obs.nc", science_file="obs.nc", gcp_file="chip.nc")]
+inputs = [CorrectionInput(telemetry_file="telemetry.nc", science_file="obs_001.nc", gcp_file="chip_001.nc")]
 
 result = run_correction(setup, sweep, inputs, work_dir="out", output=output)
 
 print(result.summary_table)
+print(result.best_parameter_set, result.best_rms_m)
 print(result.recommendation)
 ```
 
-> The data you process (observation and GCP files) is passed at run time via
-> `inputs=`, **not** stored in the config file — it's this-run data, not a
-> property of the mission.
-
-## How a mission is configured
-
-Everything a mission needs lives in **one JSON file** with up to three
-sections. You edit values — you don't write code.
-
-| Section  | Answers                                                            | How often it changes |
-| -------- | ------------------------------------------------------------------ | -------------------- |
-| `setup`  | Where are the kernels? Which instrument? What's the accuracy spec? | Once per mission     |
-| `sweep`  | Which adjustments to try, and how to search them?                  | Per experiment       |
-| `output` | What to name the result file (optional)                            | Rarely               |
-
-```json
-{
-  "setup": {
-    "geo": {
-      "meta_kernel_file": "path/to/mission.kernels.tm.json",
-      "generic_kernel_dir": "data/generic",
-      "instrument_name": "YOUR_INSTRUMENT",
-      "time_field": "corrected_timestamp"
-    },
-    "requirements": {
-      "performance_threshold_m": 250.0,
-      "performance_spec_percent": 39.0
-    }
-  },
-  "sweep": {
-    "search_strategy": "random",
-    "n_iterations": 50,
-    "seed": 42,
-    "parameters": [
-      {
-        "ptype": "CONSTANT_KERNEL",
-        "config_file": "path/to/frame_a.attitude.ck.json",
-        "spec": {
-          "current_value": [0.0, 0.0, 0.0],
-          "bounds": [-300.0, 300.0],
-          "sigma": 50.0,
-          "units": "arcseconds"
-        }
-      }
-    ]
-  }
-}
-```
-
-> **Templates to copy:** `examples/correction/example_config.json` (annotated,
-> minimal) or `examples/correction/clarreo_config.json` (a complete real
-> mission). Every field is specified in [Configuration Reference](#configuration-reference).
-
-### Reuse the setup, try many adjustments
-
-The `setup` is fixed for a mission; the `sweep` is the cheap, swappable part.
-Keep one `mission.json` and either point at per-experiment sweep files
-(`load_setup_from_json` + `load_sweep_from_json` read the `setup` and `sweep`
-sections independently) or adjust in code:
-
-```python
-grid = sweep.with_strategy("grid", grid_points_per_param=5)  # deterministic grid search
-wider = sweep.update_param("hps.az_ang_nonlin", bounds=[-100, 100])  # widen one parameter
-run_correction(setup, wider, inputs, work_dir="out")
-```
-
-Both return validated copies, so a typo or out-of-bounds value is caught
-immediately. The `update_param` selector is the parameter's position, its
-`spec.field` name, or its `config_file` filename stem.
+The data a run processes (observations and GCP chips) is passed at call time, not stored in the
+configuration: it belongs to the run, not the mission.
 
 ---
 
-## What to provide for a new mission
+## Configuration
 
-Copy `examples/correction/clarreo_config.json` and fill in these values. The
-JSON path (in parentheses) is where each one goes.
+A mission's configuration is one JSON file with up to three sections. Every value is validated
+when it loads: a wrong type, an unknown key or an out-of-range value raises, naming the field.
 
-1. **SPICE kernels** (`setup.geo.meta_kernel_file`, `generic_kernel_dir`,
-   `dynamic_kernels`) — your mission's kernel files. `dynamic_kernels` are
-   regenerated from telemetry on each run.
-2. **Instrument** (`setup.geo.instrument_name`) — the NAIF instrument name from
-   your Instrument Kernel, e.g. `"CPRS_HYSICS"`.
-3. **Timestamps** (`setup.geo.time_field`) — the column holding uGPS times. If
-   your times need scaling (e.g. GPS seconds → uGPS), set
-   `setup.data_config.time_scale_factor` to `1e6`.
-4. **Accuracy requirement** (`setup.requirements.performance_threshold_m` and
-   `performance_spec_percent`) — the per-point error limit in metres, and the
-   minimum percentage of points that must fall within it.
-5. **Adjustments to try** (`sweep.parameters`, correction only) — one entry per
-   pointing offset or timing correction (see [Configuration Reference](#configuration-reference)).
-6. **Calibration** (`setup.calibration.los_vectors_file` / `psf_file`) — needed
-   for the built-in image matcher (interim; will become SPICE-derived).
-
-That's the full setup. The sections below are field-by-field reference and
-runnable examples.
-
----
-
-## Verification
-
-Verification scores geolocation results against the mission requirement. The
-recommended input is `image_matching_results` — a list of `xr.Dataset` objects
-(one per GCP comparison) from your image-matching pipeline; this is the path
-weekly automated checks use.
-
-```python
-import xarray as xr
-from curryer.correction import load_setup_from_json, verify
-
-setup = load_setup_from_json("mission.json")
-results = [xr.open_dataset("matching_result_001.nc")]  # one per GCP comparison
-
-result = verify(setup, image_matching_results=results)  # no SPICE kernels needed for this path
-
-print(result.summary_table)  # per-point pass/fail table
-print("Passed:", result.passed)
-within = result.percent_within_threshold  # None when every GCP is rejected
-print(f"Within threshold: {'N/A' if within is None else f'{within:.1f}%'}")
-```
-
-### Input modes
-
-`verify()` takes `setup` first; everything else is keyword-only (the first
-input you supply, in the order below, wins):
-
-| Mode                         | Argument                                 | Notes                                                                                                              |
-| ---------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Pre-computed image matching  | `image_matching_results=`                | **Recommended** for production and automated checks                                                                |
-| Run image matching on demand | `geolocated_data=`                       | Custom `setup.image_matching_func`, **or** built-in pairing+matching with `gcp_directory=`/`los_file=`/`psf_file=` |
-| Explicit file-path pairs     | `gcp_pairs=` (+ `los_file=`/`psf_file=`) | Supported                                                                                                          |
-| Auto-paired paths            | `observation_paths=` + `gcp_directory=`  | Supported (+ `los_file=`/`psf_file=`)                                                                              |
-
-The `geolocated_data` path matches in one of two ways. If you attach a callable
-to `setup.image_matching_func`, `verify()` calls it. Otherwise, supply
-`gcp_directory=`, `los_file=`, and `psf_file=` and `verify()` runs built-in
-spatial pairing + image matching. If neither the override nor that trio is
-provided, the call raises `ValueError`.
-
-A runnable example using real test data: `examples/correction/example_verification.py`
-
----
-
-## Correction
-
-`run_correction()` is the entry point. It returns the best parameters, a
-pass/fail verdict, a recommendation, and a summary table.
-
-```python
-import pathlib
-from curryer.correction import (
-    CorrectionInput,
-    load_config_files,
-    run_correction,
-)
-
-# Load setup + sweep (+ output) from one JSON file (recommended for production)
-setup, sweep, output = load_config_files("examples/correction/clarreo_config.json")
-
-# Each CorrectionInput maps one telemetry + science + GCP triplet.
-# Raw (str, str, str) tuples are also accepted.
-# S3 URIs ("s3://...") are accepted when boto3 is installed.
-inputs = [
-    CorrectionInput(
-        telemetry_file=pathlib.Path("data/obs_20240317.nc"),
-        science_file=pathlib.Path("data/obs_20240317.nc"),
-        gcp_file=pathlib.Path("data/gcp/landsat_chip_001.nc"),
-    )
-]
-
-work_dir = pathlib.Path("workdir_correction")
-# NOTE: inputs come before work_dir; output is optional.
-result = run_correction(setup, sweep, inputs, work_dir, output=output)
-
-print(result.summary_table)
-print("Passed:", result.passed)
-print(result.recommendation)
-
-best = min(result.results, key=lambda r: r["rms_error_m"])
-print(f"Best RMS: {best['rms_error_m']:.2f} m  (parameters: {best['parameters']})")
-```
-
-(To reuse one setup across many sweeps, see
-[Reuse the setup, try many adjustments](#reuse-the-setup-try-many-adjustments) above.)
-
-### Low-level alternative: `loop()`
-
-`loop()` returns the raw `(results, netcdf_data)` tuple and only accepts
-plain `(str, str, str)` tuples (not `CorrectionInput`). Note its argument
-order: `work_dir` comes **before** the inputs list.
-
-```python
-from curryer.correction import loop
-
-inputs = [("data/obs.nc", "data/obs.nc", "data/gcp.nc")]
-results, netcdf_data = loop(setup, sweep, work_dir, inputs)
-```
-
-A workflow template: `examples/correction/example_run_correction.py`
-
----
-
-## Loading config from JSON
-
-```python
-from curryer.correction import load_config_files
-
-setup, sweep, output = load_config_files("mission.json")
-```
-
-`load_config_files()` reads the `setup`, `sweep`, and optional `output`
-sections. A missing `setup` or `sweep` raises a clear `KeyError`; `output`
-defaults to empty. Load a single section with `load_setup_from_json()` or
-`load_sweep_from_json()`.
-
-A complete file, including the spacecraft variable names and `output` section
-the [Quickstart](#quickstart) template leaves out:
+| Section  | Holds                                                                | Changes          |
+| -------- | -------------------------------------------------------------------- | ---------------- |
+| `setup`  | Kernels, instrument, requirement, gates, image matching, calibration | Once per mission |
+| `sweep`  | The parameters to vary, their bounds, and the strategy               | Per experiment   |
+| `output` | NetCDF output name and metadata (optional)                           | Rarely           |
 
 ```json
 {
@@ -283,11 +224,18 @@ the [Quickstart](#quickstart) template leaves out:
       "generic_kernel_dir": "data/generic",
       "instrument_name": "YOUR_INSTRUMENT",
       "time_field": "corrected_timestamp",
-      "dynamic_kernels": []
+      "dynamic_kernels": [],
+      "minimum_correlation": 0.8
     },
     "requirements": {
       "performance_threshold_m": 250.0,
       "performance_spec_percent": 39.0
+    },
+    "search": {
+      "grid_size": 11,
+      "grid_span_km": 8.0,
+      "reduction_factor": 0.5,
+      "spacing_limit_m": 25.0
     },
     "spacecraft_position_name": "sc_position",
     "boresight_name": "boresight",
@@ -302,685 +250,484 @@ the [Quickstart](#quickstart) template leaves out:
         "ptype": "CONSTANT_KERNEL",
         "config_file": "path/to/frame_a.attitude.ck.json",
         "spec": {
-          "current_value": [0.0, 0.0, 0.0],
+          "field": "angle_x",
+          "current_value": 0.0,
           "bounds": [-300.0, 300.0],
           "sigma": 50.0,
           "units": "arcseconds"
         }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_y",
+          "current_value": 0.0,
+          "bounds": [-300.0, 300.0],
+          "sigma": 50.0,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "CONSTANT_KERNEL",
+        "config_file": "path/to/frame_a.attitude.ck.json",
+        "spec": {
+          "field": "angle_z",
+          "current_value": 0.0,
+          "bounds": [0.0, 0.0],
+          "sigma": null,
+          "units": "arcseconds"
+        }
+      },
+      {
+        "ptype": "OFFSET_TIME",
+        "spec": {
+          "field": "time_offset",
+          "current_value": 0.0,
+          "bounds": [-0.3, 0.3],
+          "sigma": 0.1,
+          "units": "seconds"
+        }
       }
     ]
   },
-  "output": {
-    "output_filename": "correction_results.nc"
-  }
+  "output": { "output_filename": "correction_results.nc" }
 }
 ```
 
-A frame rotation is authored as a single `CONSTANT_KERNEL` parameter whose
-`spec.current_value` is the `[roll, pitch, yaw]` triplet.
+`load_config_files("mission.json")` returns `(setup, sweep, output)`; a missing `setup` or `sweep`
+raises `KeyError`, and `output` defaults to empty. `load_setup_from_json` and
+`load_sweep_from_json` read one section each, so a mission can keep one setup file and many sweep
+files.
 
-A fully populated mission example: `examples/correction/clarreo_config.json`
-A generic annotated template: `examples/correction/example_config.json`
+**A frame rotation** is three `CONSTANT_KERNEL` parameters sharing a `config_file`, one per axis:
+`angle_x` (roll), `angle_y` (pitch) and `angle_z` (yaw). The loop writes the frame's CK from the
+three angles. A sweep missing an axis, or naming one twice, raises.
 
----
+**Holding a parameter.** Zero-width bounds `[b, b]` hold a parameter at `current_value + b` in
+every strategy. In the example above, yaw is held at its nominal value.
 
-## Configuration Reference
-
-### Setup — `setup`
-
-The durable, mission-specific configuration (built once, reused across sweeps).
-
-| Field                        | Type                       | Notes                                                                                    |
-| ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------------- |
-| `geo`                        | `GeolocationConfig`        | **Required.** SPICE kernel paths and instrument identity                                 |
-| `requirements`               | `RequirementsConfig`       | **Required.** Pass/fail thresholds                                                       |
-| `data_config`                | `DataConfig \| None`       | File-loading specification; `None` uses CSV defaults                                     |
-| `calibration`                | `CalibrationFiles \| None` | Optional direct LOS/PSF calibration file paths (interim)                                 |
-| `psf_sampling`               | `PSFSamplingConfig`        | PSF sample spacing for image matching; defaults suit 30 m Landsat chips (see below)      |
-| `search`                     | `SearchConfig`             | Correlation search grid for image matching; defaults suit 30 m Landsat chips (see below) |
-| `spacecraft_position_name`   | `str`                      | Variable name in the image-matching `xr.Dataset` for SC position                         |
-| `boresight_name`             | `str`                      | Variable name in the image-matching `xr.Dataset` for boresight                           |
-| `transformation_matrix_name` | `str`                      | Variable name in the image-matching `xr.Dataset` for rotation matrix                     |
-| `image_matching_func`        | `Callable \| None`         | Optional custom image-matching callable; excluded from JSON                              |
-
-### Sweep — `sweep`
-
-The parameter-variation experiment, varied between runs. Use
-`sweep.with_strategy(strategy, **changes)` and
-`sweep.update_param(selector, **spec_changes)` for cheap, re-validated copies.
-
-| Field                   | Type                    | Notes                                           |
-| ----------------------- | ----------------------- | ----------------------------------------------- |
-| `parameters`            | `list[ParameterConfig]` | **Required** (at least one). Parameters to vary |
-| `search_strategy`       | `SearchStrategy`        | `RANDOM` / `GRID_SEARCH` / `SINGLE_OFFSET`      |
-| `n_iterations`          | `int`                   | Iterations (RANDOM / values-per-param SINGLE)   |
-| `seed`                  | `int \| None`           | Random seed for reproducible `RANDOM` sweeps    |
-| `grid_points_per_param` | `int`                   | Points per parameter when `GRID_SEARCH` is used |
-| `max_grid_sets`         | `int`                   | Safety cap on total grid-search parameter sets  |
-
-### Output — `output`
-
-| Field             | Type                   | Notes                                                     |
-| ----------------- | ---------------------- | --------------------------------------------------------- |
-| `netcdf`          | `NetCDFConfig \| None` | NetCDF metadata; `None` auto-populated from the threshold |
-| `output_filename` | `str \| None`          | Output NetCDF filename; `None` uses the default           |
-
-### Requirements — `setup.requirements`
-
-| Field                      | Type    | Notes                                                     |
-| -------------------------- | ------- | --------------------------------------------------------- |
-| `performance_threshold_m`  | `float` | **Required.** Per-measurement nadir-error limit in metres |
-| `performance_spec_percent` | `float` | **Required.** Minimum % of measurements that must pass    |
-
-### Kernels & instrument — `setup.geo`
-
-| Field                 | Type            | Notes                                                                                                                                                                                                              |
-| --------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `meta_kernel_file`    | `Path`          | Path to the mission meta-kernel JSON file                                                                                                                                                                          |
-| `generic_kernel_dir`  | `Path`          | Directory containing generic shared SPICE kernels                                                                                                                                                                  |
-| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs regenerated from telemetry each iteration                                                                                                                                                             |
-| `instrument_name`     | `str`           | SPICE instrument name as defined in the IK (e.g. `"CPRS_HYSICS"`)                                                                                                                                                  |
-| `time_field`          | `str`           | Column in the science DataFrame holding uGPS timestamps                                                                                                                                                            |
-| `minimum_correlation` | `float \| None` | Match-quality gate (0.0–1.0): measurements with a lower `correlation` are rejected (kept, flagged, left out of the statistics); `None` disables. When set, results must carry `correlation` or verification raises |
-| `minimum_peak_margin` | `float \| None` | Match-distinctness gate: rejects measurements whose `correlation` exceeds `correlation_secondary` by less than this; `None` disables. When set, results must carry `correlation_secondary` or verification raises  |
-
-### Image matching — `setup.search` and `setup.psf_sampling`
-
-Set these for the instrument's ground sampling; the defaults are tuned for 30 m
-Landsat chips. Invalid values raise when the setup is built.
-
-| Field                                  | Default    | Notes                                                                                                                                |
-| -------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `search.grid_size`                     | `44`       | Grid points per axis (integer >= 2)                                                                                                  |
-| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                                                     |
-| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                                            |
-| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`                                     |
-| `search.peak_exclusion_km`             | `2.0`      | `correlation_secondary` is the strongest first-grid correlation farther than this from the first-grid peak; below `grid_span_km / 2` |
-| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                                              |
-| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                                             |
-
-The search samples only the part of the PSF-convolved chip where the PSF lies
-wholly inside the chip, so half a PSF kernel at each edge is not searchable. A
-shift that samples outside that part raises instead of correlating against zero
-fill. Every search reaches the first grid's half-width, `grid_size // 2` steps
-of `grid_span_km / (grid_size - 1)` (5.6 km with the defaults), beyond the
-subimage, so an observation needs that margin plus its expected error.
-`search.max_shift_km()` is the worst case, the best point on the grid's edge in
-every iteration (28.1 km with the defaults); that margin always suffices but is
-rarely needed. The peak margin that `setup.geo.minimum_peak_margin` tests is
-`correlation - correlation_secondary`, the refined final peak minus a
-first-grid value.
-
-### Parameters — `sweep.parameters[]`
-
-| Field                | Type                   | Notes                                                               |
-| -------------------- | ---------------------- | ------------------------------------------------------------------- |
-| `ptype`              | `ParameterType`        | `CONSTANT_KERNEL`, `OFFSET_KERNEL`, or `OFFSET_TIME`                |
-| `config_file`        | `Path \| None`         | Path to the SPICE kernel JSON template; required for kernel types   |
-| `spec`               | `ParameterSpec`        | Sampling specification (see below)                                  |
-| `spec.current_value` | `float \| list[float]` | Baseline value(s). For `CONSTANT_KERNEL`: `[roll, pitch, yaw]`      |
-| `spec.bounds`        | `[min, max]`           | Offset limits in the same units as `sigma`                          |
-| `spec.sigma`         | `float \| None`        | Sampling standard deviation for the `RANDOM` strategy               |
-| `spec.units`         | `str \| None`          | Physical units string, e.g. `"arcseconds"` or `"milliseconds"`      |
-| `spec.field`         | `str \| None`          | Telemetry column name; required for `OFFSET_KERNEL` / `OFFSET_TIME` |
-
-### Parameter types — `ptype`
-
-| Value             | Description                                                                    |
-| ----------------- | ------------------------------------------------------------------------------ |
-| `CONSTANT_KERNEL` | Fixed attitude rotation applied to an instrument frame (roll/pitch/yaw offset) |
-| `OFFSET_KERNEL`   | Dynamic bias added to a telemetry angle field to regenerate a CK kernel        |
-| `OFFSET_TIME`     | Timing offset applied to science frame timestamps                              |
-
-### Search strategies — `search_strategy`
-
-| Value           | Description                                                                  |
-| --------------- | ---------------------------------------------------------------------------- |
-| `RANDOM`        | Monte Carlo: draws from a normal distribution at each iteration (default)    |
-| `GRID_SEARCH`   | Cartesian product of evenly spaced grid points across all parameter bounds   |
-| `SINGLE_OFFSET` | Each parameter swept independently while all others remain at nominal values |
-
-### Inputs — `inputs=`
-
-Each input is format-neutral: every field is just a path, and the reader is
-chosen by `setup.data_config.file_format`. The first-class real-data path is
-a **NetCDF image observation** (radiance as the science variable) that carries
-telemetry, metadata, and science times — enough for curryer/SPICE to compute
-the geometry — so the same file commonly serves as both the telemetry and
-science input. See [Inputs & Data Formats](#inputs--data-formats) below.
-
-| Field            | Description                                                    |
-| ---------------- | -------------------------------------------------------------- |
-| `telemetry_file` | Telemetry observation file (NetCDF first-class; CSV/HDF5 read) |
-| `science_file`   | Science/timing observation file (NetCDF first-class; CSV/HDF5) |
-| `gcp_file`       | GCP reference-image file (NetCDF; `.mat` interim)              |
-
-### Calibration — `setup.calibration`
-
-Direct calibration file paths. Both fields are optional
-and **interim** — real line-of-sight vectors and spacecraft geometry will be
-SPICE-derived from telemetry, so nothing in the pipeline requires these.
-
-| Field              | Description                                          |
-| ------------------ | ---------------------------------------------------- |
-| `los_vectors_file` | Per-detector line-of-sight unit vectors (instrument) |
-| `psf_file`         | Optical point-spread-function calibration            |
-
-### Data loading — `setup.data_config`
-
-| Field               | Description                                                                            |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `file_format`       | `"csv"`, `"netcdf"`, or `"hdf5"` — drives the reader for telemetry/science             |
-| `time_scale_factor` | Multiply science timestamps by this factor to obtain uGPS (e.g. `1e6` for GPS seconds) |
-| `position_columns`  | Optional list of spacecraft-position column names in the telemetry DataFrame           |
-
----
-
-## Inputs & Data Formats
-
-The config and API are **format-agnostic**: the internal contract is an
-`ImageGrid` / `xr.Dataset`, and `DataConfig.file_format` selects the reader.
-Two distinct input families exist, and it is worth being explicit about which
-is which:
-
-- **NetCDF image observations (first-class, intended real-data path).** A
-  NetCDF observation carries the radiance as its science variable plus the
-  telemetry, metadata, and science times needed for curryer/SPICE to compute
-  the line-of-sight and spacecraft geometry. This is the direction the package
-  is built toward, and the recommended format for new missions.
-- **`.mat` / file-based LOS & PSF (interim test scaffolding).** The code was
-  developed against interim `.mat` test fixtures — fake image arrays and
-  standalone `.mat` line-of-sight / PSF files supplied via
-  `CalibrationFiles.los_vectors_file` / `psf_file` (or `verify(..., los_file=,
-psf_file=)`). These are convenience inputs for testing without SPICE-derived
-  geometry; they are never required and will be superseded as LOS/spacecraft
-  geometry becomes SPICE-derived.
-
-Real-data NetCDF ingestion (deriving geometry from observation telemetry) is
-the intended direction, not a claim that it is fully implemented today. Frame
-new work around the NetCDF-observation path and treat `.mat`/file-based LOS/PSF
-as interim.
-
-**Observation files for `verify(gcp_pairs=...)` and `verify(observation_paths=...)`.**
-Rows are frames and columns are cross-track detector pixels; the middle row is
-the mid-frame. The file carries `position` (spacecraft ECEF position at the
-mid-frame, metres). A file that is a column crop of the detector carries
-`detector_pixel` (one 0-based LOS-table row per column, strictly increasing);
-without it the LOS table must have one row per column. The boresight used for
-the nadir-equivalent error is the line of sight of the pixel in the GCP's
-column in the mid-frame row.
-
----
-
-## Image-Matching Dataset Format
-
-The `image_matching_results` passed to `verify()` must be a list of
-`xr.Dataset` objects with a `measurement` dimension. Spacecraft-state
-variable names are configured on `GeolocationSetup`.
-
-| Variable                       | Dimension(s)                      | Description                                                                                                                         |
-| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `lat_error_deg`                | `[measurement]`                   | Latitude error (degrees, positive = northward)                                                                                      |
-| `lon_error_deg`                | `[measurement]`                   | Longitude error (degrees, positive = eastward)                                                                                      |
-| `gcp_lat_deg`                  | `[measurement]`                   | GCP centre latitude (degrees)                                                                                                       |
-| `gcp_lon_deg`                  | `[measurement]`                   | GCP centre longitude (degrees)                                                                                                      |
-| `gcp_alt`                      | `[measurement]`                   | GCP altitude (metres; typically `0.0`)                                                                                              |
-| `<spacecraft_position_name>`   | `[measurement, xyz]`              | Spacecraft position in CTRS/ITRF93 frame, metres                                                                                    |
-| `<boresight_name>`             | `[measurement, xyz]`              | Instrument boresight unit vector in the instrument frame                                                                            |
-| `<transformation_matrix_name>` | `[measurement, xyz_from, xyz_to]` | Rotation matrix from instrument frame to CTRS                                                                                       |
-| `correlation`                  | `[measurement]`                   | Final correlation coefficient (also read as `ccv` or `im_ccv`); required when `minimum_correlation` or `minimum_peak_margin` is set |
-| `correlation_secondary`        | `[measurement]`                   | Strongest first-grid correlation away from the peak; required when `minimum_peak_margin` is set                                     |
-
-`<spacecraft_position_name>` corresponds to `GeolocationSetup.spacecraft_position_name`
-(and similarly for the other two). For CLARREO these are `"riss_ctrs"`,
-`"bhat_hs"`, and `"t_hs2ctrs"` respectively.
-
-When spacecraft-state variables are unavailable (e.g. testing without SPICE
-kernels), set the boresight to the nadir unit vector `(-r_sc / |r_sc|)` and
-the rotation matrix to identity. This makes the nadir-equivalent scaling
-factor 1.0 and passes raw errors through unchanged — the correct conservative
-default.
-
----
-
-## Interpreting Results
-
-### Verification
+**Varying a sweep in code.** `sweep.with_strategy(...)` and `sweep.update_param(...)` return
+validated copies:
 
 ```python
-result = verify(setup, image_matching_results=datasets)
-
-print(result.summary_table)  # ASCII table: per-GCP status
-print("Passed:", result.passed)
-within = result.percent_within_threshold  # None when every GCP is rejected
-print(f"Within threshold: {'N/A' if within is None else f'{within:.1f}%'}")
-
-for err in result.per_gcp_errors:
-    print(
-        f"GCP {err.gcp_index}: {err.status:8s} nadir_error={err.nadir_equiv_error_m:.1f} m  "
-        f"along={err.along_track_error_m} m  cross={err.cross_track_error_m} m  {err.rejection_reason or ''}"
-    )
-
-# Serialise to JSON (xr.Dataset field must be excluded)
-json_str = result.model_dump_json(exclude={"aggregate_stats"})
-result.aggregate_stats.to_netcdf("verification_stats.nc")
+grid = sweep.with_strategy("grid", grid_points_per_param=5)
+wider = sweep.update_param("angle_x", bounds=[-600.0, 600.0])
 ```
 
-Every matched GCP appears in `per_gcp_errors` with a `status`:
+The `update_param` selector is the parameter's position, its `spec.field`, or its `config_file`
+stem.
 
-| Status     | Meaning                                                                                                                                                     |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pass`     | Accepted match, nadir-equivalent error below `performance_threshold_m`                                                                                      |
-| `fail`     | Accepted match, error at or above the threshold                                                                                                             |
-| `rejected` | The match failed `minimum_correlation` or `minimum_peak_margin` (e.g. cloud or a featureless scene); `rejection_reason` names the gate, value and threshold |
+---
 
-Rejected GCPs keep their computed errors so they can be reviewed, but only accepted GCPs
-enter `percent_within_threshold` and the statistics in `aggregate_stats.attrs`
-(`total_measurements` counts accepted GCPs; `n_matched`, `n_accepted` and `n_rejected`
-give the split). When every GCP is rejected, `verify()` still returns the result, with
-`passed` False, `percent_within_threshold` `None` (nothing was measured) and no
-statistics.
+## Input contracts
 
-`along_track_error_m` / `cross_track_error_m` resolve the error along the ground-track
-direction (the direction of increasing observation row, i.e. frame time, at the GCP in
-the file-pair modes and at the geolocated grid's centre in the `geolocated_data` mode) and
-90° clockwise from it. Like the latitude and longitude errors they are geolocated minus
-true: a positive along-track error means the geolocated position lies ahead of the GCP
-along the track, a positive cross-track error that it lies to the right. A timing error
-shows up along track; a roll error across track. They are `None` when the matching path
-did not record `track_azimuth_deg`.
+The inputs are checked where they enter, and a violation raises naming the file and the problem.
+Nothing is repaired or defaulted.
 
-### Quality weighting
+### Observation files for verification (`gcp_pairs`, `observation_paths`)
 
-Each accepted GCP gets a `quality_weight`, the match signal-to-noise ratio
-`ρ² / (1 − ρ²)` of its correlation `ρ` (`error_stats.match_snr_weight`). If the observed
-image is the emulated scene plus independent noise, `ρ²` is the scene's share of the
-variance, and the variance of a correlation-registration error scales as noise over
-signal, so this is an inverse-variance weight. `ρ` is capped at 0.99 (weight 49) so one
-near-perfect match cannot dominate; rejected GCPs weigh 0.
+| Variable                        | Contract                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `band_data`                     | Radiance, (frame, pixel): rows are frames, the middle row is the mid-frame                                   |
+| `lat`, `lon`                    | Per pixel, degrees (`latitude` / `longitude` also read); `h` (metres) optional                               |
+| `position`                      | Spacecraft position at the mid-frame, ECEF, metres; a missing, non-finite or Earth-interior value raises     |
+| `detector_pixel` (column crops) | One 0-based LOS-table row per column, strictly increasing; without it the LOS table needs one row per column |
 
-| ρ      | 0.80 | 0.90 | 0.95 | 0.99 |
-| ------ | ---- | ---- | ---- | ---- |
-| weight | 1.8  | 4.3  | 9.3  | 49   |
+`.mat` observations are also read, with the position in `R_ISS_midframe`.
 
-`result.weighted_percent_within_threshold` and the `weighted_*` attributes of
-`aggregate_stats` (mean, RMS, percent below 100–1000 m) are reported **next to** the
-unweighted values; `passed` always uses the unweighted percentage, as the requirement is
-written. `effective_measurements = (Σw)² / Σw²` is the number of equally good GCPs the
-weighted set is worth: when it is much smaller than the accepted count, a few GCPs carry
-the weighted statistics.
+The GCP chip's centre must lie inside the observation grid. The line of sight used for the
+nadir-equivalent error is that of the mid-frame pixel in the column nearest the chip centre.
 
-### Reviewing every GCP
+### Pre-computed matches (`image_matching_results`)
 
-For review, ask `verify()` to keep the images behind each match (file-pair modes only:
-`gcp_pairs` or `observation_paths`), then save the result:
+A list of `xr.Dataset` objects with a `measurement` dimension. The spacecraft-state variable names
+are set on the setup.
+
+| Variable                       | Dimension(s)                      | Description                                                                                          |
+| ------------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `lat_error_deg`                | `[measurement]`                   | Latitude error, degrees, positive north                                                              |
+| `lon_error_deg`                | `[measurement]`                   | Longitude error, degrees, positive east                                                              |
+| `gcp_lat_deg`, `gcp_lon_deg`   | `[measurement]`                   | GCP centre, degrees                                                                                  |
+| `gcp_alt`                      | `[measurement]`                   | GCP altitude, metres                                                                                 |
+| `<spacecraft_position_name>`   | `[measurement, xyz]`              | Spacecraft position, ITRF93 (Earth-fixed), metres                                                    |
+| `<boresight_name>`             | `[measurement, xyz]`              | Line of sight of the pixel that viewed the GCP, unit vector, instrument frame                        |
+| `<transformation_matrix_name>` | `[measurement, xyz_from, xyz_to]` | Rotation from the instrument frame to ITRF93                                                         |
+| `correlation`                  | `[measurement]`                   | Required when `minimum_correlation` or `minimum_peak_margin` is set (also read as `ccv` or `im_ccv`) |
+| `correlation_secondary`        | `[measurement]`                   | Required when `minimum_peak_margin` is set                                                           |
+| `track_azimuth_deg`            | `[measurement]`                   | Ground-track azimuth at the GCP, degrees; without it the along- and cross-track errors are `None`    |
+
+### Correction inputs (`CorrectionInput`)
+
+| Field            | Contract                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `telemetry_file` | Telemetry the dynamic kernels are built from, read with `setup.data_config.file_format` |
+| `science_file`   | Observation subimage, NetCDF (below)                                                    |
+| `gcp_file`       | GCP chip, NetCDF (`.mat` accepted)                                                      |
+
+The subimage holds:
+
+- `band_data` (frame, pixel): finite radiance;
+- `ugps` (frame): strictly increasing integer frame times, microseconds since the GPS epoch;
+- `detector_pixel` (pixel): the LOS-table row of each column; without it the columns must be the
+  table's rows in order.
+
+The loop ignores any latitude and longitude the subimage carries and re-geolocates it. The
+subimage must lie inside its chip by the search reach plus the largest shift the sweep can cause
+([The correction loop](#the-correction-loop)). Paths may be `s3://` URIs when `boto3` is
+installed.
+
+### Calibration
+
+The LOS table (`los_vectors_file`, per-detector line-of-sight unit vectors) and the PSF
+(`psf_file`) may be `.mat` files. Verification takes them as `los_file=` / `psf_file=`; the
+correction loop reads `setup.calibration`. The loop requires the LOS table, since it
+re-geolocates each pixel with it, and the built-in matching requires the PSF.
+
+---
+
+## Verification
+
+### Running it
+
+`verify(setup, ...)` takes one input mode, keyword-only. If several are given, the first in this
+order is used:
+
+| Mode                 | Arguments                                                                                               | Use                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Pre-computed matches | `image_matching_results=`                                                                               | A mission's own matching pipeline; needs no SPICE                                                 |
+| Geolocated dataset   | `geolocated_data=` with `setup.image_matching_func`, or with `gcp_directory=`, `los_file=`, `psf_file=` | Matching a whole geolocated dataset, cropped inside the chip (`detector_pixel` for a column crop) |
+| Explicit file pairs  | `gcp_pairs=`, `los_file=`, `psf_file=`                                                                  | Observation subimages already paired with their chips                                             |
+| Auto-paired files    | `observation_paths=`, `gcp_directory=`, `los_file=`, `psf_file=`                                        | Pairing by spatial overlap                                                                        |
+
+With no mode, or a mode missing what it needs, `verify()` raises `ValueError`.
+
+### The result
+
+```python
+result = verify(setup, gcp_pairs=pairs, los_file=los, psf_file=psf)
+
+print(result.summary_table)
+print(result.passed, result.percent_within_threshold, result.weighted_percent_within_threshold)
+for err in result.per_gcp_errors:
+    print(err.gcp_index, err.status, err.nadir_equiv_error_m, err.along_track_error_m, err.rejection_reason)
+```
+
+| Attribute                           | Contents                                                                                     |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `passed`                            | The verdict                                                                                  |
+| `percent_within_threshold`          | Accepted GCPs within the threshold, %; `None` when nothing was measured                      |
+| `weighted_percent_within_threshold` | The quality-weighted percentage; information only                                            |
+| `per_gcp_errors`                    | One `GCPError` per matched GCP: errors, status, reason, correlation, off-nadir angle, weight |
+| `aggregate_stats`                   | `xr.Dataset`: per-GCP errors with every intermediate term, the statistics as attributes      |
+| `warnings`, `summary_table`         | Text for people                                                                              |
+
+`aggregate_stats` holds `vp_error_m` and `xvp_error_m`, the scale factors, the nadir-equivalent
+components and total, and `off_nadir_angle_deg`. Its attributes include `total_measurements`
+(accepted GCPs), `n_matched`, `n_accepted`, `n_rejected`, and the mean, RMS, percentiles and
+`percent_below_<N>m` for 100–1000 m, with their weighted versions.
+
+### Saving, reviewing and re-applying
+
+The gates are automatic, but a person should look at every match before a result is reported. A
+cloud edge can correlate well, and a good match can narrowly miss a gate. In the file-pair modes,
+`keep_images=True` keeps the images behind each match, and `save_verification` writes everything
+a review needs:
 
 ```python
 from curryer.correction import apply_review, load_verification, read_review_decisions, save_verification
 
 result = verify(setup, gcp_pairs=pairs, los_file=los, psf_file=psf, keep_images=True)
-save_verification(result, Path("verification/2026-08-05"))
+save_verification(result, Path("verification/run1"))
 ```
 
-| File                 | Contents                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `result.json`        | The `VerificationResult` (per-GCP errors, statuses, requirements, provenance)                                                                                   |
-| `summary.csv`        | One row per GCP: status, rejection reason, nadir-equivalent / along / cross-track errors, correlation, view angle, quality weight, and an empty `review` column |
-| `aggregate_stats.nc` | Per-GCP error-stats dataset with the statistics as attributes                                                                                                   |
-| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (PSF-convolved GCP at the matched position), `reference`, `reference_convolved`, and their latitude/longitude grids             |
+| File                 | Contents                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `result.json`        | The `VerificationResult`, without `aggregate_stats` and the images; written last, so a directory without it is an incomplete save          |
+| `summary.csv`        | One row per GCP: status, reason, errors, correlations, off-nadir angle, quality weight, and an empty `review` column                       |
+| `aggregate_stats.nc` | `aggregate_stats`                                                                                                                          |
+| `chips/gcp_NNNN.nc`  | Per GCP: `observed`, `emulated` (the PSF-blurred chip at the match), `reference`, `reference_convolved`, with their latitude and longitude |
 
-CSV and NetCDF read directly in MATLAB (`readtable`, `ncread`; `ncread` returns 2-D
-arrays transposed) and Python. Plotting is left to the mission: everything a review
-figure needs is in these files. Figures that have worked well for review:
+`save_verification` refuses a directory that already holds a result. CSV and NetCDF read directly
+in MATLAB (`readtable`, `ncread`; `ncread` returns 2-D arrays transposed) and Python.
 
-- **Chip panel**, one per GCP: `observed`, the PSF-convolved GCP sampled at the
-  observation's own `latitude`/`longitude` (`search.emulate_image` on
-  `reference_convolved`), and `emulated`; side by side they show the misregistration
-  and, for a rejected GCP, why (cloud, featureless scene). Title it with the status and
-  `rejection_reason`.
-- **Map**, one per observation: a box around each GCP chip (`reference_latitude` /
-  `reference_longitude` extents) coloured by status, over the observation.
-- **Error scatter**: `along_track_error_m` against `cross_track_error_m` for every GCP,
-  rejected ones hollow, with a circle at `performance_threshold_m`.
-
-A reviewer fills the `review` column of `summary.csv` with `accept` or `reject`. Applying
-it recomputes the statistics without re-running image matching:
+A reviewer puts `accept` or `reject` in the `review` column; a blank cell keeps the automatic
+status. Applying the decisions recomputes the statistics without re-matching:
 
 ```python
-saved = load_verification(Path("verification/2026-08-05"))
-reviewed = apply_review(saved, read_review_decisions(Path("verification/2026-08-05/summary.csv"), saved))
-print(reviewed.summary_table)
-save_verification(reviewed, Path("verification/2026-08-05-reviewed"))
+saved = load_verification(Path("verification/run1"))
+reviewed = apply_review(saved, read_review_decisions(Path("verification/run1/summary.csv"), saved))
+save_verification(reviewed, Path("verification/run1_reviewed"))
 ```
 
-`accept` brings a GCP into the statistics (status `pass` or `fail` by its error); `reject`
-takes it out (status `rejected`, reason `rejected in review`). Each `GCPError.review`
-records the decision, and quality weights are recomputed, so a low-correlation GCP
-accepted in review counts fully in the unweighted statistics but little in the weighted
-ones. `examples/correction/example_verification.py` runs the whole cycle: verify, save,
-mark a decision in `summary.csv`, apply it.
+`accept` brings a GCP into the statistics (status `pass` or `fail` by its error); `reject` takes it
+out (status `rejected`, reason `rejected in review`). Quality weights are recomputed, so a
+low-correlation GCP accepted in review counts fully in the unweighted statistics but little in the
+weighted ones. `read_review_decisions` raises on a value other than `accept`, `reject` or blank,
+and on a duplicated `gcp_index`.
 
-### Comparing Before and After
+curryer has no plotting dependency; review figures belong to the mission. Figures that have
+worked well:
 
-```python
-from curryer.correction import compare_results
+- **Chip panel**, one per GCP: `observed`, the PSF-blurred chip sampled at the observation's own
+  latitude and longitude (`search.emulate_image` on `reference_convolved`), and `emulated`. Side
+  by side, they show the misregistration and, for a rejected GCP, why. Title it with the status
+  and reason.
+- **Map**, one per observation: a box around each chip coloured by status.
+- **Error scatter**: along-track against cross-track error, rejected GCPs hollow, with a circle at
+  the threshold.
 
-before = verify(setup, image_matching_results=pre_datasets)
-after = verify(setup, image_matching_results=post_datasets)
-print(compare_results(before, after))
-```
+### Before and after
 
-### Correction Loop
-
-```python
-result = run_correction(setup, sweep, inputs, work_dir)
-
-print(result.summary_table)
-print("Passed:", result.passed)
-print(result.recommendation)
-
-best = min(result.results, key=lambda r: r["rms_error_m"])
-print(f"Best RMS: {best['rms_error_m']:.2f} m  (parameters: {best['parameters']})")
-```
+`compare_results(before, after)` returns a text comparison of two verification results, such as
+before and after a correction is applied.
 
 ---
 
-## AWS / S3 Data Access
+## Correction
 
-For missions storing image-matching results in S3 (requires `boto3`):
+### Running it
+
+`run_correction(setup, sweep, inputs, work_dir, output=None)` runs the sweep and returns a
+`CorrectionResult`. Inputs are `CorrectionInput` objects or `(telemetry, science, gcp)` tuples.
+
+For each input, the loop builds the dynamic kernels from the telemetry once. Then, for each
+candidate parameter set, it:
+
+1. writes the parameter kernels (`CONSTANT_KERNEL`, `OFFSET_KERNEL`) and shifts the frame times
+   by any `OFFSET_TIME`;
+2. re-geolocates the subimage's frames and detector pixels with SPICE, using the LOS-table rows
+   named by `detector_pixel`, and terrain-corrects them with the DEM in `setup.geo.dem_data_dir`;
+3. matches the subimage's radiance on that grid to its chip (`match_observation`, or
+   `setup.observation_matching_func`).
+
+### The result
+
+| Attribute                                        | Contents                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `best_parameter_set`, `best_rms_m`, `best_index` | The best valid candidate, its mean per-pair RMS, and its index in the NetCDF                       |
+| `met_threshold`                                  | Whether the best candidate meets the requirement, on the usable pairs                              |
+| `n_parameter_sets`, `n_gcp_pairs`                | Candidates tried and pairs run                                                                     |
+| `n_usable_pairs`, `n_valid_sets`                 | Pairs the comparison rests on, and candidates compared                                             |
+| `all_parameter_sets`                             | Every candidate with its mean, best-pair and worst-pair RMS, sorted by mean RMS                    |
+| `recommendation`, `summary_table`                | Text for people, including the basis of the verdict: how many pairs and candidates stood behind it |
+| `netcdf_path`                                    | The saved NetCDF                                                                                   |
+
+Read the best candidate against `n_usable_pairs` and `n_valid_sets`: a best set chosen on one pair,
+or from a handful of valid candidates, is weak evidence.
+
+The NetCDF (`output.output_filename` in `work_dir`) records, per candidate and pair, the errors
+(`rms_error_m`, `mean_error_m`, `max_error_m`, `std_error_m`), the match (`im_lat_error_km`,
+`im_lon_error_km`, `im_ccv`, `im_grid_step_m`) and `accepted`; per candidate, the parameter values,
+`mean_rms_all_pairs`, `best_pair_rms`, `worst_pair_rms` and `valid`. An invalid candidate's
+`mean_rms_all_pairs` is NaN. When the selection raises, the NetCDF is saved first, so a failed
+sweep can still be inspected.
+
+### Choosing a strategy
+
+| Strategy        | Candidates                                                                                                                             | Use                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `GRID_SEARCH`   | Every combination of `grid_points_per_param` values across each parameter's bounds; more than `max_grid_sets` combinations raises      | Mapping the error surface, e.g. a degenerate valley |
+| `SINGLE_OFFSET` | Each parameter varied alone over `n_iterations` values, the others at nominal                                                          | A first look at each parameter                      |
+| `RANDOM`        | `n_iterations` draws, each offset normal about nominal with the parameter's `sigma`, clipped to its bounds; `seed` for reproducibility | Searching a wide space (Monte Carlo)                |
+
+A sigma comparable to the bounds piles draws on the bounds. To refine, run again with narrower
+bounds around the best candidate.
+
+### Low-level: `loop()`
+
+`loop(setup, sweep, work_dir, inputs)` returns the raw `(results, netcdf_data)`. It accepts only
+`(str, str, str)` tuples, and `work_dir` comes before the inputs.
+
+---
+
+## Configuration reference
+
+### Setup — `setup`
+
+| Field                        | Type                       | Notes                                                            |
+| ---------------------------- | -------------------------- | ---------------------------------------------------------------- |
+| `geo`                        | `GeolocationConfig`        | **Required.** Kernels, instrument, gates                         |
+| `requirements`               | `RequirementsConfig`       | **Required.** The accuracy requirement                           |
+| `data_config`                | `DataConfig \| None`       | Telemetry reader; `None` uses CSV                                |
+| `calibration`                | `CalibrationFiles \| None` | LOS table and PSF for the correction loop                        |
+| `psf_sampling`               | `PSFSamplingConfig`        | PSF sample spacing; defaults suit 30 m Landsat chips             |
+| `search`                     | `SearchConfig`             | Correlation search grid; defaults suit 30 m Landsat chips        |
+| `spacecraft_position_name`   | `str`                      | Variable name of the spacecraft position in pre-computed matches |
+| `boresight_name`             | `str`                      | Variable name of the line of sight in pre-computed matches       |
+| `transformation_matrix_name` | `str`                      | Variable name of the rotation matrix in pre-computed matches     |
+| `image_matching_func`        | `Callable \| None`         | Custom matching for `verify(geolocated_data=...)`; not in JSON   |
+| `observation_matching_func`  | `Callable \| None`         | Replaces `match_observation` in the correction loop; not in JSON |
+
+### Requirements — `setup.requirements`
+
+| Field                      | Type    | Notes                                                                                          |
+| -------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `performance_threshold_m`  | `float` | **Required.** Nadir-equivalent error limit, metres                                             |
+| `performance_spec_percent` | `float` | **Required.** Percentage of accepted GCPs within the limit that a run must exceed, in [0, 100) |
+
+### Kernels, instrument and gates — `setup.geo`
+
+| Field                 | Type            | Notes                                                                                              |
+| --------------------- | --------------- | -------------------------------------------------------------------------------------------------- |
+| `meta_kernel_file`    | `Path`          | The mission meta-kernel JSON                                                                       |
+| `generic_kernel_dir`  | `Path`          | Generic SPICE kernels                                                                              |
+| `dynamic_kernels`     | `list[Path]`    | Kernel JSONs built from each input's telemetry                                                     |
+| `instrument_name`     | `str`           | NAIF instrument name from the IK                                                                   |
+| `time_field`          | `str`           | Telemetry column of uGPS times                                                                     |
+| `dem_data_dir`        | `Path \| None`  | Elevation data the correction loop terrain-corrects with; `None` uses curryer's standard location  |
+| `minimum_correlation` | `float \| None` | Gate, 0–1; `None` disables. When set, matches must carry `correlation` or verification raises      |
+| `minimum_peak_margin` | `float \| None` | Gate; `None` disables. When set, matches must carry `correlation_secondary` or verification raises |
+
+### Image matching — `setup.search` and `setup.psf_sampling`
+
+Set these for the instrument's ground sampling. Invalid values raise when the setup is built.
+
+| Field                                  | Default    | Notes                                                                                                     |
+| -------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `search.grid_size`                     | `44`       | Grid points per axis, integer ≥ 2                                                                         |
+| `search.grid_span_km`                  | `11.0`     | Full width of the first grid, km                                                                          |
+| `search.reduction_factor`              | `0.8`      | Grid-step shrink per iteration, in (0, 1)                                                                 |
+| `search.spacing_limit_m`               | `10.0`     | The search stops at this step, m; must be below the first step, `grid_span_km / (grid_size - 1)`          |
+| `search.peak_exclusion_km`             | `2.0`      | Distance from the first-grid peak beyond which `correlation_secondary` is taken; below `grid_span_km / 2` |
+| `psf_sampling.psf_lat_sample_dist_deg` | `2.44e-05` | PSF sample spacing in latitude, degrees                                                                   |
+| `psf_sampling.psf_lon_sample_dist_deg` | `2.87e-05` | PSF sample spacing in longitude, degrees                                                                  |
+
+### Calibration — `setup.calibration`
+
+| Field              | Notes                                   |
+| ------------------ | --------------------------------------- |
+| `los_vectors_file` | Per-detector line-of-sight unit vectors |
+| `psf_file`         | Optical point-spread function           |
+
+### Data loading — `setup.data_config`
+
+| Field              | Notes                                                       |
+| ------------------ | ----------------------------------------------------------- |
+| `file_format`      | `"csv"`, `"netcdf"` or `"hdf5"`: the telemetry reader       |
+| `position_columns` | Spacecraft-position column names in the telemetry, optional |
+
+### Sweep — `sweep`
+
+| Field                   | Type                    | Notes                                                       |
+| ----------------------- | ----------------------- | ----------------------------------------------------------- |
+| `parameters`            | `list[ParameterConfig]` | **Required**, at least one                                  |
+| `search_strategy`       | `SearchStrategy`        | `RANDOM` (default), `GRID_SEARCH` or `SINGLE_OFFSET`        |
+| `n_iterations`          | `int`                   | Draws (`RANDOM`) or values per parameter (`SINGLE_OFFSET`)  |
+| `seed`                  | `int \| None`           | Seed for `RANDOM`                                           |
+| `grid_points_per_param` | `int`                   | Points per parameter for `GRID_SEARCH`                      |
+| `max_grid_sets`         | `int`                   | Largest grid allowed (default 100 000); a larger one raises |
+
+### Parameters — `sweep.parameters[]`
+
+| Field                | Type            | Notes                                                                                                                                      |
+| -------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ptype`              | `ParameterType` | `CONSTANT_KERNEL`, `OFFSET_KERNEL` or `OFFSET_TIME`                                                                                        |
+| `config_file`        | `Path \| None`  | The kernel JSON template; required for the kernel types                                                                                    |
+| `spec.current_value` | `float`         | Nominal value; for `CONSTANT_KERNEL`, the nominal angle of `field`                                                                         |
+| `spec.bounds`        | `[min, max]`    | Offsets from nominal, in `units`; zero width holds the parameter                                                                           |
+| `spec.sigma`         | `float \| None` | Standard deviation for `RANDOM`, in `units`                                                                                                |
+| `spec.units`         | `str \| None`   | e.g. `"arcseconds"`, `"radians"`, `"seconds"`, `"milliseconds"`                                                                            |
+| `spec.field`         | `str \| None`   | Telemetry column for `OFFSET_KERNEL`; rotation axis (`angle_x`, `angle_y`, `angle_z`) for `CONSTANT_KERNEL`; output name for `OFFSET_TIME` |
+
+### Parameter types — `ptype`
+
+| Value             | Adjusts                                                                      |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `CONSTANT_KERNEL` | One rotation angle (roll, pitch or yaw) of a fixed-attitude frame's CK       |
+| `OFFSET_KERNEL`   | A bias added to a telemetry angle field before its CK is built               |
+| `OFFSET_TIME`     | Seconds added to the frame times: true frame time = recorded `ugps` + offset |
+
+Kernel parameters are applied in radians, so each `CONSTANT_KERNEL` and `OFFSET_KERNEL` template
+must set `"input_angle_units": "RADIANS"` (the attitude writer reads degrees without it), and an
+`OFFSET_KERNEL` telemetry field must be in radians. The loop raises before the first pair
+otherwise.
+
+### Output — `output`
+
+| Field             | Type                   | Notes                                                 |
+| ----------------- | ---------------------- | ----------------------------------------------------- |
+| `netcdf`          | `NetCDFConfig \| None` | NetCDF metadata; `None` builds it from the threshold  |
+| `output_filename` | `str \| None`          | NetCDF file name in `work_dir`; `None` uses a default |
+
+---
+
+## Adding a mission
+
+A mission provides, in its configuration:
+
+1. **SPICE kernels**: the meta-kernel, generic kernels, and the dynamic kernels built from
+   telemetry (`setup.geo`).
+2. **The instrument**: its NAIF name, the LOS table and the PSF.
+3. **Timestamps**: frame times as integer uGPS in each subimage's `ugps`; `setup.geo.time_field`
+   names the telemetry's uGPS column.
+4. **The requirement**: threshold and spec.
+5. **Image matching for its pixel size**: `setup.search` and `setup.psf_sampling` (the defaults
+   suit 30 m Landsat chips), and the gates.
+6. **The adjustments to try**, for correction: `sweep.parameters`.
+
+And, in its own code:
+
+- **GCP chips** regridded to latitude and longitude ([GCP chip regridding](gcp_regridding.md));
+- **observation subimages** that meet the [input contracts](#input-contracts): cut around each
+  chip, inside it by the search reach (plus the sweep's largest shift, for correction);
+- **data access and command lines**: finding granules, telemetry and chips, and any figures.
+
+`examples/correction/example_config.json` is an annotated template;
+`examples/correction/clarreo_config.json` is a complete configuration for one mission.
+
+### S3
+
+Paths given to `verify()` and `run_correction()` may be `s3://` URIs when `boto3` is installed.
+For image-matching results stored by date, `curryer.correction.dataio` provides
+`S3Configuration`, `find_netcdf_objects` and `download_netcdf_objects`:
 
 ```python
 import datetime
-from curryer.correction.dataio import S3Configuration, find_netcdf_objects, download_netcdf_objects
 
-s3_config = S3Configuration(
-    bucket="my-mission-bucket",
-    base_prefix="image_match",  # date-partitioned subdirs: base_prefix/YYYYMMDD/
-)
+from curryer.correction.dataio import S3Configuration, download_netcdf_objects, find_netcdf_objects
 
-object_keys = find_netcdf_objects(
-    s3_config,
-    start_date=datetime.date(2024, 3, 17),
-    end_date=datetime.date(2024, 3, 17),
-)
-
-local_paths = download_netcdf_objects(s3_config, object_keys, destination="/tmp/downloads")
+s3_config = S3Configuration(bucket="my-mission-bucket", base_prefix="image_match")  # base_prefix/YYYYMMDD/
+keys = find_netcdf_objects(s3_config, start_date=datetime.date(2024, 3, 17), end_date=datetime.date(2024, 3, 17))
+paths = download_netcdf_objects(s3_config, keys, destination="/tmp/downloads")
 ```
 
-Configure credentials via `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
-environment variables or an IAM role. S3 support is optional; the core API
-works with local `Path` objects only.
+Credentials come from the standard AWS sources (environment, profile or role).
 
 ---
 
 ## Troubleshooting
 
-**`KeyError: Missing required 'sweep' section`**
-The JSON config is missing a required top-level section. `load_config_files()`
-requires `"setup"` and `"sweep"`; `"output"` is optional.
-
-**`ValidationError` on `requirements`**
-The setup's `requirements` block must contain `performance_threshold_m` and
-`performance_spec_percent`. These encode the mission's geolocation requirement
-and cannot be omitted.
-
-**`ValidationError` when loading the config**
-The error names the offending field. Common causes: a wrong type (`sigma` must
-be a number, not a string), a missing required field (`setup.geo` and
-`setup.requirements` are required), or an unknown field name in a parameter's
-`spec` (unknown keys are rejected rather than silently ignored).
-
-**`SPICE(PATHTOOLONG)` kernel path error**
-SPICE enforces an 80-character kernel path limit. Curryer works around this
-automatically. Override the temp directory if `/tmp` is unavailable:
-
-```bash
-export CURRYER_TEMP_DIR=/tmp
-```
-
-**`ValueError` when passing `geolocated_data=` to `verify()`**
-The `geolocated_data` path needs a way to match. Either attach a callable to
-`setup.image_matching_func`, or pass `gcp_directory=`, `los_file=`, and
-`psf_file=` to use the built-in pairing + matching. (Or skip this path and pass
-pre-computed `image_matching_results=` instead.)
-
-**`ValueError: Spacecraft position ...`**
-File-pair verification needs the observation's `position` (ECEF, metres). A
-missing value, a value in kilometres (it lands inside the Earth) or a non-finite
-value raises; nothing falls back to a nadir geometry.
-
-**`ValueError: Point (lat ..., lon ...) is outside the observation grid`**
-The GCP chip's centre must lie inside the observation it is paired with: its
-column sets the line of sight used for the error.
-
-**`ValueError: 'detector_pixel' in ... must be ...` or `... columns but the LOS table has ... rows`**
-A column-cropped observation, file or `geolocated_data`, needs `detector_pixel`
-with one strictly increasing LOS-table row per column; an uncropped one needs a
-LOS table with one row per column.
-
-**`ValueError: Search shift ... samples the subimage outside the GCP chip`**
-The observation is too large for the chip at the configured search reach. Crop
-it further inside the chip (the first grid's half-width plus the expected error,
-or `setup.search.max_shift_km()` to be sure), or reduce `search.grid_span_km` /
-`search.reduction_factor`. The
-`verify(geolocated_data=...)` mode matches the whole geolocated dataset, so it
-must already be cropped.
-
-**`ValueError: Subimage has ... non-finite value(s)`**
-The correlation is undefined over missing data. Crop or mask the observation
-before matching.
-
-**NaN values in `nadir_equiv_total_error_m`**
-The nadir-equivalent conversion requires valid spacecraft geometry. A
-negative discriminant (logged as `Suspicious geometry: discriminant < 0`)
-means the off-nadir angle exceeds the Earth-limb limit — typically caused by
-incorrect or missing spacecraft-state variables. Verify that
-`spacecraft_position_name`, `boresight_name`, and
-`transformation_matrix_name` resolve to the correct variables and that the
-spacecraft position vector is in metres in the CTRS (Earth-fixed) frame.
+| Error                                                                             | Cause and fix                                                                                                                                                                                                        |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KeyError: Missing required 'sweep' section`                                      | `load_config_files()` needs `setup` and `sweep`                                                                                                                                                                      |
+| `ValidationError` loading the configuration                                       | The message names the field: a wrong type, a missing required field, or an unknown key                                                                                                                               |
+| `SPICE(PATHTOOLONG)`                                                              | SPICE's 80-character path limit. curryer works around it with a short temporary directory; set `CURRYER_TEMP_DIR` if `/tmp` is unavailable                                                                           |
+| `ValueError` with `geolocated_data=`                                              | Attach `setup.image_matching_func`, or pass `gcp_directory=`, `los_file=` and `psf_file=`                                                                                                                            |
+| `ValueError: Spacecraft position ...`                                             | File-pair verification needs the observation's ECEF `position` in metres; a value in kilometres lands inside the Earth                                                                                               |
+| `ValueError: Point (lat ..., lon ...) is outside the observation grid`            | The chip's centre must lie inside the observation it is paired with                                                                                                                                                  |
+| `'detector_pixel' ... must be ...` / `... columns but the LOS table has ... rows` | A column crop, file or `geolocated_data`, needs strictly increasing `detector_pixel`; an uncropped one needs one LOS row per column                                                                                  |
+| `Search shift ... samples the subimage outside the GCP chip`                      | Crop the observation further inside the chip: the first grid's half-width plus the expected error (and the sweep's largest shift, for correction), or `setup.search.max_shift_km()` to be sure; or narrow the search |
+| `Subimage has ... non-finite value(s)`                                            | The correlation is undefined over missing data; crop or mask before matching                                                                                                                                         |
+| `No GCP pair passes the match-quality gates ... under any parameter set.`         | Every pair failed the gates under every candidate: cloud, or bounds that never reach the true offset                                                                                                                 |
+| `No parameter set passes the match-quality gates on every usable GCP pair; ...`   | The usable pairs pass under different candidates. The message counts the passing candidates per pair: narrow the sweep, or drop the pair that rarely passes                                                          |
+| NaN in `nadir_equiv_total_error_m` (`Suspicious geometry: discriminant < 0`)      | The off-nadir angle exceeds the Earth-limb limit: check the spacecraft-state variable names, and that the position is in metres, Earth-fixed                                                                         |
 
 ---
 
-## Reference Examples
+## Reference examples
 
-| File                                            | Status   | Description                                                           |
-| ----------------------------------------------- | -------- | --------------------------------------------------------------------- |
-| `examples/correction/example_verification.py`   | Runnable | End-to-end verification demo; real CLARREO data or synthetic fallback |
-| `examples/correction/example_run_correction.py` | Template | Correction loop template; exits cleanly when data/tools missing       |
-| `examples/correction/clarreo_config.py`         | —        | Mission config factory — use as a template for new missions           |
-| `examples/correction/clarreo_config.json`       | —        | Fully populated JSON config for CLARREO                               |
-| `examples/correction/example_config.json`       | —        | Annotated generic JSON config template                                |
-
-Run from the repository root:
+| File                                            | Description                                                            |
+| ----------------------------------------------- | ---------------------------------------------------------------------- |
+| `examples/correction/example_verification.py`   | Runnable: verify, save, mark a review decision, apply it               |
+| `examples/correction/example_run_correction.py` | Correction loop template; exits cleanly when data or tools are missing |
+| `examples/correction/example_config.json`       | Annotated configuration template                                       |
+| `examples/correction/clarreo_config.json`       | A complete configuration for one mission                               |
+| `examples/correction/clarreo_config.py`         | The same configuration built in Python                                 |
 
 ```bash
 python examples/correction/example_verification.py
 python examples/correction/example_run_correction.py
 ```
 
----
-
-## GCP Chip Regridding
-
-Ground Control Point (GCP) reference imagery (e.g. Landsat imagery) is often in HDF format, in which each pixel's
-position is stored as Earth-Centered, Earth-Fixed (ECEF) X/Y/Z coordinates on
-an irregular geodetic grid. Before these chips can be matched against L1A
-science images for verification and correction purposes, they must be resampled onto a regular latitude/longitude grid
-that matches the spatial resolution of the mission's detector.
-
-The `curryer.correction` package provides a complete pipeline for this:
-
-```
-HDF chip  →  ECEF → WGS84 geodetic  →  bilinear regrid  →  regular NetCDF grid
-```
-
-### Quick start — single file (Python)
-
-```python
-from pathlib import Path
-from curryer.correction.config import RegridConfig
-from curryer.correction.image_io import load_gcp_chip_from_hdf
-from curryer.correction.regrid import regrid_gcp_chip
-
-# 1. Load raw chip (returns band data + ECEF X/Y/Z arrays)
-band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(Path("LT08CHP.20140803.p002r071.c01.v001.hdf"))
-
-# 2. Configure regridding (~100 m resolution for CLARREO)
-config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))
-
-# 3. Regrid and save in one call
-regridded = regrid_gcp_chip(
-    band,
-    (ecef_x, ecef_y, ecef_z),
-    config,
-    output_file="regridded_chip.nc",
-    output_metadata={
-        "source_file": "LT08CHP.20140803.p002r071.c01.v001.hdf",
-        "mission": "CLARREO Pathfinder",
-        "sensor": "Landsat-8",
-        "band": "red",
-    },
-)
-
-# 4. regridded is an ImageGrid — ready for image matching
-print(regridded.data.shape)  # e.g. (421, 433)
-print(regridded.lat[0, 0])  # top-left latitude
-```
-
-### Batch processing — command-line script
-
-For a directory of 100 Landsat chips use the provided script directly:
-
-```bash
-# Regrid all *.hdf files in /data/landsat_gcps/ and write NetCDF to /data/regridded/
-python examples/correction/regrid_gcp_chips.py /data/landsat_gcps/ /data/regridded/
-```
-
-Output:
-
-```
-Processing 100 file(s) → /data/regridded/
-
-[ 1/100] START LT08CHP.20140101.p002r071.c01.v001.hdf
-         ✓ LT08CHP.20140101.p002r071.c01.v001_regridded.nc  (1823 KB, 4.2s)
-[ 2/100] START LT08CHP.20140116.p002r071.c01.v001.hdf
-         ✓ LT08CHP.20140116.p002r071.c01.v001_regridded.nc  (1791 KB, 4.0s)
-...
-────────────────────────────────────────────────────────────
-Finished: all 100 file(s) processed successfully.
-```
-
-#### Common options
-
-| Flag                       | Default              | Description                                       |
-| -------------------------- | -------------------- | ------------------------------------------------- |
-| `--resolution DLAT DLON`   | `0.0009 0.0009`      | Output resolution in degrees (~100 m)             |
-| `--pattern GLOB`           | `*.hdf`              | Filename pattern when source is a directory       |
-| `--mission NAME`           | `CLARREO Pathfinder` | Written to NetCDF `mission` attribute             |
-| `--band DATASET`           | `Band_1`             | HDF dataset name for the radiometric channel      |
-| `--skip-existing`          | off                  | Skip files whose output `.nc` already exists      |
-| `--dry-run`                | off                  | Print what would be done, write nothing           |
-| `--no-conservative-bounds` | off                  | Use full ECEF extent (may include edge artefacts) |
-| `-v` / `--verbose`         | off                  | Show per-row progress and DEBUG log output        |
-
-Resume an interrupted run with `--skip-existing`; preview before committing with `--dry-run`.
-
-### Batch processing — Python API
-
-Use this when you need custom logic (filtering, parallel execution, etc.):
-
-```python
-from pathlib import Path
-from curryer.correction.config import RegridConfig
-from curryer.correction.image_io import load_gcp_chip_from_hdf
-from curryer.correction.regrid import regrid_gcp_chip
-
-input_dir = Path("/data/landsat_gcps")
-output_dir = Path("/data/regridded")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))
-
-hdf_files = sorted(input_dir.glob("LT08CHP.*.hdf"))
-errors = {}
-for hdf_file in hdf_files:
-    nc_file = output_dir / f"{hdf_file.stem}_regridded.nc"
-    try:
-        band, ecef_x, ecef_y, ecef_z = load_gcp_chip_from_hdf(hdf_file)
-        regrid_gcp_chip(
-            band,
-            (ecef_x, ecef_y, ecef_z),
-            config,
-            output_file=str(nc_file),
-            output_metadata={"source_file": hdf_file.name, "mission": "CLARREO Pathfinder"},
-        )
-        print(f"  ✓ {hdf_file.name}")
-    except Exception as exc:
-        errors[hdf_file.name] = str(exc)
-        print(f"  ✗ {hdf_file.name}: {exc}")
-```
-
-### Loading regridded output
-
-```python
-from pathlib import Path
-from curryer.correction.image_io import load_image_grid
-
-gcp = load_image_grid(Path("regridded_chip.nc"))
-# gcp.data  — 2-D radiometric values
-# gcp.lat   — 2-D latitude  (regular grid, decreasing from top to bottom)
-# gcp.lon   — 2-D longitude (regular grid, increasing left to right)
-# gcp.h     — 2-D height above WGS84 ellipsoid (metres), or None
-```
-
-### Configuration reference
-
-```python
-from curryer.correction.config import RegridConfig
-
-config = RegridConfig(output_resolution_deg=(0.0009, 0.0009))  # resolution-based (most common)
-config = RegridConfig(output_grid_size=(500, 500))  # fixed output size
-config = RegridConfig(  # explicit extent + resolution
-    output_bounds=(-116.5, -115.5, 38.0, 39.0),  # (minlon, maxlon, minlat, maxlat)
-    output_resolution_deg=(0.001, 0.001),
-)
-```
-
-| Parameter               | Type                               | Description                                                               |
-| ----------------------- | ---------------------------------- | ------------------------------------------------------------------------- |
-| `output_resolution_deg` | `(dlat, dlon)`                     | Grid spacing in degrees. Mutually exclusive with `output_grid_size`.      |
-| `output_grid_size`      | `(nrows, ncols)`                   | Fixed output dimensions. Mutually exclusive with `output_resolution_deg`. |
-| `output_bounds`         | `(minlon, maxlon, minlat, maxlat)` | Explicit geographic extent. Requires `output_resolution_deg`.             |
-| `conservative_bounds`   | `bool` (default `True`)            | Shrink bounds to grid interior to avoid edge extrapolation.               |
-| `interpolation_method`  | `"bilinear"` \| `"nearest"`        | Interpolation algorithm (default `"bilinear"`).                           |
-| `fill_value`            | `float` (default `NaN`)            | Value assigned to output points outside the input footprint.              |
-
-### Output NetCDF structure
-
-```
-dimensions:  y (rows), x (cols)
-variables:
-  band_data(y, x)   — radiometric values      [digital_number]
-  lat(y, x)         — latitude                [degrees_north]
-  lon(y, x)         — longitude               [degrees_east]
-  h(y, x)           — height above WGS84      [metres]  (present when height is available)
-global attributes:
-  title, Conventions (CF-1.8), source_file, mission, band, processing_software, …
-```
-
-> **Coordinate convention:** row 0 is northernmost (latitude decreases down),
-> column 0 is westernmost (longitude increases right) — consistent with the
-> MATLAB `Chip_regrid2.m` output format.
-
-**Notes:**
-
-- **Ellipsoid:** ECEF → geodetic conversion always uses **WGS84** (`curryer.compute.spatial.ecef_to_geodetic`).
-- **HDF format:** `load_gcp_chip_from_hdf` tries HDF4 (`pyhdf`) first, then falls back to HDF5 (`h5py`).
-- **Memory:** a 1400 × 1400 Landsat chip uses ~30 MB RAM; 100 chips processed sequentially stay well within a 4 GB budget.
-- **Performance:** each chip typically takes 3–6 seconds on a single CPU core.
-
-```{toctree}
-:maxdepth: 1
-
-gcp_regridding.md
-```
+GCP chip regridding has its own guide: [GCP chip regridding](gcp_regridding.md).

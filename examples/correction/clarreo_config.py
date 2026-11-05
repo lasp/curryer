@@ -52,9 +52,8 @@ def create_clarreo_config(
 ) -> tuple[GeolocationSetup, Sweep, OutputConfig]:
     """Create the CLARREO Pathfinder ``(GeolocationSetup, Sweep, OutputConfig)``.
 
-    The sweep defines 6 CLARREO-specific ``ParameterConfig`` entries covering 12
-    underlying scalar correction values:
-    - 3 CONSTANT_KERNEL entries (one per frame, each with a 3-angle attitude vector)
+    The sweep defines 12 CLARREO-specific ``ParameterConfig`` entries:
+    - 9 CONSTANT_KERNEL entries (roll, pitch and yaw of three frames)
     - 2 OFFSET_KERNEL entries (azimuth and elevation angle biases)
     - 1 OFFSET_TIME entry (science timing correction)
 
@@ -100,49 +99,62 @@ def create_clarreo_config(
     parameters = [
         # ----------------------------------------------------------------
         # CONSTANT_KERNEL parameters
-        # Each ParameterConfig represents one SPICE frame kernel.
-        # current_value = [roll, pitch, yaw] baseline offsets (arcseconds).
+        # Three ParameterConfigs per SPICE frame kernel, one per rotation
+        # axis (field angle_x, angle_y, angle_z = roll, pitch, yaw), each with
+        # its baseline angle (arcseconds).
         # The correction loop perturbs these values to find a better alignment.
         # ----------------------------------------------------------------
         # BASE mechanical frame — mounts the ISS pointing platform
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_base_v01.attitude.ck.json",
-            spec={
-                "current_value": [0.0, 0.0, 0.0],
-                "bounds": [-300.0, 300.0],
-                "sigma": 30.0,
-                "units": "arcseconds",
-                "transformation_type": "dcm_rotation",
-                "coordinate_frames": ["BASE_AZIMUTH", "BASE_CUBE"],
-            },
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_base_v01.attitude.ck.json",
+                spec={
+                    "field": axis,
+                    "current_value": 0.0,
+                    "bounds": [-300.0, 300.0],
+                    "sigma": 30.0,
+                    "units": "arcseconds",
+                    "transformation_type": "dcm_rotation",
+                    "coordinate_frames": ["BASE_AZIMUTH", "BASE_CUBE"],
+                },
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # YOKE frame — rotational axis between azimuth and elevation stages
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
-            spec={
-                "current_value": [0.0, 0.0, 0.0],
-                "bounds": [-200.0, 200.0],
-                "sigma": 20.0,
-                "units": "arcseconds",
-                "transformation_type": "dcm_rotation",
-                "coordinate_frames": ["YOKE_ELEVATION", "YOKE_AZIMUTH"],
-            },
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_yoke_v01.attitude.ck.json",
+                spec={
+                    "field": axis,
+                    "current_value": 0.0,
+                    "bounds": [-200.0, 200.0],
+                    "sigma": 20.0,
+                    "units": "arcseconds",
+                    "transformation_type": "dcm_rotation",
+                    "coordinate_frames": ["YOKE_ELEVATION", "YOKE_AZIMUTH"],
+                },
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # HYSICS focal-plane instrument frame
-        ParameterConfig(
-            ptype=ParameterType.CONSTANT_KERNEL,
-            config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
-            spec={
-                "current_value": [0.0, 0.0, 0.0],
-                "bounds": [-300.0, 300.0],
-                "sigma": 30.0,
-                "units": "arcseconds",
-                "transformation_type": "dcm_rotation",
-                "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
-            },
-        ),
+        *[
+            ParameterConfig(
+                ptype=ParameterType.CONSTANT_KERNEL,
+                config_file=data_dir / "cprs_hysics_v01.attitude.ck.json",
+                spec={
+                    "field": axis,
+                    "current_value": 0.0,
+                    "bounds": [-300.0, 300.0],
+                    "sigma": 30.0,
+                    "units": "arcseconds",
+                    "transformation_type": "dcm_rotation",
+                    "coordinate_frames": ["HYSICS_SLIT", "CRADLE_ELEVATION"],
+                },
+            )
+            for axis in ("angle_x", "angle_y", "angle_z")
+        ],
         # ----------------------------------------------------------------
         # OFFSET_KERNEL parameters
         # A scalar bias is added to a named telemetry column before
@@ -178,8 +190,8 @@ def create_clarreo_config(
         ),
         # ----------------------------------------------------------------
         # OFFSET_TIME parameter
-        # All science timestamps are shifted by a constant offset.
-        # No kernel file is needed — the pipeline modifies the data directly.
+        # Every observation frame time is shifted by a constant offset.
+        # No kernel file is needed — the loop shifts the frame times directly.
         # ----------------------------------------------------------------
         ParameterConfig(
             ptype=ParameterType.OFFSET_TIME,

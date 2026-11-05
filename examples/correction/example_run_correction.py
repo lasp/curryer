@@ -16,7 +16,10 @@ requires external tooling not bundled with the Python package:
     ``bin/spice/<platform>/``
   * Generic SPICE data kernels in ``data/generic/``
     (see ``docs/source/users.md`` → "Data / Binary Files" for download links)
-  * Preprocessed telemetry and science CSV files
+  * A preprocessed telemetry CSV and observation subimages (NetCDF) cropped
+    inside the GCP chips
+  * Elevation (GMTED) data for terrain correction (``CURRYER_DATA_DIR`` or
+    ``setup.geo.dem_data_dir``)
 
 When any of those are missing, this script detects the gap and exits cleanly
 in **dry-run** mode, printing the API pattern without executing the loop.
@@ -120,11 +123,15 @@ def _load_config(config_path: Path | None) -> tuple[GeolocationSetup, Sweep, Out
 
 
 def _build_inputs() -> list[CorrectionInput]:
-    """Build the list of (telemetry, science, GCP) inputs for the loop.
+    """Build the list of (telemetry, observation, GCP) inputs for the loop.
 
     Each :class:`CorrectionInput` maps one preprocessed telemetry CSV and one
-    science-timing CSV to one GCP reference image.  Add more entries to the
-    list to incorporate additional overpasses / GCP sites.
+    observation subimage to the GCP reference chip it lies inside.  The
+    observation is NetCDF with ``band_data`` (frame, pixel) radiance, ``ugps``
+    (frame) integer frame times in microseconds since the GPS epoch, and
+    ``detector_pixel`` (pixel) rows of the LOS table; see
+    :func:`~curryer.correction.pipeline.load_loop_observation`.  Add more
+    entries to the list to incorporate additional overpasses / GCP sites.
 
     For CLARREO, the telemetry_file must be a single merged CSV that
     combines the four raw feeds (SC_SPK, SC_CK, ST_CK, AZEL_CK).  That
@@ -144,9 +151,9 @@ def _build_inputs() -> list[CorrectionInput]:
             # Merged/preprocessed telemetry CSV (SC_SPK, SC_CK, ST_CK, AZEL_CK merged).
             # Produce this file with your mission's preprocessing workflow.
             telemetry_file=_GCS_DIR / "clarreo_preprocessed_tlm.csv",
-            # One row per science frame — contains 'corrected_timestamp' in GPS seconds.
-            # This file is committed to the repo and can be used directly.
-            science_file=_GCS_DIR / "openloop_tlm_5a_sci_times_20250521T225242.csv",
+            # Observation subimage cropped inside the GCP chip (radiance, frame times, detector pixels).
+            # Produce this file with your mission's L1 product reader.
+            science_file=_GCS_DIR / "observation_GCP12055Dili.nc",
             # Ground-control-point reference image chip (.mat)
             gcp_file=_IMAGE_MATCH_DIR / "1" / "GCP12055Dili_resampled.mat",
         ),

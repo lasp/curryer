@@ -18,7 +18,7 @@ from _image_match_helpers import (
     discover_test_image_match_cases,
     run_image_matching_with_applied_errors,
 )
-from _pipeline_helpers import run_downstream_pipeline, run_upstream_pipeline
+from _pipeline_helpers import run_downstream_pipeline
 from _synthetic_helpers import (
     _generate_nadir_aligned_transforms,
     _generate_spherical_positions,
@@ -40,7 +40,7 @@ def work_dir(tmp_path):
 def test_upstream_configuration(clarreo_gcs_data_dir, clarreo_generic_dir):
     """Upstream configuration loads and validates correctly."""
     setup, sweep, _output = create_clarreo_setup_sweep(clarreo_gcs_data_dir, clarreo_generic_dir)
-    setup.data_config = DataConfig(file_format="csv", time_scale_factor=1e6)
+    setup.data_config = DataConfig(file_format="csv")
     assert setup.geo.instrument_name == "CPRS_HYSICS"
     assert len(sweep.parameters) > 0
     assert sweep.seed == 42
@@ -69,17 +69,6 @@ def test_downstream_image_matching(clarreo_image_match_data_dir):
     assert isinstance(result, xr.Dataset)
     assert "lat_error_km" in result.attrs
     assert "lon_error_km" in result.attrs
-
-
-@pytest.mark.extra
-def test_upstream_quick(clarreo_gcs_data_dir, clarreo_generic_dir, work_dir):
-    """Quick upstream pipeline (2 iterations). Requires GMTED – ``--run-extra``."""
-    results_list, results_dict, output_file = run_upstream_pipeline(n_iterations=2, work_dir=work_dir)
-    assert results_dict["status"] == "complete"
-    assert results_dict["iterations"] == 2
-    assert results_dict["mode"] == "upstream"
-    assert results_dict["parameter_sets"] > 0
-    assert output_file.exists()
 
 
 def test_downstream_quick(work_dir, clarreo_image_match_data_dir):

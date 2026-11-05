@@ -2,14 +2,15 @@
 
 This module creates and applies parameter-specific SPICE kernels:
 
-- :func:`apply_offset` -- modifies telemetry/science data for
-  ``OFFSET_KERNEL`` and ``OFFSET_TIME`` parameters.
+- :func:`apply_offset` -- modifies the telemetry (``OFFSET_KERNEL``) or the
+  observation frame times (``OFFSET_TIME``).
 - :func:`_create_dynamic_kernels` -- writes SC-SPK/SC-CK kernels from
   telemetry data (once per image pair, not per parameter set).
 - :func:`_create_parameter_kernels` -- writes parameter-specific kernels
   and applies time offsets for each iteration.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,13 +18,17 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from curryer.correction.config import ParameterConfig, ParameterType
+from curryer.correction.config import _CONSTANT_KERNEL_AXES, ParameterConfig, ParameterType
 from curryer.kernels import create
+from curryer.kernels.attitude import AttitudeEulerProperties
 
 if TYPE_CHECKING:
     from curryer.correction.config import GeolocationSetup
 
 logger = logging.getLogger(__name__)
+
+# A CONSTANT_KERNEL CK holds its angles from the GPS epoch to this sentinel uGPS (2050).
+_UGPS_EPOCH_END = 2_209_075_218_000_000
 
 
 def apply_offset(config: ParameterConfig, param_data, input_data):
@@ -32,11 +37,24 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
 
     Args:
         config: ParameterConfig specifying how to apply the offset
-        param_data: The parameter values to apply (offset amounts)
-        input_data: The input dataset to modify
+        param_data: The parameter values to apply (offset amounts), in the internal
+            units of :func:`~curryer.correction.parameters.load_param_sets`: radians
+            for OFFSET_KERNEL, seconds for OFFSET_TIME
+        input_data: The input to modify: the telemetry DataFrame for
+            OFFSET_KERNEL, the observation's per-frame uGPS times (ndarray) for
+            OFFSET_TIME.  An OFFSET_TIME offset is added, so a positive offset
+            geolocates each frame later than its recorded time (true frame time
+            = recorded ``ugps`` + offset).
 
     Returns:
         Modified copy of input_data with parameter offsets applied
+
+    Raises:
+        ValueError: If an OFFSET_KERNEL parameter names no ``field``.
+        KeyError: If the OFFSET_KERNEL ``field`` is not a telemetry column.
+        TypeError: If OFFSET_TIME *input_data* is not a numeric ndarray.
+        NotImplementedError: For CONSTANT_KERNEL, whose angles are written to a
+            kernel by :func:`_create_parameter_kernels`, not applied to data.
     """
     logger.info(f"Applying {config.ptype.name} offset to {config.spec.field or 'unknown field'}")
 
@@ -47,98 +65,62 @@ def apply_offset(config: ParameterConfig, param_data, input_data):
         modified_data = input_data.copy() if hasattr(input_data, "copy") else input_data
 
     if config.ptype == ParameterType.OFFSET_KERNEL:
-        # Apply offset to telemetry fields for dynamic kernels (azimuth/elevation angles)
-        # OFFSET_KERNEL is ONLY for angle biases, not time offsets
-        # Valid units: "arcseconds" (converted to radians) or None (radians assumed)
-        # For time offsets, use OFFSET_TIME instead
+        # Apply an angle bias (radians) to the telemetry field the AZ/EL kernels are built from
         field_name = config.spec.field
         if not field_name:
             raise ValueError("OFFSET_KERNEL parameter requires 'field' to be specified in config")
 
         if field_name in modified_data.columns:
-            # Convert parameter value to appropriate units
-            # OFFSET_KERNEL is for angle biases only (azimuth/elevation angles)
-            offset_value = param_data
-            original_value = offset_value
-            if config.spec.units == "arcseconds":
-                # Convert arcseconds to radians for application
-                offset_value = np.deg2rad(param_data / 3600.0)
-                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
-                logger.info(f"  Offset: {original_value:.6f} arcsec = {offset_value:.9f} rad")
-            else:
-                # No units specified - assume radians (direct application)
-                logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}'")
-                logger.info(f"  Offset: {offset_value:.9f} rad (no unit conversion)")
-
-            # Store original values for logging
-            original_mean = modified_data[field_name].mean()
-
-            # Apply additive offset
-            modified_data[field_name] = modified_data[field_name] + offset_value
-
-            # Log the effect
-            new_mean = modified_data[field_name].mean()
-            logger.info(f"  Original mean: {original_mean:.9f}")
-            logger.info(f"  New mean:      {new_mean:.9f}")
-            logger.info(f"  Delta:         {new_mean - original_mean:.9f}")
+            logger.info(f"✓ Applying OFFSET_KERNEL to field '{field_name}': {param_data:.9f} rad")
+            modified_data[field_name] = modified_data[field_name] + param_data
         else:
-            available_cols = list(modified_data.columns) if hasattr(modified_data, "columns") else []
-            logger.warning(f"Field '{field_name}' not found in telemetry data for offset application")
-            logger.warning(f"Available columns: {available_cols}")
+            raise KeyError(
+                f"OFFSET_KERNEL field '{field_name}' is not a telemetry column; available: {list(modified_data.columns)}"
+            )
 
     elif config.ptype == ParameterType.OFFSET_TIME:
-        # Apply time offset to science frame timing
-        # NOTE: param_data is in seconds while target field (e.g., corrected_timestamp) is typically in microseconds
-        field_name = config.spec.field or "corrected_timestamp"
-        if hasattr(modified_data, "__getitem__") and field_name in modified_data:
-            # param_data is already in seconds (converted by load_param_sets)
-            # Convert seconds to microseconds for the timestamp field
-            offset_value_seconds = param_data
-            offset_value_us = param_data * 1000000.0  # seconds to microseconds
-
-            logger.info(f"✓ Applying OFFSET_TIME to field '{field_name}'")
-            units = config.spec.units or "seconds"
-            if units == "milliseconds":
-                logger.info(f"  Offset: {offset_value_seconds * 1000.0:.6f} ms (configured) = {offset_value_us:.6f} µs")
-            elif units == "microseconds":
-                logger.info(
-                    f"  Offset: {offset_value_seconds * 1000000.0:.6f} µs (configured) = {offset_value_us:.6f} µs"
-                )
-            else:
-                logger.info(f"  Offset: {offset_value_seconds:.6f} s = {offset_value_us:.6f} µs")
-
-            # Store original values for logging
-            if hasattr(modified_data[field_name], "mean"):
-                original_mean = modified_data[field_name].mean()
-            else:
-                original_mean = np.mean(modified_data[field_name])
-
-            # Apply additive offset in microseconds
-            modified_data[field_name] = modified_data[field_name] + offset_value_us
-
-            # Log the effect
-            if hasattr(modified_data[field_name], "mean"):
-                new_mean = modified_data[field_name].mean()
-            else:
-                new_mean = np.mean(modified_data[field_name])
-            logger.info(f"  Original mean: {original_mean:.6f}")
-            logger.info(f"  New mean:      {new_mean:.6f}")
-            logger.info(f"  Delta:         {new_mean - original_mean:.6f}")
-        else:
-            logger.warning(f"Field '{field_name}' not found in science data for time offset application")
-
-    elif config.ptype == ParameterType.CONSTANT_KERNEL:
-        # For constant kernels, param_data should already be in the correct format
-        # (DataFrame with ugps, angle_x, angle_y, angle_z columns)
-        logger.info(
-            f"Using constant kernel data with {len(param_data) if hasattr(param_data, '__len__') else 1} entries"
-        )
-        modified_data = param_data
+        # Shift the observation frame times; param_data is seconds, the times uGPS.
+        if not isinstance(input_data, np.ndarray) or input_data.dtype.kind not in "iuf":
+            raise TypeError(f"OFFSET_TIME applies to an ndarray of uGPS frame times, got {type(input_data).__name__}.")
+        modified_data = input_data + np.int64(np.rint(param_data * 1e6))
+        logger.info(f"✓ Applying OFFSET_TIME: {param_data:.6f} s = {param_data * 1e6:.3f} µs to the frame times")
 
     else:
         raise NotImplementedError(f"Parameter type {config.ptype} not implemented")
 
     return modified_data
+
+
+def _require_radian_kernel_templates(parameters: list[ParameterConfig]) -> None:
+    """Check that every kernel parameter's template reads its angles in radians.
+
+    The loop writes CONSTANT_KERNEL angles, and adds OFFSET_KERNEL offsets to the telemetry, in
+    radians. A template that reads degrees (the attitude writer's default when
+    ``input_angle_units`` is absent) would make each correction 57.3 times too small.
+
+    Parameters
+    ----------
+    parameters : list[ParameterConfig]
+        The sweep's parameters; those without a kernel are ignored.
+
+    Raises
+    ------
+    ValueError
+        If a CONSTANT_KERNEL or OFFSET_KERNEL template's ``input_angle_units`` is not ``"RADIANS"``.
+    FileNotFoundError
+        If a template file does not exist.
+    """
+    for param in parameters:
+        if param.ptype not in (ParameterType.CONSTANT_KERNEL, ParameterType.OFFSET_KERNEL):
+            continue
+        properties = json.loads(Path(param.config_file).read_text())["kernel"]["properties"]
+        units = properties.get("input_angle_units", AttitudeEulerProperties.input_angle_units)
+        if units != "RADIANS":
+            raise ValueError(
+                f"{param.ptype.name} template {param.config_file} reads angles in {units}; the correction loop "
+                "writes radians, so set its input_angle_units to RADIANS (and, for OFFSET_KERNEL, its telemetry "
+                "field must be in radians)."
+            )
 
 
 def _create_dynamic_kernels(
@@ -197,16 +179,17 @@ def _create_parameter_kernels(
     params: list[tuple["ParameterConfig", Any]],
     work_dir: Path,
     tlm_dataset: pd.DataFrame,
-    sci_dataset: pd.DataFrame,
-    ugps_times: Any,
-    setup: "GeolocationSetup",
+    frame_ugps: np.ndarray,
     creator: "create.KernelCreator",
-) -> tuple[list[Path], Any]:
+) -> tuple[list[Path], np.ndarray]:
     """Create parameter-specific SPICE kernels and apply time offsets.
 
     This function applies parameter variations by creating modified kernels
     (CONSTANT_KERNEL, OFFSET_KERNEL) or modifying time tags (OFFSET_TIME).
     Each parameter set produces different kernels and/or time modifications.
+    The CONSTANT_KERNEL parameters sharing a ``config_file`` (one per axis,
+    see :class:`~curryer.correction.config.Sweep`) are written as one CK
+    holding their angles from the GPS epoch to 2050.
 
     Parameters
     ----------
@@ -216,12 +199,8 @@ def _create_parameter_kernels(
         Working directory for kernel files
     tlm_dataset : pd.DataFrame
         Spacecraft state data (may be modified for OFFSET_KERNEL) with position, velocity, attitude, and time columns
-    sci_dataset : pd.DataFrame
-        Science frame time data (may be modified for OFFSET_TIME), may include optional measurement columns
-    ugps_times : array-like
-        Original time array from science dataset
-    setup : GeolocationSetup
-        Setup with geo settings
+    frame_ugps : np.ndarray
+        The observation's per-frame times, uGPS (shifted for OFFSET_TIME)
     creator : create.KernelCreator
         KernelCreator instance for writing kernels
 
@@ -229,50 +208,34 @@ def _create_parameter_kernels(
     -------
     param_kernels : list[Path]
         List of parameter-specific kernel file paths
-    ugps_times_modified : array-like
-        Modified time array if OFFSET_TIME applied, otherwise original times
+    frame_ugps_modified : np.ndarray
+        Frame times shifted by any OFFSET_TIME, otherwise *frame_ugps*
 
     Examples
     --------
-    >>> param_kernels, times = _create_parameter_kernels(
-    ...     params, work_dir, tlm_dataset, sci_dataset, ugps_times, setup, creator
-    ... )
+    >>> param_kernels, times = _create_parameter_kernels(params, work_dir, tlm_dataset, frame_ugps, creator)
     >>> # Use in SPICE context with dynamic kernels
     >>> with sp.ext.load_kernel([dynamic_kernels, param_kernels]):
     ...     geo = geolocate(times)
     """
     param_kernels = []
-    ugps_times_modified = ugps_times.copy() if hasattr(ugps_times, "copy") else ugps_times
+    frame_ugps_modified = frame_ugps
+    constant_angles: dict[Path, dict[str, float]] = {}
 
     # Apply each individual parameter change
     logger.info("    Applying parameter changes:")
     for a_param, p_data in params:  # [ParameterConfig, typing.Any]
         # Log parameter details
         param_name = a_param.spec.field or "unknown"
-        if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-            logger.info(f"      {a_param.ptype.name}: {param_name} (constant kernel data)")
-        elif a_param.ptype == ParameterType.OFFSET_KERNEL:
-            units = a_param.spec.units or ""
-            logger.info(
-                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
-                f"(internal units; configured units: {units or 'unspecified'})"
-            )
-        elif a_param.ptype == ParameterType.OFFSET_TIME:
-            units = a_param.spec.units or ""
-            logger.info(
-                f"      {a_param.ptype.name}: {param_name} = {p_data:.6f} "
-                f"(internal units; configured units: {units or 'unspecified'})"
-            )
+        units = a_param.spec.units or ""
+        logger.info(
+            f"      {a_param.ptype.name}: {param_name} = {p_data:.9f} "
+            f"(internal units; configured units: {units or 'unspecified'})"
+        )
 
-        # Create static changing SPICE kernels
+        # Collect the frame's angles; its CK is written once all axes are known
         if a_param.ptype == ParameterType.CONSTANT_KERNEL:
-            param_kernels.append(
-                creator.write_from_json(
-                    a_param.config_file,
-                    output_kernel=work_dir,
-                    input_data=p_data,
-                )
-            )
+            constant_angles.setdefault(a_param.config_file, {})[a_param.spec.field] = p_data
 
         # Create dynamic changing SPICE kernels
         elif a_param.ptype == ParameterType.OFFSET_KERNEL:
@@ -287,12 +250,24 @@ def _create_parameter_kernels(
 
         # Alter non-kernel data
         elif a_param.ptype == ParameterType.OFFSET_TIME:
-            # Aka: Frame-times...
-            sci_dataset_alt = apply_offset(a_param, p_data, sci_dataset)
-            ugps_times_modified = sci_dataset_alt[setup.geo.time_field].values
+            frame_ugps_modified = apply_offset(a_param, p_data, frame_ugps_modified)
 
         else:
             raise NotImplementedError(a_param.ptype)
 
+    for config_file, angles in constant_angles.items():
+        ck_data = pd.DataFrame(
+            {"ugps": [0, _UGPS_EPOCH_END], **{axis: [angles[axis]] * 2 for axis in _CONSTANT_KERNEL_AXES}}
+        )
+        # The two rows span the mission; gap chunking would split them into zero-length intervals.
+        param_kernels.append(
+            creator.write_from_json(
+                config_file,
+                output_kernel=work_dir,
+                input_data=ck_data,
+                overrides={"input_gap_threshold": None},
+            )
+        )
+
     logger.info(f"    Created {len(param_kernels)} parameter-specific kernels")
-    return param_kernels, ugps_times_modified
+    return param_kernels, frame_ugps_modified
