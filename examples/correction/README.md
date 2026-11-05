@@ -13,7 +13,7 @@ into a new mission repository.
 | `example_config.json`       | —        | Generic config template (setup/sweep/output) — copy and adapt for your mission |
 | `clarreo_config.json`       | —        | CLARREO config — loadable by `load_config_files()`                             |
 | `clarreo_config.py`         | —        | CLARREO config factory using the Python API; use as a new-mission template     |
-| `example_verification.py`   | Runnable | End-to-end verification demo (real CLARREO data or synthetic fallback)         |
+| `example_verification.py`   | Runnable | Verification, save, review and recompute (real CLARREO data or synthetic)      |
 | `example_run_correction.py` | Template | Correction loop template — exits cleanly if data/tools are missing             |
 | `regrid_gcp_chips.py`       | Runnable | Batch-regrid HDF GCP chips to NetCDF (see `docs/source/gcp_regridding.md`)     |
 

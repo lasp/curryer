@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
+import xarray as xr
 
+from ..compute import constants
 from .config import PSFSamplingConfig, SearchConfig
 from .grid_types import (
     ImageGrid,
@@ -23,10 +24,7 @@ from .psf import (
     resample_psf_to_gcp_resolution,
     zero_pad_psf,
 )
-from .search import im_search
-
-if TYPE_CHECKING:
-    import xarray as xr
+from .search import emulate_image, im_search
 
 logger = logging.getLogger(__name__)
 
@@ -187,3 +185,87 @@ def integrated_image_match(
         projected_psf=projected_psf,
         convolved_gcp=gcp_convolved,
     )
+
+
+def chip_image_dataset(
+    subimage: ImageGrid, gcp: ImageGrid, result: IntegratedImageMatchResult, search_config: SearchConfig
+) -> xr.Dataset:
+    """Collect the images behind one GCP match for review.
+
+    The emulated image is the PSF-convolved GCP chip sampled at the observation
+    pixels shifted by the matched error, i.e. the image whose correlation with
+    the observation is ``result.ccv_final``.  The reference images are cropped
+    to the chip rows and columns the search could reach, the subimage's
+    lat/lon extent widened by ``search_config.max_shift_km()`` and one chip
+    pixel each way, and stored as float32.
+
+    Parameters
+    ----------
+    subimage : ImageGrid
+        Observation subimage that was matched (rows = frames, columns =
+        cross-track pixels), lat/lon in degrees.
+    gcp : ImageGrid
+        GCP reference chip as loaded, before PSF convolution.
+    result : IntegratedImageMatchResult
+        Output of :func:`integrated_image_match` for *subimage* and *gcp*.
+    search_config : SearchConfig
+        The search configuration of the match, which bounds the shift.
+
+    Returns
+    -------
+    xr.Dataset
+        On dims ``(row, col)``: ``observed``, ``emulated``, ``latitude`` and
+        ``longitude`` of the observation.  On dims ``(gcp_row, gcp_col)``:
+        ``reference``, ``reference_convolved``, ``reference_latitude`` and
+        ``reference_longitude``, cropped as above.  Attributes
+        ``lat_error_km``, ``lon_error_km``, ``correlation`` and
+        ``correlation_secondary``.
+
+    Raises
+    ------
+    ValueError
+        If no chip row or column lies within the reachable region.
+    """
+    n_rows, n_cols = subimage.data.shape
+    mid_lat = float(subimage.lat[n_rows // 2, n_cols // 2])
+    radius_km = constants.WGS84_SEMI_MAJOR_AXIS_KM
+    lat_shift_deg = np.rad2deg(result.lat_error_km / radius_km)
+    lon_shift_deg = np.rad2deg(result.lon_error_km / (radius_km * np.cos(np.deg2rad(mid_lat))))
+    emulated = emulate_image(subimage.lon - lon_shift_deg, subimage.lat - lat_shift_deg, result.convolved_gcp)
+
+    reach_lat_deg = np.rad2deg(search_config.max_shift_km() / radius_km)
+    reach_lon_deg = reach_lat_deg / np.cos(np.deg2rad(mid_lat))
+    rows = _reachable(gcp.lat[:, 0], subimage.lat, reach_lat_deg)
+    cols = _reachable(gcp.lon[0, :], subimage.lon, reach_lon_deg)
+    if rows.stop <= rows.start or cols.stop <= cols.start:
+        raise ValueError("No GCP chip row or column lies within the region the search could reach.")
+    crop = (rows, cols)
+
+    pixel = ("row", "col")
+    chip = ("gcp_row", "gcp_col")
+    return xr.Dataset(
+        {
+            "observed": (pixel, np.asarray(subimage.data, dtype=float)),
+            "emulated": (pixel, emulated, {"long_name": "PSF-convolved GCP sampled at the matched positions"}),
+            "latitude": (pixel, subimage.lat, {"units": "degrees_north"}),
+            "longitude": (pixel, subimage.lon, {"units": "degrees_east"}),
+            "reference": (chip, np.asarray(gcp.data[crop], dtype=np.float32)),
+            "reference_convolved": (chip, np.asarray(result.convolved_gcp.data[crop], dtype=np.float32)),
+            "reference_latitude": (chip, gcp.lat[crop], {"units": "degrees_north"}),
+            "reference_longitude": (chip, gcp.lon[crop], {"units": "degrees_east"}),
+        },
+        attrs={
+            "lat_error_km": result.lat_error_km,
+            "lon_error_km": result.lon_error_km,
+            "correlation": result.ccv_final,
+            "correlation_secondary": result.ccv_secondary,
+        },
+    )
+
+
+def _reachable(axis: np.ndarray, coords: np.ndarray, reach_deg: float) -> slice:
+    """Slice of a monotonic chip *axis* covering *coords* +/- *reach_deg*, plus one sample each way."""
+    inside = np.flatnonzero((axis >= np.min(coords) - reach_deg) & (axis <= np.max(coords) + reach_deg))
+    if inside.size == 0:
+        return slice(0, 0)
+    return slice(max(int(inside[0]) - 1, 0), min(int(inside[-1]) + 2, axis.size))
