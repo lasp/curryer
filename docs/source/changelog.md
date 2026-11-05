@@ -31,6 +31,23 @@ target_lat_deg, target_lon_deg)` aims the boresight at the mid-frame pixel in th
 - **Pairing raises** -- `pair_files` and `pair_geolocated_dataset_with_gcp_files` raise
   `ValueError` naming a file that fails to load (previously skipped, which misaligned every
   later pair).
+- **Pairing uses the traced swath footprint** -- `find_l1a_gcp_pairs`, `pair_files` and
+  `pair_geolocated_dataset_with_gcp_files` test each GCP center against the polygon traced around
+  the L1A's geolocated pixels (`curryer.compute.footprint.footprint_polygon`), about one pixel
+  outside the edge pixel centres at the default tolerance, instead of the polygon through its four corner pixels in a flat ENU
+  plane. On a curved swath the corner polygon paired chips outside the swath and missed chips
+  inside it (by up to about 18 km on 6-9 minute granules). Margins are great-circle
+  distances on the mean-radius sphere. `PairingResult.l1a_images` holds `L1AMetadata`, which adds
+  the `footprint`; an optional `footprint_tolerance_km` sets its tolerance (the edge's offset and
+  simplification). An untraceable footprint (folded or overlapping grids) falls back to the
+  buffered convex hull with a warning naming the image. A chip whose center is farther than one
+  pixel spacing from its nearest L1A pixel is not paired, whatever its margin, and is logged at
+  INFO: `resolve_spacecraft_ecef` rejects it, and the footprint reaches about 1.3 pixels past a
+  corner pixel, so such a chip ended the verification run. A negative `max_distance_m` therefore
+  cannot reach past about one pixel spacing. An L1A whose geolocation has non-NaN fill,
+  out-of-range values or a single row, a GCP chip whose center pixel is non-finite or out of range
+  (previously never paired), and a non-finite `max_distance_m` raise `ValueError` naming the image
+  or chip.
 - **`im_search` returns seven values** -- `(lat_err_km, lon_err_km, ccv_max, ccv_secondary, row,
 col, step_m)`, and `IntegratedImageMatchResult` gains `ccv_secondary` before its index fields.
   `im_search` raises when a shifted subimage samples outside the GCP chip (it correlated against

@@ -1,10 +1,16 @@
 """Utilities for pairing L1A images with nearby GCP chips.
 
-The routines in this module describe each image footprint using the
-``NamedImageGrid`` metadata, convert the corners to a local East-North-Up frame,
-and compute the distance between a GCP center point and the nearest edge of
-each L1A footprint.  The core entry point is :func:`find_l1a_gcp_pairs`, which
-returns a many-to-many mapping between the supplied L1A and GCP collections.
+Each L1A footprint is the polygon traced around its geolocated pixels
+(:func:`curryer.compute.footprint.footprint_polygon`), so it follows curved
+swaths. Its edge lies half a pixel plus the footprint tolerance outside the edge
+pixel centres (one pixel at the default tolerance), moved by up to the tolerance
+either way by simplification. A GCP chip pairs with an L1A
+image by the signed great-circle distance from the chip's center pixel to that
+polygon's edge (:func:`curryer.compute.footprint.footprint_margin_m`), and only
+when the center is within one pixel spacing of its nearest L1A pixel, the limit
+:func:`curryer.correction.psf.resolve_spacecraft_ecef` accepts for the line of
+sight that views the GCP. The core entry point is :func:`find_l1a_gcp_pairs`, which returns a many-to-many mapping
+between the supplied L1A and GCP collections.
 
 File-based utilities (discover_gcp_files, pair_files) provide higher-level
 wrappers for working with ``.mat`` or NetCDF ``.nc`` files on disk.
@@ -13,15 +19,17 @@ wrappers for working with ``.mat`` or NetCDF ``.nc`` files on disk.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
+from ..compute.footprint import FootprintGeometryError, convex_footprint, footprint_margin_m, swath_footprint
 from ..compute.spatial import geodetic_to_ecef
 from .grid_types import ImageGrid, NamedImageGrid
+from .psf import _nearest_grid_pixel
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +142,22 @@ class ImageMetadata:
 
 
 @dataclass
+class L1AMetadata(ImageMetadata):
+    """Metadata describing an L1A image footprint.
+
+    Extends :class:`ImageMetadata` with the traced footprint polygon that
+    pairing tests GCP centers against: (longitude, latitude) degrees, shape
+    (N + 1, 2), closed, as returned by
+    :func:`curryer.compute.footprint.footprint_polygon`. ``footprint`` is the
+    image's extent; ``corners``, ``center`` and ``bbox`` are raw pixel values,
+    NaN where those pixels are fill, and ``bbox`` does not account for the
+    antimeridian.
+    """
+
+    footprint: np.ndarray
+
+
+@dataclass
 class GCPMetadata(ImageMetadata):
     """Metadata describing a GCP image footprint.
 
@@ -163,7 +187,7 @@ class PairMatch:
 class PairingResult:
     """Container for the output of :func:`find_l1a_gcp_pairs`."""
 
-    l1a_images: list[ImageMetadata]
+    l1a_images: list[L1AMetadata]
     gcp_images: list[GCPMetadata]
     matches: list[PairMatch]
 
@@ -204,103 +228,6 @@ def _image_bbox(image: ImageGrid) -> tuple[float, float, float, float]:
     return lat_min, lat_max, lon_min, lon_max
 
 
-def _point_in_polygon(point_xy: np.ndarray, polygon_xy: np.ndarray) -> bool:
-    """Return ``True`` if ``point_xy`` lies inside ``polygon_xy``.
-
-    Uses the winding-number algorithm with a ray cast along the positive
-    *x*-axis.
-    """
-
-    winding = 0
-    x, y = point_xy
-    for i in range(len(polygon_xy)):
-        x1, y1 = polygon_xy[i]
-        x2, y2 = polygon_xy[(i + 1) % len(polygon_xy)]
-        if y1 <= y:
-            if y2 > y and (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1) > 0:
-                winding += 1
-        else:
-            if y2 <= y and (x2 - x1) * (y - y1) - (x - x1) * (y2 - y1) < 0:
-                winding -= 1
-    return winding != 0
-
-
-def _distance_point_to_segment(point_xy: np.ndarray, a_xy: np.ndarray, b_xy: np.ndarray) -> float:
-    """Return the minimum distance from ``point_xy`` to segment ``ab``."""
-
-    ap = point_xy - a_xy
-    ab = b_xy - a_xy
-    ab_norm_sq = float(np.dot(ab, ab))
-    if ab_norm_sq == 0.0:
-        return float(np.linalg.norm(ap))
-    t = float(np.dot(ap, ab)) / ab_norm_sq
-    t_clamped = max(0.0, min(1.0, t))
-    closest = a_xy + t_clamped * ab
-    return float(np.linalg.norm(point_xy - closest))
-
-
-def _distance_point_to_polygon_m(
-    point_lat: float,
-    point_lon: float,
-    point_h: float,
-    polygon_latlon: Sequence[tuple[float, float]],
-) -> float:
-    """Return the distance from a point to a polygon in meters.
-
-    Parameters
-    ----------
-    point_lat, point_lon, point_h
-        Geodetic coordinates of the query location.
-    polygon_latlon
-        Sequence of latitude/longitude tuples describing polygon corners.
-
-    Returns
-    -------
-    float
-        Signed distance between the point and the polygon boundary.  Positive
-        values indicate the point is inside the polygon and represent the
-        margin to the nearest edge.  Negative values indicate the point lies
-        outside the polygon and represent the distance to the closest edge.
-    """
-
-    poly = np.asarray(polygon_latlon, dtype=float)
-    origin_lat = float(np.mean(poly[:, 0]))
-    origin_lon = float(np.mean(poly[:, 1]))
-    origin_h = 0.0
-
-    polygon_enu = geodetic_to_enu(
-        poly[:, 0],
-        poly[:, 1],
-        np.zeros(len(poly)),
-        origin_lat,
-        origin_lon,
-        origin_h,
-    )[:, :2]
-
-    point_enu = geodetic_to_enu(
-        np.array([point_lat]),
-        np.array([point_lon]),
-        np.array([point_h]),
-        origin_lat,
-        origin_lon,
-        origin_h,
-    )[0, :2]
-
-    inside = _point_in_polygon(point_enu, polygon_enu)
-
-    min_distance = float("inf")
-    for i in range(len(polygon_enu)):
-        a = polygon_enu[i]
-        b = polygon_enu[(i + 1) % len(polygon_enu)]
-        distance = _distance_point_to_segment(point_enu, a, b)
-        if distance < min_distance:
-            min_distance = distance
-
-    if inside:
-        return min_distance
-    return -min_distance
-
-
 def _build_image_metadata(index: int, image: NamedImageGrid) -> ImageMetadata:
     """Construct :class:`ImageMetadata` for ``image``."""
 
@@ -317,11 +244,49 @@ def _build_image_metadata(index: int, image: NamedImageGrid) -> ImageMetadata:
     )
 
 
+def _build_l1a_metadata(index: int, image: NamedImageGrid, footprint_tolerance_km: float | None) -> L1AMetadata:
+    """Construct :class:`L1AMetadata` for ``image``, tracing its footprint.
+
+    The footprint is :func:`~curryer.compute.footprint.swath_footprint`, or
+    :func:`~curryer.compute.footprint.convex_footprint` with a warning naming the
+    image where the edge cannot be traced (as
+    :func:`~curryer.compute.footprint.footprint_polygon` does). It is built before
+    the corner metadata, so geolocation that is not 2-D raises ``ValueError``.
+    """
+    name = image.name if image.name is not None else f"image_{index}"
+    try:
+        try:
+            footprint = swath_footprint(image.lat, image.lon, tolerance_km=footprint_tolerance_km)
+        except FootprintGeometryError as e:
+            logger.warning(
+                "L1A image %r: could not trace the swath edge (%s); using the buffered convex hull.", name, e
+            )
+            footprint = convex_footprint(image.lat, image.lon, tolerance_km=footprint_tolerance_km)
+    except FootprintGeometryError:
+        raise
+    except ValueError as e:
+        raise ValueError(f"Footprint of L1A image {name!r}: {e}") from e
+    base = _build_image_metadata(index, image)
+    return L1AMetadata(
+        index=base.index,
+        name=base.name,
+        corners=base.corners,
+        center=base.center,
+        bbox=base.bbox,
+        footprint=footprint,
+    )
+
+
 def _build_gcp_metadata(index: int, image: NamedImageGrid) -> GCPMetadata:
-    """Construct :class:`GCPMetadata` for ``image``."""
+    """Construct :class:`GCPMetadata` for ``image``; raises ``ValueError`` naming it if its center is invalid."""
 
     base = _build_image_metadata(index, image)
     lat_c, lon_c, h_c = _image_center(image)
+    if not (np.isfinite(lat_c) and np.isfinite(lon_c) and abs(lat_c) <= 90 and abs(lon_c) <= 180):
+        raise ValueError(
+            f"GCP chip {base.name!r}: center pixel latitude {lat_c} and longitude {lon_c} must be finite, "
+            "within [-90, 90] and [-180, 180]"
+        )
     center_ecef = geodetic_to_ecef(np.array([lon_c, lat_c, h_c]), degrees=True, meters=True)
     return GCPMetadata(
         index=base.index,
@@ -337,48 +302,102 @@ def find_l1a_gcp_pairs(
     l1a_images: Iterable[NamedImageGrid],
     gcp_images: Iterable[NamedImageGrid],
     max_distance_m: float,
+    footprint_tolerance_km: float | None = None,
 ) -> PairingResult:
-    """Find all L1A/GCP pairs within a distance threshold.
+    """Find all L1A/GCP pairs whose signed footprint margin meets a threshold.
 
     Parameters
     ----------
     l1a_images
         Iterable of :class:`NamedImageGrid` instances representing L1A imagery.
+        Latitude and longitude are 2-D (rows, columns) in degrees, NaN for fill.
+        Each footprint is the polygon traced around the pixels, its edge half a
+        pixel plus ``footprint_tolerance_km`` outside the edge pixel centres
+        (one pixel at the default), moved by up to ``footprint_tolerance_km``
+        either way by simplification. Where the edge cannot be traced (folded
+        or overlapping grids), it is the buffered convex hull of the pixels,
+        logged as a warning naming the image; the hull reaches past a concave
+        swath, and chips in that gap are dropped by the nearest-pixel test
+        below.
     gcp_images
         Iterable of :class:`NamedImageGrid` instances representing GCP chips.
+        The center pixel's latitude and longitude are the chip's position.
     max_distance_m
-        Minimum margin (meters) required between the GCP center and the
-        nearest L1A edge.  Only pairs with ``margin >= max_distance_m`` are
-        returned.
+        Minimum signed margin (meters, a finite ``float`` or ``int``) of the GCP center from the
+        L1A footprint edge, positive inside.  Only pairs with
+        ``margin >= max_distance_m`` are returned: ``0`` pairs centers inside
+        or on the edge, a positive value requires them at least that far
+        inside, a negative value allows them up to ``abs(max_distance_m)``
+        outside. A chip that meets it is still not paired, and is logged at
+        INFO, when its center is farther from its nearest L1A pixel than that
+        pixel's farthest adjacent pixel (about one pixel spacing outside the
+        edge pixel centres; more than that at a corner of the footprint), as
+        :func:`curryer.correction.psf.resolve_spacecraft_ecef` would reject
+        it. So a negative ``max_distance_m`` cannot pair a center more than
+        about a pixel spacing outside the pixels.
+    footprint_tolerance_km
+        Tolerance of each L1A footprint polygon, km: the edge's offset beyond
+        the half-pixel line and how far simplification may move it, so a
+        larger value also widens the footprint. ``None`` uses half the image's
+        smaller median pixel spacing
+        (:func:`curryer.compute.footprint.footprint_polygon`).
 
     Returns
     -------
     PairingResult
-        Metadata for the supplied images together with any pairs that fall
-        within ``max_distance_m``.
+        Metadata for the supplied images together with the pairs whose signed
+        margin is at least ``max_distance_m`` and whose GCP center passes the
+        nearest-pixel test.
+
+    Raises
+    ------
+    ValueError
+        Naming the image, if an L1A footprint cannot be built: geolocation that
+        is not 2-D floating, holds infinite or out-of-range values (a fill value
+        other than NaN, such as -9999, is out of range), has no valid pixels or
+        no two adjacent valid pixels, extends more than 60 degrees from its
+        center, or encloses a pole; a grid axis with no two adjacent valid
+        pixels (a single row, say), along which the pixel size is unknown; an
+        invalid ``footprint_tolerance_km``; or, with
+        ``footprint_tolerance_km=None``, a zero median pixel spacing (as with
+        repeated frames). If ``max_distance_m`` is not a finite ``float`` or ``int``. Naming the chip, if a GCP chip's center pixel
+        has a non-finite or out-of-range latitude or longitude.
+    FootprintGeometryError
+        Only if a convex-hull footprint fails its own verification, which
+        indicates a defect in :mod:`curryer.compute.footprint`.
     """
-
-    l1a_meta: list[ImageMetadata] = []
+    if (
+        isinstance(max_distance_m, bool)
+        or not isinstance(max_distance_m, (int, float))
+        or not np.isfinite(max_distance_m)
+    ):
+        raise ValueError(f"max_distance_m must be a finite float or int, got {max_distance_m!r}")
+    l1a_list = list(l1a_images)
+    l1a_meta: list[L1AMetadata] = []
     gcp_meta: list[GCPMetadata] = []
-
-    for idx, image in enumerate(l1a_images):
-        l1a_meta.append(_build_image_metadata(idx, image))
-
+    for idx, image in enumerate(l1a_list):
+        l1a_meta.append(_build_l1a_metadata(idx, image, footprint_tolerance_km))
     for idx, image in enumerate(gcp_images):
         gcp_meta.append(_build_gcp_metadata(idx, image))
 
     matches: list[PairMatch] = []
-    for l1a in l1a_meta:
-        for gcp in gcp_meta:
-            lat_c, lon_c = gcp.center
-            margin = _distance_point_to_polygon_m(lat_c, lon_c, 0.0, l1a.corners)
+    if not gcp_meta:
+        return PairingResult(l1a_meta, gcp_meta, matches)
+    gcp_lat = np.array([gcp.center[0] for gcp in gcp_meta], dtype=float)
+    gcp_lon = np.array([gcp.center[1] for gcp in gcp_meta], dtype=float)
+    for l1a, image in zip(l1a_meta, l1a_list):
+        margins = footprint_margin_m(l1a.footprint, gcp_lat, gcp_lon)
+        for gcp, margin in zip(gcp_meta, margins):
             if margin >= max_distance_m:
+                try:
+                    _nearest_grid_pixel(image, gcp.center[0], gcp.center[1])
+                except ValueError as e:
+                    logger.info("No-pair [%s] to [%s] within [%s m]: %s", l1a.name, gcp.name, margin, e)
+                    continue
                 logger.info("Paired [%s] to [%s] within [%s m]", l1a.name, gcp.name, margin)
-                matches.append(PairMatch(l1a.index, gcp.index, margin))
+                matches.append(PairMatch(l1a.index, gcp.index, float(margin)))
             else:
-                logger.debug(
-                    "No-pair [%s] to [%s] because [%s m] >= [%s m]", l1a.name, gcp.name, margin, max_distance_m
-                )
+                logger.debug("No-pair [%s] to [%s] because [%s m] < [%s m]", l1a.name, gcp.name, margin, max_distance_m)
 
     return PairingResult(l1a_meta, gcp_meta, matches)
 
@@ -422,6 +441,7 @@ def pair_files(
     l1a_key: str = "subimage",
     gcp_key: str = "GCP",
     gcp_pattern: str = "*_resampled.mat",
+    footprint_tolerance_km: float | None = None,
 ) -> list[tuple[Path, Path]]:
     """
     Find L1A-GCP pairs based on spatial overlap and return as file path tuples.
@@ -434,16 +454,22 @@ def pair_files(
         l1a_files: List of L1A (or observation) file paths to pair.
             Supports ``.mat`` and ``.nc`` files.
         gcp_directory: Directory containing GCP reference files.
-        max_distance_m: Minimum margin for valid pairing (default: 0.0)
-            - 0.0: Requires GCP center inside L1A footprint (strict)
-            - >0: Allows GCP center up to this distance inside footprint
-            - <0: Allows GCP center outside footprint (loose)
+        max_distance_m: Minimum signed margin of the GCP center from the
+            footprint edge, meters, positive inside (default: 0.0)
+            - 0.0: GCP center inside the L1A footprint or on its edge
+            - >0: GCP center at least this far inside the footprint
+            - <0: GCP center may lie up to abs(max_distance_m) outside
+            A GCP center more than about one pixel spacing from its nearest
+            L1A pixel is never paired (see :func:`find_l1a_gcp_pairs`).
         l1a_key: MATLAB struct key for L1A data (default: "subimage").
             Ignored for NetCDF files.
         gcp_key: MATLAB struct key for GCP data (default: "GCP").
             Ignored for NetCDF files.
         gcp_pattern: File pattern for GCP discovery
             (default: "*_resampled.mat"; use "*_regridded.nc" for NetCDF chips).
+        footprint_tolerance_km: Tolerance of each L1A footprint polygon, km
+            (its offset and simplification; see :func:`find_l1a_gcp_pairs`);
+            None (default) uses half the image's smaller median pixel spacing.
 
     Returns:
         List of (l1a_file, gcp_file) tuples for all valid spatial pairs.
@@ -454,8 +480,9 @@ def pair_files(
         ValueError: If l1a_files is empty, no GCP files match gcp_pattern, or
             any L1A or GCP file fails to load, including a missing file (the
             message names the file; the original exception is chained as
-            ``__cause__``). An empty pair list is returned, not raised, when
-            the files load but nothing overlaps.
+            ``__cause__``), or an L1A footprint cannot be built (see
+            :func:`find_l1a_gcp_pairs`). An empty pair list is returned, not
+            raised, when the files load but nothing overlaps.
 
     Example:
         >>> # .mat subimages paired with .mat GCPs (original behaviour)
@@ -501,12 +528,13 @@ def pair_files(
             raise ValueError(f"Failed to load GCP file {gcp_file}: {e}") from e
 
     logger.info(f"GCP Pairing: Finding spatial overlaps (max_distance={max_distance_m}m)...")
-    result = find_l1a_gcp_pairs(l1a_images, gcp_images, max_distance_m)
+    result = find_l1a_gcp_pairs(l1a_images, gcp_images, max_distance_m, footprint_tolerance_km)
 
     if not result.matches:
         logger.warning(
-            f"No valid pairs found with max_distance={max_distance_m}m. "
-            f"Try increasing max_distance_m or check spatial coverage."
+            f"No valid pairs found with max_distance_m={max_distance_m} m. A GCP center must lie at least "
+            "max_distance_m inside an L1A footprint; lower it (negative allows centers outside) or check the "
+            "spatial coverage."
         )
         return []
 
@@ -527,13 +555,14 @@ def pair_geolocated_dataset_with_gcp_files(
     gcp_files: list[Path],
     max_distance_m: float = 0.0,
     gcp_key: str = "GCP",
+    footprint_tolerance_km: float | None = None,
 ) -> list[Path]:
     """Find GCP chip files that spatially overlap an in-memory geolocated dataset.
 
     This is the in-memory-observation counterpart of :func:`pair_files`. Both
     delegate to the same core spatial-pairing algorithm
-    (:func:`find_l1a_gcp_pairs`) with proper ENU-distance polygon containment,
-    ensuring a single implementation for all GCP pairing.
+    (:func:`find_l1a_gcp_pairs`): the GCP center's signed distance to the
+    observation's traced footprint polygon.
 
     Parameters
     ----------
@@ -545,12 +574,18 @@ def pair_geolocated_dataset_with_gcp_files(
     max_distance_m : float, optional
         Minimum signed margin (meters) required between the GCP chip center
         and the nearest observation footprint edge.  ``0.0`` (default) means
-        the GCP center must fall strictly inside the footprint;
+        the GCP center must fall inside the footprint or on its edge;
         negative values allow the center to lie *outside* the footprint by up
-        to ``abs(max_distance_m)`` meters.
+        to ``abs(max_distance_m)`` meters, but a center more than about one
+        pixel spacing from its nearest observation pixel is never paired (see
+        :func:`find_l1a_gcp_pairs`).
     gcp_key : str, optional
         MATLAB struct key used when loading ``.mat`` GCP chips.  Defaults to
         ``"GCP"``.  Ignored for NetCDF files.
+    footprint_tolerance_km : float or None, optional
+        Tolerance of the observation's footprint polygon, km (its offset and
+        simplification; see :func:`find_l1a_gcp_pairs`); ``None`` (default)
+        uses half its smaller median pixel spacing.
 
     Returns
     -------
@@ -563,7 +598,8 @@ def pair_geolocated_dataset_with_gcp_files(
     ------
     ValueError
         If any GCP file fails to load (the message names the file; the
-        original exception is chained as ``__cause__``).
+        original exception is chained as ``__cause__``), or the observation's
+        footprint cannot be built (see :func:`find_l1a_gcp_pairs`).
 
     Examples
     --------
@@ -597,6 +633,6 @@ def pair_geolocated_dataset_with_gcp_files(
         except Exception as e:
             raise ValueError(f"Failed to load GCP file {gcp_file}: {e}") from e
 
-    pairing_result = find_l1a_gcp_pairs([obs_named], gcp_named, max_distance_m)
+    pairing_result = find_l1a_gcp_pairs([obs_named], gcp_named, max_distance_m, footprint_tolerance_km)
     matched_indices = {m.gcp_index for m in pairing_result.matches}
     return [Path(gcp_files[i]) for i in sorted(matched_indices)]
