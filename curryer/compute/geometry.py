@@ -73,13 +73,11 @@ them). Each field expands to the columns below.
 - ``relative_azimuth`` -> ``relative_azimuth`` -- viewing relative to solar azimuth.
 - ``cone_angle`` -> ``cone_angle`` -- boresight angle off the satellite-to-geocenter
   vector.
-- ``cone_angle_rate`` -> ``cone_angle_rate`` -- finite-difference time derivative of
-  ``cone_angle`` (deg/s) over the requested times.
 - ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
 - ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
   (body -> ``attitude_frame``, scalar-first).
-- ``clock_angle`` / ``clock_angle_rate`` -> same-named columns -- boresight azimuth in the
-  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s).
+- ``clock_angle`` -> ``clock_angle`` -- boresight azimuth in the inertial-velocity orbital
+  frame.
 - ``along_track_angle`` / ``cross_track_angle`` -> same-named columns -- boresight look
   angles from nadir in the velocity-nadir and cross-track-nadir planes.
 - ``sc_position_inertial`` / ``sc_velocity_inertial`` ->
@@ -96,11 +94,11 @@ them). Each field expands to the columns below.
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
 geodetic North in [0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are
-geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` uses the
-CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the
-Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
-(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
-in [0, 90] for Earth-disk views.
+geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` is
+``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the Sun sits at 180, and is the
+lossless unfolded value; folding it to [0, 180] (``min(raa, 360 - raa)``) is a separate,
+lossy step left to the product that wants it. ``cone_angle`` is in [0, 90] for Earth-disk
+views.
 
 The lunar fields are a direction rather than surface angles. ``moon_direction_x/y/z`` is
 the unit vector from the observer to the Moon in the frame the instrument kernel declares
@@ -545,9 +543,6 @@ class _ProviderResults:
         ``moon_*`` slice properties.
     attitude_quaternion : numpy.ndarray or None
         Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
-    ugps_times : numpy.ndarray or None
-        The request times (GPS microseconds), shape (N,), carried so rate fields can
-        finite-difference against the actual (possibly non-uniform) spacing.
     """
 
     sc_state: np.ndarray | None = None
@@ -557,7 +552,6 @@ class _ProviderResults:
     sc_state_inertial: np.ndarray | None = None
     boresight_inertial: np.ndarray | None = None
     moon_geometry: np.ndarray | None = None
-    ugps_times: np.ndarray | None = None
 
     @property
     def sc_position(self) -> np.ndarray:
@@ -599,7 +593,7 @@ class _ProviderResults:
         """Right-handed orbital-frame basis vectors from the inertial state, each (N, 3):
         ``x`` along the inertial velocity (component perpendicular to nadir), ``z`` toward
         Earth's center (nadir, ``-r_hat``), ``y = z x x``. Built once and shared by the
-        clock and along/cross-track fields (CERES SCI-12/-13).
+        clock and along/cross-track fields.
 
         Degenerate rows -- a missing state, ``r = 0``, or a velocity parallel to nadir --
         have a zero norm *and* a zero numerator, so they normalize to NaN (never inf),
@@ -614,15 +608,6 @@ class _ProviderResults:
             x = x / np.linalg.norm(x, axis=-1, keepdims=True)
         y = np.cross(z, x)
         return x, y, z
-
-    @cached_property
-    def seconds(self) -> np.ndarray:
-        """Request times as float seconds from the first sample -- the coordinate for
-        finite-difference rate fields. Referenced to the first time so that int64 uGPS
-        microseconds keep sub-microsecond precision after the float cast.
-        """
-        ugps = np.asarray(self.ugps_times, dtype=np.int64)
-        return (ugps - ugps[0]).astype(float) / 1e6
 
     @cached_property
     def boresight_intersection(self) -> np.ndarray:
@@ -644,10 +629,10 @@ def _relative_azimuth(p):
     """Relative azimuth of the viewing direction about the solar plane, in [0, 360).
 
     :func:`spatial.relative_azimuth` of the boresight viewing and solar azimuths
-    (azimuths clockwise from geodetic North per ``spatial.calc_azimuth``): the CERES
-    BDS R3V4 origin with the Sun at 180, kept unfolded so the side of the principal
-    plane survives. The same helper serves per-pixel products, so a boresight and a
-    pixel relative azimuth agree by construction.
+    (azimuths clockwise from geodetic North per ``spatial.calc_azimuth``), with the Sun
+    at 180 and kept unfolded so the side of the principal plane survives. The same helper
+    serves per-pixel products, so a boresight and a pixel relative azimuth agree by
+    construction.
 
     Parameters
     ----------
@@ -670,9 +655,9 @@ def _relative_azimuth(p):
 def _cone_angle(p):
     """Angle between the boresight and the satellite-to-geocenter direction.
 
-    The cone angle (CERES BDS R3V4 SCI-18) is the off-nadir angle of the boresight
-    measured from the vector pointing from the spacecraft to Earth's center
-    (``-sc_position``). In [0, 90] for Earth-disk views; larger toward the limb.
+    The off-nadir angle of the boresight, measured from the vector pointing from the
+    spacecraft to Earth's center (``-sc_position``). In [0, 90] for Earth-disk views;
+    larger toward the limb.
 
     Parameters
     ----------
@@ -691,35 +676,9 @@ def _cone_angle(p):
     return np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
 
 
-def _cone_angle_rate(p):
-    """Finite-difference time derivative of the cone angle, in degrees per second.
-
-    ``np.gradient`` of :func:`_cone_angle` over the request times (``p.seconds``):
-    second-order accurate in the interior, first-order at the ends, and honouring
-    non-uniform spacing. Its sign gives the direction the boresight sweeps relative to
-    nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
-    samples; a single-time request is NaN, since a rate needs at least two samples.
-
-    Parameters
-    ----------
-    p : _ProviderResults
-        Per-request provider results; uses ``boresight`` and ``sc_position`` (via
-        :func:`_cone_angle`) and the request times ``p.seconds``.
-
-    Returns
-    -------
-    numpy.ndarray
-        Cone-angle rate in degrees/second, shape (N,).
-    """
-    cone = _cone_angle(p)
-    if cone.shape[0] < 2:
-        return np.full_like(cone, np.nan)
-    return np.gradient(cone, p.seconds)
-
-
 def _clock_angle(p):
-    """Clock angle (CERES BDS R3V4 SCI-12): azimuth of the boresight in the orbital frame,
-    measured from the inertial-velocity direction, in [0, 360).
+    """Clock angle: azimuth of the boresight in the orbital frame, measured from the
+    inertial-velocity direction, in [0, 360).
 
     ``atan2(boresight . y, boresight . x)`` in the orbital frame (``x`` = inertial velocity,
     ``y = z x x``, ``z`` = nadir): 0 with the Earth point directly ahead, 270 on the orbital
@@ -728,34 +687,6 @@ def _clock_angle(p):
     x, y, _ = p.orbital_frame
     u = p.boresight_inertial
     return np.mod(np.degrees(np.arctan2(np.sum(u * y, axis=-1), np.sum(u * x, axis=-1))), 360.0)
-
-
-def _clock_angle_rate(p):
-    """Finite-difference time derivative of the clock angle, deg/s.
-
-    ``np.gradient`` over the request times (``p.seconds``) of the clock angle *unwrapped*
-    first, so the 360 -> 0 wrap does not inject a spurious spike. Single-time requests are
-    NaN, and a NaN clock angle propagates to its neighbours.
-
-    ``np.unwrap`` is not NaN-safe -- its correction is a cumulative sum, so one missing
-    sample would poison every later one -- hence the unwrap runs over the finite samples
-    only and is scattered back, leaving gaps as NaN for ``np.gradient`` to propagate
-    locally. Unwrapping across a gap cannot know how many wraps occurred inside it, but an
-    unknown multiple of 360 is a constant offset that cancels in the derivative everywhere
-    except at the gap edge, which is NaN regardless.
-
-    Note the clock angle is an azimuth about nadir and is therefore singular there: as the
-    boresight crosses nadir its azimuth swings ~180 degrees, so this rate legitimately
-    spikes on near-nadir samples.
-    """
-    clock = _clock_angle(p)
-    if clock.shape[0] < 2:
-        return np.full_like(clock, np.nan)
-    finite = np.isfinite(clock)
-    unwrapped = np.full_like(clock, np.nan)
-    if finite.sum() >= 2:
-        unwrapped[finite] = np.degrees(np.unwrap(np.radians(clock[finite])))
-    return np.gradient(unwrapped, p.seconds)
 
 
 def _along_track_angle(p):
@@ -828,7 +759,6 @@ _FIELD_SPECS = (
         lambda p: _relative_azimuth(p)[:, None],
     ),
     (GeometryField.CONE_ANGLE, {"boresight", "sc_state"}, lambda p: _cone_angle(p)[:, None]),
-    (GeometryField.CONE_ANGLE_RATE, {"boresight", "sc_state"}, lambda p: _cone_angle_rate(p)[:, None]),
     (GeometryField.SC_VELOCITY, {"sc_state"}, lambda p: p.sc_velocity),
     (GeometryField.SATELLITE_ATTITUDE, {"attitude_quaternion"}, lambda p: p.attitude_quaternion),
     # Inertial state vectors: slices of the same inertial ephemeris read the orbital-frame
@@ -838,11 +768,6 @@ _FIELD_SPECS = (
     (GeometryField.BORESIGHT_INERTIAL, {"boresight_inertial"}, lambda p: p.boresight_inertial),
     # Orbital-frame fields: the boresight in the orbital frame built from the inertial state.
     (GeometryField.CLOCK_ANGLE, {"sc_state_inertial", "boresight_inertial"}, lambda p: _clock_angle(p)[:, None]),
-    (
-        GeometryField.CLOCK_ANGLE_RATE,
-        {"sc_state_inertial", "boresight_inertial"},
-        lambda p: _clock_angle_rate(p)[:, None],
-    ),
     (
         GeometryField.ALONG_TRACK_ANGLE,
         {"sc_state_inertial", "boresight_inertial"},
@@ -1011,7 +936,7 @@ class GeometryData(abstract.AbstractMissionData):
                     raise ValueError(message)
                 logger.warning(message)
             gathered[key] = values
-        return _ProviderResults(ugps_times=ugps_times, **gathered)
+        return _ProviderResults(**gathered)
 
     @abstract.log_return()
     def get_geometry(

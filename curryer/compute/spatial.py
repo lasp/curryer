@@ -1579,10 +1579,10 @@ def relative_azimuth(viewing_azimuth: np.ndarray, solar_azimuth: np.ndarray, deg
     """Relative azimuth of the viewing direction about the solar plane (vectorized).
 
     ``mod(viewing_azimuth - solar_azimuth + half_turn, full_turn)`` with both azimuths
-    clockwise from geodetic North as returned by `calc_azimuth`. This is the CERES BDS
-    R3V4 origin: the Sun sits at 180 degrees, and the value keeps which side of the
-    principal plane the geometry is on. The CERES [0, 180] *fold*
-    (``min(raa, 360 - raa)``) is a separate, lossy step left to the product that wants it.
+    clockwise from geodetic North as returned by `calc_azimuth`. The Sun sits at 180
+    degrees, and the value keeps which side of the principal plane the geometry is on.
+    Folding it to [0, 180] (``min(raa, 360 - raa)``) is a separate, lossy step left to the
+    product that wants it.
 
     Parameters
     ----------

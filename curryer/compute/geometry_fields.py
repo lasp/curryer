@@ -91,17 +91,12 @@ class GeometryField(_FieldEnum):
     RELATIVE_AZIMUTH = (
         "relative_azimuth",
         ("relative_azimuth",),
-        "Viewing azimuth relative to solar azimuth (CERES origin, unfolded).",
+        "Viewing azimuth relative to solar azimuth (Sun at 180, unfolded), [0, 360).",
     )
     CONE_ANGLE = (
         "cone_angle",
         ("cone_angle",),
         "Boresight angle off the satellite-to-geocenter (nadir) vector.",
-    )
-    CONE_ANGLE_RATE = (
-        "cone_angle_rate",
-        ("cone_angle_rate",),
-        "Rate of change of the cone angle (deg/s), finite-differenced over the requested times.",
     )
     SC_VELOCITY = (
         "sc_velocity",
@@ -116,12 +111,7 @@ class GeometryField(_FieldEnum):
     CLOCK_ANGLE = (
         "clock_angle",
         ("clock_angle",),
-        "Boresight azimuth in the inertial-velocity orbital frame (CERES SCI-12), [0, 360).",
-    )
-    CLOCK_ANGLE_RATE = (
-        "clock_angle_rate",
-        ("clock_angle_rate",),
-        "Rate of change of the clock angle (deg/s), unwrapped finite difference.",
+        "Boresight azimuth in the inertial-velocity orbital frame, [0, 360).",
     )
     ALONG_TRACK_ANGLE = (
         "along_track_angle",
@@ -216,7 +206,7 @@ class PixelField(_FieldEnum):
     RELATIVE_AZIMUTH = (
         "relative_azimuth",
         ("relative_azimuth",),
-        "Viewing azimuth relative to solar azimuth (CERES origin, unfolded).",
+        "Viewing azimuth relative to solar azimuth (Sun at 180, unfolded), [0, 360).",
     )
     SURFACE_POSITION = (
         "surface_position",

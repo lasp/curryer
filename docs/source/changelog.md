@@ -135,6 +135,11 @@ correlation_secondary` is below it, and raises where `correlation_secondary` is 
   tile a chip list touched (about 70 MB per GMTED tile).
 - `CorrectionResult` gains `n_usable_pairs` and `n_valid_sets`, and its recommendation and
   summary table state the pairs and sets the verdict rests on.
+- **Rate fields removed from `GeometryData`** -- `cone_angle_rate` and `clock_angle_rate`
+  (`GeometryField.CONE_ANGLE_RATE`, `GeometryField.CLOCK_ANGLE_RATE`) are gone. They were
+  time derivatives of the orbital-frame angles, which is not the scan-rate quantity product
+  fields of those names usually carry; a mission that needs a rate computes it from its own
+  mechanism angles. Requesting either name raises `KeyError`.
 
 ### New
 
