@@ -5,13 +5,56 @@
 
 import logging
 import logging.config
+import os
 import subprocess
 import time
 import typing
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# The distribution registers under a different name than the import package.
+DISTRIBUTION_NAME = "lasp-curryer"
+
+
+def package_version() -> str:
+    """Installed version of this package, whichever name it registered under.
+
+    Falls back to ``"unknown"`` when no distribution is registered (e.g. a
+    source checkout on ``sys.path`` without an install) — callers use the
+    version as a cache-directory key, so this must never raise.
+    """
+    for dist_name in (DISTRIBUTION_NAME, __name__.split(".", 1)[0]):
+        try:
+            return version(dist_name)
+        except PackageNotFoundError:
+            continue
+    logger.debug("No installed distribution found for %s; using 'unknown'", DISTRIBUTION_NAME)
+    return "unknown"
+
+
+def get_local_cache_dir() -> Path:
+    """Determine the user cache directory for this package version.
+
+    The directory is keyed by installed package version, so a new release
+    starts from an empty cache.
+
+    Returns
+    -------
+    pathlib.Path
+        Platform cache directory for the current curryer version. Not
+        created by this function.
+    """
+    package_name = __name__.split(".", 1)[0]
+    if os.name == "nt":
+        base = Path(os.getenv("LOCALAPPDATA", "~/AppData/Local")).expanduser()
+    elif os.uname().sysname == "Darwin":
+        base = Path("~/Library/Caches").expanduser()
+    else:
+        base = Path(os.getenv("XDG_CACHE_HOME", "~/.cache")).expanduser()
+    return base / package_name / package_version()
 
 
 def track_performance(func: typing.Callable, storage: dict = None):

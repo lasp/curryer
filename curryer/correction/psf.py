@@ -5,14 +5,14 @@ from collections.abc import Iterable
 
 import numpy as np
 from scipy.interpolate import (
-    NearestNDInterpolator,
+    LinearNDInterpolator,
     RegularGridInterpolator,
 )
-from scipy.ndimage import map_coordinates
-from scipy.signal import convolve2d, fftconvolve
+from scipy.ndimage import map_coordinates, uniform_filter1d
+from scipy.signal import fftconvolve
 
 from ..compute import constants
-from ..compute.spatial import ecef_to_geodetic, geodetic_to_ecef
+from ..compute.spatial import calc_azimuth, ecef_to_geodetic, geodetic_to_ecef
 from .config import PSFSamplingConfig
 from .grid_types import (
     ImageGrid,
@@ -22,6 +22,10 @@ from .grid_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_CENTRING_TOLERANCE_PX = 1e-6
+_MAX_CENTRING_ITERATIONS = 20
 
 
 def centroid(weights: np.ndarray) -> float:
@@ -231,6 +235,42 @@ def convolve_gcp_with_psf(gcp: ImageGrid, psf: PSFGrid) -> ImageGrid:
     return ImageGrid(data=convolved, lat=gcp.lat, lon=gcp.lon, h=gcp.h)
 
 
+def crop_to_full_psf_overlap(convolved: ImageGrid, psf: PSFGrid) -> ImageGrid:
+    """
+    Crop a GCP convolved by :func:`convolve_gcp_with_psf` to where the PSF lies wholly inside the chip.
+
+    The convolution pads the chip with zeros, so within half a kernel of its edge the convolved
+    chip fades toward zero. The cropped grid holds only pixels computed from chip data alone, the
+    ``mode="valid"`` region of the convolution.
+
+    Parameters
+    ----------
+    convolved : ImageGrid
+        Output of :func:`convolve_gcp_with_psf`.
+    psf : PSFGrid
+        The PSF it was convolved with.
+
+    Returns
+    -------
+    ImageGrid
+        ``convolved`` with ``psf.data.shape[i] - 1`` rows and columns removed in total, split
+        between the two edges as ``fftconvolve(mode="same")`` centres the kernel.
+
+    Raises
+    ------
+    ValueError
+        If the PSF kernel is not smaller than the chip along both axes.
+    """
+
+    (n_rows, n_cols), (k_rows, k_cols) = convolved.data.shape, psf.data.shape
+    if k_rows >= n_rows or k_cols >= n_cols:
+        raise ValueError(f"PSF kernel {psf.data.shape} is not smaller than the GCP chip {convolved.data.shape}.")
+    rows = slice(k_rows // 2, n_rows - (k_rows - 1) // 2)
+    cols = slice(k_cols // 2, n_cols - (k_cols - 1) // 2)
+    h = None if convolved.h is None else convolved.h[rows, cols]
+    return ImageGrid(data=convolved.data[rows, cols], lat=convolved.lat[rows, cols], lon=convolved.lon[rows, cols], h=h)
+
+
 def convolve_psf_with_spacecraft_motion(
     psf: ProjectedPSF,
     composite_img: ImageGrid,
@@ -239,115 +279,83 @@ def convolve_psf_with_spacecraft_motion(
     """
     Apply spacecraft motion blur to projected PSF.
 
+    The footprint moves along track during a frame, so the PSF is blurred by the
+    mean lat/lon step between successive frames (rows) of *composite_img*.  The PSF
+    is rotated so the motion runs along one grid axis, blurred along it, and
+    rotated back onto a lat/lon grid that covers the whole blurred PSF.  The blur
+    is the whole frame step, so the detector is taken to integrate for the whole
+    frame period.
+
     Parameters
     ----------
     psf : ProjectedPSF
         Projected PSF on Earth's surface.
     composite_img : ImageGrid
-        Composite image defining spacecraft motion direction.
+        Observation subimage, rows = frames (along track); its frame step sets the
+        direction and length of the blur.
     config : PSFSamplingConfig
         Configuration with PSF sampling parameters.
 
     Returns
     -------
     PSFGrid
-        PSF convolved with spacecraft motion blur.
+        PSF convolved with spacecraft motion blur, on a regular lat/lon grid at the
+        configured sample distances that spans the blurred PSF's nonzero support
+        plus one sample on each side; zero outside the sampled PSF.
+
+    Raises
+    ------
+    ValueError
+        If *composite_img* has fewer than two frames, or its mean frame step is
+        not finite or is zero.
     """
-
-    logger.debug("Convolve with SC - Init")
-    lat_motion = np.mean(np.diff(composite_img.lat, axis=1))
-    lon_motion = np.mean(np.diff(composite_img.lon, axis=1))
-
-    theta_deg = np.degrees(np.arctan2(lat_motion, lon_motion))
+    if composite_img.lat.shape[0] < 2:
+        raise ValueError("The motion blur needs at least two frames to give the frame step.")
+    lat_motion = np.mean(np.diff(composite_img.lat, axis=0))
+    lon_motion = np.mean(np.diff(composite_img.lon, axis=0))
     dist = np.hypot(lat_motion, lon_motion)
+    if not (np.isfinite(dist) and dist > 0):
+        raise ValueError(f"The mean frame step ({lat_motion}, {lon_motion}) deg must be finite and nonzero.")
 
-    psf_lon = psf.lon
-    psf_lat = psf.lat
-
-    psf_mid_lon = np.mean(psf_lon)
-    psf_mid_lat = np.mean(psf_lat)
-
-    rot_angle = np.deg2rad(-theta_deg)
-    rot_mat = np.array([[np.cos(rot_angle), -np.sin(rot_angle)], [np.sin(rot_angle), np.cos(rot_angle)]])
-
-    logger.debug("Convolve with SC - Forward prep")
-    coords = np.vstack((psf_lon.ravel() - psf_mid_lon, psf_lat.ravel() - psf_mid_lat))
-    rotated = rot_mat @ coords
-    psf_lon_rot = rotated[0].reshape(psf_lon.shape) + psf_mid_lon
-    psf_lat_rot = rotated[1].reshape(psf_lat.shape) + psf_mid_lat
-
+    theta = np.arctan2(lat_motion, lon_motion)
     dlat = config.psf_lat_sample_dist_deg
     dlon = config.psf_lon_sample_dist_deg
 
-    x = np.arange(
-        psf_lon_rot.min() - dist / 2.0,
-        psf_lon_rot.max() + dist / 2.0 + dlon,
-        dlon,
-    )
-    y = np.arange(psf_lat_rot.min(), psf_lat_rot.max() + dlat, dlat)
+    mid = np.array([np.mean(psf.lon), np.mean(psf.lat)])
+    to_motion = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
+    samples = to_motion @ np.vstack((psf.lon.ravel() - mid[0], psf.lat.ravel() - mid[1]))
+
+    x = np.arange(samples[0].min() - dist / 2.0, samples[0].max() + dist / 2.0 + dlon, dlon)
+    y = np.arange(samples[1].min(), samples[1].max() + dlat, dlat)
     X, Y = np.meshgrid(x, y)
+    sampled = LinearNDInterpolator(samples.T, psf.data.ravel(), fill_value=0.0)(X, Y)
 
-    logger.debug("Convolve with SC - Nearest interp")
-    nearest = NearestNDInterpolator(np.column_stack((psf_lon_rot.ravel(), psf_lat_rot.ravel())), psf.data.ravel())
-    psf_interp = nearest(X, Y)
-    psf_interp = np.nan_to_num(psf_interp, nan=0.0)
+    num_steps = max(1, int(round(dist / dlon)))
+    # Box sum of num_steps samples along the motion axis, aligned as convolve2d(mode="same"). The
+    # running sum leaves rounding residue where the window holds no sample; the count of nonzero
+    # samples in the window is exact, and is zero exactly there.
+    box = dict(size=num_steps, axis=1, mode="constant", cval=0.0)
+    psf_map = uniform_filter1d(sampled, **box) * num_steps
+    psf_map[uniform_filter1d((sampled != 0).astype(float), **box) * num_steps < 0.5] = 0.0
 
-    logger.debug("Convolve with SC - Convolve 2d")
-    num_steps = max(1, int(round(abs(dist / dlon))))
-    kernel = np.ones((1, num_steps), dtype=float)
-    psf_map = convolve2d(psf_interp, kernel, mode="same", boundary="fill", fillvalue=0.0)
-
-    logger.debug("Convolve with SC - Linear interp")  # TODO: Orig impl was slow!!!
-    # # Original implementation.
-    # rot_angle_back = np.deg2rad(theta_deg)
-    # rot_mat_back = np.array(
-    #     [[np.cos(rot_angle_back), -np.sin(rot_angle_back)], [np.sin(rot_angle_back), np.cos(rot_angle_back)]]
-    # )
-    # coords_back = np.vstack((X.ravel() - psf_mid_lon, Y.ravel() - psf_mid_lat))
-    # rotated_back = rot_mat_back @ coords_back
-    # X_new = rotated_back[0] + psf_mid_lon
-    # Y_new = rotated_back[1] + psf_mid_lat
-    #
-    # linear = LinearNDInterpolator(
-    #     np.column_stack((X_new, Y_new)), psf_map.ravel(), fill_value=0.0
-    # )
-    # data = linear(X, Y)
-    # data = np.nan_to_num(data, nan=0.0)
-
-    # # New implementation (v1).
-    # # Convert back to fractional indices on the uniform grid
-    # y_coords = (Y_new - y[0]) / dlat
-    # x_coords = (X_new - x[0]) / dlon
-    #
-    # # Bilinear interpolation with zero padding outside the grid
-    # data = map_coordinates(
-    #     psf_map,
-    #     [y_coords.ravel(), x_coords.ravel()],
-    #     order=1,
-    #     mode="constant",
-    #     cval=0.0,
-    # ).reshape(Y.shape)
-
-    # New implementation (v2).
-    coords = np.vstack((X.ravel() - psf_mid_lon, Y.ravel() - psf_mid_lat))
-    rotated = rot_mat @ coords  # rot_mat is the earlier -theta rotation
-    X_rot = rotated[0] + psf_mid_lon
-    Y_rot = rotated[1] + psf_mid_lat
-
-    # Convert to fractional indices in the rotated grid
-    x_idx = (X_rot - x[0]) / dlon
-    y_idx = (Y_rot - y[0]) / dlat
-
+    corners = to_motion.T @ np.array([[x[0], x[-1], x[0], x[-1]], [y[0], y[0], y[-1], y[-1]]])
+    lon = mid[0] + np.arange(corners[0].min(), corners[0].max() + dlon, dlon)
+    lat = mid[1] + np.arange(corners[1].min(), corners[1].max() + dlat, dlat)
+    LON, LAT = np.meshgrid(lon, lat)
+    in_motion = to_motion @ np.vstack((LON.ravel() - mid[0], LAT.ravel() - mid[1]))
     data = map_coordinates(
-        psf_map,
-        [y_idx, x_idx],
-        order=1,
-        mode="constant",
-        cval=0.0,
-    ).reshape(X.shape)
+        psf_map, [(in_motion[1] - y[0]) / dlat, (in_motion[0] - x[0]) / dlon], order=1, mode="constant", cval=0.0
+    ).reshape(LON.shape)
 
-    logger.debug("Convolve with SC - End")
-    return PSFGrid(data=data, lat=y, lon=x)
+    # The rotated grid's bounding box is mostly zero at its corners; keep the PSF's support and
+    # one zero sample around it, so linear interpolation of the result is unchanged.
+    rows = np.flatnonzero(data.any(axis=1))
+    cols = np.flatnonzero(data.any(axis=0))
+    if rows.size:
+        r0, r1 = max(rows[0] - 1, 0), min(rows[-1] + 2, data.shape[0])
+        c0, c1 = max(cols[0] - 1, 0), min(cols[-1] + 2, data.shape[1])
+        data, lat, lon = data[r0:r1, c0:c1], lat[r0:r1], lon[c0:c1]
+    return PSFGrid(data=data, lat=lat, lon=lon)
 
 
 def zero_pad_psf(psf: PSFGrid) -> PSFGrid:
@@ -410,6 +418,16 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     """
     Resample PSF to match GCP reference image resolution.
 
+    The resampled grid has an odd number of samples on each axis, and its
+    sample positions are offset (by less than a pixel) so that the weighted
+    centre of the sampled weights is the middle sample to within
+    ``1e-6`` pixel; :func:`convolve_gcp_with_psf` then blurs the GCP without
+    shifting it. Sampling at the PSF centroid alone leaves the discrete
+    weights' centre off the middle sample by up to about 0.1 pixel on a
+    coarse grid. The returned coordinates put the middle sample at the PSF
+    centroid. The GCP pixel must be no wider than the PSF's RMS width on each
+    axis, so that the samples represent the PSF.
+
     Parameters
     ----------
     psf : PSFGrid
@@ -420,28 +438,58 @@ def resample_psf_to_gcp_resolution(psf: PSFGrid, gcp: ImageGrid) -> PSFGrid:
     Returns
     -------
     PSFGrid
-        Resampled PSF at GCP resolution.
+        Resampled PSF at GCP resolution, covering the whole input PSF.
 
     Raises
     ------
     ValueError
-        If PSF is not on a rectilinear grid.
+        If PSF is not on a rectilinear grid, its weights do not have a positive
+        sum, the GCP pixel is wider than the PSF's RMS width on either axis, or
+        the sampled weights cannot be centred.
     """
 
     if psf.lat.ndim != 1 or psf.lon.ndim != 1:
         raise ValueError("PSF must be on a rectilinear grid before resampling.")
+    total = psf.data.sum()
+    if not total > 0:
+        raise ValueError(f"PSF weights sum to {total}; the centroid is undefined.")
 
     dlon = float(np.abs(np.mean(np.diff(gcp.lon, axis=1))))
     dlat = float(np.abs(np.mean(np.diff(gcp.lat, axis=0))))
 
-    x = np.arange(psf.lon.min(), psf.lon.max() + dlon, dlon)
-    y = np.arange(psf.lat.min(), psf.lat.max() + dlat, dlat)
-    Y_new, X_new = np.meshgrid(y, x, indexing="ij")
-
+    lat_c = float(np.sum(psf.data.sum(axis=1) * psf.lat) / total)
+    lon_c = float(np.sum(psf.data.sum(axis=0) * psf.lon) / total)
+    rms_lat = float(np.sqrt(np.sum(psf.data.sum(axis=1) * (psf.lat - lat_c) ** 2) / total))
+    rms_lon = float(np.sqrt(np.sum(psf.data.sum(axis=0) * (psf.lon - lon_c) ** 2) / total))
+    if dlat > rms_lat or dlon > rms_lon:
+        raise ValueError(
+            f"GCP pixel ({dlat:.3g}, {dlon:.3g}) deg lat/lon is wider than the PSF's RMS width "
+            f"({rms_lat:.3g}, {rms_lon:.3g}) deg; too few samples to represent the PSF."
+        )
+    extent_x = max(lon_c - psf.lon.min(), psf.lon.max() - lon_c)
+    extent_y = max(lat_c - psf.lat.min(), psf.lat.max() - lat_c)
     interpolant = RegularGridInterpolator((psf.lat, psf.lon), psf.data, bounds_error=False, fill_value=0.0)
-    data = interpolant(np.stack((Y_new.ravel(), X_new.ravel()), axis=-1)).reshape(Y_new.shape)
 
-    return PSFGrid(data=data, lat=y, lon=x)
+    # Shift the samples until the discrete weights' centre is the middle sample; the offset
+    # moves that centre by about offset / step, so each step removes the residual to first order.
+    shift_x = shift_y = 0.0
+    for _ in range(_MAX_CENTRING_ITERATIONS):
+        half_x = int(np.ceil((extent_x + abs(shift_x)) / dlon))
+        half_y = int(np.ceil((extent_y + abs(shift_y)) / dlat))
+        k_x = np.arange(-half_x, half_x + 1)
+        k_y = np.arange(-half_y, half_y + 1)
+        Y_new, X_new = np.meshgrid(lat_c + shift_y + k_y * dlat, lon_c + shift_x + k_x * dlon, indexing="ij")
+        data = interpolant(np.stack((Y_new.ravel(), X_new.ravel()), axis=-1)).reshape(Y_new.shape)
+        off_y = centroid(data.sum(axis=1)) - half_y
+        off_x = centroid(data.sum(axis=0)) - half_x
+        if abs(off_x) < _CENTRING_TOLERANCE_PX and abs(off_y) < _CENTRING_TOLERANCE_PX:
+            return PSFGrid(data=data, lat=lat_c + k_y * dlat, lon=lon_c + k_x * dlon)
+        shift_x += off_x * dlon
+        shift_y += off_y * dlat
+    raise ValueError(
+        f"Resampled PSF weights stay ({off_y:.3g}, {off_x:.3g}) pixel lat/lon off the middle sample after "
+        f"{_MAX_CENTRING_ITERATIONS} centring steps."
+    )
 
 
 def normalize_psf(psf: PSFGrid) -> PSFGrid:
@@ -471,68 +519,200 @@ def normalize_psf(psf: PSFGrid) -> PSFGrid:
     return psf
 
 
+def validate_spacecraft_ecef_m(r_spacecraft_m: np.ndarray) -> np.ndarray:
+    """Check that a spacecraft position is an ECEF vector in meters above the Earth.
+
+    Catches the common unit and shape mistakes (kilometers instead of meters,
+    a column vector, NaN fill) at the point where the position enters image
+    matching or error statistics.  It cannot detect an inertial (e.g. J2000)
+    position passed as ECEF, since both have Earth-orbit magnitudes.
+
+    Parameters
+    ----------
+    r_spacecraft_m : ndarray of shape (3,)
+        Spacecraft ECEF position in meters.
+
+    Returns
+    -------
+    ndarray, shape (3,)
+        The position as a float64 array.
+
+    Raises
+    ------
+    ValueError
+        If the position is not shape ``(3,)``, not finite, inside the Earth
+        (shorter than the WGS-84 semi-minor axis), or not above the WGS-84
+        ellipsoid.
+    """
+    r = np.asarray(r_spacecraft_m, dtype=float)
+    if r.shape != (3,):
+        raise ValueError(f"Spacecraft position must have shape (3,), got {r.shape}.")
+    if not np.all(np.isfinite(r)):
+        raise ValueError(f"Spacecraft position must be finite, got {r}.")
+    if np.linalg.norm(r) < constants.WGS84_SEMI_MINOR_AXIS_KM * 1_000.0:
+        raise ValueError(
+            f"Spacecraft position {r} is {np.linalg.norm(r):.0f} m from the Earth's center, inside the Earth; "
+            "expected an ECEF position in meters."
+        )
+    altitude_m = ecef_to_geodetic(r, meters=True)[2]
+    if not altitude_m > 0.0:
+        raise ValueError(
+            f"Spacecraft position {r} m is {altitude_m:.0f} m relative to the WGS-84 ellipsoid; "
+            "expected an ECEF position in meters above the surface."
+        )
+    return r
+
+
+def _nearest_grid_pixel(grid: ImageGrid, lat_deg: float, lon_deg: float) -> tuple[int, int]:
+    """Return the ``(row, col)`` of the grid pixel nearest a geodetic point.
+
+    Raises
+    ------
+    ValueError
+        If the point is farther from its nearest pixel than that pixel is
+        from its farthest adjacent pixel, i.e. outside the grid.
+    """
+    coslat = np.cos(np.deg2rad(lat_deg))
+
+    def dist2(lat, lon, lat0, lon0):
+        return (lat - lat0) ** 2 + (((lon - lon0 + 180.0) % 360.0 - 180.0) * coslat) ** 2
+
+    d2 = dist2(grid.lat, grid.lon, lat_deg, lon_deg)
+    if not np.any(np.isfinite(d2)):
+        raise ValueError("Observation grid has no finite lat/lon.")
+    i, j = np.unravel_index(np.nanargmin(d2), d2.shape)
+    rows, cols = d2.shape
+    neighbours = [
+        (i + di, j + dj) for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)) if 0 <= i + di < rows and 0 <= j + dj < cols
+    ]
+    spacing2 = np.array([dist2(grid.lat[n], grid.lon[n], grid.lat[i, j], grid.lon[i, j]) for n in neighbours])
+    if not spacing2.size or not np.any(np.isfinite(spacing2)) or not d2[i, j] <= np.nanmax(spacing2):
+        raise ValueError(
+            f"Point (lat {lat_deg}, lon {lon_deg}) is outside the observation grid: its nearest pixel "
+            f"({i}, {j}) is farther away than that pixel's adjacent pixels."
+        )
+    return int(i), int(j)
+
+
 def resolve_spacecraft_ecef(
     grid: ImageGrid,
-    r_spacecraft_m: np.ndarray | None,
-    default_altitude_m: float = 400_000.0,
+    r_spacecraft_m: np.ndarray,
+    target_lat_deg: float,
+    target_lon_deg: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(r_spacecraft_m, boresight, t_matrix)`` for image-matching.
 
-    When *r_spacecraft_m* is provided it is used directly; the boresight is
-    the unit nadir vector ``-r / |r|``.  When *r_spacecraft_m* is ``None`` the
-    grid center lat/lon is used to build an approximate nadir position at
-    *default_altitude_m* above the WGS-84 ellipsoid surface.
+    The boresight is the unit line of sight from the spacecraft to the
+    observation pixel in the mid-frame row and in the column of the pixel
+    nearest the target (the GCP centre), using that pixel's lat/lon/height.
+    The nadir-equivalent error is defined on the line of sight of the pixel
+    that viewed the GCP.  With one mid-frame spacecraft position, the
+    pixel in the GCP's cross-track column of the mid-frame row has the GCP's
+    off-nadir angle; aiming at the GCP itself from the mid-frame position
+    would not, when the GCP was imaged at a different frame.  The view-plane
+    azimuth still differs from the GCP's by the along-track change in
+    viewing direction between the mid-frame and the GCP's frame.
 
-    The rotation matrix is always the ``3×3`` identity — the boresight is
-    already expressed in the CTRS frame via the nadir-approximation, so no
-    additional rotation is needed.
+    The rotation matrix is the ``3×3`` identity because the boresight is
+    already expressed in the CTRS (ECEF) frame.
 
     Parameters
     ----------
     grid : ImageGrid
-        Observation grid, used for the center lat/lon when *r_spacecraft_m*
-        is ``None``.
-    r_spacecraft_m : ndarray of shape (3,) or None
-        Spacecraft ECEF position in meters.  Pass ``None`` to fall back to
-        the nadir approximation.
-    default_altitude_m : float, optional
-        Spacecraft altitude above the WGS-84 surface (meters) used when
-        *r_spacecraft_m* is ``None``.  Default 400 000 m (ISS nominal orbit).
-        Override for other spacecraft (e.g. 505 000 m for CTIM).
+        Observation grid with rows = frames (along track) and columns =
+        cross-track pixels; its middle row is the frame of *r_spacecraft_m*.
+        ``grid.lat``/``grid.lon`` in degrees, ``grid.h`` in meters above the
+        WGS-84 ellipsoid (treated as 0 when ``None``).
+    r_spacecraft_m : ndarray of shape (3,)
+        Spacecraft ECEF position in meters at the observation mid-frame.
+    target_lat_deg, target_lon_deg : float
+        Geodetic latitude and longitude of the GCP centre, degrees.  Must lie
+        within *grid* or at most one pixel spacing beyond its edge pixels,
+        where the edge pixel's line of sight is the nearest available.
+        :mod:`~curryer.correction.pairing` applies the same test and does not
+        pair a GCP this rejects.
 
     Returns
     -------
     r_spacecraft_m : ndarray, shape (3,)
-        ECEF spacecraft position in meters.
+        ECEF spacecraft position in meters (float copy of the input).
     boresight : ndarray, shape (3,)
-        Nadir unit vector from spacecraft toward Earth center.
+        Unit vector in ECEF from the spacecraft to the mid-frame pixel in the
+        target's column.
     t_matrix : ndarray, shape (3, 3)
         Identity rotation matrix.
-    """
-    if r_spacecraft_m is not None:
-        r = np.asarray(r_spacecraft_m, dtype=float).ravel()
-        boresight = -r / np.linalg.norm(r)
-        return r, boresight, np.eye(3)
 
-    # Approximate nadir from grid center lat/lon
-    mid_i, mid_j = grid.mid_indices
-    lat = float(grid.lat[mid_i, mid_j])
-    lon = float(grid.lon[mid_i, mid_j])
-    lat_r = np.deg2rad(lat)
-    lon_r = np.deg2rad(lon)
-    nadir_hat = np.array(
-        [
-            np.cos(lat_r) * np.cos(lon_r),
-            np.cos(lat_r) * np.sin(lon_r),
-            np.sin(lat_r),
-        ]
-    )
-    r_approx = (constants.WGS84_SEMI_MAJOR_AXIS_KM * 1_000.0 + default_altitude_m) * nadir_hat
-    logger.debug(
-        "No spacecraft position in observation file — approximating nadir "
-        "from grid center (lat=%.2f, lon=%.2f, alt=%.0f m)",
-        lat,
-        lon,
-        default_altitude_m,
-    )
-    return r_approx, -nadir_hat, np.eye(3)
+    Raises
+    ------
+    ValueError
+        If *r_spacecraft_m* is ``None``, not shape ``(3,)``, not finite, or
+        not above the WGS-84 ellipsoid; if the target lat/lon is not finite or
+        lies outside *grid*; or if the lat/lon/height of the mid-frame pixel
+        in the target's column is not finite.
+    """
+    if r_spacecraft_m is None:
+        raise ValueError(
+            "Spacecraft ECEF position is required to resolve the viewing geometry; "
+            "supply it in the observation file ('position' for NetCDF, 'R_ISS_midframe' for .mat)."
+        )
+    r = validate_spacecraft_ecef_m(r_spacecraft_m)
+
+    if not (np.isfinite(target_lat_deg) and np.isfinite(target_lon_deg)):
+        raise ValueError(f"Target lat/lon must be finite, got ({target_lat_deg}, {target_lon_deg}).")
+    _, col = _nearest_grid_pixel(grid, target_lat_deg, target_lon_deg)
+    row = grid.mid_indices[0]
+    height_m = 0.0 if grid.h is None else float(grid.h[row, col])
+    lon_lat_h = np.array([grid.lon[row, col], grid.lat[row, col], height_m], dtype=float)
+    if not np.all(np.isfinite(lon_lat_h)):
+        raise ValueError(f"Mid-frame pixel ({row}, {col}) lon/lat/height must be finite, got {lon_lat_h}.")
+    p_view = geodetic_to_ecef(lon_lat_h, meters=True, degrees=True)
+
+    line_of_sight = p_view - r
+    boresight = line_of_sight / np.linalg.norm(line_of_sight)
+    return r, boresight, np.eye(3)
+
+
+def ground_track_azimuth_deg(grid: ImageGrid, target_lat_deg: float, target_lon_deg: float) -> float:
+    """Return the ground azimuth of increasing row at the grid pixel nearest a target.
+
+    With rows = frames, this is the direction in which successive frames
+    advance over the ground at the target: the along-track direction used to
+    resolve a geolocation error into along-track and cross-track components.
+    It is the azimuth, at the previous row, of the ellipsoid point of the next
+    row in the target's column (one-sided at the first and last rows).
+
+    Parameters
+    ----------
+    grid : ImageGrid
+        Observation grid with rows = frames (along track) and columns =
+        cross-track pixels; ``grid.lat``/``grid.lon`` in degrees.
+    target_lat_deg, target_lon_deg : float
+        Geodetic latitude and longitude of the target, degrees.  Must lie
+        within *grid*.
+
+    Returns
+    -------
+    float
+        Azimuth in degrees clockwise from north, in ``[0, 360)``.
+
+    Raises
+    ------
+    ValueError
+        If the target lat/lon is not finite or lies outside *grid*; if *grid*
+        has fewer than two rows; or if the two pixels used are not finite or
+        coincide.
+    """
+    if not (np.isfinite(target_lat_deg) and np.isfinite(target_lon_deg)):
+        raise ValueError(f"Target lat/lon must be finite, got ({target_lat_deg}, {target_lon_deg}).")
+    n_rows = grid.lat.shape[0]
+    if n_rows < 2:
+        raise ValueError(f"Observation grid has {n_rows} row; the ground-track direction needs at least two.")
+    row, col = _nearest_grid_pixel(grid, target_lat_deg, target_lon_deg)
+    rows = (max(row - 1, 0), min(row + 1, n_rows - 1))
+    lon_lat = np.array([[grid.lon[r, col], grid.lat[r, col], 0.0] for r in rows], dtype=float)
+    if not np.all(np.isfinite(lon_lat)):
+        raise ValueError(f"Pixels in rows {rows}, column {col} must have finite lat/lon, got {lon_lat[:, 1::-1]}.")
+    p_from, p_to = geodetic_to_ecef(lon_lat, meters=False, degrees=True)
+    if np.array_equal(p_from, p_to):
+        raise ValueError(f"Pixels in rows {rows}, column {col} coincide; the ground-track direction is undefined.")
+    return float(calc_azimuth(p_from, p_to, degrees=True)[0])

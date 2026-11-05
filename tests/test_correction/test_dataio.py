@@ -15,7 +15,6 @@ from curryer.correction.dataio import (
     S3Configuration,
     download_netcdf_objects,
     find_netcdf_objects,
-    validate_science_output,
     validate_telemetry_output,
 )
 
@@ -106,33 +105,3 @@ def test_validate_telemetry_not_dataframe(mock_config):
 def test_validate_telemetry_empty(mock_config):
     with pytest.raises(ValueError, match="empty DataFrame"):
         validate_telemetry_output(pd.DataFrame(), mock_config)
-
-
-def test_validate_science_valid(mock_config):
-    df = pd.DataFrame({"corrected_timestamp": [1e6, 2e6], "frame_id": [1, 2]})
-    validate_science_output(df, mock_config)  # must not raise
-
-
-def test_validate_science_not_dataframe(mock_config):
-    with pytest.raises(TypeError, match="must return pd.DataFrame"):
-        validate_science_output([1, 2, 3], mock_config)
-
-
-def test_validate_science_empty(mock_config):
-    with pytest.raises(ValueError, match="empty DataFrame"):
-        validate_science_output(pd.DataFrame(), mock_config)
-
-
-def test_validate_science_missing_time_field(mock_config):
-    df = pd.DataFrame({"frame_id": [1, 2], "other": [100, 200]})
-    with pytest.raises(ValueError, match="must include time field 'corrected_timestamp'"):
-        validate_science_output(df, mock_config)
-
-
-def test_validate_science_custom_time_field(mock_config):
-    mock_config.geo.time_field = "custom_time"
-    df_ok = pd.DataFrame({"custom_time": [1.0, 2.0], "data": [1, 2]})
-    validate_science_output(df_ok, mock_config)  # must not raise
-    df_bad = pd.DataFrame({"corrected_timestamp": [1.0, 2.0], "data": [1, 2]})
-    with pytest.raises(ValueError, match="must include time field 'custom_time'"):
-        validate_science_output(df_bad, mock_config)

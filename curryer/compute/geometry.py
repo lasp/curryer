@@ -46,6 +46,8 @@ yields a NaN provider row; the math-only leaves are pure and propagate NaN
 elementwise, so every field is NaN on exactly the rows its inputs are missing and
 finite elsewhere -- per time, per field. Downstream maps those NaNs onto the
 product ``_FillValue`` (e.g. -999); the rows are never dropped or back-filled.
+A SPICE input that is NaN at *every* requested time logs a warning, or raises with
+``require_coverage=True`` -- the caller's statement that the kernels must cover the span.
 
 Available fields: request any by name (``GeometryData.available_fields()`` lists
 them). Each field expands to the columns below.
@@ -72,13 +74,12 @@ them). Each field expands to the columns below.
 - ``cone_angle`` -> ``cone_angle`` -- boresight angle off the satellite-to-geocenter
   vector.
 - ``cone_angle_rate`` -> ``cone_angle_rate`` -- finite-difference time derivative of
-  ``cone_angle`` (deg/s) over the requested times. See the note below on gimbal rates.
+  ``cone_angle`` (deg/s) over the requested times.
 - ``sc_velocity`` -> ``spacecraft_velocity_x/y/z`` -- observer velocity (ECEF, km/s).
 - ``satellite_attitude`` -> ``attitude_q0..q3`` -- observer body attitude quaternion
   (body -> ``attitude_frame``, scalar-first).
 - ``clock_angle`` / ``clock_angle_rate`` -> same-named columns -- boresight azimuth in the
-  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s). See the
-  note below on gimbal rates.
+  inertial-velocity orbital frame (CERES SCI-12) and its unwrapped rate (deg/s).
 - ``along_track_angle`` / ``cross_track_angle`` -> same-named columns -- boresight look
   angles from nadir in the velocity-nadir and cross-track-nadir planes.
 - ``sc_position_inertial`` / ``sc_velocity_inertial`` ->
@@ -86,6 +87,11 @@ them). Each field expands to the columns below.
   observer state in ``inertial_frame`` (km, km/s).
 - ``boresight_inertial`` -> ``boresight_inertial_x/y/z`` -- instrument boresight unit
   vector in ``inertial_frame``.
+- ``moon_direction`` -> ``moon_direction_x/y/z`` -- unit vector toward the Moon, in the
+  instrument's FOV frame.
+- ``moon_angular_radius`` -> ``moon_angular_radius`` -- apparent angular radius of the
+  lunar disk.
+- ``moon_distance`` -> ``moon_distance`` -- apparent observer-Moon distance (km).
 
 Angle convention: the surface angles are in degrees, over the boresight ellipsoid
 intersection. Azimuths (``viewing_azimuth``, ``solar_azimuth``) are clockwise from
@@ -93,22 +99,24 @@ geodetic North in [0, 360); zeniths (``viewing_zenith``, ``solar_zenith``) are
 geodetic, from the local surface normal, in [0, 180]. ``relative_azimuth`` uses the
 CERES BDS R3V4 origin -- ``mod(viewing_azimuth - solar_azimuth + 180, 360)``, so the
 Sun sits at 180 -- and is the lossless unfolded value; the CERES [0, 180] *fold*
-(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is in [0, 90] for Earth-disk views.
+(``min(raa, 360 - raa)``) is a separate, lossy, downstream step. ``cone_angle`` is
+in [0, 90] for Earth-disk views.
 
-``cone_angle_rate`` and ``clock_angle_rate`` are the time derivatives their names say they
-are: ``np.gradient`` of the orbital-frame angles above. They are **not** the ERBE/CERES L2
-product fields of the same names, which are backward two-point differences of the
-instrument's *gimbal encoder* angles over the sample interval -- elevation for the cone rate,
-azimuth for the clock rate (CERES BDS QA-6, with the rate fields at SCI-34/SCI-35). The two
-agree away from nadir and part company near closest approach to it -- no crossing required,
-since a scan that misses nadir still drives the cone angle through a smooth minimum -- where the
-encoder keeps turning at the scan rate while the derivative of an azimuth about nadir peaks
-sharply, diverging as the miss goes to zero, and the derivative of the cone angle falls to
-zero. A mission populating those product fields wants the encoder differences, which depend
-on its own gimbal frames and so belong in the mission's own code, not here. Note also that the
-heritage flags apply no range edit to those fields (QA-7): the only failure mode is a missing
-angle, so gating a large value is not
-a way to reconcile the two definitions.
+The lunar fields are a direction rather than surface angles. ``moon_direction_x/y/z`` is
+the unit vector from the observer to the Moon in the frame the instrument kernel declares
+its FOV in (``INS<id>_FOV_FRAME``), which is the frame the boresight and FOV boundary
+vectors already live in -- so the boresight separation is a dot product against the
+``boresight`` from `curryer.spicierpy.ext.instrument_fov`, with no rotation in between.
+A caller wanting a boresight-relative azimuth/elevation pair passes those same two
+vectors to `curryer.compute.spatial.boresight_offset_angles`, which takes the azimuth
+origin from the IK's own ``FOV_REF_VECTOR``.
+
+The direction is to the *center* of the Moon, not its limb: the nearest edge of the disk
+sits ``moon_angular_radius`` closer than the center direction implies. The target is the
+Moon body center (NAIF 301), not the Earth-Moon barycenter, and the angular radius uses
+the largest of the body's three radii, so the disk circumscribes rather than understates.
+The Moon is queried as an apparent (LT+S) position, so ``moon_distance`` is the
+light-time corrected range.
 """
 
 import logging
@@ -425,6 +433,77 @@ def _provider_attitude_quaternion(ugps_times, ctx):
     return quaternions.values
 
 
+def _provider_moon_geometry(ugps_times, ctx):
+    """Moon direction, apparent size and range, shape (N, 5) as [direction x, y, z, angular
+    radius, distance] -- a unit vector in the instrument's FOV frame, then degrees and km.
+
+    One ephemeris read plus two static kernel-pool reads, kept in one provider because they
+    are inseparable: the direction is only comparable to the boresight in the frame the IK
+    declares its FOV in, and the angular radius needs the same range the direction comes from.
+    The Moon is queried in the instrument's *FOV* frame -- not its body frame, which an IK is
+    free to define it separately from -- so the target direction and the boresight are
+    co-framed by construction and need no rotation.
+
+    The direction is to the Moon body center (NAIF 301, via ``ctx.moon``), neither the
+    Earth-Moon barycenter nor the limb; the angular radius is what a caller subtracts to
+    reach the nearest edge of the disk. Apparent position ("LT+S") rather than geometric: at
+    lunar range from low Earth orbit the light-time and aberration shift is a few arcseconds,
+    small but free, and it matches the correction :func:`curryer.compute.pointing.check_fov`
+    already uses for the same question.
+
+    The one-time IK/PCK lookups are guarded like the boresight provider: a failure is logged
+    and NaN-fills every row under ``ctx.allow_nans``. Per-sample ephemeris gaps, and the
+    missing frame chain of an observer with no attitude, come back as NaN rows from the
+    ephemeris query.
+
+    Parameters
+    ----------
+    ugps_times : array_like of int
+        Times in GPS microseconds at which to evaluate the Moon direction.
+    ctx : GeometryData
+        Supplies the observing instrument (``ctx.observer``), the lunar body
+        (``ctx.moon``), and the NaN-fill toggle (``ctx.allow_nans``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Direction, angular radius and distance, shape (N, 5). Rows where the ephemeris or
+        pointing is unavailable are NaN (under ``allow_nans``).
+
+    """
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+
+    @spicierpy.ext.spice_error_to_val(err_value=None, err_flag=lambda err: err, disable=not ctx.allow_nans)
+    def _resolve_fov_and_radius():
+        fov = spicierpy.ext.instrument_fov(ctx.observer)
+        # Largest radius -> the circumscribing disk, so the angular radius never
+        # understates how much sky the body covers.
+        radii = spicierpy.bodvrd(spicierpy.obj.Body(ctx.moon).name, "RADII", 3)[1]
+        return fov, float(np.max(radii))
+
+    resolved, error = _resolve_fov_and_radius()
+    if resolved is None:  # no instrument FOV, or no lunar radii -> surface the error and NaN-fill.
+        logger.warning("Instrument FOV or lunar radii unavailable for observer %r: %s", ctx.observer, error)
+        return np.full((ugps_times.size, 5), np.nan)
+    fov, moon_radius = resolved
+
+    position = spicierpy.ext.query_ephemeris(
+        ugps_times,
+        target=ctx.moon,
+        observer=ctx.observer,
+        ref_frame=fov.frame,
+        correction="LT+S",
+        allow_nans=ctx.allow_nans,
+    )[list(spicierpy.ext.POSITION_COLUMNS)].values
+
+    distance = np.linalg.norm(position, axis=-1)
+    # Gaps arrive as NaN rows and stay NaN through both divisions; `errstate` keeps that silent.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        direction = position / distance[:, None]
+        angular_radius = np.rad2deg(np.arcsin(np.clip(moon_radius / distance, 0.0, 1.0)))
+    return np.column_stack([direction, angular_radius, distance])
+
+
 _PROVIDERS = {
     "sc_state": _provider_sc_state,
     "sun_position": _provider_sun_position,
@@ -432,6 +511,7 @@ _PROVIDERS = {
     "attitude_quaternion": _provider_attitude_quaternion,
     "boresight_inertial": _provider_boresight_inertial,
     "sc_state_inertial": _provider_sc_state_inertial,
+    "moon_geometry": _provider_moon_geometry,
 }
 
 
@@ -459,6 +539,10 @@ class _ProviderResults:
         (and ``*_inertial``) slice properties.
     sun_position, boresight, boresight_inertial : numpy.ndarray or None
         Base provider results, shape (N, 3).
+    moon_geometry : numpy.ndarray or None
+        Lunar geometry, shape (N, 5) as [direction x, y, z, angular radius, distance], the
+        direction being a unit vector in the instrument's FOV frame. Exposed as the
+        ``moon_*`` slice properties.
     attitude_quaternion : numpy.ndarray or None
         Body-to-``attitude_frame`` quaternion, shape (N, 4), scalar-first.
     ugps_times : numpy.ndarray or None
@@ -472,6 +556,7 @@ class _ProviderResults:
     attitude_quaternion: np.ndarray | None = None
     sc_state_inertial: np.ndarray | None = None
     boresight_inertial: np.ndarray | None = None
+    moon_geometry: np.ndarray | None = None
     ugps_times: np.ndarray | None = None
 
     @property
@@ -493,6 +578,21 @@ class _ProviderResults:
     def sc_velocity_inertial(self) -> np.ndarray:
         """Inertial observer velocity (N, 3), the second half of ``sc_state_inertial``."""
         return self.sc_state_inertial[:, 3:6]
+
+    @property
+    def moon_direction(self) -> np.ndarray:
+        """Moon unit vector in the instrument's FOV frame (N, 3), the first half of ``moon_geometry``."""
+        return self.moon_geometry[:, :3]
+
+    @property
+    def moon_angular_radius(self) -> np.ndarray:
+        """Apparent angular radius of the lunar disk (deg), column 3 of ``moon_geometry``."""
+        return self.moon_geometry[:, 3]
+
+    @property
+    def moon_distance(self) -> np.ndarray:
+        """Observer-Moon distance (km), column 4 of ``moon_geometry``."""
+        return self.moon_geometry[:, 4]
 
     @cached_property
     def orbital_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -543,13 +643,11 @@ class _ProviderResults:
 def _relative_azimuth(p):
     """Relative azimuth of the viewing direction about the solar plane, in [0, 360).
 
-    ``mod(viewing_azimuth - solar_azimuth + 180, 360)`` (azimuths clockwise from
-    geodetic North per ``spatial.calc_azimuth``), matching the CERES BDS R3V4 origin
-    so the Sun sits at 180. This is the lossless full-range value -- it keeps which
-    side of the principal plane the geometry is on. The CERES [0, 180] *fold*
-    (``min(raa, 360 - raa)``) is a separate, lossy step applied downstream if a
-    product wants it; curryer keeps the unfolded value, since a reference/wrap shift
-    is reversible but a fold is not.
+    :func:`spatial.relative_azimuth` of the boresight viewing and solar azimuths
+    (azimuths clockwise from geodetic North per ``spatial.calc_azimuth``): the CERES
+    BDS R3V4 origin with the Sun at 180, kept unfolded so the side of the principal
+    plane survives. The same helper serves per-pixel products, so a boresight and a
+    pixel relative azimuth agree by construction.
 
     Parameters
     ----------
@@ -566,7 +664,7 @@ def _relative_azimuth(p):
     intersection = p.boresight_intersection
     view_az = spatial.calc_azimuth(intersection, p.sc_position, degrees=True)
     sun_az = spatial.calc_azimuth(intersection, p.sun_position, degrees=True)
-    return np.mod(view_az - sun_az + 180.0, 360.0)
+    return spatial.relative_azimuth(view_az, sun_az, degrees=True)
 
 
 def _cone_angle(p):
@@ -601,12 +699,6 @@ def _cone_angle_rate(p):
     non-uniform spacing. Its sign gives the direction the boresight sweeps relative to
     nadir. NaN where the cone angle is NaN (boresight off-disk) propagates to adjacent
     samples; a single-time request is NaN, since a rate needs at least two samples.
-
-    This is the derivative of the *geometry*, not of the scan mechanism. Where a scan misses
-    nadir by some angle the cone angle has a smooth minimum, so this rate passes through zero
-    at closest approach even though the gimbal never stops. The ERBE/CERES product field named
-    ``Cone_Angle_Rate`` is the elevation encoder's rate and reports the scan rate there
-    instead; the two are not interchangeable.
 
     Parameters
     ----------
@@ -654,10 +746,7 @@ def _clock_angle_rate(p):
 
     Note the clock angle is an azimuth about nadir and is therefore singular there: as the
     boresight crosses nadir its azimuth swings ~180 degrees, so this rate legitimately
-    spikes on near-nadir samples. The spike is a property of the coordinate, not of the
-    instrument's motion, and no gate on it recovers a mechanism rate -- the ERBE/CERES
-    product field named ``Clock_Angle_Rate`` is the azimuth encoder's rate, which has no
-    pole. Populate that field from the encoder, not by thresholding this.
+    spikes on near-nadir samples.
     """
     clock = _clock_angle(p)
     if clock.shape[0] < 2:
@@ -764,6 +853,11 @@ _FIELD_SPECS = (
         {"sc_state_inertial", "boresight_inertial"},
         lambda p: _cross_track_angle(p)[:, None],
     ),
+    # Lunar fields: columns of the one moon provider array (see ``_provider_moon_geometry``),
+    # so requesting any subset costs one read.
+    (GeometryField.MOON_DIRECTION, {"moon_geometry"}, lambda p: p.moon_direction),
+    (GeometryField.MOON_ANGULAR_RADIUS, {"moon_geometry"}, lambda p: p.moon_angular_radius[:, None]),
+    (GeometryField.MOON_DISTANCE, {"moon_geometry"}, lambda p: p.moon_distance[:, None]),
 )
 
 _FIELDS = {
@@ -826,9 +920,10 @@ class GeometryData(abstract.AbstractMissionData):
         spacecraft.
     microsecond_cadence : int, optional
         Default cadence for :meth:`get_times`, in microseconds.
-    earth, sun : str or int or spicierpy.obj.Body, optional
-        Central body and solar body for the ephemeris queries. Default
-        ``"EARTH"`` / ``"SUN"``; overridable so no body name is fixed in code.
+    earth, sun, moon : str or int or spicierpy.obj.Body, optional
+        Central body, solar body and lunar body for the ephemeris queries. Default
+        ``"EARTH"`` / ``"SUN"`` / ``"MOON"``; overridable so no body name is fixed in
+        code.
     earth_frame : str or spicierpy.obj.Frame, optional
         Earth-fixed (ECEF) reference frame. Default ``spatial.EARTH_FRAME``
         (ITRF93).
@@ -851,6 +946,7 @@ class GeometryData(abstract.AbstractMissionData):
         microsecond_cadence=None,
         earth="EARTH",
         sun="SUN",
+        moon="MOON",
         earth_frame=None,
         inertial_frame="J2000",
         attitude_frame=None,
@@ -862,6 +958,7 @@ class GeometryData(abstract.AbstractMissionData):
         self.observer = observer
         self.earth = earth
         self.sun = sun
+        self.moon = moon
         self.earth_frame = spatial.EARTH_FRAME if earth_frame is None else earth_frame
         self.inertial_frame = inertial_frame
         self.attitude_frame = inertial_frame if attitude_frame is None else attitude_frame
@@ -886,16 +983,17 @@ class GeometryData(abstract.AbstractMissionData):
             raise KeyError(f"Unknown geometry field(s): {unknown}. Available: {available}")
         return list(fields)
 
-    def _gather_providers(self, fields, ugps_times):
+    def _gather_providers(self, fields, ugps_times, require_coverage=False):
         """Query the minimal set of providers for ``fields``, once each.
 
         Providers are evaluated in a stable (sorted) order so runs are
         reproducible. A provider that comes back entirely NaN almost always means
         the required kernels are not furnished (or do not cover the requested
-        span) rather than a genuine per-sample gap, so it is logged as a warning to
-        surface the likely misconfiguration. The all-NaN result still propagates
-        per the fill contract; set the instance ``allow_nans`` attribute to False
-        to raise on the underlying SPICE error instead.
+        span) rather than a genuine per-sample gap. With ``require_coverage`` it
+        raises ``ValueError``; otherwise it is logged as a warning and the all-NaN
+        result propagates per the fill contract. Setting the instance
+        ``allow_nans`` attribute to False instead raises on the first SPICE error,
+        including a single-sample gap.
         """
         needed = sorted(set().union(*(_FIELDS[name].providers for name in fields)))
         logger.debug("Querying providers %s for fields %s", needed, fields)
@@ -903,17 +1001,22 @@ class GeometryData(abstract.AbstractMissionData):
         for key in needed:
             values = _PROVIDERS[key](ugps_times, self)
             if np.size(values) and np.all(np.isnan(np.asarray(values, dtype=float))):
-                logger.warning(
-                    "Provider %r returned all-NaN over %d time(s); check that the required kernels "
-                    "are furnished and cover the requested span.",
-                    key,
-                    len(ugps_times),
+                readers = [str(name) for name in fields if key in _FIELDS[name].providers]
+                message = (
+                    f"Provider {key!r} (read by {readers}) returned all-NaN for observer {self.observer!r} over "
+                    f"{len(ugps_times)} time(s) from uGPS {ugps_times.min()} to {ugps_times.max()}; check that the "
+                    "required kernels are furnished and cover the requested span."
                 )
+                if require_coverage:
+                    raise ValueError(message)
+                logger.warning(message)
             gathered[key] = values
         return _ProviderResults(ugps_times=ugps_times, **gathered)
 
     @abstract.log_return()
-    def get_geometry(self, ugps_times: np.ndarray, fields: list[str] | None = None) -> pd.DataFrame:
+    def get_geometry(
+        self, ugps_times: np.ndarray, fields: list[str] | None = None, *, require_coverage: bool = False
+    ) -> pd.DataFrame:
         """Compute the requested fields as a table.
 
         Parameters
@@ -925,6 +1028,10 @@ class GeometryData(abstract.AbstractMissionData):
             Field names to compute. Default is the ephemeris-only set (valid for
             any observer); attitude/instrument fields (e.g. ``boresight``) must be
             requested explicitly. See :meth:`available_fields` for the full list.
+        require_coverage : bool, optional
+            If True, raise when a SPICE input the requested fields read covers none of
+            `ugps_times`. Per-sample gaps still come back as NaN. Default False logs a
+            warning instead (see the module Fill contract).
 
         Returns
         -------
@@ -935,10 +1042,19 @@ class GeometryData(abstract.AbstractMissionData):
             coverage are NaN across that field's columns (see the module Fill
             contract).
 
+        Raises
+        ------
+        KeyError
+            If `fields` names an unregistered field.
+        ValueError
+            If `require_coverage` is True and a SPICE input the requested fields read
+            is NaN at every time, e.g. its kernels are not furnished or do not cover the
+            span. Empty `ugps_times` never raises.
+
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
         fields = self._resolve_fields(fields)
-        providers = self._gather_providers(fields, ugps_times)
+        providers = self._gather_providers(fields, ugps_times, require_coverage=require_coverage)
 
         data = {}
         for name in fields:
@@ -948,7 +1064,9 @@ class GeometryData(abstract.AbstractMissionData):
                 data[column] = values[:, jth]
         return pd.DataFrame(data, index=pd.Index(ugps_times, name="ugps"))
 
-    def get_vectors(self, ugps_times: np.ndarray, fields: list[str]) -> dict[str, np.ndarray]:
+    def get_vectors(
+        self, ugps_times: np.ndarray, fields: list[str], *, require_coverage: bool = False
+    ) -> dict[str, np.ndarray]:
         """Compute the requested fields as typed arrays.
 
         The typed sibling of :meth:`get_geometry`, addressed by field name rather
@@ -961,6 +1079,8 @@ class GeometryData(abstract.AbstractMissionData):
             uniformly spaced; each time is evaluated exactly (no interpolation).
         fields : list of str
             Field names to compute.
+        require_coverage : bool, optional
+            As for :meth:`get_geometry`.
 
         Returns
         -------
@@ -970,8 +1090,15 @@ class GeometryData(abstract.AbstractMissionData):
             frame (``ITRF93`` by default). Rows outside SPICE coverage are NaN
             (see the module Fill contract).
 
+        Raises
+        ------
+        KeyError
+            If `fields` names an unregistered field.
+        ValueError
+            As for :meth:`get_geometry`.
+
         """
         ugps_times = np.atleast_1d(np.asarray(ugps_times))
         fields = self._resolve_fields(fields)
-        providers = self._gather_providers(fields, ugps_times)
+        providers = self._gather_providers(fields, ugps_times, require_coverage=require_coverage)
         return {name: np.asarray(_FIELDS[name].evaluate(providers), dtype=float) for name in fields}

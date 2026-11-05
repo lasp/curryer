@@ -56,6 +56,8 @@ class SpatialQualityFlags(IntFlag):
     CALC_ANCIL_INSUFF_DATA = 0x2000
     CALC_ANCIL_NOT_FINITE = 0x4000
 
+    CALC_TERRAIN_OUTSIDE_DEM = 0x8000  # Terrain search left the loaded elevation region.
+
     @classmethod
     def from_spice_error(cls, error: SpiceyError):
         if error is None:

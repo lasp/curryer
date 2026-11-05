@@ -31,6 +31,7 @@ from typing_extensions import deprecated
 from .. import spicetime, spicierpy
 from . import constants, elevation
 from .constants import SpatialQualityFlags as SQF
+from .geometry_fields import PixelField
 
 logger = logging.getLogger(__name__)
 
@@ -523,7 +524,7 @@ def compute_ellipsoid_intersection(
     Parameters
     ----------
     ugps_times : np.ndarray
-        Array of times (in UNIX GPS seconds) at which to compute the intersection points.
+        Array of times in GPS microseconds (uGPS) at which to compute the intersection points.
     instrument : int, str, or spicierpy.obj.Body
         The instrument or spacecraft identifier. Can be a NAIF integer code, a string name, or a `spicierpy.obj.Body` object.
     perspective_correction : str, optional
@@ -802,17 +803,44 @@ def ray_intersect_ellipsoid(
         uu_dot_pp = ((vector / aab) * (position / aab)).sum(axis=1)[..., None]
         pp_norm2 = np.linalg.norm(position / aab)[..., None, None] ** 2
     uu_norm2 = np.linalg.norm(vector / aab, axis=1)[..., None] ** 2
-    dist = (-uu_dot_pp - np.sqrt(uu_dot_pp**2 - uu_norm2 * (pp_norm2 - 1))) / uu_norm2
-
-    # No intersect computes to nan, but inverse direction misses are negative.
+    # A negative discriminant is a miss: NaN, without a sqrt warning. Inverse direction misses
+    # come out negative and are removed below.
+    discriminant = uu_dot_pp**2 - uu_norm2 * (pp_norm2 - 1)
+    discriminant[discriminant < 0] = np.nan
+    dist = (-uu_dot_pp - np.sqrt(discriminant)) / uu_norm2
     dist[dist < 0] = np.nan
 
     xyz = position + dist * vector
     if not geodetic:
         return xyz.ravel() if given_1d else xyz
 
-    # Compute lon/lat. Special case where direct computation is allowed since
-    # height is assumed to be zero.
+    lla = _surface_xyz_to_geodetic(xyz, degrees=degrees, e2=e2)
+    return lla.ravel() if given_1d else lla
+
+
+def _surface_xyz_to_geodetic(xyz: np.ndarray, degrees=False, e2: float | None = None) -> np.ndarray:
+    """Geodetic lon/lat/alt of points lying on the ellipsoid surface (vectorized).
+
+    Special case of `ecef_to_geodetic` for `ray_intersect_ellipsoid` output: the height
+    is zero by construction, so the geodetic latitude follows directly from the point
+    and the general iterative solution is not needed. NaN rows (misses) stay NaN.
+
+    Parameters
+    ----------
+    xyz : np.ndarray
+        Surface points in rectangular ellipsoid-fixed coordinates, shape (N, 3).
+    degrees : bool, optional
+        Return lon/lat in degrees instead of radians (default).
+    e2 : float, optional
+        Ellipsoid's squared eccentricity. Default is WGS84.
+
+    Returns
+    -------
+    np.ndarray
+        Geodetic lon/lat/alt, shape (N, 3); alt is 0.0 for hits and NaN for misses.
+    """
+    if e2 is None:
+        e2 = constants.WGS84_ECCENTRICITY2
     bad_xyz = np.isnan(xyz).any(axis=1)
     lla = np.stack(
         [
@@ -831,7 +859,7 @@ def ray_intersect_ellipsoid(
 
     if degrees:
         lla[:, :2] = np.rad2deg(lla[:, :2])
-    return lla.ravel() if given_1d else lla
+    return lla
 
 
 def ecef_to_geodetic(xyz: np.ndarray, meters=False, degrees=True) -> np.ndarray:
@@ -951,6 +979,15 @@ def geodetic_to_ecef(lon_lat_alt: np.ndarray, meters=False, degrees=True) -> np.
     return xyz.ravel() if given_1d else xyz
 
 
+# Distance step of the terrain search, in km. Must consider DEM resolution!
+TERRAIN_STEP_KM = 0.5
+# Lowest height, in km, the terrain search starts from. The search steps down by at most its start height, so
+# 10 m reaches the lowest geoid (about -0.11 km) in about a dozen steps.
+TERRAIN_MIN_START_KM = 0.01
+# View zenith angle, in degrees, beyond which terrain correction is not attempted.
+TERRAIN_MAX_ZENITH_DEG = 85
+
+
 def terrain_correct(
     elev: elevation.Elevation, ec_srf_pos: np.ndarray, ec_sat_pos: np.ndarray, local_minmax: tuple[float, float] = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -978,7 +1015,10 @@ def terrain_correct(
         WGS84 ellipsoid (geoid height + orthometric (DEM) height). Points that
         can not be corrected (e.g., >85 degree off-nadir) are set to NaNs.
     np.ndarray
-        Quality flags indicating why the correction failed.
+        Quality flags indicating why the correction failed. A point whose
+        search leaves an `elevation.ElevationRegion` is flagged
+        `CALC_TERRAIN_OUTSIDE_DEM`, and one that does not reach the surface in
+        1000 steps `CALC_TERRAIN_MAX_ITER`; the other points are unaffected.
 
     References
     ----------
@@ -1035,21 +1075,16 @@ def terrain_correct(
             alt_srf_max,
         )
 
-    # 1) Local ellipsoid normal unit vector from geodetic lat/lon.
-    ellips_norm_vec = np.array(
-        [np.cos(gd_xyz[:, 1]) * np.cos(gd_xyz[:, 0]), np.cos(gd_xyz[:, 1]) * np.sin(gd_xyz[:, 0]), np.sin(gd_xyz[:, 1])]
-    ).T
+    # The search must start above the ellipsoid. Over a region with only negative heights (ocean with a
+    # negative geoid), the max would start it below, stepping away from the surface.
+    alt_srf_max = max(alt_srf_max, TERRAIN_MIN_START_KM)
 
-    # 2) ECR unit vector from ground to satellite.
-    ec_sat_vec = ec_srf_pos - ec_sat_pos
-    ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec, axis=1)[..., None]) * -1
+    # 1-3) Unit vector from ground to satellite, and its local vertical component.
+    ec_sat_vec, cos_sat = _view_vector(ec_srf_pos, ec_sat_pos, gd_xyz)
 
-    # 3) Local vertical component of the vector.
-    cos_sat = np.prod([ec_sat_vec, ellips_norm_vec], axis=0).sum(axis=1)[..., None]
-
-    # Skip (or exit if all) within 5-deg of horizontal! Too off nadir.
+    # Skip (or exit if all) beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    idx_ang_valid = (v_zenith_ang <= np.deg2rad(85)).ravel()
+    idx_ang_valid = (v_zenith_ang <= np.deg2rad(TERRAIN_MAX_ZENITH_DEG)).ravel()
     n_ang_valid = idx_ang_valid.sum()
     if n_ang_valid != npts:
         logger.info(
@@ -1087,22 +1122,28 @@ def terrain_correct(
     gd_cur_xyz[:, 2] = np.zeros(npts)
 
     # 10) Terrain intersection.
+    idx_valid = idx_ang_valid.copy()
     gd_cur_h = np.full(npts, np.nan)
-    gd_cur_h[idx_ang_valid] = elev.query(gd_cur_xyz[idx_ang_valid, 0], gd_cur_xyz[idx_ang_valid, 1])
+    _drop_outside_region(
+        elev, idx_ang_valid, gd_cur_xyz[idx_ang_valid, 0], gd_cur_xyz[idx_ang_valid, 1], idx_valid, qf_values
+    )
+    if idx_valid.any():
+        gd_cur_h[idx_valid] = elev.query(gd_cur_xyz[idx_valid, 0], gd_cur_xyz[idx_valid, 1])
     gd_prev_h = gd_cur_h.copy()
 
     # Initialize to the max local height.
     gd_cur_alt = np.full(npts, alt_srf_max)
     gd_prev_alt = gd_cur_alt.copy()
 
-    # Distance step size. Must consider DEM resolution!
-    d_step = 0.5  # km
-    delta_dist = d_step / np.sin(v_zenith_ang)
-    delta_dist = np.min([delta_dist, dist_srf_max], axis=0)  # Added due to issues around pure-nadir.
+    # Distance step size. Infinite at exact nadir, where the minimum takes the whole distance.
+    with np.errstate(divide="ignore"):
+        delta_dist = TERRAIN_STEP_KM / np.sin(v_zenith_ang)
+    delta_dist = np.min([delta_dist, dist_srf_max], axis=0)
     dist_cur = dist_srf_max.copy()
 
-    # Iterate until the point is below the elevation.
-    idx_cont = idx_ang_valid & (gd_cur_h < gd_cur_alt)
+    # Iterate until the point is below the elevation. A start on the surface steps at least once, so the
+    # interpolation has two steps to work from.
+    idx_cont = idx_valid & (gd_cur_h <= gd_cur_alt)
     iloop = 0
     while idx_cont.any():
         iloop += 1
@@ -1113,6 +1154,13 @@ def terrain_correct(
 
         # Convert to geodetic lon, lat and altitude (above ellipsoid).
         gd_cur_pos_subset = ecef_to_geodetic(ec_cur_pos_subset, degrees=False)
+        is_inside = _drop_outside_region(
+            elev, idx_cont, gd_cur_pos_subset[:, 0], gd_cur_pos_subset[:, 1], idx_valid, qf_values
+        )
+        idx_cont &= idx_valid
+        if not idx_cont.any():
+            break
+        gd_cur_pos_subset = gd_cur_pos_subset[is_inside]
         gd_prev_alt[idx_cont] = gd_cur_alt[idx_cont]
         gd_cur_alt[idx_cont] = gd_cur_pos_subset[:, 2]
 
@@ -1143,7 +1191,7 @@ def terrain_correct(
             )
 
         # Update if we've stepped below the surface (ends loop after all points).
-        idx_cont = idx_ang_valid & (gd_cur_h < gd_cur_alt)
+        idx_cont = idx_valid & (gd_cur_h < gd_cur_alt)
 
         # Fail-safe to prevent infinite looping.
         if iloop > 1000:
@@ -1154,13 +1202,8 @@ def terrain_correct(
                 idx_cont.size,
             )
             qf_values[idx_cont] |= SQF.CALC_TERRAIN_MAX_ITER
-
-            gd_final = np.array([np.nan, np.nan, np.nan])
-            if not given_1d:
-                gd_final = np.tile(gd_final, (npts, 1))
-            else:
-                qf_values = qf_values.ravel()
-            return gd_final, qf_values
+            idx_valid &= ~idx_cont
+            break
 
     # 11) Precise terrain intersection from last two iterations.
     delta_gd_cur_alt = gd_cur_alt - gd_prev_alt
@@ -1168,24 +1211,25 @@ def terrain_correct(
 
     # Final DEM-based height above the ellipsoid.
     gd_final_pos = np.full((npts, 3), np.nan)
-    gd_final_pos[idx_ang_valid, 2] = (alpha * gd_cur_h + (1 - alpha) * gd_prev_h)[idx_ang_valid]
+    gd_final_pos[idx_valid, 2] = (alpha * gd_cur_h + (1 - alpha) * gd_prev_h)[idx_valid]
 
     # 12) Final geodetic coordinates. Note that the DEM height is used over the
     # computed geodetic altitude (discarded).
     dist_final = dist_cur + (1 - alpha[..., None]) * delta_dist
     ec_final_pos = ec_srf_pos + dist_final * ec_sat_vec
-    gd_final_pos[idx_ang_valid, :2] = ecef_to_geodetic(ec_final_pos[idx_ang_valid, :], degrees=True)[:, :2]
+    if idx_valid.any():
+        gd_final_pos[idx_valid, :2] = ecef_to_geodetic(ec_final_pos[idx_valid, :], degrees=True)[:, :2]
 
     # 13) Set final quality flag if any nans (shouldn't happen).
     idx_out_valid = np.isfinite(gd_final_pos).all(axis=1)
-    qf_values[~idx_out_valid & idx_ang_valid] |= SQF.CALC_TERRAIN_NOT_FINITE
+    qf_values[~idx_out_valid & idx_valid] |= SQF.CALC_TERRAIN_NOT_FINITE
 
     if logger.isEnabledFor(logging.DEBUG):
         if idx_out_valid.sum():
             pt_minmax_lla = []
             for ith in range(3):
                 pt_minmax_lla.extend([gd_final_pos[idx_out_valid, ith].min(), gd_final_pos[idx_out_valid, ith].max()])
-            pt_ellps_ht = ecef_to_geodetic(ec_final_pos[idx_ang_valid, :])[:, 2]
+            pt_ellps_ht = ecef_to_geodetic(ec_final_pos[idx_valid, :])[:, 2]
             pt_ellps_ht = [pt_ellps_ht.min(), pt_ellps_ht.max()]
         else:
             pt_minmax_lla = [np.nan for _ in range(6)]
@@ -1201,6 +1245,62 @@ def terrain_correct(
         )
 
     return (gd_final_pos.ravel(), qf_values.ravel()) if given_1d else (gd_final_pos, qf_values)
+
+
+def _view_vector(
+    ec_srf_pos: np.ndarray, ec_sat_pos: np.ndarray, gd_srf_pos: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Unit vectors from surface points to the spacecraft (ECEF, Nx3) and the
+    cosine of their view zenith angles (Nx1), from surface positions in ECEF
+    and geodetic radians (Nx3).
+    """
+    # Local ellipsoid normal unit vector from geodetic lat/lon.
+    ellips_norm_vec = np.array(
+        [
+            np.cos(gd_srf_pos[:, 1]) * np.cos(gd_srf_pos[:, 0]),
+            np.cos(gd_srf_pos[:, 1]) * np.sin(gd_srf_pos[:, 0]),
+            np.sin(gd_srf_pos[:, 1]),
+        ]
+    ).T
+
+    ec_sat_vec = ec_srf_pos - ec_sat_pos
+    ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec, axis=1)[..., None]) * -1
+
+    # Rounding can put an exact-nadir view just past 1, where arccos is NaN.
+    cos_sat = np.clip(np.prod([ec_sat_vec, ellips_norm_vec], axis=0).sum(axis=1)[..., None], -1.0, 1.0)
+    return ec_sat_vec, cos_sat
+
+
+def _drop_outside_region(
+    elev: elevation.Elevation,
+    idx_pts: np.ndarray,
+    lon: np.ndarray,
+    lat: np.ndarray,
+    idx_valid: np.ndarray,
+    qf_values: np.ndarray,
+) -> np.ndarray:
+    """Flag and invalidate, in place, the points an elevation region does not
+    cover. `lon` and `lat` (radians) hold one value per True in mask `idx_pts`.
+    Returns which of those points are inside; an `elevation.Elevation` is
+    global, so all are.
+    """
+    if not isinstance(elev, elevation.ElevationRegion):
+        return np.ones(lon.shape, dtype=bool)
+
+    is_inside = elev.contains(lon, lat)
+    if not is_inside.all():
+        idx_out = np.flatnonzero(idx_pts)[~is_inside]
+        logger.warning(
+            "Terrain search left the elevation region for [%d/%d] points, first at lon=[%.6f], lat=[%.6f] (deg); %s",
+            idx_out.size,
+            idx_valid.size,
+            np.rad2deg(lon[~is_inside][0]),
+            np.rad2deg(lat[~is_inside][0]),
+            elev,
+        )
+        qf_values[idx_out] |= SQF.CALC_TERRAIN_OUTSIDE_DEM
+        idx_valid[idx_out] = False
+    return is_inside
 
 
 def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=False, signed=False) -> np.ndarray:
@@ -1225,10 +1325,9 @@ def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fal
         Azimuth angle between the observer, target and +Z-axis.
 
     """
-    pairwise = True
-    if obs_position.ndim == 2 and trg_position.ndim == 1:
-        pairwise = False
-    elif obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size:
+    if not (obs_position.ndim == 2 and trg_position.ndim == 1) and (
+        obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size
+    ):
         raise ValueError("`obs_position` and `trg_position` must have the same dim and size!")
 
     given_1d = obs_position.ndim == 1
@@ -1239,40 +1338,11 @@ def calc_azimuth(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fal
     if obs_position.shape[-1] != 3 or obs_position.shape[-1] != trg_position.shape[-1]:
         raise ValueError("`obs_position` and `trg_position` must have 3 values per point!")
 
-    # Target vector.
-    trg_position = trg_position - obs_position
-
-    # Unit normal vector of the observer (surface), surface normal (geodetic).
-    obs_position = ecef_to_geodetic(obs_position, meters=False, degrees=False)
-    obs_uvec = np.array(
-        [
-            np.cos(obs_position[..., 1]) * np.cos(obs_position[..., 0]),
-            np.cos(obs_position[..., 1]) * np.sin(obs_position[..., 0]),
-            np.sin(obs_position[..., 1]),
-        ]
-    ).T
-
-    # East and north unit vectors.
-    east_uvec = np.array(
-        [-np.sin(obs_position[..., 0]), np.cos(obs_position[..., 0]), np.zeros(obs_position.shape[0])]
-    ).T
-    north_uvec = np.cross(obs_uvec, east_uvec)
-
-    # Directional cosines of the azimuth angle.
-    if pairwise:
-        az_l_cos = np.prod([trg_position, east_uvec], axis=0)
-        az_m_cos = np.prod([trg_position, north_uvec], axis=0)
-    else:
-        az_l_cos = trg_position * east_uvec
-        az_m_cos = trg_position * north_uvec
-    az_l_cos = az_l_cos.sum(axis=1)
-    az_m_cos = az_m_cos.sum(axis=1)
-    az_ang = np.arctan2(az_l_cos, az_m_cos)
-
-    if not signed:
-        az_ang[az_ang < 0] += np.pi * 2
-    if degrees:
-        az_ang = np.rad2deg(az_ang)
+    # Target vector, broadcast to one per observer when a single target was given.
+    trg_vector = trg_position - obs_position
+    lonlat = ecef_to_geodetic(obs_position, meters=False, degrees=False)
+    _, east_uvec, north_uvec = _local_frame_vectors(lonlat[:, 0], lonlat[:, 1])
+    az_ang = _azimuth_from_local_frame(trg_vector, east_uvec, north_uvec, degrees=degrees, signed=signed)
     return az_ang.ravel() if given_1d else az_ang
 
 
@@ -1298,10 +1368,9 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
         Zenith angle between the observer, target and reference frame center.
 
     """
-    pairwise = True
-    if obs_position.ndim == 2 and trg_position.ndim == 1:
-        pairwise = False
-    elif obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size:
+    if not (obs_position.ndim == 2 and trg_position.ndim == 1) and (
+        obs_position.ndim != trg_position.ndim or obs_position.size != trg_position.size
+    ):
         raise ValueError("`obs_position` and `trg_position` must have the same dim and size!")
 
     given_1d = obs_position.ndim == 1
@@ -1312,33 +1381,227 @@ def calc_zenith(obs_position: np.ndarray, trg_position: np.ndarray, degrees=Fals
     if obs_position.shape[-1] != 3 or obs_position.shape[-1] != trg_position.shape[-1]:
         raise ValueError("`obs_position` and `trg_position` must have 3 values per point!")
 
-    # Unit vector from the observer (surface) to the target (S/C or SUN)
-    trg_position = trg_position - obs_position
-    trg_position /= np.linalg.norm(trg_position, axis=1)[..., None]
+    # Target vector, broadcast to one per observer when a single target was given.
+    trg_vector = trg_position - obs_position
 
-    # Unit normal vector of the observer (surface), either from the body center
-    # (geocentric) or surface-normal (geodetic).
+    # Unit normal of the observer (surface): from the body center (geocentric) or the geodetic
+    # surface normal.
     if geocentric:
-        obs_position = obs_position / np.linalg.norm(obs_position, axis=1)[..., None]
+        normal = obs_position / np.linalg.norm(obs_position, axis=1)[..., None]
     else:
-        obs_position = ecef_to_geodetic(obs_position, meters=False, degrees=False)
-        obs_position = np.array(
-            [
-                np.cos(obs_position[..., 1]) * np.cos(obs_position[..., 0]),
-                np.cos(obs_position[..., 1]) * np.sin(obs_position[..., 0]),
-                np.sin(obs_position[..., 1]),
-            ]
-        ).T
+        lonlat = ecef_to_geodetic(obs_position, meters=False, degrees=False)
+        normal, _, _ = _local_frame_vectors(lonlat[:, 0], lonlat[:, 1])
 
-    if pairwise:
-        zenith_ang = np.prod([obs_position, trg_position], axis=0)
-    else:
-        zenith_ang = obs_position * trg_position
-    zenith_ang = np.arccos(zenith_ang.sum(axis=1))
-
-    if degrees:
-        zenith_ang = np.rad2deg(zenith_ang)
+    zenith_ang = _zenith_from_normal(trg_vector, normal, degrees=degrees)
     return zenith_ang.ravel() if given_1d else zenith_ang
+
+
+def boresight_offset_angles(
+    target_vectors: np.ndarray,
+    boresight_vector: np.ndarray,
+    reference_vector: np.ndarray = None,
+    degrees=False,
+) -> np.ndarray:
+    """Compute a target's angular offset from an instrument boresight (vectorized).
+
+    Decomposes each target direction in a right-handed triad built on the boresight:
+    an azimuth offset and an elevation offset about the two cross-boresight axes,
+    plus the total angle between the boresight and the target.
+
+    Parameters
+    ----------
+    target_vectors : np.ndarray
+        Observer-to-target vectors [N, 3] or [3], in the same frame as
+        `boresight_vector`. Magnitudes are ignored (normalized internally).
+    boresight_vector : np.ndarray
+        Instrument boresight vector [3], typically the instrument kernel's
+        boresight in its FOV frame (see
+        `curryer.spicierpy.ext.instrument_fov`).
+    reference_vector : np.ndarray, optional
+        Vector [3] fixing the azimuth origin. Only its component perpendicular
+        to the boresight is used. Default is the frame's +X axis; prefer the
+        instrument kernel's own ``INS<id>_FOV_REF_VECTOR``, which
+        `curryer.spicierpy.ext.instrument_fov` returns as ``ref_vector``.
+    degrees : bool, optional
+        If True, returns are in degrees, otherwise (default) radians.
+
+    Returns
+    -------
+    np.ndarray
+        Angles [N, 3] as [azimuth offset, elevation offset, boresight angle],
+        ranging over (-pi, pi], [-pi/2, pi/2] and [0, pi] respectively. A 1D
+        array of 3 values if `target_vectors` was 1D. Rows with a zero-length or
+        non-finite target vector are NaN.
+
+    Raises
+    ------
+    ValueError
+        If the vectors are not 3 values per point, if `boresight_vector` is
+        non-finite or zero-length, if `reference_vector` is non-finite, or if
+        `reference_vector` is parallel to `boresight_vector` (leaving the
+        azimuth origin undefined).
+
+    Notes
+    -----
+    - The triad is built from the boresight rather than from the frame axes, so
+      the offsets are measured from the instrument kernel's boresight even when
+      that boresight is not a frame axis.
+    - The boresight angle is `arctan2` of the transverse magnitude against the
+      along-boresight component rather than `arccos` of the latter, which stays
+      conditioned at the small separations the value is usually wanted for.
+    - **Convention.** The offsets are an intrinsic azimuth-then-elevation Euler
+      pair, *not* two independent plane-projected angles. Azimuth is measured in
+      the boresight-reference plane; elevation is then measured out of that
+      plane, about the already-rotated axis. A target displaced equally toward
+      the two cross-boresight axes therefore gives *unequal* offsets -- for
+      ``(1, 1, 3)`` about a +Z boresight, 18.4349 and 17.5484 degrees -- unlike
+      the ``along_track_angle`` / ``cross_track_angle`` pair
+      in `curryer.compute.geometry`, which are `arctan2` in both axes. The
+      identity that does hold is
+      ``cos(boresight_angle) == cos(azimuth) * cos(elevation)``.
+    - **Sign.** Positive elevation runs toward ``boresight x reference``, so it
+      is fixed by the boresight's orientation in its frame, not by the frame
+      axes. A target displaced toward frame +Y reads +3 degrees under a +Z
+      boresight and -3 degrees under a -Z one, both with a +X reference.
+    - The pair describes a direction near the boresight. It stays valid over the
+      full sphere, but azimuth is discontinuous across +/-180 degrees and
+      elevation saturates at +/-90, so far off-boresight it is a poor
+      description of the direction and `boresight_angle` is the usable value.
+
+    """
+    target_vectors = np.asarray(target_vectors, dtype=float)
+    given_1d = target_vectors.ndim == 1
+    if given_1d:
+        target_vectors = target_vectors[None, ...]
+    if target_vectors.ndim != 2 or target_vectors.shape[-1] != 3:
+        raise ValueError("`target_vectors` must have 3 values per point!")
+
+    # The boresight and the reference define the triad, not the data: a degenerate one
+    # makes every row NaN, so they raise rather than following the fill contract that
+    # `target_vectors` rows do.
+    boresight_vector = np.asarray(boresight_vector, dtype=float).ravel()
+    if boresight_vector.size != 3:
+        raise ValueError("`boresight_vector` must be a single vector of 3 values!")
+    boresight_norm = np.linalg.norm(boresight_vector)
+    if not np.isfinite(boresight_norm) or boresight_norm == 0:
+        raise ValueError("`boresight_vector` must be finite and non-zero!")
+
+    defaulted_reference = reference_vector is None
+    if defaulted_reference:
+        reference_vector = np.array([1.0, 0.0, 0.0])
+    else:
+        reference_vector = np.asarray(reference_vector, dtype=float).ravel()
+        if reference_vector.size != 3:
+            raise ValueError("`reference_vector` must be a single vector of 3 values!")
+        if not np.isfinite(reference_vector).all():
+            raise ValueError("`reference_vector` must be finite!")
+
+    # Boresight triad: +Z along the boresight, +X the reference direction made
+    # perpendicular to it, +Y completing the right-handed set.
+    z_axis = boresight_vector / boresight_norm
+    x_axis = reference_vector - (reference_vector @ z_axis) * z_axis
+    x_axis_norm = np.linalg.norm(x_axis)
+    if x_axis_norm == 0:
+        if defaulted_reference:
+            raise ValueError(
+                "`boresight_vector` lies along the default +X azimuth reference, leaving the azimuth"
+                " origin undefined; pass `reference_vector` explicitly (an instrument kernel's"
+                " FOV_REF_VECTOR, via `curryer.spicierpy.ext.instrument_fov`)!"
+            )
+        raise ValueError("`reference_vector` is parallel to `boresight_vector`; azimuth origin is undefined!")
+    x_axis /= x_axis_norm
+    y_axis = np.cross(z_axis, x_axis)
+
+    # Zero-length and non-finite targets normalize to NaN (never inf), honoring
+    # the fill contract of the callers; `errstate` keeps that silent.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        target_uvec = target_vectors / np.linalg.norm(target_vectors, axis=-1, keepdims=True)
+
+    along = target_uvec @ z_axis
+    across_ref = target_uvec @ x_axis
+    across_perp = target_uvec @ y_axis
+
+    angles = np.stack(
+        [
+            np.arctan2(across_ref, along),
+            np.arcsin(np.clip(across_perp, -1.0, 1.0)),
+            np.arctan2(np.hypot(across_ref, across_perp), along),
+        ],
+        axis=-1,
+    )
+    if degrees:
+        angles = np.rad2deg(angles)
+    return angles.ravel() if given_1d else angles
+
+
+def _local_frame_vectors(lon: np.ndarray, lat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Geodetic up, east and north unit vectors at surface points (vectorized).
+
+    Parameters
+    ----------
+    lon, lat : np.ndarray
+        Geodetic longitude and latitude in radians, shape (N,).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        ``(up, east, north)`` unit vectors in the ellipsoid-fixed frame, each shape (N, 3).
+    """
+    cos_lat, sin_lat = np.cos(lat), np.sin(lat)
+    cos_lon, sin_lon = np.cos(lon), np.sin(lon)
+    up = np.stack([cos_lat * cos_lon, cos_lat * sin_lon, sin_lat], axis=1)
+    east = np.stack([-sin_lon, cos_lon, np.zeros_like(lon)], axis=1)
+    return up, east, np.cross(up, east)
+
+
+def _azimuth_from_local_frame(
+    trg_vector: np.ndarray, east: np.ndarray, north: np.ndarray, degrees=False, signed=False
+) -> np.ndarray:
+    """Azimuth of observer-to-target vectors (N, 3) given the observer's east and north unit vectors."""
+    az_ang = np.arctan2((trg_vector * east).sum(axis=1), (trg_vector * north).sum(axis=1))
+    if not signed:
+        az_ang[az_ang < 0] += np.pi * 2
+    return np.rad2deg(az_ang) if degrees else az_ang
+
+
+def _zenith_from_normal(trg_vector: np.ndarray, normal: np.ndarray, degrees=False) -> np.ndarray:
+    """Zenith of observer-to-target vectors (N, 3) about the observer's unit normal (N, 3).
+
+    The cosine is clamped to [-1, 1]: for a target along the normal, rounding puts the dot
+    product of two unit vectors a few ulps past 1, where `arccos` returns NaN.
+    """
+    trg_unit = trg_vector / np.linalg.norm(trg_vector, axis=1)[..., None]
+    zenith_ang = np.arccos(np.clip((normal * trg_unit).sum(axis=1), -1.0, 1.0))
+    return np.rad2deg(zenith_ang) if degrees else zenith_ang
+
+
+def relative_azimuth(viewing_azimuth: np.ndarray, solar_azimuth: np.ndarray, degrees=False) -> np.ndarray:
+    """Relative azimuth of the viewing direction about the solar plane (vectorized).
+
+    ``mod(viewing_azimuth - solar_azimuth + half_turn, full_turn)`` with both azimuths
+    clockwise from geodetic North as returned by `calc_azimuth`. This is the CERES BDS
+    R3V4 origin: the Sun sits at 180 degrees, and the value keeps which side of the
+    principal plane the geometry is on. The CERES [0, 180] *fold*
+    (``min(raa, 360 - raa)``) is a separate, lossy step left to the product that wants it.
+
+    Parameters
+    ----------
+    viewing_azimuth : np.ndarray
+        Azimuth of the observer (spacecraft) at the surface point.
+    solar_azimuth : np.ndarray
+        Azimuth of the Sun at the surface point; same shape as `viewing_azimuth` or
+        broadcastable to it.
+    degrees : bool, optional
+        If True, inputs and returns are in degrees, otherwise (default) radians.
+
+    Returns
+    -------
+    np.ndarray
+        Relative azimuth in [0, 360) degrees or [0, 2*pi) radians; NaN where either
+        input is NaN.
+    """
+    half_turn, full_turn = (180.0, 360.0) if degrees else (np.pi, 2 * np.pi)
+    return np.mod(np.asarray(viewing_azimuth) - np.asarray(solar_azimuth) + half_turn, full_turn)
 
 
 def surface_angles(
@@ -1416,6 +1679,272 @@ def surface_angles(
     return angles
 
 
+def _resolve_pixel_fields(fields) -> tuple[PixelField, ...]:
+    """Validate requested pixel fields, defaulting to every registered field.
+
+    Parameters
+    ----------
+    fields : iterable of PixelField or str, or None
+        Requested fields. None selects all of them.
+
+    Returns
+    -------
+    tuple of PixelField
+        The requested fields, in the order given.
+
+    Raises
+    ------
+    TypeError
+        If `fields` is a single string or `PixelField` rather than a collection of them.
+    ValueError
+        If `fields` is empty.
+    KeyError
+        If any name is not a registered `PixelField`.
+    """
+    if fields is None:
+        return tuple(PixelField)
+    if isinstance(fields, str):
+        raise TypeError(f"`fields` must be a collection of PixelField members or names, not the string {fields!r}.")
+    fields = tuple(fields)
+    if not fields:
+        raise ValueError("`fields` is empty; name at least one PixelField, or pass None for all of them.")
+    by_selector = {field.value: field for field in PixelField}
+    unknown = [name for name in fields if str(name) not in by_selector]
+    if unknown:
+        raise KeyError(f"Unknown pixel geometry field(s): {unknown}. Available: {sorted(by_selector)}")
+    return tuple(by_selector[str(name)] for name in fields)
+
+
+def pixel_geometry(
+    ugps_times: np.ndarray,
+    instrument: int | str | spicierpy.obj.Body,
+    pointing_vectors: np.ndarray,
+    *,
+    fields: list[str] | None = None,
+    sun: int | str | spicierpy.obj.Body = "SUN",
+    perspective_correction: str | None = None,
+    allow_nans: bool = True,
+    degrees: bool = True,
+    observer_id: int = spicierpy.obj.Body("EARTH").id,
+    fixed_frame_name: str = EARTH_FRAME,
+) -> dict[str, np.ndarray]:
+    """Geolocate an instrument's pixel vectors and compute the surface angles at each hit.
+
+    The per-pixel counterpart of `Geolocate.calc_ancillary` (with `perspective_correction`
+    unset) for focal planes too large for the pandas ``(time, pixel)`` product: ndarrays
+    in, ``(n_times, n_pixels)`` ndarrays out. Per time it makes at most three SPICE calls
+    (instrument rotation and position, Sun position); everything per pixel is closed-form
+    numpy: the ray-ellipsoid intersection (`ray_intersect_ellipsoid`), the geodetic
+    conversion, and the azimuth and zenith of the spacecraft and the Sun at each
+    intersection (the math behind `calc_azimuth` and `calc_zenith`). The viewing angles use
+    the spacecraft position the intersection already queried, so no second ephemeris read
+    is made.
+
+    Field selection mirrors `GeometryData.get_geometry`: name the `PixelField` members you
+    want and only the work behind them is done. Requesting no solar field skips the Sun
+    ephemeris query outright; requesting no angle at all skips the local-frame construction.
+
+    Parameters
+    ----------
+    ugps_times : np.ndarray
+        One or more times in GPS microseconds (uGPS).
+    instrument : int, str or spicierpy.obj.Body
+        Instrument whose frame the `pointing_vectors` are defined in and whose ephemeris
+        gives the spacecraft position. Kernels must already be loaded.
+    pointing_vectors : np.ndarray
+        Pixel look vectors in the instrument frame, shape ``(n_pixels, 3)``, finite and
+        non-zero. Need not be unit length. The same vectors are used at every time.
+    fields : list of PixelField or str, optional
+        Fields to compute. Default is every registered field. See
+        `curryer.compute.geometry_fields.PixelField`.
+    sun : int, str or spicierpy.obj.Body, optional
+        Body for the solar angles. Default ``"SUN"``.
+    perspective_correction : str, optional
+        SPICE aberration correction applied to both the instrument and the Sun position
+        queries (e.g. ``"LT+S"``). Default None applies none, matching
+        `compute_ellipsoid_intersection` and `surface_angles`. Note that the two diverge when
+        a correction is given: `surface_angles` always queries the Sun uncorrected, so passing
+        a correction here corrects a query that it leaves alone.
+    allow_nans : bool, optional
+        If True (default), a SPICE failure at a time (data gap, missing attitude) leaves
+        that time's pixels NaN and sets their quality flags; otherwise the SPICE error is
+        raised.
+    degrees : bool, optional
+        If True (default), lon/lat and angles are in degrees, otherwise radians.
+    observer_id : int, optional
+        NAIF ID of the Earth body the positions are relative to. Default Earth. The
+        ellipsoid and the geodetic conversions are WGS84 regardless, so this selects an
+        Earth body alias, not another planet.
+    fixed_frame_name : str, optional
+        Earth-fixed frame for the positions and the intersection. Default `EARTH_FRAME`.
+
+    Returns
+    -------
+    dict of {str: numpy.ndarray}
+        One entry per output column of each requested field (``PixelField.columns``), each
+        an ``(n_times, n_pixels)`` array. Float columns are NaN where the pixel misses the
+        ellipsoid or SPICE data was unavailable; ``quality_flags`` says which and is the one
+        integer column, deliberately not cast to float the way
+        `GeometryData.get_vectors` casts its output, so the bitmask stays exact.
+
+    Raises
+    ------
+    ValueError
+        If `pointing_vectors` is not a finite ``(n_pixels, 3)`` array, or `fields` is empty.
+    TypeError
+        If `fields` is a single string or `PixelField` rather than a collection of them.
+    KeyError
+        If `fields` names something that is not a `PixelField`.
+    SpiceyError
+        If `allow_nans` is False and a SPICE query fails.
+
+    Notes
+    -----
+    Angles follow the `surface_angles` conventions: azimuths clockwise from geodetic North
+    in [0, 360), zeniths geodetic from the local WGS84 surface normal in [0, 180],
+    ``relative_azimuth`` per :func:`relative_azimuth` (Sun at 180). ``altitude`` is 0 at
+    every hit.
+
+    Memory: the transient working set for the time being processed (rotated vectors, the
+    intersection in two coordinate systems, the local frame and the angles) peaks at about
+    250 bytes per pixel on top of the returned arrays (measured with ``tracemalloc`` at one
+    million pixels). Callers with millions of pixels should pass a few times per call.
+
+    Quality flags per pixel (`SpatialQualityFlags`): ``CALC_ELLIPS_NO_INTERSECT`` where
+    the ray misses the ellipsoid; the SPICE cause plus ``CALC_ELLIPS_INSUFF_DATA`` when
+    the instrument rotation or position was unavailable at that time;
+    ``CALC_ANCIL_INSUFF_DATA`` when the Sun position was unavailable (viewing angles are
+    still computed); ``CALC_ANCIL_NOT_FINITE`` where an angle is NaN at a valid hit. The
+    ancillary flags describe only the angles actually requested, so a call that asks for no
+    solar field never raises ``CALC_ANCIL_INSUFF_DATA``.
+    """
+    if not isinstance(instrument, spicierpy.obj.Body):
+        instrument = spicierpy.obj.Body(instrument, frame=True)
+    requested = _resolve_pixel_fields(fields)
+    pix_vectors = np.ascontiguousarray(pointing_vectors, dtype=np.float64)
+    if pix_vectors.ndim != 2 or pix_vectors.shape[1] != 3 or pix_vectors.shape[0] == 0:
+        raise ValueError(f"`pointing_vectors` must be shape (n_pixels, 3), got {pix_vectors.shape}.")
+    if not np.isfinite(pix_vectors).all() or (np.linalg.norm(pix_vectors, axis=1) == 0).any():
+        raise ValueError("`pointing_vectors` must be finite and non-zero.")
+
+    ugps_times = np.atleast_1d(np.asarray(ugps_times))
+    et_times = np.atleast_1d(spicetime.adapt(ugps_times, to="et"))
+    n_times, n_pixels = et_times.size, pix_vectors.shape[0]
+    abcorr = "NONE" if perspective_correction is None else perspective_correction
+
+    wanted = set(requested)
+    want_solar = bool(wanted & {PixelField.SOLAR_ZENITH, PixelField.SOLAR_AZIMUTH, PixelField.RELATIVE_AZIMUTH})
+    want_viewing = bool(wanted & {PixelField.VIEWING_ZENITH, PixelField.VIEWING_AZIMUTH, PixelField.RELATIVE_AZIMUTH})
+    want_angles = want_solar or want_viewing
+    want_geodetic = PixelField.SURFACE_GEODETIC in wanted
+    want_surface = PixelField.SURFACE_POSITION in wanted
+    want_flags = PixelField.QUALITY_FLAGS in wanted
+    logger.debug(
+        "Calculating [%s x %s] pixel geometry for [%s], fields %s",
+        n_pixels,
+        n_times,
+        instrument,
+        [str(field) for field in requested],
+    )
+
+    sun_positions = None
+    if want_solar:
+        sun_positions = spicierpy.ext.query_ephemeris(
+            ugps_times,
+            target=sun,
+            observer=observer_id,
+            ref_frame=fixed_frame_name,
+            correction=perspective_correction,
+            allow_nans=allow_nans,
+        )[list(spicierpy.ext.POSITION_COLUMNS)].to_numpy(dtype=np.float64)
+
+    out: dict[str, np.ndarray] = {}
+    for field in requested:
+        dtype = np.int64 if field is PixelField.QUALITY_FLAGS else float
+        fill = 0 if field is PixelField.QUALITY_FLAGS else np.nan
+        for column in field.columns:
+            out[column] = np.full((n_times, n_pixels), fill, dtype=dtype)
+
+    for ith, et_time in enumerate(et_times):
+        (rotation, sc_position), qf_val = SpatialQueries.query_rotation_and_position(
+            et_time,
+            instrument,
+            abcorr,
+            observer_id=observer_id,
+            allow_nans=allow_nans,
+            fixed_frame_name=fixed_frame_name,
+        )
+        if qf_val != SQF.GOOD:
+            if want_flags:
+                out["quality_flags"][ith] = int(qf_val | SQF.CALC_ELLIPS_INSUFF_DATA)
+            continue
+
+        xyz = ray_intersect_ellipsoid((rotation @ pix_vectors.T).T, sc_position)
+        hit = np.isfinite(xyz).all(axis=1)
+        qf_row = np.where(hit, int(SQF.GOOD), int(SQF.CALC_ELLIPS_NO_INTERSECT)) if want_flags else None
+
+        if want_surface:
+            for jth, column in enumerate(PixelField.SURFACE_POSITION.columns):
+                out[column][ith] = xyz[:, jth]
+
+        if not (want_geodetic or want_angles):
+            if want_flags:
+                out["quality_flags"][ith] = qf_row
+            continue
+
+        lla = _surface_xyz_to_geodetic(xyz)
+
+        if want_angles:
+            # The intersection already yields exact geodetic lon/lat (alt = 0), so the local frame is
+            # built once here instead of re-deriving it inside each angle call. Misses are NaN rows
+            # and propagate as NaN through the angle math without warnings.
+            up, east, north = _local_frame_vectors(lla[:, 0], lla[:, 1])
+            angles_finite = np.ones(n_pixels, dtype=bool)
+
+            viewing_azimuth = None
+            if want_viewing:
+                sc_vector = sc_position - xyz
+                viewing_zenith = _zenith_from_normal(sc_vector, up, degrees=degrees)
+                viewing_azimuth = _azimuth_from_local_frame(sc_vector, east, north, degrees=degrees)
+                angles_finite &= np.isfinite(viewing_zenith) & np.isfinite(viewing_azimuth)
+                if PixelField.VIEWING_ZENITH in wanted:
+                    out["viewing_zenith"][ith] = viewing_zenith
+                if PixelField.VIEWING_AZIMUTH in wanted:
+                    out["viewing_azimuth"][ith] = viewing_azimuth
+
+            if want_solar:
+                sun_position = sun_positions[ith]
+                if np.isfinite(sun_position).all():
+                    sun_vector = sun_position - xyz
+                    solar_zenith = _zenith_from_normal(sun_vector, up, degrees=degrees)
+                    solar_azimuth = _azimuth_from_local_frame(sun_vector, east, north, degrees=degrees)
+                    angles_finite &= np.isfinite(solar_zenith) & np.isfinite(solar_azimuth)
+                    if PixelField.SOLAR_ZENITH in wanted:
+                        out["solar_zenith"][ith] = solar_zenith
+                    if PixelField.SOLAR_AZIMUTH in wanted:
+                        out["solar_azimuth"][ith] = solar_azimuth
+                    if PixelField.RELATIVE_AZIMUTH in wanted:
+                        out["relative_azimuth"][ith] = relative_azimuth(viewing_azimuth, solar_azimuth, degrees=degrees)
+                elif want_flags:
+                    qf_row |= int(SQF.CALC_ANCIL_INSUFF_DATA)
+
+            if want_flags:
+                qf_row[hit & ~angles_finite] |= int(SQF.CALC_ANCIL_NOT_FINITE)
+
+        if want_flags:
+            out["quality_flags"][ith] = qf_row
+
+        if want_geodetic:
+            if degrees:
+                lla[:, :2] = np.rad2deg(lla[:, :2])
+            out["longitude"][ith] = lla[:, 0]
+            out["latitude"][ith] = lla[:, 1]
+            out["altitude"][ith] = lla[:, 2]
+
+    logger.info("Completed [%s x %s] pixel geometry for [%s]", n_pixels, n_times, instrument)
+    return out
+
+
 def minmax_lon(lons: np.ndarray, degrees=False) -> (float, float):
     """Compute min/max longitude, accounting for the international dateline.
 
@@ -1460,7 +1989,7 @@ class Geolocate:
             standardized locations.
 
         """
-        self.instrument = spicierpy.obj.Body(instrument, frame=True)  # E.g. "CPRS_HYSICS"
+        self.instrument = spicierpy.obj.Body(instrument, frame=True)
         self.sc_state_frame = spicierpy.obj.Frame("J2000")  # TODO: Or ECEF (ITRF93)?
         self.elevation = elevation.Elevation(dem_data_dir, meters=False, degrees=False)
         self._step_time = None
@@ -1832,6 +2361,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
         alt_srf_min, alt_srf_max = elev.local_minmax(gd_lon, gd_lat, pad=10)  # km
     else:
         alt_srf_min, alt_srf_max = local_minmax
+    alt_srf_max = max(alt_srf_max, TERRAIN_MIN_START_KM)  # See `terrain_correct`.
 
     if logger.isEnabledFor(5):
         gd_sat_pos = spicierpy.recgeo(
@@ -1863,11 +2393,11 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     ec_sat_vec = (ec_sat_vec / np.linalg.norm(ec_sat_vec)) * -1
 
     # 3) Local vertical component of the vector.
-    cos_sat = ec_sat_vec @ ellips_norm_vec
+    cos_sat = np.clip(ec_sat_vec @ ellips_norm_vec, -1.0, 1.0)
 
-    # Exit early if within 5-deg of horizontal! Too off nadir.
+    # Exit early if beyond the max zenith angle! Too off nadir.
     v_zenith_ang = np.arccos(cos_sat)  # rad
-    if v_zenith_ang > np.deg2rad(85):
+    if v_zenith_ang > np.deg2rad(TERRAIN_MAX_ZENITH_DEG):
         logger.info(
             "Unable to perform terrain correction! Zenith angle [%s] (degrees) too high!", np.rad2deg(v_zenith_ang)
         )
@@ -1907,15 +2437,14 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
     gd_cur_alt = alt_srf_max
     gd_prev_alt = gd_cur_alt
 
-    # Distance step size. Must consider DEM resolution!
-    d_step = 0.5  # km
-    delta_dist = d_step / np.sin(v_zenith_ang)
-    delta_dist = np.min([delta_dist, dist_srf_max])  # Added due to issues around pure-nadir.
+    with np.errstate(divide="ignore"):
+        delta_dist = TERRAIN_STEP_KM / np.sin(v_zenith_ang)
+    delta_dist = np.min([delta_dist, dist_srf_max])
     dist_cur = dist_srf_max
 
     # Iterate until the point is below the elevation.
     i = 0
-    while gd_cur_h < gd_cur_alt:
+    while gd_cur_h < gd_cur_alt or (i == 0 and gd_cur_h == gd_cur_alt):  # See `terrain_correct`.
         i += 1
         dist_cur -= delta_dist
         ec_cur_pos = ec_srf_pos + dist_cur * ec_sat_vec
@@ -1925,6 +2454,7 @@ def terrain_correct_single(elev: elevation.Elevation, ec_srf_pos, ec_sat_pos, lo
             re=constants.WGS84_SEMI_MAJOR_AXIS_KM,
             f=constants.WGS84_INVERSE_FLATTENING,
         )
+        gd_prev_alt = gd_cur_alt
         gd_cur_lon, gd_cur_lat, gd_cur_alt = gd_cur_pos  # Key that `gd_cur_alt` is updated!
 
         gd_prev_h = gd_cur_h

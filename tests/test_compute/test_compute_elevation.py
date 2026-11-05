@@ -495,5 +495,111 @@ class ElevationTestCase(unittest.TestCase):
         return
 
 
+class ElevationRegionTestCase(unittest.TestCase):
+    """Region queries on synthetic data, without DEM files."""
+
+    def setUp(self) -> None:
+        # Pixel centers -10.0 to 9.9 deg lon, 5.0 to -4.9 deg lat; heights encode the pixel.
+        data = np.arange(100 * 200, dtype=float).reshape(100, 200)
+        self.region = elevation.ElevationRegion(data, -10.0, 5.0, 0.1, -0.1, degrees=True)
+
+    def test_query_inside(self):
+        npt.assert_array_equal(self.region.query(np.array([-10.0, 0.0]), np.array([5.0, 0.0])), [0, 50 * 200 + 100])
+        value = self.region.query(0.0, 0.0)
+        self.assertIsInstance(value, np.floating)
+        self.assertEqual(value, 50 * 200 + 100)
+
+    def test_query_outside_raises_with_given_lon(self):
+        # West of the region: not wrapped to +350, which the message would otherwise show.
+        with self.assertRaisesRegex(
+            ValueError,
+            r"\[2/3\] points are outside .* index \[1\] lon=\[-20.0\], lat=\[0.0\]; region lon=\[-10.0, 10.0\)",
+        ):
+            self.region.query(np.array([0.0, -20.0, 0.0]), np.array([0.0, 0.0, 10.0]))
+        with self.assertRaisesRegex(ValueError, r"\[1/1\] points .* lon=\[10.0\]"):
+            self.region.query(10.0, 0.0)
+
+    def test_contains(self):
+        npt.assert_array_equal(
+            self.region.contains(np.array([0.0, -20.0, 9.9, np.nan]), np.array([0.0, 0.0, -4.9, 0.0])),
+            [True, False, True, False],
+        )
+
+    def test_contains_dateline(self):
+        # A region crossing the dateline is stored with longitudes past +180.
+        region = elevation.ElevationRegion(np.zeros((10, 100)), 175.0, 1.0, 0.1, -0.1, degrees=True)
+        npt.assert_array_equal(
+            region.contains(np.array([176.0, -176.0, -170.0, 170.0]), np.full(4, 0.5)), [True, True, False, False]
+        )
+        npt.assert_array_equal(region.query(np.array([-176.0]), np.array([0.5])), [0.0])
+
+    def test_contains_dateline_radians(self):
+        step = np.deg2rad(0.1)
+        region = elevation.ElevationRegion(np.zeros((10, 100)), np.deg2rad(175.0), np.deg2rad(1.0), step, -step)
+        lon = np.deg2rad([176.0, -176.0, -170.0, 170.0])
+        npt.assert_array_equal(region.contains(lon, np.full(4, np.deg2rad(0.5))), [True, True, False, False])
+
+    @staticmethod
+    def _tile_elevation(tiles, degrees=True):
+        """Elevation over synthetic 1-degree tiles, each given by its west pixel center, height = lon."""
+
+        def load_tile(x0):
+            x = x0 + np.arange(10.0)
+            y = 4.5 - np.arange(10.0)
+            return xr.DataArray(
+                np.tile(x, (y.size, 1)) * 1e3,
+                dims=("y", "x"),
+                coords={"x": x, "y": y},
+                attrs={"_FillValue": -32768, "resolution": (1.0, -1.0)},
+            )
+
+        elev = elevation.Elevation.__new__(elevation.Elevation)
+        elev.degrees = degrees
+        elev.meters = False
+        elev._regional_files = lambda *args, **kwargs: set(tiles)
+        elev.load_file = load_tile
+        return elev
+
+    def test_local_region_dateline_padded(self):
+        # Bounds padded past +180 or -180 describe the same region as the wrapped bounds.
+        elev = self._tile_elevation([170.5, -179.5])
+        lons = np.array([177.5, 179.5, -179.5, -177.5])
+        for bounds in [(175, 185, -5, 5), (-185, -175, -5, 5)]:
+            with self.subTest(bounds=bounds):
+                region = elev.local_region(*bounds, orthometric=True)
+                npt.assert_allclose(region.query(lons, np.full(4, 0.5)), lons)
+
+        elev_rad = self._tile_elevation([170.5, -179.5], degrees=False)
+        region = elev_rad.local_region(*np.deg2rad((175, 185, -5, 5)), orthometric=True)
+        npt.assert_allclose(region.query(np.deg2rad(-179.5), np.deg2rad(0.5)), -179.5)
+
+    def test_local_region_bounds_outside_range(self):
+        # Boxes entirely past +180 or -180 select the same box wrapped into range, no wider.
+        for bounds, wrapped, tiles, lon in [
+            ((355, 365, -5, 5), (-5, 5), [-9.5, 0.5], np.array([-4.5, 4.5])),
+            ((190, 200, -5, 5), (-170, -160), [-169.5], np.array([-169.5, -160.5])),
+            ((-200, -190, -5, 5), (160, 170), [160.5], np.array([160.5, 169.5])),
+        ]:
+            with self.subTest(bounds=bounds):
+                elev = self._tile_elevation(tiles)
+                searched = []
+                elev._regional_files = lambda *args, **kwargs: searched.append(args[:2]) or set(tiles)
+                region = elev.local_region(*bounds, orthometric=True)
+                self.assertEqual(searched, [wrapped])
+                npt.assert_allclose(region.query(lon, np.full(2, 0.5)), lon)
+
+    def test_local_region_uneven_tiles_raises(self):
+        elev = self._tile_elevation([0.5, 10.6])
+        with self.assertRaisesRegex(ValueError, r"not evenly spaced in \[x\]"):
+            elev.local_region(0, 20, -5, 5, orthometric=True)
+
+    def test_local_region_full_turn_raises(self):
+        # Checked before any DEM file is read.
+        elev = elevation.Elevation.__new__(elevation.Elevation)
+        elev.degrees = True
+        with self.assertRaisesRegex(ValueError, "span a full turn"):
+            elev.local_region(-181, 181, -5, 5)
+
+
 if __name__ == "__main__":
     unittest.main()
