@@ -1,4 +1,4 @@
-"""Tests for the viewing and ground-track geometry in ``curryer.correction.psf``."""
+"""Unit tests for ``curryer.correction.psf``: viewing and ground-track geometry, the PSF crop and the motion blur."""
 
 from __future__ import annotations
 
@@ -7,9 +7,15 @@ import pytest
 import xarray as xr
 
 from curryer.compute.spatial import geodetic_to_ecef
+from curryer.correction.config import PSFSamplingConfig
 from curryer.correction.error_stats import ErrorStatsConfig, ErrorStatsProcessor
-from curryer.correction.grid_types import ImageGrid
-from curryer.correction.psf import ground_track_azimuth_deg, resolve_spacecraft_ecef
+from curryer.correction.grid_types import ImageGrid, ProjectedPSF, PSFGrid
+from curryer.correction.psf import (
+    convolve_psf_with_spacecraft_motion,
+    ground_track_azimuth_deg,
+    resample_psf_to_gcp_resolution,
+    resolve_spacecraft_ecef,
+)
 
 CENTER_LON, CENTER_LAT = -102.33, 26.15
 ALTITUDE_M = 410_000.0
@@ -244,3 +250,149 @@ def test_crop_with_psf_not_smaller_than_chip_raises():
     psf = PSFGrid(data=np.ones((4, 3)), lat=np.arange(4), lon=np.arange(3))
     with pytest.raises(ValueError, match="not smaller than the GCP chip"):
         crop_to_full_psf_overlap(chip, psf)
+
+
+SIGMA_DEG = 0.002
+FRAME_STEP_DEG = 0.006
+BLUR_SAMPLING = PSFSamplingConfig(psf_lat_sample_dist_deg=1e-4, psf_lon_sample_dist_deg=1e-4)
+UNEQUAL_SAMPLING = PSFSamplingConfig(psf_lat_sample_dist_deg=0.85e-4, psf_lon_sample_dist_deg=1e-4)
+
+
+def _rotated(heading_deg: float, along: np.ndarray, across: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Lon/lat of offsets *along* / *across* a heading measured counterclockwise from east."""
+    h = np.deg2rad(heading_deg)
+    return CENTER_LON + along * np.cos(h) - across * np.sin(h), CENTER_LAT + along * np.sin(h) + across * np.cos(h)
+
+
+def _gaussian_psf(heading_deg: float, floor: float = 0.0) -> ProjectedPSF:
+    """Gaussian PSF twice as wide across the heading as along it, sampled on a grid aligned with it."""
+    along, across = np.meshgrid(
+        np.linspace(-4, 4, 41) * SIGMA_DEG, np.linspace(-4, 4, 41) * 2 * SIGMA_DEG, indexing="ij"
+    )
+    lon, lat = _rotated(heading_deg, along, across)
+    data = np.exp(-0.5 * ((along / SIGMA_DEG) ** 2 + (across / (2 * SIGMA_DEG)) ** 2)) + floor
+    return ProjectedPSF(data=data, lat=lat, lon=lon)
+
+
+def _frames(heading_deg: float, n_frames: int = 5) -> ImageGrid:
+    """Frames advancing FRAME_STEP_DEG along the heading, three pixels across it."""
+    along, across = np.meshgrid(np.arange(n_frames) * FRAME_STEP_DEG, np.array([-1.0, 0.0, 1.0]) * 0.005, indexing="ij")
+    lon, lat = _rotated(heading_deg, along, across)
+    return ImageGrid(data=np.ones(lat.shape), lat=lat, lon=lon)
+
+
+def _rms_widths(psf: PSFGrid, heading_deg: float) -> tuple[float, float]:
+    lat, lon = np.meshgrid(psf.lat, psf.lon, indexing="ij")
+    w = psf.data / psf.data.sum()
+    d_lon, d_lat = lon - np.sum(w * lon), lat - np.sum(w * lat)
+    h = np.deg2rad(heading_deg)
+    along = d_lon * np.cos(h) + d_lat * np.sin(h)
+    across = -d_lon * np.sin(h) + d_lat * np.cos(h)
+    return float(np.sqrt(np.sum(w * along**2))), float(np.sqrt(np.sum(w * across**2)))
+
+
+@pytest.mark.parametrize("sampling", [BLUR_SAMPLING, UNEQUAL_SAMPLING], ids=["equal-sampling", "unequal-sampling"])
+@pytest.mark.parametrize("heading_deg", [0.0, 41.0, 90.0, 139.0, 225.0])
+def test_motion_blur_widens_the_psf_by_one_frame_step_along_track(heading_deg, sampling):
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(heading_deg), _frames(heading_deg), sampling)
+
+    along, across = _rms_widths(blurred, heading_deg)
+    assert along == pytest.approx(np.sqrt(SIGMA_DEG**2 + FRAME_STEP_DEG**2 / 12), rel=0.03)
+    assert across == pytest.approx(2 * SIGMA_DEG, rel=0.03)
+
+
+def test_motion_blur_is_zero_outside_the_sampled_psf():
+    # The PSF is sampled on a grid aligned with east, the frames advance at 45 degrees: the
+    # samples do not fill the grid the blur runs on, and nothing may be filled in beyond them.
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(0.0, floor=0.5), _frames(45.0), BLUR_SAMPLING)
+
+    lat, lon = np.meshgrid(blurred.lat, blurred.lon, indexing="ij")
+    reach = FRAME_STEP_DEG / 2 + 2e-4
+    outside = (np.abs(lon - CENTER_LON) > 4 * SIGMA_DEG + reach) | (np.abs(lat - CENTER_LAT) > 8 * SIGMA_DEG + reach)
+    assert blurred.data[~outside].max() > 0
+    np.testing.assert_array_equal(blurred.data[outside], 0.0)
+    nonzero_lon = lon[blurred.data != 0]
+    assert np.abs(nonzero_lon - CENTER_LON).max() > 4 * SIGMA_DEG
+
+
+@pytest.mark.parametrize("heading_deg", [0.0, 41.0, 90.0, 139.0])
+def test_motion_blur_grid_spans_the_support_plus_one_sample(heading_deg):
+    # The rotated grid's corners are zero; at most one zero sample is kept around the support.
+    blurred = convolve_psf_with_spacecraft_motion(_gaussian_psf(heading_deg), _frames(heading_deg), BLUR_SAMPLING)
+
+    for axis in (0, 1):
+        nonzero = np.flatnonzero(blurred.data.any(axis=1 - axis))
+        assert nonzero[0] <= 1
+        assert nonzero[-1] >= blurred.data.shape[axis] - 2
+
+
+@pytest.mark.parametrize(
+    ("frames", "match"),
+    [
+        (_frames(0.0, n_frames=1), "at least two frames"),
+        (
+            ImageGrid(data=np.ones((2, 3)), lat=np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]]), lon=np.zeros((2, 3))),
+            "finite and nonzero",
+        ),
+        (
+            ImageGrid(data=np.ones((2, 3)), lat=np.zeros((2, 3)), lon=np.zeros((2, 3))),
+            "finite and nonzero",
+        ),
+    ],
+    ids=["one-frame", "non-finite-step", "zero-step"],
+)
+def test_motion_blur_without_a_frame_step_raises(frames, match):
+    with pytest.raises(ValueError, match=match):
+        convolve_psf_with_spacecraft_motion(_gaussian_psf(0.0), frames, BLUR_SAMPLING)
+
+
+def _chip_grid(step_deg: float = 1e-3, n: int = 41) -> ImageGrid:
+    lon, lat = np.meshgrid(CENTER_LON + np.arange(n) * step_deg, CENTER_LAT - np.arange(n) * step_deg)
+    return ImageGrid(data=np.zeros((n, n)), lat=lat, lon=lon)
+
+
+def test_resample_onto_gcp_pixels_wider_than_the_psf_raises():
+    # Lobes of 0.001 deg sampled every 0.003 deg would put the samples' weighted centre 0.1 pixel off.
+    lat = CENTER_LAT + np.linspace(-0.004, 0.006, 101)
+    lon = CENTER_LON + np.linspace(-0.005, 0.003, 81)
+    d_lat, d_lon = np.meshgrid(lat - CENTER_LAT, lon - CENTER_LON, indexing="ij")
+    data = np.exp(-0.5 * (d_lat**2 + d_lon**2) / 0.001**2)
+    with pytest.raises(ValueError, match="wider than the PSF's RMS width"):
+        resample_psf_to_gcp_resolution(PSFGrid(data=data, lat=lat, lon=lon), _chip_grid(step_deg=0.003))
+
+
+@pytest.mark.parametrize("step_deg", [1e-3, 1.3e-3], ids=["fine", "coarsest-allowed"])
+def test_resampled_psf_is_centred_on_its_centroid(step_deg):
+    # Two lobes of unequal weight: the centroid is off the middle of the PSF's own grid. At the
+    # coarsest step the guard allows, samples taken at the centroid leave the weights 0.004 pixel off.
+    lat = CENTER_LAT + np.linspace(-0.004, 0.006, 101)
+    lon = CENTER_LON + np.linspace(-0.005, 0.003, 81)
+    d_lat, d_lon = np.meshgrid(lat - CENTER_LAT, lon - CENTER_LON, indexing="ij")
+    data = np.exp(-0.5 * (d_lat**2 + d_lon**2) / 0.001**2) + 0.4 * np.exp(
+        -0.5 * ((d_lat - 0.003) ** 2 + (d_lon + 0.002) ** 2) / 0.001**2
+    )
+    psf = PSFGrid(data=data, lat=lat, lon=lon)
+    centroid_lat = np.sum(data.sum(axis=1) * lat) / data.sum()
+    centroid_lon = np.sum(data.sum(axis=0) * lon) / data.sum()
+
+    resampled = resample_psf_to_gcp_resolution(psf, _chip_grid(step_deg=step_deg))
+
+    n_lat, n_lon = resampled.data.shape
+    assert n_lat % 2 == 1
+    assert n_lon % 2 == 1
+    assert resampled.lat[n_lat // 2] == pytest.approx(centroid_lat, abs=1e-12)
+    assert resampled.lon[n_lon // 2] == pytest.approx(centroid_lon, abs=1e-12)
+    weights = resampled.data / resampled.data.sum()
+    assert np.sum(weights.sum(axis=1) * np.arange(n_lat)) == pytest.approx(n_lat // 2, abs=1e-6)
+    assert np.sum(weights.sum(axis=0) * np.arange(n_lon)) == pytest.approx(n_lon // 2, abs=1e-6)
+    assert resampled.lat.min() <= lat.min()
+    assert resampled.lat.max() >= lat.max()
+    assert resampled.lon.min() <= lon.min()
+    assert resampled.lon.max() >= lon.max()
+
+
+@pytest.mark.parametrize("data", [np.zeros((5, 5)), -np.ones((5, 5))], ids=["zero", "negative"])
+def test_resample_without_positive_psf_weights_raises(data):
+    psf = PSFGrid(data=data, lat=CENTER_LAT + np.arange(5) * 1e-3, lon=CENTER_LON + np.arange(5) * 1e-3)
+    with pytest.raises(ValueError, match="centroid is undefined"):
+        resample_psf_to_gcp_resolution(psf, _chip_grid())
