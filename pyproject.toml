@@ -44,10 +44,11 @@ dependencies = [
     "scipy>=1.9",
     "pandas>=1.5",
     "xarray>=2022.11",
-    # NOTE: netcdf 1.7.3 and h5py 3.14.0/1 resulted in issues on release. Pins
-    # may be removed after future releases address those bugs.
-    "netcdf4>=1.6,<1.7.3",
-    "h5py>=3.0,<3.14.0",
+    # NOTE: h5py 3.15.x and netCDF4 wheels built on HDF5 1.14.6 fail with "NetCDF: HDF error"
+    # in one process (Unidata/netcdf4-python#1438); not reproduced with h5py 3.16.
+    # netCDF4 1.7.3 stays excluded, as in libera_utils.
+    "netcdf4>=1.6,!=1.7.3",
+    "h5py>=3.0,!=3.15.*",
     "tifffile>=2024.1.1",
     "affine>=2.3",
     "pyproj>=3.6",
